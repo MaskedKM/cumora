@@ -337,8 +337,12 @@ test('zcode envelope parser: object passthrough, non-envelope falls back to text
 })
 
 test('zcode readZcodeMainModel: absent/malformed config resolves null', () => {
+  // Both probes pin HOME to nonexistent dirs: the fallback is the REAL
+  // homedir, and a dev box with a logged-in zcode (~/.zcode/cli/config.json)
+  // would otherwise flip this assertion — the test must not depend on
+  // machine state.
   assert.equal(readZcodeMainModel({ HOME: '/nonexistent-zcode-home' } as NodeJS.ProcessEnv), null)
-  assert.equal(readZcodeMainModel({} as NodeJS.ProcessEnv), null)
+  assert.equal(readZcodeMainModel({ HOME: '/nonexistent-zcode-home-2' } as NodeJS.ProcessEnv), null)
 })
 
 /**
