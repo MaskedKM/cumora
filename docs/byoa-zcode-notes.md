@@ -27,13 +27,13 @@
 | # | 验证点 | 结论 |
 |---|--------|------|
 | 1 | `-p` + `--continue` 组合 | ✅ 跨进程上下文延续(--cwd 相同即恢复该目录最新会话) |
-| 2 | 首次运行即带 `--continue` | ❌ 报错 `No resumable session found for <cwd>`,exit 1(已被 `--resume` 方案取代,见 7) |
+| 2 | 首次运行即带 `--continue` | ❌ 报错 `No resumable session found for <cwd>`,exit 1(已被 `--resume` 方案取代,见下方"补充实测"与修订 2) |
 | 3 | `-p` stdout 形态 | ✅ 纯回复文本、无噪音、ANSI 可用 `--no-color` 压制 |
 | 4 | persona 文件拾取 | ✅ AGENTS.md 与 CLAUDE.md **都被读取** → seedHome 写 AGENTS.md 即可 |
 | 5 | 只读模式 | ✅ `--mode plan` 单独即阻止写文件;`--disallowed-tools "Bash Edit Write"` 亦生效(双保险) |
 | 6 | `ZCODE_HOME` 隔离 | ❌ **不隔离**:config 固定读 `~/.zcode/cli/config.json`(移走真实 config 后,设与不设 ZCODE_HOME 均报 Model config is missing)→ 0.16.3 无 per-agent 模型钉死 |
 | 7 | `--json` 输出 | ✅✅ **关键升级**:`-p --json` 在 stdout 输出单个 JSON 信封,含 `sessionId` / `response` / `usage`(inputTokens、outputTokens、cacheReadTokens、cacheWriteTokens、reasoningTokens)/ `projection`(上下文水位) |
-| 8 | 思考控制 | ❌ 无 CLI flag(thought_level 仅存在于应用内配置);默认行为可接受 |
+| 8 | 思考控制 | ❌ 无 CLI flag;`~/.zcode/cli/config.json` 也没有已验证的等价键(thought_level 仅出现在应用内会话配置 schema,CLI config 的 zod schema 无此键)→ 接受默认行为 |
 
 ## 补充实测(适配器设计的关键输入)
 
@@ -56,14 +56,17 @@
 # 无头入口(AppImage 挂载点随版本漂移)
 node /tmp/.mount_ZCode.*/resources/glm/zcode.cjs --cwd <dir> --mode yolo --no-color --json -p "<prompt>"
 
-# 写 CLI 配置(从桌面版 v2 配置复制启用的 provider,apiKey 不落日志)
+# 写 CLI 配置(从桌面版 v2 配置复制启用的 provider;apiKey 只在文件间搬运,不打印)
 python3 - <<'EOF'
-import json
-v2 = json.load(open('~/.zcode/v2/config.json'.replace('~', __import__('os').path.expanduser('~'), 1)))
-entry = v2['provider']['builtin:bigmodel-coding-plan']  # 本机启用项
-cli = json.load(open('~/.zcode/cli/config.json'.replace('~', __import__('os').path.expanduser('~'), 1)))
+import json, os
+home = os.path.expanduser('~')
+v2 = json.load(open(os.path.join(home, '.zcode/v2/config.json')))
+entry = v2['provider']['builtin:bigmodel-coding-plan']  # 本机启用项,按需替换
+cli_path = os.path.join(home, '.zcode/cli/config.json')
+cli = json.load(open(cli_path)) if os.path.exists(cli_path) else {}
 cli['provider'] = {'bigmodel-coding-plan': entry}
 cli['model'] = {'main': 'bigmodel-coding-plan/GLM-5.2', 'lite': 'bigmodel-coding-plan/GLM-5-Turbo'}
-json.dump(cli, open('~/.zcode/cli/config.json'.replace('~', __import__('os').path.expanduser('~'), 1), 'w'), indent=2)
+with open(cli_path, 'w') as f:
+    json.dump(cli, f, indent=2)
 EOF
 ```
