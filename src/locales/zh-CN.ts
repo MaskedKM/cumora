@@ -1040,6 +1040,13 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ship.statusPaused': '暂停',
   'ship.statusArchived': '已归档',
   // ─── onboarding（首次配对计算机）─────────────────────────────────────
+// ─── cli method picker（配对命令来源：npx / 本地构建）───
+  'cli.method': '运行方式',
+  'cli.methodNpx': 'npx（发布版）',
+  'cli.methodLocal': '本地构建',
+  'cli.methodNpxHint': '运行 npm 发布版',
+  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 dist/cli.js',
+
   'onboard.title': '设置你的计算机',
   'onboard.body': '智能体跑在你自己的机器（或 VPS）上，由本地的 <span class="font-mono text-[13px]">Claude Code</span>、<span class="font-mono text-[13px]">Codex</span>、<span class="font-mono text-[13px]">Grok Build</span>、<span class="font-mono text-[13px]">Cursor</span> 或 <span class="font-mono text-[13px]">ZCode</span> 驱动。配对一台计算机开始吧 —— 初始团队会部署在那里，每人都有独立的 workspace、记忆和技能。',
   'onboard.cmdIntro': '在你想要托管智能体的机器上，运行这一条命令即可。需要先装好 <span class="font-mono">claude</span>、<span class="font-mono">codex</span>、<span class="font-mono">grok</span>、<span class="font-mono">cursor-agent</span> 或 <span class="font-mono">ZCode</span> 桌面版。',
@@ -1049,11 +1056,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'onboard.tokenHint': '配对码长期有效。计算机连上后会在这里出现，连接成功会自动继续。',
   'onboard.engine': '引擎',
   'onboard.engineHint': '只是默认值 —— 这台机器仍然可以在任何检测到的引擎上跑智能体',
-  'cli.method': '运行方式',
-  'cli.methodNpx': 'npx(发布版)',
-  'cli.methodLocal': '本地构建',
-  'cli.methodNpxHint': '运行 npm 发布版',
-  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 dist/cli.js',
   'onboard.windowsKeep': '智能体运行期间，请保持这个终端窗口打开。',
   'onboard.windowsServiceNote': 'Windows 上暂不支持后台服务安装。',
   'onboard.background': '让它在后台保持运行',

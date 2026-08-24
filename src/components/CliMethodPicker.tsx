@@ -30,9 +30,15 @@ export function useCliLaunch(): {
   const [method, setMethod] = useState<CliMethod>(() =>
     (localStorage.getItem(LS_METHOD) as CliMethod | null) === 'local' ? 'local' : 'npx')
   const [localPath, setLocalPath] = useState<string>(() => localStorage.getItem(LS_PATH) ?? '')
-  useEffect(() => { localStorage.setItem(LS_METHOD, method) }, [method])
-  useEffect(() => { localStorage.setItem(LS_PATH, localPath) }, [localPath])
-  const cli = method === 'npx' ? 'npx cumora@latest' : `node ${localPath.trim() || LOCAL_CLI_PLACEHOLDER}`
+  // Writes are best-effort: private-mode / disabled storage throws, and an
+  // exception inside these effects would break the picker (same rationale as
+  // the other persistence call sites).
+  useEffect(() => { try { localStorage.setItem(LS_METHOD, method) } catch { /* storage unavailable */ } }, [method])
+  useEffect(() => { try { localStorage.setItem(LS_PATH, localPath) } catch { /* storage unavailable */ } }, [localPath])
+  // Quote the local path so a repo location containing spaces still
+  // copy-pastes as one argv element (double quotes work in POSIX shells and
+  // Windows cmd alike).
+  const cli = method === 'npx' ? 'npx cumora@latest' : `node "${localPath.trim() || LOCAL_CLI_PLACEHOLDER}"`
   return { method, setMethod, localPath, setLocalPath, cli }
 }
 

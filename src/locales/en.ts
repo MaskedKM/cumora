@@ -1039,6 +1039,13 @@ export const en = {
   'ship.statusPaused': 'Paused',
   'ship.statusArchived': 'Archived',
   // ─── onboarding (first-run computer pairing) ─────────────────────
+// ─── cli method picker (pairing command source: npx vs local build) ───
+  'cli.method': 'Run with',
+  'cli.methodNpx': 'npx (published)',
+  'cli.methodLocal': 'Local build',
+  'cli.methodNpxHint': 'runs the published npm package',
+  'cli.methodLocalHint': 'runs a repo build — edit the path to your dist/cli.js',
+
   'onboard.title': 'Set up your computer',
   'onboard.body': 'Your agents run on <strong>your own machine</strong> (or a VPS), powered by your local <span class="font-mono text-[13px]"> Claude Code</span>, <span class="font-mono text-[13px]"> Codex</span>, <span class="font-mono text-[13px]"> Grok Build</span>, <span class="font-mono text-[13px]"> Cursor</span>, or <span class="font-mono text-[13px]"> ZCode</span>. Pair a computer to get started — your starter team will set up there, each with its own isolated workspace, memory, and skills.',
   'onboard.cmdIntro': 'On the machine you want to host your agents, you’ll run one command. It needs <span class="font-mono">claude</span>, <span class="font-mono">codex</span>, <span class="font-mono">grok</span>, <span class="font-mono">cursor-agent</span>, or the <span class="font-mono">ZCode</span> desktop app installed.',
@@ -1048,11 +1055,6 @@ export const en = {
   'onboard.tokenHint': 'This pairing token stays valid. The computer appears here and you’ll continue automatically once it connects.',
   'onboard.engine': 'Engine',
   'onboard.engineHint': 'just the default — this computer can still run agents on any detected engine',
-  'cli.method': 'Command',
-  'cli.methodNpx': 'npx (published)',
-  'cli.methodLocal': 'Local build',
-  'cli.methodNpxHint': 'runs the published npm package',
-  'cli.methodLocalHint': 'runs a repo build — edit the path to your dist/cli.js',
   'onboard.windowsKeep': 'Keep this terminal open while the agents run.',
   'onboard.windowsServiceNote': 'background service install isn’t supported on Windows yet.',
   'onboard.background': 'Keep it running in the background',
