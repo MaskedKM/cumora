@@ -2678,27 +2678,50 @@ class ZcodeAdapter implements EngineAdapter {
   private async writeModelConfig(home: string, persona: EnginePersona, env: NodeJS.ProcessEnv): Promise<void> {
     const projPath = join(home, '.zcode', 'config.json')
     const model = persona.model?.trim() || null
+    const fastModel = persona.fastModel?.trim() || null
     const providerId = model?.includes('/') ? model.split('/')[0] : null
     if (!model || !providerId) {
       if (model && !providerId) {
         console.warn(`[zcode] agent model "${model}" is not in provider/model form (e.g. kimi/k3) — leaving the machine-level pin in place`)
       }
+      if (!model && fastModel) {
+        console.warn('[zcode] fast model set without a main model — zcode pins lite only alongside a main pin; ignoring it')
+      }
       await rm(projPath, { force: true })
       return
     }
-    const entry = (readZcodeUserConfig(env)?.provider ?? {})[providerId] as Record<string, unknown> | undefined
+    const userProviders = readZcodeUserConfig(env)?.provider ?? {}
+    const entry = userProviders[providerId] as Record<string, unknown> | undefined
     if (!entry || typeof entry !== 'object') {
       console.warn(`[zcode] provider "${providerId}" not found in ~/.zcode/cli/config.json — add it there first (or run the CLI login), leaving the machine-level pin in place`)
       await rm(projPath, { force: true })
       return
     }
-    const fastModel = persona.fastModel?.trim()
+    // The lite pin may reference a DIFFERENT provider — copy its entry too,
+    // or zcode fails the whole config with "provider X is missing baseURL"
+    // (provider tables don't merge across layers). A fast provider missing
+    // from the operator's config drops lite with a warning rather than
+    // breaking the main pin.
+    let lite: string | null = null
+    const providers: Record<string, unknown> = { [providerId]: entry }
+    if (fastModel) {
+      const fastProviderId = fastModel.includes('/') ? fastModel.split('/')[0] : null
+      const fastEntry = fastProviderId ? userProviders[fastProviderId] as Record<string, unknown> | undefined : undefined
+      if (fastEntry && typeof fastEntry === 'object') {
+        lite = fastModel
+        providers[fastProviderId!] = fastEntry
+      } else {
+        console.warn(`[zcode] fast model "${fastModel}"'s provider not found in ~/.zcode/cli/config.json — dropping the lite pin (main pin unaffected)`)
+      }
+    }
     const proj = {
-      model: { main: model, ...(fastModel ? { lite: fastModel } : {}) },
-      provider: { [providerId]: entry },
+      model: { main: model, ...(lite ? { lite } : {}) },
+      provider: providers,
     }
     await mkdir(join(home, '.zcode'), { recursive: true })
-    await writeFile(projPath, JSON.stringify(proj, null, 2), 'utf8')
+    // 0600 like every other secret-bearing file under the home (runtime
+    // token, standing prompt): this carries the operator's provider apiKey.
+    await writeFile(projPath, JSON.stringify(proj, null, 2), { encoding: 'utf8', mode: 0o600 })
   }
 
   // No startSession: `zcode app-server` exists but driving a persistent

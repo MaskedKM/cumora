@@ -7,7 +7,7 @@
  * (docs/byoa-zcode-notes.md).
  */
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -388,6 +388,44 @@ test('zcode seedHome: unknown provider or malformed ref leaves the machine pin (
   assert.ok(existsSync(proj))
   await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null }, f.env)
   assert.ok(!existsSync(proj), 'clearing the model must remove the override')
+})
+
+test('zcode seedHome: cross-provider fast model copies both providers; missing fast provider drops lite only', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  // main on kimi, fast on a second provider present in the user config
+  await (async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(f.root, 'fakehome', '.zcode', 'cli', 'config.json'), JSON.stringify({
+      model: { main: 'bigmodel-coding-plan/GLM-5.2' },
+      provider: {
+        kimi: { kind: 'anthropic', options: { apiKey: 'k-test-1', baseURL: 'https://api.kimi.com/coding' } },
+        glm: { kind: 'anthropic', options: { apiKey: 'g-test-1', baseURL: 'https://open.bigmodel.cn/api/anthropic' } },
+      },
+    }), 'utf8')
+  })()
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3', fastModel: 'glm/glm-4-flash' }, f.env)
+  let written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8')) as { model?: { main?: string; lite?: string }; provider?: Record<string, unknown> }
+  assert.equal(written.model?.lite, 'glm/glm-4-flash')
+  assert.ok(written.provider?.kimi && written.provider?.glm, 'both providers must be copied for a cross-provider lite pin')
+  // fast provider absent from the operator's config → lite dropped, main pin intact
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3', fastModel: 'nope/mini' }, f.env)
+  written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8'))
+  assert.equal(written.model?.lite, undefined, 'unresolvable fast provider must drop lite')
+  assert.equal(written.model?.main, 'kimi/k3')
+  assert.ok(written.provider?.kimi && !written.provider?.nope)
+  // no fastModel at all → no lite key
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8'))
+  assert.equal(written.model?.lite, undefined)
+})
+
+test('zcode project config is written 0600 (it carries the provider apiKey)', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  const st = statSync(join(f.home, '.zcode', 'config.json'))
+  assert.equal(st.mode & 0o077, 0, `project config must not be group/world readable, got ${(st.mode & 0o777).toString(8)}`)
 })
 
 test('zcode run attributes the turn to the project-pinned model', { skip: IS_WIN }, async () => {
