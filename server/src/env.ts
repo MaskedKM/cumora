@@ -6,6 +6,7 @@
  *  environment win over those in `.env` (dotenv default), so deployment
  *  doesn't need a file. */
 import 'dotenv/config'
+import type { EngineId } from './agents/computer/engine.js'
 
 function required(name: string, fallback?: string): string {
   const v = process.env[name] ?? fallback
@@ -58,6 +59,28 @@ export const env = {
    * (e.g. nano) for these calls specifically.
    */
   OPENAI_COMPACTION_MODEL: process.env.OPENAI_COMPACTION_MODEL ?? DEFAULT_SUPPORT_MODEL,
+  /**
+   * Cerebellum ROUTE — deployment-wide switch for where cerebellum-tier
+   * calls (agenda triage today; other JSON classifiers later) run.
+   * 'remote' (default) — today's behavior, an OpenAI-Chat-Completions-
+   *   compatible provider (see CEREBELLUM_PROVIDER/_BASE_URL/_API_KEY/_MODEL,
+   *   landed separately).
+   * 'byoa' — prefer the operator's own local engine (CEREBELLUM_LOCAL_ENGINE)
+   *   via the daemon's EngineAdapter.classify(), falling back to remote per
+   *   agent when that engine isn't actually available (see
+   *   agents/cerebellum-route.ts). Any other value is treated as 'remote'.
+   */
+  CEREBELLUM_ROUTE: (process.env.CEREBELLUM_ROUTE === 'byoa' ? 'byoa' : 'remote') as 'remote' | 'byoa',
+  /**
+   * Which local engine cerebellum calls should use when CEREBELLUM_ROUTE is
+   * 'byoa' — independent of any given agent's own brain-tier `engine`, so an
+   * operator can pick a cheaper/faster engine for the classifier tier on
+   * purpose. Only consulted when CEREBELLUM_ROUTE=byoa. Defaults to 'claude'
+   * (Cumora's most common BYOA engine); an agent's Computer must actually
+   * advertise this engine in `available_engines` or the call falls back to
+   * remote (see resolveCerebellumRoute).
+   */
+  CEREBELLUM_LOCAL_ENGINE: (process.env.CEREBELLUM_LOCAL_ENGINE ?? 'claude') as EngineId,
   /**
    * Novita LLM API key. Optional — when unset, agents configured with a
    * `novita/<model>` model id (see server/src/novita.ts) fall back to the
