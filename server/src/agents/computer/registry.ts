@@ -20,7 +20,7 @@ import { publish, CH_STATUS } from '../../redis.js'
 import { signAgentToken } from '../runtime/jwt.js'
 
 export type ComputerKind = 'cloud' | 'local' | 'vps'
-export type EngineId = 'managed' | 'claude' | 'codex' | 'grok' | 'cursor'
+export type EngineId = 'managed' | 'claude' | 'codex' | 'grok' | 'cursor' | 'zcode'
 export type ComputerStatus = 'online' | 'offline' | 'busy'
 
 /** How long a paired computer can go without a heartbeat before the sweep
@@ -350,7 +350,8 @@ export async function mintAgentRuntimeToken(args: {
  *
  *  When a row has no explicit model, fall back to the deploy-level default
  *  (CUMORA_DEFAULT_CLAUDE_MODEL / CUMORA_DEFAULT_CODEX_MODEL /
- *  CUMORA_DEFAULT_GROK_MODEL / CUMORA_DEFAULT_CURSOR_MODEL) so every BYOA
+ *  CUMORA_DEFAULT_GROK_MODEL / CUMORA_DEFAULT_CURSOR_MODEL /
+ *  CUMORA_DEFAULT_ZCODE_MODEL) so every BYOA
  *  daemon gets a consistent pin — independent of whatever model the local
  *  engine CLI happens to default to today. Critical: a model
  *  upgrade in the underlying CLI (e.g. claude 4.7 → 4.8) silently changes
@@ -368,9 +369,14 @@ export async function listAgentsForComputer(computerId: string): Promise<
   const codexDefault = process.env.CUMORA_DEFAULT_CODEX_MODEL?.trim() || null
   const grokDefault = process.env.CUMORA_DEFAULT_GROK_MODEL?.trim() || null
   const cursorDefault = process.env.CUMORA_DEFAULT_CURSOR_MODEL?.trim() || null
+  // Placeholder parity with the other engines: the zcode CLI takes no --model
+  // flag (see docs/byoa-zcode-notes.md), so the adapter does not consume this
+  // value today — it lands here only so a future CLI that grows a model flag
+  // has the same deploy-level pinning knob as its siblings.
+  const zcodeDefault = process.env.CUMORA_DEFAULT_ZCODE_MODEL?.trim() || null
   return rows.map((r) => {
     if (r.model) return r
-    const dflt = r.engine === 'codex' ? codexDefault : r.engine === 'claude' ? claudeDefault : r.engine === 'grok' ? grokDefault : r.engine === 'cursor' ? cursorDefault : null
+    const dflt = r.engine === 'codex' ? codexDefault : r.engine === 'claude' ? claudeDefault : r.engine === 'grok' ? grokDefault : r.engine === 'cursor' ? cursorDefault : r.engine === 'zcode' ? zcodeDefault : null
     return dflt ? { ...r, model: dflt } : r
   })
 }
