@@ -27,7 +27,7 @@ import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
 import { parseSseStream, wakeStreamWasStable } from '../runtime/sse-parse.js'
-import { detectEngines, getAdapter, ENGINE_IDS, runEngineDoctor, type EngineId, type EngineSession, type EngineRunResult, type EngineUsage, type EngineHopReport } from './engine.js'
+import { detectEngines, getAdapter, ENGINE_IDS, runEngineDoctor, resolveZcodeLauncher, zcodeEngineVersion, type EngineId, type EngineSession, type EngineRunResult, type EngineUsage, type EngineHopReport } from './engine.js'
 import { usageFromClaude, type TokenUsage } from '../cost.js'
 import { parseTriage, finalizeTriage, isRateLimited } from '../triage-core.js'
 import { GLANCE_YIELD_RULES } from '../glance-protocol.js'
@@ -681,6 +681,16 @@ function helpText(): string {
 async function requireLocalEngine(): Promise<EngineId[]> {
   const engines = await detectEngines()
   if (engines.length === 0) throw new Error(missingEngineMessage())
+  // zcode's CLI surface is young — its help text has drifted ahead of the
+  // arg parser before. Record the runtime version at pairing so any later
+  // drift report has the number that behaved this way (the AppImage cache
+  // also re-extracts on upgrade via its size+mtime key, see engine.ts).
+  if (engines.includes('zcode')) {
+    const version = zcodeEngineVersion()
+    const source = resolveZcodeLauncher()?.source
+    if (version) console.log(`[computer] zcode engine version ${version}${source ? ` (${source})` : ''}`)
+    else console.log('[computer] zcode engine present, but `zcode version` did not answer — flag drift risk unknown')
+  }
   return engines
 }
 

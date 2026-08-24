@@ -2437,6 +2437,34 @@ export function resolveZcodeLauncher(env: NodeJS.ProcessEnv = process.env): Zcod
   return null
 }
 
+/** Best-effort zcode CLI version probe (`zcode version`), for drift
+ *  diagnosis at pairing time. Null when the launcher can't resolve or the
+ *  probe fails — never fatal. */
+export function zcodeEngineVersion(env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const launcher = resolveZcodeLauncher(env)
+    if (!launcher) return null
+    const out = execFileSync(launcher.command, [...launcher.prefix, 'version'], {
+      env, timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8',
+    })
+    const m = out.match(/(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)
+    return m ? m[1] : (out.trim().slice(0, 32) || null)
+  } catch {
+    return null
+  }
+}
+
+/** zcode's help text has run ahead of its arg parser before (0.16.3 lists
+ *  --output-format/--settings/--max-turns that the parser rejects), so a
+ *  flag-level break after an upgrade is a realistic failure mode. Turn the
+ *  bare parse error into an actionable diagnosis. */
+function zcodeDriftHint(error: string): string {
+  return /Unknown option/i.test(error)
+    ? `${error}\n[zcode] CLI drift: this zcode build doesn't accept one of the flags cumora passes. ` +
+      'Update the ZCode desktop app, or pin a known-good entry via CUMORA_ZCODE_BIN, then re-pair.'
+    : error
+}
+
 /** Run one `-p --json` call and fold the envelope into an EngineRunResult.
  *  One hop report fires when the envelope carried usage — zcode reports
  *  usage once per turn, so emitting more would double-count. */
@@ -2479,7 +2507,7 @@ function spawnZcodeJson(
       if (!envelope) {
         resolve({
           exitCode,
-          error: exitCode === 0 ? undefined : failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [text] }),
+          error: exitCode === 0 ? undefined : zcodeDriftHint(failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [text] })),
           text,
         })
         return
@@ -2496,7 +2524,7 @@ function spawnZcodeJson(
       }
       resolve({
         exitCode,
-        error: exitCode === 0 ? undefined : failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [typeof envelope.response === 'string' ? envelope.response : text] }),
+        error: exitCode === 0 ? undefined : zcodeDriftHint(failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [typeof envelope.response === 'string' ? envelope.response : text] })),
         text: typeof envelope.response === 'string' ? envelope.response : text,
         sessionId: typeof envelope.sessionId === 'string' && envelope.sessionId ? envelope.sessionId : null,
         usage,
