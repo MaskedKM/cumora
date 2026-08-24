@@ -98,10 +98,26 @@ export interface AdminWaitlistEntry {
   decidedBy: string | null
 }
 
+export type CerebellumRoute = 'remote' | 'byoa'
+
 export interface AdminSettings {
   waitlist_enabled: boolean
   signups_paused: boolean
+  cerebellum_route: CerebellumRoute
+  cerebellum_local_engine: string
+  cerebellum_provider: string
+  cerebellum_base_url: string
+  cerebellum_model: string
+  /** API key is write-only (see `AdminSettingsPatch`) — GET only ever
+   *  reflects configured-ness + a masked suffix, never the plaintext. */
+  cerebellum_api_key_configured: boolean
+  cerebellum_api_key_suffix: string | null
 }
+
+/** PUT body: everything in `AdminSettings` is settable as-is, plus the
+ *  write-only `cerebellum_api_key` (a new plaintext value to encrypt, or
+ *  omitted to leave the stored key untouched). */
+export type AdminSettingsPatch = Partial<AdminSettings> & { cerebellum_api_key?: string }
 
 export interface AdminStats {
   users: { total: number; admins: number; tiers: { free: number; pro: number; max: number } }
@@ -293,8 +309,11 @@ export const adminApi = {
   },
 
   settings: () => http<AdminSettings>('/settings'),
-  setSettings: (patch: Partial<AdminSettings>) =>
+  setSettings: (patch: AdminSettingsPatch) =>
     http<AdminSettings>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  /** Union of `available_engines` across every currently-online Computer —
+   *  feeds the byoa local-engine dropdown. Empty when none are online. */
+  availableEngines: () => http<{ engines: string[] }>('/computers/available-engines'),
 
   listUsers: (params: { q?: string; tier?: Tier | ''; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams()
