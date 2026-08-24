@@ -69,6 +69,28 @@ export const env = {
    *  self-hosted proxy or a pinned API version. */
   NOVITA_BASE_URL: (process.env.NOVITA_BASE_URL ?? 'https://api.novita.ai/openai').replace(/\/+$/, ''),
   /**
+   * Cerebellum remote-provider config — the generic, provider-agnostic
+   * counterpart to `NOVITA_*` (see `server/src/cerebellum-adapter.ts`,
+   * which reuses novita.ts's Responses↔Chat-Completions translation
+   * against an arbitrary OpenAI-Chat-Completions-compatible endpoint).
+   * All four are optional and independent of the `novita/`-prefix
+   * convention above; when `CEREBELLUM_BASE_URL`/`CEREBELLUM_API_KEY` are
+   * unset, cerebellum-tier callers fall back to plain OpenAI
+   * (`OPENAI_API_KEY`/`OPENAI_MODEL_SUPPORT`) — that fallback decision is
+   * made by the call site, not this module.
+   *   CEREBELLUM_PROVIDER — free-form label (e.g. "deepseek"), used only
+   *                          for logging/diagnostics.
+   *   CEREBELLUM_BASE_URL  — the provider's OpenAI-compatible Chat
+   *                          Completions base URL.
+   *   CEREBELLUM_API_KEY   — bearer key for that endpoint.
+   *   CEREBELLUM_MODEL     — model id to send, as the provider expects it
+   *                          (no prefix stripped).
+   */
+  CEREBELLUM_PROVIDER: process.env.CEREBELLUM_PROVIDER ?? '',
+  CEREBELLUM_BASE_URL: (process.env.CEREBELLUM_BASE_URL ?? '').replace(/\/+$/, ''),
+  CEREBELLUM_API_KEY: process.env.CEREBELLUM_API_KEY ?? '',
+  CEREBELLUM_MODEL: process.env.CEREBELLUM_MODEL ?? '',
+  /**
    * Webhook URL for process-level alerts (unhandledRejection /
    * uncaughtException). Currently expects a Discord-compatible
    * `{ content: "..." }` JSON payload. When unset, alerts are still
