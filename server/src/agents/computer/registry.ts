@@ -350,7 +350,8 @@ export async function mintAgentRuntimeToken(args: {
  *
  *  When a row has no explicit model, fall back to the deploy-level default
  *  (CUMORA_DEFAULT_CLAUDE_MODEL / CUMORA_DEFAULT_CODEX_MODEL /
- *  CUMORA_DEFAULT_GROK_MODEL / CUMORA_DEFAULT_CURSOR_MODEL) so every BYOA
+ *  CUMORA_DEFAULT_GROK_MODEL / CUMORA_DEFAULT_CURSOR_MODEL /
+ *  CUMORA_DEFAULT_ZCODE_MODEL) so every BYOA
  *  daemon gets a consistent pin — independent of whatever model the local
  *  engine CLI happens to default to today. Critical: a model
  *  upgrade in the underlying CLI (e.g. claude 4.7 → 4.8) silently changes
