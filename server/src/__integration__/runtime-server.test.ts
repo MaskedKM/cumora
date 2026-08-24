@@ -243,3 +243,96 @@ test('[integration] runtime: /runs + /runs/:runId/finish persists status transit
   assert.equal(rows[0].token_count, 1234)
   assert.equal(rows[0].agent_id, agentId)
 })
+
+// ── ticket #20: BYOA agenda-triage daemon-poll path ────────────────────
+//
+// Mirrors the `/inbox-triage/payload` conventions this file doesn't (yet)
+// cover directly, but matches `agent-idle-agenda.test.ts`'s seeding style.
+// The daemon-side EngineAdapter.classify() invocation is out of scope here
+// (covered by the daemon's own --doctor probe per docs/BYOA.md) — these
+// tests only assert the server's half of the payload/verdict contract.
+
+async function seedAgendaCard(agentId: string, companyId: string): Promise<string> {
+  const boardId = `b-${randomUUID().slice(0, 8)}`
+  const columnId = `col-${randomUUID().slice(0, 8)}`
+  const cardId = `card-${randomUUID().slice(0, 8)}`
+  await pool.query(`INSERT INTO boards (id, company_id, title, created_by) VALUES ($1,$2,'Board','test')`, [boardId, companyId])
+  await pool.query(`INSERT INTO board_columns (id, board_id, title, position) VALUES ($1,$2,'To Do',0)`, [columnId, boardId])
+  await pool.query(
+    `INSERT INTO board_cards (id, board_id, column_id, title, assignee_id, created_by) VALUES ($1,$2,$3,'Ship it',$4,'test')`,
+    [cardId, boardId, columnId, agentId],
+  )
+  return cardId
+}
+
+test('[integration] runtime: GET /agenda for a byoa-routed agent returns the classifier payload, not a verdict', async () => {
+  const { env } = await import('../env.js')
+  const { agentId, companyId, token } = await seedAgent()
+  await seedAgendaCard(agentId, companyId)
+  const computerId = `comp-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO computers (id, company_id, name, kind, available_engines, status) VALUES ($1,$2,'MacBook','local','["claude"]'::jsonb,'online')`,
+    [computerId, companyId],
+  )
+  await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
+
+  const savedRoute = env.CEREBELLUM_ROUTE
+  const savedEngine = env.CEREBELLUM_LOCAL_ENGINE
+  env.CEREBELLUM_ROUTE = 'byoa'
+  env.CEREBELLUM_LOCAL_ENGINE = 'claude'
+  try {
+    const r = await call('/runtime/agenda', { method: 'GET', token })
+    assert.equal(r.status, 200)
+    assert.equal(typeof r.body.instructions, 'string')
+    assert.equal(typeof r.body.input, 'string')
+    assert.match(r.body.instructions, /heartbeat agenda triage/i)
+    assert.equal(r.body.actionable, undefined, 'byoa route must never get a synchronous remote verdict')
+    assert.equal(r.body.agenda.cards.length, 1)
+    assert.equal(r.body.agenda.cards[0].title, 'Ship it')
+  } finally {
+    env.CEREBELLUM_ROUTE = savedRoute
+    env.CEREBELLUM_LOCAL_ENGINE = savedEngine
+  }
+})
+
+test('[integration] runtime: GET /agenda for a remote-routed agent (default, no computer) still returns a final decision synchronously', async () => {
+  const { __setLlmClientOverrideForTesting } = await import('../llm.js')
+  const { agentId, companyId, token } = await seedAgent()
+  await seedAgendaCard(agentId, companyId)
+  __setLlmClientOverrideForTesting((async () => ({
+    responses: { create: async () => ({ output_text: JSON.stringify({ actionable: true, focus: 'Ship it', reason: 'due' }) }) },
+  })) as never)
+  try {
+    const r = await call('/runtime/agenda', { method: 'GET', token })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.instructions, undefined, 'remote route must not hand back a daemon-classify payload')
+    assert.equal(r.body.actionable, true)
+    assert.match(String(r.body.brief), /Ship it/)
+  } finally {
+    __setLlmClientOverrideForTesting(null)
+  }
+})
+
+test('[integration] runtime: POST /agenda/verdict finalizes a locally-classified actionable verdict into a brief', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  await seedAgendaCard(agentId, companyId)
+
+  const r = await call('/runtime/agenda/verdict', {
+    token, body: { actionable: true, focus: 'Ship the migration', reason: 'card is due' },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.actionable, true)
+  assert.equal(r.body.focus, 'Ship the migration')
+  assert.equal(r.body.cards, 1)
+  assert.match(String(r.body.brief), /Ship it/)
+})
+
+test('[integration] runtime: POST /agenda/verdict with actionable=false returns the fail-closed shape', async () => {
+  const { token } = await seedAgent()
+  const r = await call('/runtime/agenda/verdict', {
+    token, body: { actionable: false, reason: 'classifier error' },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.actionable, false)
+  assert.equal(r.body.brief, undefined)
+})
