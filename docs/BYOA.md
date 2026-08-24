@@ -221,12 +221,17 @@ the agent's isolated home. On Windows the daemon resolves the real
 `claude`/`codex`/`grok`/`cursor-agent` `.cmd` shims and routes large prompts via stdin.
 Model selection: the per-agent `participants.model` / `fast_model`
 columns, else the matching deploy-level `CUMORA_DEFAULT_*_MODEL` pin.
-**zcode is the exception:** its CLI takes no `--model` flag and
-`ZCODE_HOME` does not isolate the config (POC-verified), so the model is
-whatever the operator pinned in `~/.zcode/cli/config.json` (`model.main`)
-— the ledger attributes turns to that id, honestly. zcode specifics
-(headless entry, login bootstrap, envelope contract, drift handling) are
-recorded in [`byoa-zcode-notes.md`](byoa-zcode-notes.md).
+**zcode pins models via a PROJECT config:** its CLI takes no `--model`
+flag and no env redirects its config (POC-verified), but it DOES read a
+project-level `<cwd>/.zcode/config.json` whose `model.main` overrides the
+operator's user-level pin — so the daemon writes the UI's per-agent
+`model`/`fast_model` there at seedHome (copying the referenced provider
+entry, apiKey included, from `~/.zcode/cli/config.json`, because provider
+tables don't merge across layers). Blank model → no project config → the
+machine-level pin. The ledger attributes each turn to the project pin,
+falling back to the user pin. zcode specifics (headless entry, login
+bootstrap, envelope contract, drift handling) are recorded in
+[`byoa-zcode-notes.md`](byoa-zcode-notes.md).
 
 ### Running against a custom provider
 

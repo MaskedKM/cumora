@@ -7,7 +7,7 @@
  * (docs/byoa-zcode-notes.md).
  */
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -101,6 +101,7 @@ async function fixture(scenario = 'ok'): Promise<Fixture> {
   await chmod(fake, 0o755)
   await writeFile(join(fakeHome, '.zcode', 'cli', 'config.json'), JSON.stringify({
     model: { main: 'bigmodel-coding-plan/GLM-5.2' },
+    provider: { kimi: { kind: 'anthropic', options: { apiKey: 'k-test-1', baseURL: 'https://api.kimi.com/coding' } } },
   }), 'utf8')
   const log = join(root, 'zcode.log')
   process.env.FAKE_ZCODE_LOG = log
@@ -351,6 +352,95 @@ test('zcode readZcodeMainModel: absent/malformed config resolves null', async ()
   assert.equal(readZcodeMainModel({ HOME: root } as NodeJS.ProcessEnv), null)
   await writeFile(join(root, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 42 } }), 'utf8')
   assert.equal(readZcodeMainModel({ HOME: root } as NodeJS.ProcessEnv), null)
+})
+
+test('zcode seedHome pins the UI model via a project config with the provider copied in', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  const proj = join(f.home, '.zcode', 'config.json')
+  await adapter.seedHome(f.home, { id: 'a1', name: 'Nova', role: null, systemPrompt: null, model: 'kimi/k3', fastModel: 'kimi/kimi-for-coding' }, f.env)
+  const written = JSON.parse(readFileSync(proj, 'utf8')) as { model?: { main?: string; lite?: string }; provider?: Record<string, { options?: { apiKey?: string } }> }
+  assert.equal(written.model?.main, 'kimi/k3')
+  assert.equal(written.model?.lite, 'kimi/kimi-for-coding')
+  // provider tables do not merge across config layers — the entry (with its
+  // apiKey) must be copied verbatim from the operator's user config.
+  assert.equal(written.provider?.kimi?.options?.apiKey, 'k-test-1')
+  // Attribution follows the project layer, not the user pin.
+  assert.equal(readZcodeMainModel(f.env, f.home), 'kimi/k3')
+  assert.equal(readZcodeMainModel(f.env), 'bigmodel-coding-plan/GLM-5.2')
+})
+
+test('zcode seedHome: unknown provider or malformed ref leaves the machine pin (and clears a stale override)', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  const proj = join(f.home, '.zcode', 'config.json')
+  await mkdir(join(f.home, '.zcode'), { recursive: true })
+  await writeFile(proj, '{"model":{"main":"stale/old"}}', 'utf8')
+  // no slash → malformed ref
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi-k3' }, f.env)
+  assert.ok(!existsSync(proj), 'malformed ref must clear the stale project override')
+  // provider absent from the operator's config
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'nope/k3' }, f.env)
+  assert.ok(!existsSync(proj), 'unknown provider must clear the stale project override')
+  assert.equal(readZcodeMainModel(f.env, f.home), 'bigmodel-coding-plan/GLM-5.2')
+  // model cleared in the UI → project override removed, machine pin back
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  assert.ok(existsSync(proj))
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null }, f.env)
+  assert.ok(!existsSync(proj), 'clearing the model must remove the override')
+})
+
+test('zcode seedHome: cross-provider fast model copies both providers; missing fast provider drops lite only', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  // main on kimi, fast on a second provider present in the user config
+  await (async () => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(f.root, 'fakehome', '.zcode', 'cli', 'config.json'), JSON.stringify({
+      model: { main: 'bigmodel-coding-plan/GLM-5.2' },
+      provider: {
+        kimi: { kind: 'anthropic', options: { apiKey: 'k-test-1', baseURL: 'https://api.kimi.com/coding' } },
+        glm: { kind: 'anthropic', options: { apiKey: 'g-test-1', baseURL: 'https://open.bigmodel.cn/api/anthropic' } },
+      },
+    }), 'utf8')
+  })()
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3', fastModel: 'glm/glm-4-flash' }, f.env)
+  let written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8')) as { model?: { main?: string; lite?: string }; provider?: Record<string, unknown> }
+  assert.equal(written.model?.lite, 'glm/glm-4-flash')
+  assert.ok(written.provider?.kimi && written.provider?.glm, 'both providers must be copied for a cross-provider lite pin')
+  // fast provider absent from the operator's config → lite dropped, main pin intact
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3', fastModel: 'nope/mini' }, f.env)
+  written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8'))
+  assert.equal(written.model?.lite, undefined, 'unresolvable fast provider must drop lite')
+  assert.equal(written.model?.main, 'kimi/k3')
+  assert.ok(written.provider?.kimi && !written.provider?.nope)
+  // no fastModel at all → no lite key
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  written = JSON.parse(readFileSync(join(f.home, '.zcode', 'config.json'), 'utf8'))
+  assert.equal(written.model?.lite, undefined)
+})
+
+test('zcode project config is written 0600 (it carries the provider apiKey)', async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  await adapter.seedHome(f.home, { id: 'a1', name: 'N', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  const st = statSync(join(f.home, '.zcode', 'config.json'))
+  assert.equal(st.mode & 0o077, 0, `project config must not be group/world readable, got ${(st.mode & 0o777).toString(8)}`)
+})
+
+test('zcode run attributes the turn to the project-pinned model', { skip: IS_WIN }, async () => {
+  const f = await fixture()
+  const adapter = getAdapter('zcode')
+  await adapter.seedHome(f.home, { id: 'a1', name: 'Nova', role: null, systemPrompt: null, model: 'kimi/k3' }, f.env)
+  const ac = new AbortController()
+  const hops: EngineHopReport[] = []
+  const r = await adapter.run({
+    home: f.home, env: f.env, prompt: 'hi', signal: ac.signal,
+    onLog: () => {}, onHopUsage: (h) => hops.push(h),
+  })
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.model, 'kimi/k3')
+  assert.equal(hops[0]?.model, 'kimi/k3')
 })
 
 /**

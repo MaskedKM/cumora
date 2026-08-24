@@ -5,7 +5,7 @@
 ## 无头入口与配置引导
 
 - PATH 上的 `zcode` 是 Electron GUI,无头调用会拉起窗口(Linux 下另有 chrome-sandbox SUID 崩溃)。无头入口 = `node <appdir>/resources/glm/zcode.cjs …`。
-- CLI 配置固定读 `~/.zcode/cli/config.json`(`zcode login` 会自动写入)。schema:
+- CLI **用户级**配置固定读 `~/.zcode/cli/config.json`(`zcode login` 会自动写入;另有项目级覆盖,见文末)。schema:
   ```jsonc
   {
     "model": { "main": "<providerId>/<modelId>", "lite": "<providerId>/<modelId>" },  // 字符串引用
@@ -46,9 +46,16 @@
 
 1. `run()` 用 `-p --json`:解析信封取 `response`(文本)、`sessionId`(续会话)、`usage`(映射到 EngineUsage;**`inputTokens` 已含 cacheRead 部分**——证据:POC 轮 input 21295 / cacheRead 17600 / output 39,`projection.totalTokenCount` = 21334 = 21295+39,即 total = input+output、input 含 cache,与 Anthropic 协议语义一致;故 `input_tokens = inputTokens − cacheReadTokens`,`cacheReadTokens→cache_read_input_tokens`,`cacheWriteTokens→cache_creation_input_tokens`,`outputTokens+reasoningTokens→output_tokens`)。**usage 从 unmeasured 升级为逐轮真实计量**。
 2. 会话连续性走 `--resume <sessionId>`(daemon 既有管线),不用 `--continue`;陈旧 id 自愈重试。
-3. model 钉死维持 ❌(ZCODE_HOME 不隔离);ledger 的 model 字段如实取 `~/.zcode/cli/config.json` 的 `model.main` 值。
-4. classify/probe:`--mode plan` + `--disallowed-tools "Bash Edit Write"`,同样可用 `--json` 拿 usage;小模型不可切(ZCODE_HOME 方案否决)→ 跑默认模型、如实上报。
+3. ~~model 钉死维持 ❌~~(已被下方「项目级配置」发现取代:per-agent 模型经 `<home>/.zcode/config.json` 生效,issue #15)。
+4. classify/probe:`--mode plan` + `--disallowed-tools "Bash Edit Write"`,同样可用 `--json` 拿 usage;~~小模型不可切~~(triage 本身仍跑默认模型,但 agent 的 fast_model 可经项目配置钉到 lite,见下)。
 5. seedHome:`ensureCommonHome` + AGENTS.md(总是重写,persona 编辑要生效)。
+
+## 补充发现:项目级配置与 per-agent 模型(2026-08-24 二轮验证)
+
+- zcode 支持**项目级配置** `<cwd>/.zcode/config.json`(或 `zcode.json`),从 cwd 向上发现;其 `model.main` 覆盖用户级钉死(实测:用户级 kimi/k3 → 项目级 kimi/kimi-for-coding,contextWindow 256k 证实生效)。
+- **provider 表不跨层合并**:项目配置必须自带 `provider.{id}` 完整条目(apiKey/baseURL 从用户级复制),否则报 `Model provider X is missing baseURL`。
+- env 重定向出口不存在:ZCODE_HOME 仅用于遥测设备 id;userConfigPath 是程序内参数;无 ZCODE_CONFIG。
+- → Cumora 的 per-agent 模型落地:daemon 在 agent home 写 `.zcode/config.json`(issue #15),UI 模型字段因此生效。
 
 ## 环境引导备忘(本机复现)
 
