@@ -18,6 +18,7 @@ import {
   parseZcodeEnvelope,
   readZcodeMainModel,
   resolveZcodeLauncher,
+  zcodeEngineVersion,
   type EngineHopReport,
 } from '../agents/computer/engine.js'
 
@@ -54,8 +55,13 @@ const scenario = process.env.FAKE_ZCODE_SCENARIO || 'ok'
 const resumeAt = argv.indexOf('--resume')
 const prompt = argv[argv.length - 1]
 record({ argv, cwd: process.cwd() })
+if (argv[0] === 'version') { process.stdout.write('0.16.3\\n'); process.exit(0) }
 if (scenario === 'stale' && resumeAt >= 0) {
   process.stderr.write('Error: Session not found: ' + argv[resumeAt + 1] + '\\n')
+  process.exit(1)
+}
+if (scenario === 'unknown-option') {
+  process.stderr.write("Unknown option '--mode'. To specify a positional argument starting with a '-', place it at the end of the command after '--'\\n")
   process.exit(1)
 }
 if (scenario === 'plain-text') {
@@ -281,8 +287,33 @@ test('zcode launcher: AppImage is discovered via the desktop file and cached by 
   const first = l!.prefix[0]
   const again = resolveZcodeLauncher(env)
   assert.equal(again?.prefix[0], first)
-  const extractCount = readFileSync(extractLog, 'utf8').trim().split('\n').filter(Boolean).length
+  let extractCount = readFileSync(extractLog, 'utf8').trim().split('\n').filter(Boolean).length
   assert.equal(extractCount, 1, `AppImage should be extracted exactly once, got ${extractCount}`)
+  // Upgrade simulation: append to the AppImage (size+mtime change) → new
+  // content key → the launcher re-extracts instead of serving the stale copy.
+  await writeFile(appimage, `#!/bin/sh\nif [ "$1" = "--appimage-extract" ]; then echo x >> ${extractLog}; mkdir -p squashfs-root/resources/glm && echo "ok2" > squashfs-root/resources/glm/zcode.cjs; fi\nsleep 0.01\n`, 'utf8')
+  await chmod(appimage, 0o755)
+  const upgraded = resolveZcodeLauncher(env)
+  assert.notEqual(upgraded?.prefix[0], first, 'upgraded AppImage must map to a new cache entry')
+  extractCount = readFileSync(extractLog, 'utf8').trim().split('\n').filter(Boolean).length
+  assert.equal(extractCount, 2, `upgrade must re-extract exactly once more, got ${extractCount}`)
+})
+
+test('zcode drift diagnosis: an Unknown-option failure carries an actionable hint', { skip: IS_WIN }, async () => {
+  const f = await fixture('unknown-option')
+  const adapter = getAdapter('zcode')
+  const ac = new AbortController()
+  const r = await adapter.run({ home: f.home, env: f.env, prompt: 'x', signal: ac.signal, onLog: () => {} })
+  assert.equal(r.exitCode, 1)
+  assert.match(r.error ?? '', /Unknown option/)
+  assert.match(r.error ?? '', /CLI drift/)
+  assert.match(r.error ?? '', /CUMORA_ZCODE_BIN/)
+})
+
+test('zcode version probe reads the CLI runtime version through the launcher', { skip: IS_WIN }, async () => {
+  const f = await fixture()
+  assert.equal(zcodeEngineVersion(f.env), '0.16.3')
+  assert.equal(zcodeEngineVersion({ HOME: '/nonexistent-zcode-home', PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv), null)
 })
 
 test('zcode detection covers the CUMORA_ZCODE_BIN path', async () => {
