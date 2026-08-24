@@ -130,7 +130,7 @@ test('zcode seedHome writes AGENTS.md (always) and common home directories', asy
   const agents = await readFile(join(f.home, 'AGENTS.md'), 'utf8')
   assert.match(agents, /# Nova — pilot/)
   assert.match(agents, /Be terse\./)
-  for (const dir of ['memory', 'notes', 'workspace']) {
+  for (const dir of ['memory', 'notes', 'workspace', 'skills']) {
     assert.ok(existsSync(join(f.home, dir)), `missing ${dir}`)
   }
   assert.ok(existsSync(join(f.home, 'memory', 'MEMORY.md')))
@@ -339,4 +339,35 @@ test('zcode envelope parser: object passthrough, non-envelope falls back to text
 test('zcode readZcodeMainModel: absent/malformed config resolves null', () => {
   assert.equal(readZcodeMainModel({ HOME: '/nonexistent-zcode-home' } as NodeJS.ProcessEnv), null)
   assert.equal(readZcodeMainModel({} as NodeJS.ProcessEnv), null)
+})
+
+/**
+ * REAL-engine smoke (opt-in — it spends the operator's tokens). Skipped
+ * unless BOTH CUMORA_ZCODE_SMOKE=1 and CUMORA_ZCODE_BIN are set:
+ *
+ *   CUMORA_ZCODE_SMOKE=1 CUMORA_ZCODE_BIN=<path to zcode.cjs> \
+ *     node --import tsx --test server/src/__tests__/agents-computer-engine-zcode.test.ts
+ *
+ * Requires a logged-in CLI (~/.zcode/cli/config.json with a model.main —
+ * see docs/byoa-zcode-notes.md for the bootstrap). Pins the cross-process
+ * contract the fakes can only imitate: a real envelope, a stable session id
+ * across --resume, and real usage numbers.
+ */
+test('zcode REAL smoke: envelope, resume continuity, usage', { skip: !(process.env.CUMORA_ZCODE_SMOKE === '1' && process.env.CUMORA_ZCODE_BIN) }, async () => {
+  snapshotEnv()
+  const root = await mkdtemp(join(tmpdir(), 'cumora-engine-zcode-real-'))
+  tempDirs.push(root)
+  const adapter = getAdapter('zcode')
+  const ac = new AbortController()
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  const codeword = `SMOKE-${Date.now().toString(36)}`
+  const r1 = await adapter.run({ home: root, env, prompt: `Remember this codeword: ${codeword}. Reply with exactly: noted`, signal: ac.signal, onLog: () => {} })
+  assert.equal(r1.exitCode, 0, r1.error)
+  assert.ok(r1.sessionId?.startsWith('sess_'), `sessionId should look like a session id, got ${r1.sessionId}`)
+  assert.ok(r1.usage && (r1.usage.input_tokens! > 0 || r1.usage.output_tokens! > 0), 'real usage expected')
+  assert.ok(r1.model, 'model attribution from config expected')
+  assert.notEqual(r1.model, 'zcode-unknown-model', 'config must be readable — run the CLI login bootstrap first')
+  const r2 = await adapter.run({ home: root, env, prompt: 'Reply with only the codeword I told you.', signal: ac.signal, resumeSessionId: r1.sessionId, onLog: () => {} })
+  assert.equal(r2.exitCode, 0, r2.error)
+  assert.equal(r2.sessionId, r1.sessionId, 'resumed turn must keep the session id')
 })
