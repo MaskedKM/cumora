@@ -24,6 +24,12 @@ import {
   changeUserTier,
   suspendUser, unsuspendUser,
 } from '../admin.js'
+import {
+  getCerebellumSettings, setCerebellumSettings,
+  getCerebellumApiKeyStatus, setCerebellumApiKey,
+  onlineComputerAvailableEngines,
+  type CerebellumRouteSettings,
+} from '../cerebellum-settings.js'
 
 export const adminRouter = Router()
 
@@ -77,21 +83,68 @@ adminRouter.get('/me', safe(async (req, res) => {
 
 /* ============== Settings ============== */
 
+/** Shared GET/PUT response shape: the two boolean toggles (admin.ts) plus
+ *  the six Cerebellum Route fields (cerebellum-settings.ts) — the API key
+ *  only ever as `{ configured, suffix }`, never the decrypted value
+ *  (issue #22 acceptance criteria). */
+async function buildSettingsResponse(): Promise<Record<string, unknown>> {
+  const [s, cerebellum, apiKeyStatus] = await Promise.all([
+    getSettings(),
+    getCerebellumSettings(),
+    getCerebellumApiKeyStatus(),
+  ])
+  return {
+    ...s,
+    cerebellum_route: cerebellum.route,
+    cerebellum_local_engine: cerebellum.localEngine,
+    cerebellum_provider: cerebellum.provider,
+    cerebellum_base_url: cerebellum.baseUrl,
+    cerebellum_model: cerebellum.model,
+    cerebellum_api_key_configured: apiKeyStatus.configured,
+    cerebellum_api_key_suffix: apiKeyStatus.suffix,
+  }
+}
+
 adminRouter.get('/settings', safe(async (req, res) => {
   await requireAdmin(req)
-  const s = await getSettings()
-  res.json(s)
+  res.json(await buildSettingsResponse())
 }))
 
 adminRouter.put('/settings', safe(async (req, res) => {
   const uid = await requireAdmin(req)
-  const body = (req.body ?? {}) as Partial<AppSettings>
+  const body = (req.body ?? {}) as Partial<AppSettings> & Record<string, unknown>
   const updates: Array<[keyof AppSettings, boolean]> = []
   if (typeof body.waitlist_enabled === 'boolean') updates.push(['waitlist_enabled', body.waitlist_enabled])
   if (typeof body.signups_paused === 'boolean')   updates.push(['signups_paused',   body.signups_paused])
-  if (updates.length === 0) throw new HttpError(400, 'no settings to update')
+
+  const cerebellumUpdates: Partial<CerebellumRouteSettings> = {}
+  if (body.cerebellum_route === 'remote' || body.cerebellum_route === 'byoa') cerebellumUpdates.route = body.cerebellum_route
+  if (typeof body.cerebellum_local_engine === 'string') cerebellumUpdates.localEngine = body.cerebellum_local_engine
+  if (typeof body.cerebellum_provider === 'string') cerebellumUpdates.provider = body.cerebellum_provider
+  if (typeof body.cerebellum_base_url === 'string') cerebellumUpdates.baseUrl = body.cerebellum_base_url
+  if (typeof body.cerebellum_model === 'string') cerebellumUpdates.model = body.cerebellum_model
+  const hasCerebellumUpdates = Object.keys(cerebellumUpdates).length > 0
+  // Omitting the field entirely leaves the stored key untouched; an empty
+  // string explicitly clears it (see setCerebellumApiKey).
+  const hasApiKeyUpdate = typeof body.cerebellum_api_key === 'string'
+
+  if (updates.length === 0 && !hasCerebellumUpdates && !hasApiKeyUpdate) {
+    throw new HttpError(400, 'no settings to update')
+  }
   for (const [k, v] of updates) await setSetting(k, v, uid)
-  res.json(await getSettings())
+  if (hasCerebellumUpdates) await setCerebellumSettings(cerebellumUpdates, uid)
+  if (hasApiKeyUpdate) await setCerebellumApiKey(body.cerebellum_api_key as string, uid)
+  res.json(await buildSettingsResponse())
+}))
+
+/* ============== Computers ============== */
+
+/** Read-only: the union of `available_engines` across every currently-
+ *  online Computer. Feeds the (future, #23) local-engine dropdown; empty
+ *  array when no Computer is online. */
+adminRouter.get('/computers/available-engines', safe(async (req, res) => {
+  await requireAdmin(req)
+  res.json({ engines: await onlineComputerAvailableEngines() })
 }))
 
 /* ============== Users ============== */

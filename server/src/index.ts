@@ -32,6 +32,7 @@ import { startPollExpirationSweeper } from './polls.js'
 import { startLlmRollupRefresher } from './agents/llm-rollup.js'
 import { startTrialSweepWorker } from './trial-sweep.js'
 import { seedAdmins } from './admin.js'
+import { migrateCerebellumSettingsFromEnv } from './cerebellum-settings.js'
 import { notifyAlert } from './alerting.js'
 import { startShippingMaintenance } from './shipping-maintenance.js'
 
@@ -41,6 +42,10 @@ async function main() {
   // Promote CUMORA_ADMIN_EMAILS members to is_admin on every boot —
   // idempotent, only flips FALSE→TRUE. Demotion goes through the panel.
   await seedAdmins()
+  // One-time carry-over of CEREBELLUM_* env config into app_settings —
+  // idempotent, never overwrites a value already set via the UI or a
+  // prior boot (see cerebellum-settings.ts).
+  await migrateCerebellumSettingsFromEnv()
   // Catch any company that was created before the auto-onboarding wiring
   // existed (e.g. dev workspaces predating this commit).
   await backfillStarterAgents()

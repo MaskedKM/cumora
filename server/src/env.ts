@@ -490,6 +490,18 @@ export const env = {
    *  Keep it OUT of git — configure it as a server secret only. */
   FCM_SERVICE_ACCOUNT_JSON: process.env.FCM_SERVICE_ACCOUNT_JSON ?? '',
   FCM_SERVICE_ACCOUNT_PATH: process.env.FCM_SERVICE_ACCOUNT_PATH ?? '',
+  /**
+   * Deployment-level master key for encrypting the `cerebellum_api_key`
+   * DB-backed setting (AES-256-GCM) — see
+   * docs/adr/0001-encrypt-cerebellum-secrets.md and
+   * `server/src/cerebellum-settings.ts`. Generate once at deploy time (e.g.
+   * `openssl rand -hex 32`) and never rotate without a migration — losing it
+   * makes any previously-saved Cerebellum API key unrecoverable. Optional at
+   * boot: a deployment that never configures a remote Cerebellum provider
+   * doesn't need it; saving an API key without it set fails loudly instead
+   * of falling back to plaintext.
+   */
+  CUMORA_SECRETS_KEY: process.env.CUMORA_SECRETS_KEY ?? '',
 }
 
 // Production-secret gate: refuse to boot in production while any security

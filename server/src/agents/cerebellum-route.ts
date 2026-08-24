@@ -16,7 +16,7 @@
  * call site) will consume.
  */
 import { pool } from '../db/pool.js'
-import { env } from '../env.js'
+import { getCerebellumSettings } from '../cerebellum-settings.js'
 
 export type CerebellumRoute = 'remote' | 'byoa'
 
@@ -48,11 +48,14 @@ export function resolveCerebellumRoute(args: {
 
 /** DB-backed wrapper future call sites use directly: looks up the agent's
  *  assigned (non-revoked) Computer, if any, and applies
- *  {@link resolveCerebellumRoute} against the deployment's CEREBELLUM_* env.
- *  Skips the DB round-trip entirely when the deployment isn't even on the
- *  `byoa` route. */
+ *  {@link resolveCerebellumRoute} against the deployment's Cerebellum Route
+ *  settings (ticket #22: read through `cerebellum-settings.ts`, not
+ *  `env.*`, so an admin edit takes effect on the next call). Skips the DB
+ *  round-trip for the Computer lookup entirely when the deployment isn't
+ *  even on the `byoa` route. */
 export async function resolveCerebellumRouteForAgent(agentId: string): Promise<CerebellumRoute> {
-  if (env.CEREBELLUM_ROUTE !== 'byoa') return 'remote'
+  const { route, localEngine } = await getCerebellumSettings()
+  if (route !== 'byoa') return 'remote'
   const { rows } = await pool.query<CerebellumComputerInfo>(
     `SELECT c.status, c.available_engines
        FROM participants p
@@ -62,8 +65,8 @@ export async function resolveCerebellumRouteForAgent(agentId: string): Promise<C
     [agentId],
   )
   return resolveCerebellumRoute({
-    route: env.CEREBELLUM_ROUTE,
-    localEngine: env.CEREBELLUM_LOCAL_ENGINE,
+    route,
+    localEngine,
     computer: rows[0] ?? null,
   })
 }

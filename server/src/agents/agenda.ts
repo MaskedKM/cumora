@@ -33,6 +33,7 @@ import { getTrackedLlmClient } from './llm-ledger.js'
 import { redis } from '../redis.js'
 import { resolveCerebellumRouteForAgent } from './cerebellum-route.js'
 import { cerebellumResponsesShim, cerebellumRemoteConfigured } from '../cerebellum-adapter.js'
+import { getCerebellumSettings } from '../cerebellum-settings.js'
 import {
   DONE_COLUMN_PATTERNS,
   AGENDA_CLASSIFIER_ERROR,
@@ -334,8 +335,13 @@ export async function classifyAgendaActionable(args: {
     // Generalized remote adapter (#18) when configured — any OpenAI-Chat-
     // Completions-compatible provider, not just OpenAI. Unconfigured →
     // unchanged legacy behavior (plain OpenAI client via the ledger).
-    const useCerebellumAdapter = cerebellumRemoteConfigured()
-    const model = useCerebellumAdapter ? (env.CEREBELLUM_MODEL || env.OPENAI_MODEL_SUPPORT) : env.OPENAI_MODEL_SUPPORT
+    // #22: base URL/API key/model now come from the DB-backed settings
+    // accessor, not env.CEREBELLUM_*, so an admin edit takes effect here
+    // without a restart.
+    const useCerebellumAdapter = await cerebellumRemoteConfigured()
+    const model = useCerebellumAdapter
+      ? ((await getCerebellumSettings()).model || env.OPENAI_MODEL_SUPPORT)
+      : env.OPENAI_MODEL_SUPPORT
     const requestArgs = {
       model,
       instructions: built.instructions,
