@@ -740,7 +740,7 @@ function SkypeSoundSection() {
 // Brand and engine names stay in English in every locale. The values
 // below are display labels surfaced to users when we list computers —
 // products keep their own casing.
-const ENGINE_LABEL: Record<string, string> = { managed: 'Cumora', claude: 'Claude Code', codex: 'Codex', grok: 'Grok Build', cursor: 'Cursor' }
+const ENGINE_LABEL: Record<string, string> = { managed: 'Cumora', claude: 'Claude Code', codex: 'Codex', grok: 'Grok Build', cursor: 'Cursor', zcode: 'ZCode' }
 const KIND_ICON: Record<string, string> = { cloud: '☁', local: '💻', vps: '🖥' }
 const STATUS_COLOR: Record<string, string> = { online: '#3BB273', busy: '#E6A23C', offline: 'var(--ink-300)' }
 
