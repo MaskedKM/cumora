@@ -208,11 +208,11 @@ interface EngineSession {
 | --- | --- | --- | --- | --- | --- |
 | Persistent session | `claude -p --input-format stream-json --output-format stream-json --verbose [--resume <id>] [--model X]` | `codex app-server --listen stdio://`, driven over JSON-RPC (`thread/start` / `thread/resume`) | `grok agent --always-approve --no-leader … stdio`, driven over ACP | none in Cursor Agent `2026.08.11-e8db854` | none consumed yet (`app-server` exists; future work) |
 | Standing prompt | `--append-system-prompt-file <home>/.cumora-standing-prompt.md` | `developerInstructions` on `thread/start` | ACP `_meta.rules` | inlined into each wake | inlined into each wake |
-| One-shot fallback | `claude -p … --output-format stream-json` | `codex exec … --skip-git-repo-check` | `grok -p … --output-format streaming-messages-json` | `cursor-agent -p --output-format stream-json --force --trust [--resume <id>]` | `zcode.cjs --cwd <home> --mode yolo --json [--resume <id>] -p <prompt>` (one JSON envelope per turn: response + sessionId + usage) |
+| One-shot fallback | `claude -p … --output-format stream-json` | `codex exec … --skip-git-repo-check` | `grok -p … --output-format streaming-messages-json` | `cursor-agent -p --output-format stream-json --force --trust [--resume <id>]` | `zcode.cjs --cwd <home> --mode yolo --no-color --json [--resume <id>] -p <prompt>` (one JSON envelope per turn: response + sessionId + usage) |
 | Fallback triggers | `CUMORA_CLAUDE_ARGS` set | `CUMORA_CODEX_ARGS` set, `CUMORA_CODEX_NO_APP_SERVER=1`, Windows, or git-init failure | `CUMORA_GROK_ARGS` set, `CUMORA_GROK_NO_ACP=1`, or Windows | always one-shot; `CUMORA_CURSOR_ARGS` overrides flags | always one-shot; `CUMORA_ZCODE_ARGS` overrides flags |
 | Memory / persona file | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` (zcode reads AGENTS.md **and** CLAUDE.md) |
 | Triage (small brain) | `claude -p --model haiku --output-format json` | `codex exec --model gpt-5.4-mini` | `grok -p --model grok-4.5 --output-format json` | `cursor-agent --mode ask -p --output-format stream-json --trust` | `zcode.cjs --mode plan --disallowed-tools "Bash Edit Write" --json -p` (no small-model flag — runs the default, honestly reported) |
-| Entry resolution | PATH `claude` | PATH `codex` | PATH `grok` + `~/.grok/bin` fallback | PATH `cursor-agent` | `CUMORA_ZCODE_BIN` → PATH `zcode-cli` → desktop AppImage auto-discovery (Linux); PATH `zcode` is the GUI and is never used |
+| Entry resolution | PATH `claude` | PATH `codex` | PATH `grok` + `~/.grok/bin` fallback | PATH `cursor-agent` | `CUMORA_ZCODE_BIN` → PATH `zcode-cli` (POSIX) → desktop AppImage auto-discovery (Linux); PATH `zcode` is the GUI and is never used |
 
 Sessions carry a resume id (`~/.cumora/sessions/<agentId>.session`); a
 failed resume falls back to a fresh thread instead of wedging the agent.
@@ -263,7 +263,7 @@ CUMORA_ENGINE_MODEL=local CUMORA_TRIAGE_MODEL=local-small cumora agent computer
   sessions/<agentId>.session       ← engine resume id
   triage/                          ← neutral cwd for small-brain spawns
   agents/<agentId>/                ← cwd for every engine turn; isolated
-    CLAUDE.md  (or AGENTS.md)      ← static persona header, rewritten on persona edits
+    CLAUDE.md  (or AGENTS.md)      ← persona header (rewritten on persona edits; Grok is write-once)
     .cumora-standing-prompt.md     ← the per-session operational prompt
     .claude/skills/<name>/SKILL.md ← this agent's skills (Claude)
     .cursor/skills/                 ← Cursor-native skill directory
@@ -313,7 +313,7 @@ CREATE TABLE computers (
   owner_user_id     TEXT,            -- null for the managed Cumora Cloud row
   name              TEXT NOT NULL,   -- "Cumora Cloud", "MacBook Pro", …
   kind              TEXT NOT NULL,   -- 'cloud' | 'local' | 'vps'
-  available_engines JSONB,           -- ['claude','codex','grok','cursor'] (daemon-detected)
+  available_engines JSONB,           -- ['claude','codex','grok','cursor','zcode'] (daemon-detected)
   status            TEXT NOT NULL,   -- 'online' | 'offline' | 'busy'
   last_seen_at      TIMESTAMP,
   credential_hash   TEXT,            -- SHA256 of the device token
@@ -326,7 +326,7 @@ CREATE TABLE computers (
 
 -- participants carry their host + engine + models
 --   computer_id  TEXT   (FK → computers.id)
---   engine       TEXT   ('managed' | 'claude' | 'codex' | 'grok' | 'cursor')
+--   engine       TEXT   ('managed' | 'claude' | 'codex' | 'grok' | 'cursor' | 'zcode')
 --   model        TEXT   (big-brain override)
 --   fast_model   TEXT   (small-brain override)
 ```
@@ -414,7 +414,7 @@ npx cumora@latest agent computer --pair <code> [--server <url>]
 ## Boundaries
 
 - **Cost / rate limits are the operator's** (their Claude Code / Codex / Grok Build /
-  Cursor subscription) — a stated BYOA benefit. The daemon's semaphores, spawn
+  Cursor / ZCode subscription) — a stated BYOA benefit. The daemon's semaphores, spawn
   pacing, and cooldowns exist to stay inside those limits gracefully
   (COORDINATION.md 2-4).
 - **Local inner state is not mirrored to the server.** Memory, notes,

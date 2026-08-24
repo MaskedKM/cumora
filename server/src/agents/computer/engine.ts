@@ -2627,6 +2627,10 @@ class ZcodeAdapter implements EngineAdapter {
 
   async seedHome(home: string, persona: EnginePersona): Promise<void> {
     await ensureCommonHome(home)
+    // The persona header points at `skills/` as the agent's skill directory —
+    // create it like Claude (.claude/skills) and Cursor (.cursor/skills) do,
+    // so the referenced layout always exists.
+    await mkdir(join(home, 'skills'), { recursive: true })
     // Always rewrite so persona edits land without a fresh home (Claude/Codex
     // semantics; Grok's write-once would freeze persona edits). POC point 4:
     // zcode reads BOTH AGENTS.md and CLAUDE.md from its cwd — AGENTS.md is
