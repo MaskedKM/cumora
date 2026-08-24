@@ -44,7 +44,7 @@
 
 ## 对适配器方案的修订(相对原 issue 假设)
 
-1. `run()` 用 `-p --json`:解析信封取 `response`(文本)、`sessionId`(续会话)、`usage`(映射到 EngineUsage:`inputTokens→input_tokens`、`cacheReadTokens→cache_read_input_tokens`、`cacheWriteTokens→cache_creation_input_tokens`、`outputTokens+reasoningTokens→output_tokens`)。**usage 从 unmeasured 升级为逐轮真实计量**。
+1. `run()` 用 `-p --json`:解析信封取 `response`(文本)、`sessionId`(续会话)、`usage`(映射到 EngineUsage;**`inputTokens` 已含 cacheRead 部分**——证据:POC 轮 input 21295 / cacheRead 17600 / output 39,`projection.totalTokenCount` = 21334 = 21295+39,即 total = input+output、input 含 cache,与 Anthropic 协议语义一致;故 `input_tokens = inputTokens − cacheReadTokens`,`cacheReadTokens→cache_read_input_tokens`,`cacheWriteTokens→cache_creation_input_tokens`,`outputTokens+reasoningTokens→output_tokens`)。**usage 从 unmeasured 升级为逐轮真实计量**。
 2. 会话连续性走 `--resume <sessionId>`(daemon 既有管线),不用 `--continue`;陈旧 id 自愈重试。
 3. model 钉死维持 ❌(ZCODE_HOME 不隔离);ledger 的 model 字段如实取 `~/.zcode/cli/config.json` 的 `model.main` 值。
 4. classify/probe:`--mode plan` + `--disallowed-tools "Bash Edit Write"`,同样可用 `--json` 拿 usage;小模型不可切(ZCODE_HOME 方案否决)→ 跑默认模型、如实上报。

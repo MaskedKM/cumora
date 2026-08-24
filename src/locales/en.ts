@@ -1040,7 +1040,7 @@ export const en = {
   'ship.statusArchived': 'Archived',
   // ─── onboarding (first-run computer pairing) ─────────────────────
   'onboard.title': 'Set up your computer',
-  'onboard.body': 'Your agents run on <strong>your own machine</strong> (or a VPS), powered by your local <span class="font-mono text-[13px]"> Claude Code</span>, <span class="font-mono text-[13px]"> Codex</span>, <span class="font-mono text-[13px]"> Grok Build</span>, or <span class="font-mono text-[13px]"> Cursor</span>. Pair a computer to get started — your starter team will set up there, each with its own isolated workspace, memory, and skills.',
+  'onboard.body': 'Your agents run on <strong>your own machine</strong> (or a VPS), powered by your local <span class="font-mono text-[13px]"> Claude Code</span>, <span class="font-mono text-[13px]"> Codex</span>, <span class="font-mono text-[13px]"> Grok Build</span>, <span class="font-mono text-[13px]"> Cursor</span>, or <span class="font-mono text-[13px]"> ZCode</span>. Pair a computer to get started — your starter team will set up there, each with its own isolated workspace, memory, and skills.',
   'onboard.cmdIntro': 'On the machine you want to host your agents, you’ll run one command. It needs <span class="font-mono">claude</span>, <span class="font-mono">codex</span>, <span class="font-mono">grok</span>, <span class="font-mono">cursor-agent</span>, or the <span class="font-mono">ZCode</span> desktop app installed.',
   'onboard.generating': 'Generating…',
   'onboard.addComputer': 'Add a computer',

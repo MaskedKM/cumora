@@ -256,14 +256,19 @@ test('zcode launcher: PATH zcode-cli is found; a bare zcode GUI bin is never use
 test('zcode launcher: AppImage is discovered via the desktop file and cached by content key', { skip: IS_WIN }, async () => {
   const f = await fixture()
   // Isolated HOME: no zcode-cli on PATH, a .desktop pointing at a fake AppImage
-  // that honors --appimage-extract, and an isolated cache root.
+  // that honors --appimage-extract (and logs each extraction), and an isolated
+  // cache root.
   const fakeHome = join(f.root, 'apphome')
   const apps = join(fakeHome, '.local', 'share', 'applications')
   await mkdir(apps, { recursive: true })
-  const appimage = join(f.root, 'fake.ZCode.AppImage')
-  await writeFile(appimage, `#!/bin/sh\nif [ "$1" = "--appimage-extract" ]; then mkdir -p squashfs-root/resources/glm && echo "ok" > squashfs-root/resources/glm/zcode.cjs; fi\n`, 'utf8')
+  const appDir = join(f.root, 'my apps with spaces')
+  await mkdir(appDir)
+  const appimage = join(appDir, 'fake.ZCode.AppImage')
+  const extractLog = join(f.root, 'extract.log')
+  await writeFile(appimage, `#!/bin/sh\nif [ "$1" = "--appimage-extract" ]; then echo x >> ${extractLog}; mkdir -p squashfs-root/resources/glm && echo "ok" > squashfs-root/resources/glm/zcode.cjs; fi\n`, 'utf8')
   await chmod(appimage, 0o755)
-  await writeFile(join(apps, 'zcode.desktop'), `[Desktop Entry]\nExec=${appimage} %U\n`, 'utf8')
+  // Quoted Exec path with spaces + a field code — the parse must honor both.
+  await writeFile(join(apps, 'zcode.desktop'), `[Desktop Entry]\nExec="${appimage}" %U\n`, 'utf8')
   const cache = join(f.root, 'cache')
   const env = { HOME: fakeHome, XDG_CACHE_HOME: cache, PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv
   const l = resolveZcodeLauncher(env)
@@ -272,11 +277,12 @@ test('zcode launcher: AppImage is discovered via the desktop file and cached by 
   assert.equal(l?.command, process.execPath)
   assert.ok(l!.prefix[0].startsWith(join(cache, 'cumora', 'zcode')))
   assert.ok(existsSync(l!.prefix[0]), 'extracted zcode.cjs should exist')
-  // Cache hit: same size+mtime → same path, and the extract script would
-  // otherwise recreate it (mtime of the AppImage unchanged).
+  // Cache hit: same content key → same path AND no second extraction.
   const first = l!.prefix[0]
   const again = resolveZcodeLauncher(env)
   assert.equal(again?.prefix[0], first)
+  const extractCount = readFileSync(extractLog, 'utf8').trim().split('\n').filter(Boolean).length
+  assert.equal(extractCount, 1, `AppImage should be extracted exactly once, got ${extractCount}`)
 })
 
 test('zcode detection covers the CUMORA_ZCODE_BIN path', async () => {

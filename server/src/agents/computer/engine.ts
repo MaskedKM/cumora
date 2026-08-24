@@ -22,7 +22,7 @@
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile, access, mkdtemp } from 'node:fs/promises'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, delimiter as PATH_DELIMITER } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
@@ -2393,19 +2393,24 @@ export function resolveZcodeLauncher(env: NodeJS.ProcessEnv = process.env): Zcod
   }
   for (const dir of (env.PATH ?? '').split(PATH_DELIMITER)) {
     if (!dir) continue
-    const candidate = join(dir, IS_WIN ? 'zcode-cli.cmd' : 'zcode-cli')
-    if (existsSync(candidate)) return { command: candidate, prefix: [], source: 'PATH:zcode-cli' }
-    if (!IS_WIN && existsSync(join(dir, 'zcode-cli'))) return { command: join(dir, 'zcode-cli'), prefix: [], source: 'PATH:zcode-cli' }
+    // POSIX-style `zcode-cli` only: there is no Windows distribution, and a
+    // hypothetical `.cmd` shim would need resolveSpawn's shell treatment.
+    const candidate = join(dir, 'zcode-cli')
+    if (!IS_WIN && existsSync(candidate)) return { command: candidate, prefix: [], source: 'PATH:zcode-cli' }
   }
   // Desktop AppImage (Linux). The .desktop file the installer writes is the
   // stable pointer to the AppImage; the AppImage itself mounts at a drifting
   // /tmp path, so extract the one file we need into a content-keyed cache.
-  if (!IS_WIN) {
+  if (process.platform === 'linux') {
     try {
       const home = env.HOME || homedir()
       const desktop = readFileSync(join(home, '.local', 'share', 'applications', 'zcode.desktop'), 'utf8')
       const execLine = desktop.split('\n').find((l) => l.startsWith('Exec='))
-      const appimage = execLine?.slice('Exec='.length).trim().split(/\s+/)[0]?.replace(/^["']|["']$/g, '')
+      // First token of the Exec value; honors a quoted path (spaces) and
+      // drops trailing arguments/field codes (%U and friends).
+      const execValue = execLine?.slice('Exec='.length).trim() ?? ''
+      const quoted = execValue.match(/^"([^"]+)"/)
+      const appimage = (quoted?.[1] ?? execValue.split(/\s+/)[0]) || ''
       if (appimage && existsSync(appimage) && !appimage.includes('.mount_')) {
         const st = statSync(appimage)
         const cacheRoot = env.XDG_CACHE_HOME || join(home, '.cache')
@@ -2416,7 +2421,11 @@ export function resolveZcodeLauncher(env: NodeJS.ProcessEnv = process.env): Zcod
           try {
             execFileSync(appimage, ['--appimage-extract', 'resources/glm/zcode.cjs'], { cwd: tmp, stdio: 'ignore' })
             mkdirSync(cacheDir, { recursive: true })
-            copyFileSync(join(tmp, 'squashfs-root', 'resources', 'glm', 'zcode.cjs'), cjs)
+            // Fill via temp + rename so a crash mid-copy can't leave a partial
+            // file that existsSync would treat as a permanent cache hit.
+            const staging = `${cjs}.tmp-${process.pid}`
+            copyFileSync(join(tmp, 'squashfs-root', 'resources', 'glm', 'zcode.cjs'), staging)
+            renameSync(staging, cjs)
           } finally {
             rmSync(tmp, { recursive: true, force: true })
           }
@@ -2452,16 +2461,19 @@ function spawnZcodeJson(
     const onAbort = (): void => { child.kill('SIGTERM') }
     opts.signal.addEventListener('abort', onAbort, { once: true })
     if (opts.signal.aborted) onAbort()
+    // StringDecoder so a multibyte char split at a pipe boundary can't
+    // corrupt the envelope (same reason spawnEngine carries one).
+    const decoder = new StringDecoder('utf8')
     let stdout = ''
+    let settled = false
     const stderrTail: string[] = []
-    child.stdout?.on('data', (buf: Buffer) => { stdout += buf.toString('utf8') })
+    child.stdout?.on('data', (buf: Buffer) => { stdout += decoder.write(buf) })
     child.stderr?.on('data', (buf: Buffer) => { for (const l of buf.toString('utf8').split('\n')) { const c = cleanLine(l); if (c) { pushTail(stderrTail, c); opts.onLog?.(c) } } })
-    child.on('error', (err) => {
+    const finish = (code: number | null, signalName: NodeJS.Signals | null): void => {
+      if (settled) return
+      settled = true
       opts.signal.removeEventListener('abort', onAbort)
-      resolve({ exitCode: 1, error: err instanceof Error ? err.message : String(err), text: '' })
-    })
-    child.on('close', (code, signalName) => {
-      opts.signal.removeEventListener('abort', onAbort)
+      stdout += decoder.end()
       const exitCode = code ?? (signalName ? 128 : 1)
       const { envelope, text } = parseZcodeEnvelope(stdout)
       if (!envelope) {
@@ -2473,8 +2485,11 @@ function spawnZcodeJson(
         return
       }
       const usage = zcodeUsageToEngineUsage(envelope.usage)
-      const model = readZcodeMainModel(opts.env)
-      if (exitCode === 0 && usage && model && opts.onHopUsage) {
+      // Honest attribution: the envelope names no model, so report the id the
+      // operator's config pins. When the config is unreadable we still owe the
+      // ledger a row — a greppable placeholder rather than dropping the hop.
+      const model = readZcodeMainModel(opts.env) ?? 'zcode-unknown-model'
+      if (exitCode === 0 && usage && opts.onHopUsage) {
         try {
           opts.onHopUsage({ model, usage, latencyMs: Date.now() - startedAt, hopIndex: 1 })
         } catch { /* ledger best-effort, never break the stream */ }
@@ -2487,7 +2502,19 @@ function spawnZcodeJson(
         usage,
         model,
       })
+    }
+    child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      opts.signal.removeEventListener('abort', onAbort)
+      resolve({ exitCode: 1, error: err instanceof Error ? err.message : String(err), text: '' })
     })
+    // Normal end: wait for 'close' so the last of stdout is parsed. Torn-down
+    // end: settle on 'exit' instead — the engine's own children hold the
+    // stdio pipes, and once aborted the remaining output is moot (same fix
+    // spawnEngine carries for daemon shutdown drain).
+    child.on('close', (code, signalName) => { finish(code, signalName) })
+    child.on('exit', (code, signalName) => { if (opts.signal.aborted) finish(code, signalName) })
   })
 }
 
@@ -2539,9 +2566,10 @@ class ZcodeAdapter implements EngineAdapter {
     if (flags.length) {
       // User-owned triage flag set → plain print mode, raw text back (the
       // shared override discipline; no envelope to fold).
-      return spawnCapture(launcher.command, [...launcher.prefix, ...flags, '-p', prompt], {
+      const r = await spawnCapture(launcher.command, [...launcher.prefix, ...flags, '-p', prompt], {
         cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog,
-      }) as Promise<EngineRunResult & { text: string }>
+      })
+      return { exitCode: r.error ? 1 : 0, error: r.error, text: r.text, sessionId: null }
     }
     return spawnZcodeJson(launcher, ['--cwd', args.cwd, '--mode', 'plan', '--no-color', '--json', '--disallowed-tools', 'Bash Edit Write', '-p', stripLoneSurrogates(prompt)], {
       cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog,
@@ -2688,6 +2716,9 @@ export async function runEngineDoctor(opts?: {
   return Promise.all(ids.map(async (id): Promise<EngineHealth> => {
     const adapter = ADAPTERS[id]
     const path = (await resolveBinPath(adapter.bin)) ?? (id === 'grok' ? resolveGrokBin(env) : null)
+      // zcode's entry is usually not a PATH binary — mirror detectEngines and
+      // let the launcher (CUMORA_ZCODE_BIN / AppImage) satisfy the doctor.
+      ?? (id === 'zcode' ? (resolveZcodeLauncher(env)?.command ?? null) : null)
     if (!path) return { id, installed: false, path: null, big: null, small: null, wake: null }
     const probeTier = async (tier: 'big' | 'small'): Promise<BrainHealth> => {
       const controller = new AbortController()
