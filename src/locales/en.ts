@@ -1038,13 +1038,13 @@ export const en = {
   'ship.statusLearned': 'Learned',
   'ship.statusPaused': 'Paused',
   'ship.statusArchived': 'Archived',
-  // ─── onboarding (first-run computer pairing) ─────────────────────
-// ─── cli method picker (pairing command source: npx vs local build) ───
+  // ─── cli method picker (pairing command source: npx vs local build) ───
   'cli.method': 'Run with',
   'cli.methodNpx': 'npx (published)',
   'cli.methodLocal': 'Local build',
   'cli.methodNpxHint': 'runs the published npm package',
   'cli.methodLocalHint': 'runs a repo build — edit the path to your dist/cli.js',
+  // ─── onboarding (first-run computer pairing) ─────────────────────
 
   'onboard.title': 'Set up your computer',
   'onboard.body': 'Your agents run on <strong>your own machine</strong> (or a VPS), powered by your local <span class="font-mono text-[13px]"> Claude Code</span>, <span class="font-mono text-[13px]"> Codex</span>, <span class="font-mono text-[13px]"> Grok Build</span>, <span class="font-mono text-[13px]"> Cursor</span>, or <span class="font-mono text-[13px]"> ZCode</span>. Pair a computer to get started — your starter team will set up there, each with its own isolated workspace, memory, and skills.',

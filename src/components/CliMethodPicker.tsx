@@ -35,10 +35,12 @@ export function useCliLaunch(): {
   // the other persistence call sites).
   useEffect(() => { try { localStorage.setItem(LS_METHOD, method) } catch { /* storage unavailable */ } }, [method])
   useEffect(() => { try { localStorage.setItem(LS_PATH, localPath) } catch { /* storage unavailable */ } }, [localPath])
-  // Quote the local path so a repo location containing spaces still
-  // copy-pastes as one argv element (double quotes work in POSIX shells and
-  // Windows cmd alike).
-  const cli = method === 'npx' ? 'npx cumora@latest' : `node "${localPath.trim() || LOCAL_CLI_PLACEHOLDER}"`
+  // Quote the local path ONLY when it contains whitespace: quoting breaks
+  // tilde expansion (POSIX shells don't expand `~` inside quotes — and the
+  // placeholder is tilde-leading), while an unquoted spaced path breaks
+  // argv. Conditional quoting keeps both copy-pasteable.
+  const localEntry = localPath.trim() || LOCAL_CLI_PLACEHOLDER
+  const cli = method === 'npx' ? 'npx cumora@latest' : `node ${/\s/.test(localEntry) ? `"${localEntry}"` : localEntry}`
   return { method, setMethod, localPath, setLocalPath, cli }
 }
 
