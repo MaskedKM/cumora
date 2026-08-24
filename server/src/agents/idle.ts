@@ -25,6 +25,7 @@ import {
   AGENDA_CLASSIFIER_ERROR,
   type AgentAgenda,
 } from './agenda.js'
+import { resolveCerebellumRouteForAgent } from './cerebellum-route.js'
 
 // Test injection points — mirror scanner.ts. Production never sets these;
 // integration tests use them to capture wake calls without actually
@@ -148,6 +149,15 @@ export async function runIdleTick(): Promise<void> {
         })
         continue
       }
+
+      // Ticket #20: a byoa-routed agent's agenda classification runs on the
+      // operator's own machine via the daemon's independent `/runtime/agenda`
+      // poll (maybeAgendaTurn) — NOT here. Per spec #17, idle.ts's per-company
+      // throttle only governs the remote-routed path; skip this tenant's tick
+      // rather than call the remote classifier for an agent that shouldn't
+      // ever reach it (and would otherwise fail closed via classifyAgenda's
+      // own defensive byoa check).
+      if ((await resolveCerebellumRouteForAgent(agent.id)) === 'byoa') continue
 
       const persona = await getPersona(agent.id)
       if (!persona) continue

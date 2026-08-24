@@ -23,6 +23,16 @@
  * Model selection convention: an agent (or an env default) opts into Novita
  * by prefixing its `model` with `novita/`, e.g. `novita/deepseek/deepseek-v3.2`.
  * The prefix is stripped before the model id is sent to Novita.
+ *
+ * `createOpenAIResponsesAdapter` below is this same translation logic
+ * generalized: given any client getter (arbitrary `baseURL`/`apiKey`) and an
+ * optional model-name mapper, it returns a Responses-shaped shim just like
+ * `novitaResponsesShim`. This is what lets the cerebellum tier
+ * (`server/src/cerebellum-adapter.ts`) reuse the exact same translation
+ * against any OpenAI-Chat-Completions-compatible provider, configured via
+ * `CEREBELLUM_BASE_URL`/`CEREBELLUM_API_KEY` instead of `NOVITA_*` — no
+ * model-prefix convention involved, since cerebellum routing is a separate,
+ * explicit config surface (see server/src/env.ts).
  */
 import OpenAI from 'openai'
 import type {
@@ -251,9 +261,9 @@ function toResponseUsage(raw: unknown): Record<string, unknown> | null {
  *  silent default. `reasoning.effort` has no Chat Completions equivalent
  *  either (Novita's reasoning knobs — `separate_reasoning`, `enable_thinking`
  *  — are model-specific and orthogonal); we drop it rather than guess. */
-function buildChatBody(args: ResponsesCreateArgs, stream: boolean): Record<string, unknown> {
+function buildChatBody(args: ResponsesCreateArgs, stream: boolean, mapModel: (model: string) => string): Record<string, unknown> {
   const body: Record<string, unknown> = {
-    model: stripNovitaPrefix(args.model),
+    model: mapModel(args.model),
     messages: toChatMessages(args.instructions, args.input),
     stream,
   }
@@ -270,9 +280,14 @@ function buildChatBody(args: ResponsesCreateArgs, stream: boolean): Record<strin
  *  `getTrackedLlmClient`'s wrapper) — so translating just that + `.usage`
  *  covers convene.ts / agenda.ts / inbox-triage.ts / router.ts / etc. in
  *  full. */
-async function createNonStreaming(args: ResponsesCreateArgs, opts?: RequestOpts): Promise<Record<string, unknown>> {
-  const body = buildChatBody(args, false)
-  const completion = await novitaClient().chat.completions.create(
+async function createNonStreaming(
+  args: ResponsesCreateArgs,
+  opts: RequestOpts | undefined,
+  getClient: () => OpenAI,
+  mapModel: (model: string) => string,
+): Promise<Record<string, unknown>> {
+  const body = buildChatBody(args, false, mapModel)
+  const completion = await getClient().chat.completions.create(
     body as unknown as Parameters<OpenAI['chat']['completions']['create']>[0] & { stream?: false },
     toRequestOptions(args, opts),
   )
@@ -311,15 +326,17 @@ async function createNonStreaming(args: ResponsesCreateArgs, opts?: RequestOpts)
  *  needed, not a partial shim. */
 async function* createStreaming(
   args: ResponsesCreateArgs,
-  opts?: RequestOpts,
+  opts: RequestOpts | undefined,
+  getClient: () => OpenAI,
+  mapModel: (model: string) => string,
 ): AsyncGenerator<ResponseStreamEvent> {
-  const body = buildChatBody(args, true)
-  const stream = await novitaClient().chat.completions.create(
+  const body = buildChatBody(args, true, mapModel)
+  const stream = await getClient().chat.completions.create(
     body as unknown as Parameters<OpenAI['chat']['completions']['create']>[0] & { stream: true },
     toRequestOptions(args, opts),
   )
 
-  const responseId = `novita-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const responseId = `resp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   yield {
     type: 'response.created',
     sequence_number: 0,
@@ -438,12 +455,26 @@ function wrapAsyncIterable(gen: AsyncGenerator<ResponseStreamEvent>): AsyncItera
 /** The Responses-API-shaped surface every call site actually uses off a
  *  client: `client.responses.create(...)`. Assigning this object as
  *  `client.responses` (see `withNovitaRouting` in llm.ts) is sufficient —
- *  nothing in this codebase touches any other `client.responses.*` method. */
-export const novitaResponsesShim = {
-  create(args: ResponsesCreateArgs, opts?: RequestOpts): unknown {
-    if (args.stream) {
-      return Promise.resolve(wrapAsyncIterable(createStreaming(args, opts)))
-    }
-    return createNonStreaming(args, opts)
-  },
+ *  nothing in this codebase touches any other `client.responses.*` method.
+ *
+ *  Generalized: `getClient` supplies the underlying OpenAI-Chat-Completions
+ *  client (any `baseURL`/`apiKey`, including a per-call test override —
+ *  see `novitaClient` and `cerebellum-adapter.ts`'s equivalent), and
+ *  `mapModel` transforms the Responses-API `model` id before it's sent
+ *  (Novita strips its `novita/` prefix; a plain provider adapter has no
+ *  prefix to strip and defaults to identity). */
+export function createOpenAIResponsesAdapter(
+  getClient: () => OpenAI,
+  mapModel: (model: string) => string = (model) => model,
+): { create(args: ResponsesCreateArgs, opts?: RequestOpts): unknown } {
+  return {
+    create(args: ResponsesCreateArgs, opts?: RequestOpts): unknown {
+      if (args.stream) {
+        return Promise.resolve(wrapAsyncIterable(createStreaming(args, opts, getClient, mapModel)))
+      }
+      return createNonStreaming(args, opts, getClient, mapModel)
+    },
+  }
 }
+
+export const novitaResponsesShim = createOpenAIResponsesAdapter(novitaClient, stripNovitaPrefix)
