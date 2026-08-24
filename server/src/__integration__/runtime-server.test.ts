@@ -266,7 +266,10 @@ async function seedAgendaCard(agentId: string, companyId: string): Promise<strin
 }
 
 test('[integration] runtime: GET /agenda for a byoa-routed agent returns the classifier payload, not a verdict', async () => {
-  const { env } = await import('../env.js')
+  // #22: Cerebellum Route now reads through cerebellum-settings.ts
+  // (app_settings), not env.CEREBELLUM_* — flip the DB-backed setting
+  // instead of the old env mutation.
+  const { setCerebellumSettings } = await import('../cerebellum-settings.js')
   const { agentId, companyId, token } = await seedAgent()
   await seedAgendaCard(agentId, companyId)
   const computerId = `comp-${randomUUID().slice(0, 8)}`
@@ -276,10 +279,7 @@ test('[integration] runtime: GET /agenda for a byoa-routed agent returns the cla
   )
   await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
 
-  const savedRoute = env.CEREBELLUM_ROUTE
-  const savedEngine = env.CEREBELLUM_LOCAL_ENGINE
-  env.CEREBELLUM_ROUTE = 'byoa'
-  env.CEREBELLUM_LOCAL_ENGINE = 'claude'
+  await setCerebellumSettings({ route: 'byoa', localEngine: 'claude' }, 'test')
   try {
     const r = await call('/runtime/agenda', { method: 'GET', token })
     assert.equal(r.status, 200)
@@ -290,8 +290,7 @@ test('[integration] runtime: GET /agenda for a byoa-routed agent returns the cla
     assert.equal(r.body.agenda.cards.length, 1)
     assert.equal(r.body.agenda.cards[0].title, 'Ship it')
   } finally {
-    env.CEREBELLUM_ROUTE = savedRoute
-    env.CEREBELLUM_LOCAL_ENGINE = savedEngine
+    await setCerebellumSettings({ route: 'remote', localEngine: 'claude' }, 'test')
   }
 })
 

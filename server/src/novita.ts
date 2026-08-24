@@ -283,11 +283,11 @@ function buildChatBody(args: ResponsesCreateArgs, stream: boolean, mapModel: (mo
 async function createNonStreaming(
   args: ResponsesCreateArgs,
   opts: RequestOpts | undefined,
-  getClient: () => OpenAI,
+  getClient: () => OpenAI | Promise<OpenAI>,
   mapModel: (model: string) => string,
 ): Promise<Record<string, unknown>> {
   const body = buildChatBody(args, false, mapModel)
-  const completion = await getClient().chat.completions.create(
+  const completion = await (await getClient()).chat.completions.create(
     body as unknown as Parameters<OpenAI['chat']['completions']['create']>[0] & { stream?: false },
     toRequestOptions(args, opts),
   )
@@ -327,11 +327,11 @@ async function createNonStreaming(
 async function* createStreaming(
   args: ResponsesCreateArgs,
   opts: RequestOpts | undefined,
-  getClient: () => OpenAI,
+  getClient: () => OpenAI | Promise<OpenAI>,
   mapModel: (model: string) => string,
 ): AsyncGenerator<ResponseStreamEvent> {
   const body = buildChatBody(args, true, mapModel)
-  const stream = await getClient().chat.completions.create(
+  const stream = await (await getClient()).chat.completions.create(
     body as unknown as Parameters<OpenAI['chat']['completions']['create']>[0] & { stream: true },
     toRequestOptions(args, opts),
   )
@@ -462,9 +462,11 @@ function wrapAsyncIterable(gen: AsyncGenerator<ResponseStreamEvent>): AsyncItera
  *  see `novitaClient` and `cerebellum-adapter.ts`'s equivalent), and
  *  `mapModel` transforms the Responses-API `model` id before it's sent
  *  (Novita strips its `novita/` prefix; a plain provider adapter has no
- *  prefix to strip and defaults to identity). */
+ *  prefix to strip and defaults to identity). `getClient` may return a
+ *  `Promise<OpenAI>` — cerebellum-adapter.ts builds its client from a
+ *  DB-backed settings read, which is inherently async. */
 export function createOpenAIResponsesAdapter(
-  getClient: () => OpenAI,
+  getClient: () => OpenAI | Promise<OpenAI>,
   mapModel: (model: string) => string = (model) => model,
 ): { create(args: ResponsesCreateArgs, opts?: RequestOpts): unknown } {
   return {
