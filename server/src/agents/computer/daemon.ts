@@ -30,6 +30,10 @@ import { parseSseStream, wakeStreamWasStable } from '../runtime/sse-parse.js'
 import { detectEngines, getAdapter, ENGINE_IDS, runEngineDoctor, type EngineId, type EngineSession, type EngineRunResult, type EngineUsage, type EngineHopReport } from './engine.js'
 import { usageFromClaude, type TokenUsage } from '../cost.js'
 import { parseTriage, finalizeTriage, isRateLimited } from '../triage-core.js'
+import {
+  parseAgendaVerdict, coerceAgendaVerdict, agendaDeterministicFallback,
+  type AgentAgenda, type AgendaVerdict,
+} from '../agenda-triage-core.js'
 import { GLANCE_YIELD_RULES } from '../glance-protocol.js'
 import { SKYPE_EMOTICONS_GUIDE } from '../skype-emoticons.js'
 import {
@@ -398,6 +402,23 @@ interface RuntimeInboxTriageResponse {
   reason?: string
   promptNote?: string
   source?: string
+}
+
+/** `/agenda` (ticket #20): either the final wake decision (remote route —
+ *  server already ran the classifier and, if actionable, claimed stalls +
+ *  built the brief), or — for a byoa-routed agent — the classifier PAYLOAD to
+ *  run on this daemon's OWN local engine, mirroring `RuntimeTriagePayload`'s
+ *  "verdict OR prompt" shape. `agenda` rides along on the payload branch so a
+ *  local classify() failure can still compute the SAME narrow deterministic
+ *  fallback the remote path uses on a classifier outage. */
+interface RuntimeAgendaResponse {
+  actionable?: boolean
+  focus?: string
+  brief?: string
+  reason?: string
+  instructions?: string
+  input?: string
+  agenda?: AgentAgenda
 }
 
 /** `/inbox-triage/payload`: either a verdict the server decided without a model
@@ -1457,6 +1478,54 @@ class AgentRunner {
     }
   }
 
+  /** Agenda triage (ticket #20): GET `/agenda`. On the remote cerebellum route
+   *  the server already ran the classifier and returns the final wake
+   *  decision — pass it straight through, exactly like before. On the byoa
+   *  route the response instead carries the classifier PAYLOAD (mirrors
+   *  `inboxTriage`'s `/inbox-triage/payload` pattern): run it on THIS
+   *  daemon's own local engine via the same `classify()` primitive inbox
+   *  triage uses, then POST the verdict to `/agenda/verdict` so the server
+   *  can claim stalls + build the final brief with current data. */
+  private async agendaTriage(token: string): Promise<RuntimeAgendaResponse | null> {
+    const payload = await runtimeGet<RuntimeAgendaResponse>(this.cfg.serverUrl, '/agenda', token)
+    if (!payload) return null
+    if (!payload.instructions || !payload.input) return payload // remote route: final decision already
+
+    let res: { text: string; error?: string; usage?: EngineUsage; model?: string | null }
+    await triageSem.acquire()
+    await spawnPacer.gate()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), TRIAGE_TIMEOUT_MS)
+    try {
+      await mkdir(TRIAGE_DIR, { recursive: true })
+      res = await this.adapter.classify({
+        cwd: TRIAGE_DIR,
+        prompt: `${payload.instructions}\n\n${payload.input}`,
+        env: this.engineEnv(),
+        model: process.env.CUMORA_TRIAGE_MODEL,
+        signal: controller.signal,
+      })
+    } catch (err) {
+      res = { text: '', error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      clearTimeout(timer)
+      triageSem.release()
+    }
+
+    // agenda is always present alongside instructions/input (see server.ts) —
+    // needed here for the deterministic fallback below.
+    const agenda: AgentAgenda = payload.agenda ?? { cards: [], events: [], stalls: [] }
+    let verdict: AgendaVerdict
+    if (res.error || !res.text.trim()) {
+      console.warn(`[computer] ${this.agent.id} local agenda triage failed${controller.signal.aborted ? ' (timed out)' : ''}: ${(res.error ?? 'no output').slice(0, 200)} — falling back to the deterministic rule`)
+      verdict = agendaDeterministicFallback(agenda)
+    } else {
+      const parsed = parseAgendaVerdict(res.text)
+      verdict = parsed ? coerceAgendaVerdict(parsed) : agendaDeterministicFallback(agenda)
+    }
+    return await runtimeBest(this.cfg.serverUrl, '/agenda/verdict', token, verdict) as RuntimeAgendaResponse | null
+  }
+
   /** Triage model id for pricing, honoring CUMORA_TRIAGE_MODEL. Cursor has
    *  no fixed cheap alias, so its reported stream model wins; the agent model
    *  is only a fallback when the stream does not name one. */
@@ -1727,9 +1796,7 @@ class AgentRunner {
       console.log(`[computer] ${this.agent.id} agenda skip: engine rate-limit cooldown, ${leftS}s left`)
       return
     }
-    const ag = await runtimeGet<{ actionable?: boolean; brief?: string; focus?: string }>(
-      this.cfg.serverUrl, '/agenda', token,
-    )
+    const ag = await this.agendaTriage(token)
     if (!ag?.actionable || !ag.brief) return
     console.log(`[computer] ${this.agent.id} agenda turn START — proactive board work${ag.focus ? `: ${ag.focus.slice(0, 80)}` : ''}`)
     await runtimeBest(this.cfg.serverUrl, '/status', token, { status: 'thinking' })

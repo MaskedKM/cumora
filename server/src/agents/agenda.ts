@@ -31,66 +31,32 @@ import { pool } from '../db/pool.js'
 import { env } from '../env.js'
 import { getTrackedLlmClient } from './llm-ledger.js'
 import { redis } from '../redis.js'
+import { resolveCerebellumRouteForAgent } from './cerebellum-route.js'
+import { cerebellumResponsesShim, cerebellumRemoteConfigured } from '../cerebellum-adapter.js'
+import {
+  DONE_COLUMN_PATTERNS,
+  AGENDA_CLASSIFIER_ERROR,
+  renderAgendaForClassifier,
+  buildAgendaClassifierRequest,
+  parseAgendaVerdict,
+  coerceAgendaVerdict,
+  agendaDeterministicFallback,
+  type AgendaCard,
+  type AgendaEvent,
+  type StalledConvo,
+  type AgentAgenda,
+  type AgendaVerdict,
+} from './agenda-triage-core.js'
 
-/** A Kanban card that the agent should plausibly act on. */
-export interface AgendaCard {
-  id: string
-  board_id: string
-  board_title: string
-  column_id: string
-  column_title: string
-  title: string
-  description: string | null
-  assignee_id: string | null
-  mentions: string[]
-  updated_at: string
+export {
+  AGENDA_CLASSIFIER_ERROR,
+  parseAgendaVerdict,
+  type AgendaCard,
+  type AgendaEvent,
+  type StalledConvo,
+  type AgentAgenda,
+  type AgendaVerdict,
 }
-
-/** A calendar event in the current / imminent slot for this agent. */
-export interface AgendaEvent {
-  id: string
-  title: string
-  description: string | null
-  start_at: string
-  agent_prompt: string | null
-  target_conversation_id: string | null
-}
-
-/** A conversation the agent is in that has gone quiet mid-flow — surfaced so the
- *  agent can proactively follow up (answer if it owes a reply, nudge if it's
- *  waiting, or prod a stalled human-started activity) instead of only ever
- *  reacting to new messages. `lastAuthorIsSelf` tells the brain which: false =
- *  someone else spoke last (you may owe a reply / be a bystander); true = you
- *  spoke last (you're awaiting them → consider a nudge). The brain reads the room
- *  and decides who/whether/how; the cerebellum only gates whether it's worth a wake. */
-export interface StalledConvo {
-  conversationId: string
-  kind: string
-  title: string | null
-  lastMessageId: string
-  lastAuthorId: string
-  lastAuthorName: string
-  lastAuthorIsSelf: boolean
-  lastBody: string
-  minutesSilent: number
-  /** The last few messages (oldest→newest, "author: body"), so the cerebellum can
-   *  tell a genuinely-waiting stall from a thread that has CONCLUDED / socially
-   *  closed (a wrap-up flurry with no open ask). Without this it sees only the
-   *  single last line and mistakes a finished activity for one still in motion. */
-  recentTail: string
-}
-
-export interface AgentAgenda {
-  cards: AgendaCard[]
-  events: AgendaEvent[]
-  stalls: StalledConvo[]
-}
-
-/** Patterns we treat as "the card is already finished, don't bug the
- *  agent." Matched case-insensitively against the column title — the
- *  Kanban schema doesn't carry an "is_done" flag, so column-title
- *  heuristics are the cheapest signal we have. */
-const DONE_COLUMN_PATTERNS = /\b(done|complete|completed|shipped|archive|archived|closed|cancel|canceled|cancelled)\b/i
 
 /** How far ahead a calendar event can be and still count as "current
  *  slot" for the heartbeat. 30 min gives the agent enough time to
@@ -327,176 +293,53 @@ export async function gatherAgentAgenda(
   return { cards, events, stalls }
 }
 
-/** Render the agenda as a compact text block for the classifier. We
- *  intentionally do not include the full description body — the
- *  classifier only needs to decide go/no-go, and the brain will see
- *  the full card via the `kanban` CLI on actual wake.
+/** Cerebellum classifier: given the agenda + persona, decide if a wake is
+ *  justified. Strict JSON. Falls back to "actionable=false" (or the narrow
+ *  deterministic fallback) on any error so a classifier outage doesn't burn
+ *  brain calls on every heartbeat.
  *
- *  Prefix-cache order (providers cache the longest unchanged prefix):
- *    1. cards (change only when a card row changes)
- *    2. stall identity + recent messages (change only on new chat)
- *    3. calendar slot (slides as wall-clock crosses 30m/15m windows)
- *  Wall-clock "Nm silent" is kept in a final timing section. That preserves
- *  the original recency signal while preventing a ticking value from
- *  invalidating the stable agenda prefix on every heartbeat. */
-function byId<T extends { id: string }>(a: T, b: T): number {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-}
-
-function renderAgendaForClassifier(agenda: AgentAgenda): string {
-  const lines: string[] = []
-  // Sort by id so inserting/updating one row does not reshuffle the rest and
-  // bust the prefix cache of every later line. Selection (most-recent LIMIT)
-  // still happens in SQL; this is display order only.
-  const cards = [...agenda.cards].sort(byId)
-  const stalls = [...agenda.stalls].sort((a, b) => (
-    a.conversationId < b.conversationId ? -1 : a.conversationId > b.conversationId ? 1 : 0
-  ))
-  if (cards.length > 0) {
-    lines.push(`Kanban cards (${cards.length}):`)
-    for (const c of cards) {
-      const tag = c.assignee_id ? 'assigned' : 'mentioned'
-      lines.push(`- [${tag}] "${c.title}" in ${c.board_title} / ${c.column_title} (id=${c.id}, updated ${c.updated_at})`)
-    }
-  }
-  if (stalls.length > 0) {
-    if (lines.length > 0) lines.push('')
-    lines.push(`Conversations you're in that have gone quiet (${stalls.length}) — judge each: genuinely WAITING on someone, or already CONCLUDED/wound down?`)
-    for (const s of stalls) {
-      const who = s.lastAuthorIsSelf ? 'YOU spoke last, no reply since' : `${s.lastAuthorName} spoke last, you haven't responded`
-      lines.push(`- [${s.kind}] ${s.title ?? s.conversationId} (${s.conversationId}) — ${who}. Last few messages:`)
-      for (const ln of (s.recentTail || s.lastBody).split('\n')) lines.push(`    ${ln}`)
-    }
-  }
-  if (agenda.events.length > 0) {
-    if (lines.length > 0) lines.push('')
-    lines.push(`Calendar events in current slot (${agenda.events.length}):`)
-    for (const e of agenda.events) {
-      const prompt = e.agent_prompt ? ` — prompt: ${e.agent_prompt.slice(0, 140)}` : ''
-      lines.push(`- "${e.title}" at ${e.start_at}${prompt}`)
-    }
-  }
-  if (stalls.length > 0) {
-    if (lines.length > 0) lines.push('')
-    lines.push('Current stall timing:')
-    for (const s of stalls) lines.push(`- ${s.conversationId}: ${s.minutesSilent}m silent`)
-  }
-  if (lines.length === 0) return '(empty)'
-  return lines.join('\n')
-}
-
-export interface AgendaVerdict {
-  /** Whether the agent should wake right now to act on this agenda. */
-  actionable: boolean
-  /** One-line focus the brain should drive toward, if actionable. */
-  focus: string
-  /** Telemetry-only reason string; never shown to the agent. The literal
-   *  string `'classifier error'` is a sentinel — callers should treat it
-   *  as "triage failed, fall back to the safe path" rather than "no work
-   *  to do," so a transient LLM outage doesn't silence every agent with
-   *  agenda items. */
-  reason: string
-}
-
-/** Sentinel value for {@link AgendaVerdict.reason} when the underlying
- *  classifier call threw. Exported so callers can detect it without
- *  string-matching. */
-export const AGENDA_CLASSIFIER_ERROR = 'classifier error'
-
-/** Parse the support model's verdict conservatively. JSON mode is not enough
- * for every OpenAI-compatible provider: DeepSeek sometimes wraps JSON, omits
- * key quotes, or truncates after all required fields. Recover only an explicit
- * actionable value. A malformed positive also needs a non-empty focus, so
- * salvage can never turn ambiguous output into a wake. */
-export function parseAgendaVerdict(raw: string): {
-  actionable?: unknown
-  focus?: unknown
-  reason?: unknown
-} | null {
-  const unfenced = raw.trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-  const firstBrace = unfenced.indexOf('{')
-  if (firstBrace < 0) return null
-  const lastBrace = unfenced.lastIndexOf('}')
-  const candidate = unfenced.slice(firstBrace, lastBrace > firstBrace ? lastBrace + 1 : undefined)
-  try {
-    return JSON.parse(candidate) as { actionable?: unknown; focus?: unknown; reason?: unknown }
-  } catch { /* conservative field salvage below */ }
-
-  const actionMatch = candidate.match(
-    /(?:["']?actionable["']?)\s*:\s*(true|false|1|0|["']true["']|["']false["'])/i,
-  )
-  if (!actionMatch) return null
-  const actionToken = actionMatch[1].replace(/["']/g, '').toLowerCase()
-  const actionable = actionToken === 'true' || actionToken === '1'
-  const stringField = (name: string): string => {
-    const match = candidate.match(new RegExp(`(?:["']?${name}["']?)\\s*:\\s*(["'])([\\s\\S]*?)\\1(?:\\s*[,}]|$)`, 'i'))
-    return match?.[2] ?? ''
-  }
-  const focus = stringField('focus')
-  const reason = stringField('reason')
-  if (actionable && !focus.trim()) {
-    return { actionable: false, focus: '', reason: 'malformed positive verdict without focus' }
-  }
-  return { actionable, focus, reason }
-}
-
-/** Cerebellum classifier: given the agenda + persona, decide if a
- *  wake is justified. Strict JSON. Falls back to "actionable=false"
- *  on any error so a classifier outage doesn't burn brain calls on
- *  every heartbeat. */
+ *  Routing (spec #17, ticket #20): resolves this agent's cerebellum route
+ *  first. `remote` (the default, or a BYOA agent whose daemon/engine isn't
+ *  currently available) calls a Chat-Completions-compatible model — the
+ *  generalized `cerebellum-adapter.ts` when `CEREBELLUM_BASE_URL`/
+ *  `CEREBELLUM_API_KEY` are configured, else today's plain OpenAI client
+ *  (unchanged behavior). `byoa` is NEVER called out to from here — a
+ *  byoa-routed agent's classification runs on the operator's own local
+ *  engine via the daemon-poll path (`/runtime/agenda` + `/runtime/agenda/verdict`,
+ *  mirroring `/runtime/inbox-triage/payload`); this function fails closed
+ *  defensively if a caller reaches it anyway for a byoa-routed agent, rather
+ *  than ever risking a remote call against an operator's unset OpenAI key. */
 export async function classifyAgendaActionable(args: {
   persona: { name: string; role: string; style: string; model: string | null }
   companyId: string
   agenda: AgentAgenda
   /** Optional agent id — when provided, the ledger row is scoped to this
    *  agent so the per-agent spend rollup ("whose heartbeats burn the most")
-   *  is queryable. Cloud callers (idle.ts) pass `personaId`; the BYOA
-   *  endpoint passes `c.sub`. Older callers can omit it. */
+   *  is queryable, AND it's what lets this function resolve the cerebellum
+   *  route. Cloud callers (idle.ts) pass `personaId`; the BYOA endpoint
+   *  passes `c.sub`. Older callers can omit it (always resolves `remote`). */
   agentId?: string
 }): Promise<AgendaVerdict> {
   const { persona, companyId, agenda } = args
-  if (agenda.cards.length === 0 && agenda.events.length === 0 && agenda.stalls.length === 0) {
-    return { actionable: false, focus: '', reason: 'empty agenda' }
+  const built = buildAgendaClassifierRequest({ persona, agenda })
+  if (built.verdict) return built.verdict
+
+  const route = args.agentId ? await resolveCerebellumRouteForAgent(args.agentId) : 'remote'
+  if (route === 'byoa') {
+    console.warn(`[agenda] classifyAgendaActionable called for byoa-routed agent ${args.agentId} — caller should use the /runtime/agenda daemon-poll path instead of the remote classifier`)
+    return { actionable: false, focus: '', reason: AGENDA_CLASSIFIER_ERROR }
   }
-  const rendered = renderAgendaForClassifier(agenda)
-  const styleHint = (persona.style ?? '').slice(0, 400)
-  const instructions = `You are Cumora's heartbeat agenda triage. Given an agent's currently-assigned Kanban cards and their currently-due calendar events, decide whether the agent should wake up RIGHT NOW to act on something, or stay quiet.
 
-Decide "actionable: true" only when at least one item is concrete, fresh, AND clearly belongs to this agent's role. Reject:
-- vague brainstorming cards with no owner action
-- cards already in a done/archive-style column
-- events that are personal markers (no agent_prompt)
-- duplicates of work the agent has obviously already started
-
-ORDERING: list order is for prompt-cache stability, not priority. Judge urgency from each card's updated timestamp, each event's start time, and each stalled conversation's current silence duration and message content.
-
-STALLED CONVERSATIONS: for each, READ the recent messages shown and judge whether it is genuinely WAITING or already CONCLUDED. actionable=true ONLY when the recent messages show a CONCRETE unanswered ask directed at someone, or an explicitly in-progress step plainly waiting on a next move. It is NOT actionable (false) when the thread has CONCLUDED or socially CLOSED — participants exchanging wrap-up / closing / acknowledgement remarks, a conclusion or result already reached, nothing pending and no one waiting on a specific next step — no matter how "quiet" it now is. A merely quiet conversation is NOT a stall; "someone spoke last and I didn't reply" is NOT by itself a reason (most messages need no reply). Resurrecting a finished conversation with a late reply is a failure — when in doubt that it's truly still waiting, choose false.
-
-Reply ONLY as strict JSON: {"actionable": boolean, "focus": "one-line focus for the agent if actionable, else empty", "reason": "short factual reason"}.`
-  const input = `Agent: ${persona.name}${persona.role ? `, ${persona.role}` : ''}
-Persona / style:
-${styleHint || '(none)'}
-
-Current agenda for this agent:
-${rendered}
-
-Reply as strict JSON.`
   try {
-    const client = await getTrackedLlmClient({
-      purpose: 'agenda',
-      companyId,
-      agentId: args.agentId ?? null,
-      extras: {
-        cards: agenda.cards.length, events: agenda.events.length, stalls: agenda.stalls.length,
-        persona: persona.name,
-      },
-    })
-    const r = await client.responses.create({
-      model: env.OPENAI_MODEL_SUPPORT,
-      instructions,
-      input,
+    // Generalized remote adapter (#18) when configured — any OpenAI-Chat-
+    // Completions-compatible provider, not just OpenAI. Unconfigured →
+    // unchanged legacy behavior (plain OpenAI client via the ledger).
+    const useCerebellumAdapter = cerebellumRemoteConfigured()
+    const model = useCerebellumAdapter ? (env.CEREBELLUM_MODEL || env.OPENAI_MODEL_SUPPORT) : env.OPENAI_MODEL_SUPPORT
+    const requestArgs = {
+      model,
+      instructions: built.instructions,
+      input: built.input,
       text: { format: { type: 'json_object' } },
       // DeepSeek V4 Flash regularly spends the first ~300 tokens on hidden
       // reasoning. A 300-token cap then truncates the JSON to one character,
@@ -504,64 +347,33 @@ Reply as strict JSON.`
       // enough room for reasoning plus the small structured verdict.
       max_output_tokens: 2000,
       reasoning: { effort: 'minimal' },
-    })
-    const parsed = parseAgendaVerdict(r.output_text ?? '')
-    if (!parsed) throw new Error('agenda classifier returned no recoverable verdict')
-    // Coerce to a real boolean *strictly*. `Boolean("no")` is `true`
-    // because non-empty strings are truthy — so if the model replies
-    // {"actionable": "no"} (treating it as natural language) we'd
-    // wrongly wake the brain. Accept true/"true"/1 as actionable; treat
-    // everything else (including "no", "false", undefined, 0) as not
-    // actionable. Same for focus / reason — clamp via String + slice
-    // even if the model returns a number or an array.
-    const a = parsed.actionable
-    const actionable = a === true || a === 'true' || a === 1
-    return {
-      actionable,
-      focus: String(parsed.focus ?? '').slice(0, 240),
-      reason: String(parsed.reason ?? '').slice(0, 240),
     }
+    // ponytail: the generalized-adapter path skips llm-ledger tracking (it
+    // isn't a raw OpenAI client getTrackedLlmClient can wrap) — add if an
+    // operator needs spend visibility for a non-default CEREBELLUM_* provider.
+    let outputText: string
+    if (useCerebellumAdapter) {
+      const r = await cerebellumResponsesShim.create(requestArgs as never) as { output_text?: string }
+      outputText = r.output_text ?? ''
+    } else {
+      const client = await getTrackedLlmClient({
+        purpose: 'agenda',
+        companyId,
+        agentId: args.agentId ?? null,
+        extras: {
+          cards: agenda.cards.length, events: agenda.events.length, stalls: agenda.stalls.length,
+          persona: persona.name,
+        },
+      })
+      const r = await client.responses.create(requestArgs as never)
+      outputText = r.output_text ?? ''
+    }
+    const parsed = parseAgendaVerdict(outputText)
+    if (!parsed) throw new Error('agenda classifier returned no recoverable verdict')
+    return coerceAgendaVerdict(parsed)
   } catch (e) {
     console.warn('[agenda] classifier failed', e instanceof Error ? e.message : e)
-    // ─── deterministic fallback ─────────────────────────────────────
-    // When the cerebellum classifier is unavailable (sub2api 503 / model
-    // outage / network), default fail-closed BUT carve out a narrow,
-    // conservative case so the stall safety net isn't 100% broken during
-    // an outage: a SINGLE recent stall where SOMEONE ELSE spoke last and
-    // this agent owes a reply. The rationale:
-    //   - we don't try to judge "concluded vs in-motion" without the LLM
-    //     (that's exactly what the cerebellum is for); we just surface
-    //     the simplest "you have an unread, nobody else has it" case.
-    //   - bounded: ONE stall only (multi-stall ambiguity → fail-closed),
-    //     SOMEONE-ELSE-spoke-last only (not "I spoke, nudge them" — that
-    //     direction needs more judgment), minutesSilent ≤ STALL_FALLBACK_MAX
-    //     (don't resurrect ancient threads), no card/event noise (those
-    //     genuinely need LLM judgment on priority).
-    //   - cost bounded: the per-conversation NX nudge claim (claimStallNudge)
-    //     still applies downstream — at most ONE agent ever wakes the
-    //     big brain for a given stall, even if all members' fallbacks
-    //     fire simultaneously.
-    //   - aligned with [[keep-hard-safety-backstops]]: a deterministic
-    //     floor under the AI layer for the narrow case where the AI
-    //     judgment is OBVIOUSLY consistent (unread message I owe a reply
-    //     to, recent, alone on the agenda).
-    const STALL_FALLBACK_MAX_MIN = 30
-    const recentAwaitingMe = agenda.stalls.filter(
-      (s) => !s.lastAuthorIsSelf && s.minutesSilent <= STALL_FALLBACK_MAX_MIN,
-    )
-    if (
-      agenda.cards.length === 0 &&
-      agenda.events.length === 0 &&
-      recentAwaitingMe.length === 1
-    ) {
-      const s = recentAwaitingMe[0]
-      return {
-        actionable: true,
-        focus: `Reply to ${s.lastAuthorName} in ${s.title ?? s.conversationId} — they spoke last (${s.minutesSilent}m ago) and you haven't responded.`,
-        reason: `${AGENDA_CLASSIFIER_ERROR} (deterministic fallback: single recent awaiting-you stall)`,
-      }
-    }
-    return { actionable: false, focus: '', reason: AGENDA_CLASSIFIER_ERROR }
+    return agendaDeterministicFallback(agenda)
   }
 }
 

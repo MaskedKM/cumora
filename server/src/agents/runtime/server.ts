@@ -19,7 +19,12 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { runCli } from '../cli.js'
 import { buildTriageRequest, gatherClaimsByConvo } from '../inbox-triage.js'
 import { buildTeamRosterText, getPersona } from '../personas.js'
-import { gatherAgentAgenda, classifyAgendaActionable, renderAgendaBrief, claimStallNudge, AGENDA_CLASSIFIER_ERROR } from '../agenda.js'
+import {
+  gatherAgentAgenda, classifyAgendaActionable, renderAgendaBrief, claimStallNudge, AGENDA_CLASSIFIER_ERROR,
+  type AgentAgenda, type AgendaVerdict,
+} from '../agenda.js'
+import { resolveCerebellumRouteForAgent } from '../cerebellum-route.js'
+import { buildAgendaClassifierRequest } from '../agenda-triage-core.js'
 import { consumeAgentTurnToken } from '../scheduler.js'
 import { touchAgentRun, recordTriage, type TriageSource } from '../observability.js'
 import { buildRuntimeArgv } from './cli-argv.js'
@@ -191,29 +196,17 @@ runtimeRouter.get('/inbox-triage/payload', withAgent(async (c, _req, res) => {
   res.json(buildTriageRequest({ agentId: c.sub, persona, inbox, context, claimsByConvo, humanActiveInCompany }))
 }))
 
-// BOARD-AWARENESS for BYOA: the daemon has no DB, so the server gathers this
-// agent's actionable AGENDA — Kanban cards assigned to / @-mentioning them in
-// non-done columns + due calendar events — and runs the SAME cheap cerebellum
-// classifier the cloud idle scheduler (idle.ts) uses, returning a focused brief
-// when there is real work. This is what makes a BYOA agent PROACTIVELY pick up
-// assigned board tasks instead of only reacting to a chat push. The classifier
-// runs on the cloud support model (Cumora-subsidized), so it does NOT spend the
-// operator's quota; the operator's brain is spent only on the actual work. The
-// daemon gates calls behind a "quiet for N minutes" window (its anti-loop), so
-// this isn't hit every poll. Empty / non-actionable → { actionable: false }.
-runtimeRouter.get('/agenda', withAgent(async (c, _req, res) => {
-  if (!c.companyId) { res.json({ actionable: false }); return }
-  const agenda = await gatherAgentAgenda(c.sub, c.companyId)
-  if (agenda.cards.length === 0 && agenda.events.length === 0 && agenda.stalls.length === 0) {
-    res.json({ actionable: false, cards: 0, events: 0, stalls: 0 })
-    return
-  }
-  const persona = await getPersona(c.sub)
-  if (!persona) { res.json({ actionable: false }); return }
-  const verdict = await classifyAgendaActionable({ persona, companyId: c.companyId, agenda, agentId: c.sub })
+/** Shared tail of the agenda-triage flow: given a verdict (however it was
+ *  produced — the remote classifier synchronously, or a BYOA daemon's local
+ *  classify() posted back via `/agenda/verdict`), claim stalls and build the
+ *  final wake payload the daemon/idle.ts act on. Factored out so both `/agenda`
+ *  (remote route) and `/agenda/verdict` (byoa route) return byte-identical
+ *  shapes for the same verdict. */
+async function finalizeAgendaVerdict(
+  agenda: AgentAgenda, verdict: AgendaVerdict,
+): Promise<{ actionable: boolean; focus?: string; brief?: string; cards: number; events: number; stalls: number; reason?: string }> {
   if (!verdict.actionable) {
-    res.json({ actionable: false, cards: agenda.cards.length, events: agenda.events.length, stalls: agenda.stalls.length, reason: verdict.reason })
-    return
+    return { actionable: false, cards: agenda.cards.length, events: agenda.events.length, stalls: agenda.stalls.length, reason: verdict.reason }
   }
   // The cerebellum said yes. Now CLAIM each stall so exactly ONE agent nudges it
   // (and never twice for the same stall state) — keep only the stalls this agent
@@ -221,8 +214,9 @@ runtimeRouter.get('/agenda', withAgent(async (c, _req, res) => {
   // per-agent (no race), so they pass through untouched.
   //
   // Pass source='fallback' when the verdict came from the deterministic
-  // fallback (classifier 503) so the NX TTL is short (5min vs 45min) — a "no"
-  // from the chosen agent shouldn't permanently lock out other members.
+  // fallback (classifier/local-engine outage) so the NX TTL is short (5min vs
+  // 45min) — a "no" from the chosen agent shouldn't permanently lock out
+  // other members.
   const nudgeSource = verdict.reason.startsWith(AGENDA_CLASSIFIER_ERROR) ? 'fallback' : 'classified'
   const wonStalls = []
   for (const s of agenda.stalls) {
@@ -232,17 +226,76 @@ runtimeRouter.get('/agenda', withAgent(async (c, _req, res) => {
   // If stalls were the ONLY reason and another agent already claimed them all,
   // there's nothing left for THIS agent to do — don't wake its big brain.
   if (finalAgenda.cards.length === 0 && finalAgenda.events.length === 0 && finalAgenda.stalls.length === 0) {
-    res.json({ actionable: false, cards: 0, events: 0, stalls: 0, reason: 'stall already claimed by another agent' })
-    return
+    return { actionable: false, cards: 0, events: 0, stalls: 0, reason: 'stall already claimed by another agent' }
   }
-  res.json({
+  return {
     actionable: true,
     focus: verdict.focus,
     brief: renderAgendaBrief(finalAgenda, verdict.focus),
     cards: finalAgenda.cards.length,
     events: finalAgenda.events.length,
     stalls: finalAgenda.stalls.length,
-  })
+  }
+}
+
+// BOARD-AWARENESS for BYOA: the daemon has no DB, so the server gathers this
+// agent's actionable AGENDA — Kanban cards assigned to / @-mentioning them in
+// non-done columns + due calendar events. This is what makes a BYOA agent
+// PROACTIVELY pick up assigned board tasks instead of only reacting to a chat
+// push. The daemon gates calls behind a "quiet for N minutes" window (its
+// anti-loop), so this isn't hit every poll. Empty / non-actionable →
+// { actionable: false }.
+//
+// Cerebellum routing (spec #17, ticket #20): a `remote`-routed agent (Cloud,
+// or a BYOA agent whose daemon/engine isn't reachable) gets the classifier run
+// HERE, synchronously, against the cloud/adapter model — unchanged from
+// before. A `byoa`-routed agent's classification must run on the OPERATOR'S
+// OWN machine, so instead of a verdict this returns the classifier PAYLOAD
+// (`instructions`/`input`, mirroring `/inbox-triage/payload`'s shape) plus the
+// raw `agenda` the daemon needs for its own deterministic fallback if the
+// local classify() fails. The daemon runs `EngineAdapter.classify()` on it and
+// posts the verdict back to `/agenda/verdict`, which shares this same tail via
+// `finalizeAgendaVerdict`.
+runtimeRouter.get('/agenda', withAgent(async (c, _req, res) => {
+  if (!c.companyId) { res.json({ actionable: false }); return }
+  const agenda = await gatherAgentAgenda(c.sub, c.companyId)
+  if (agenda.cards.length === 0 && agenda.events.length === 0 && agenda.stalls.length === 0) {
+    res.json({ actionable: false, cards: 0, events: 0, stalls: 0 })
+    return
+  }
+  const persona = await getPersona(c.sub)
+  if (!persona) { res.json({ actionable: false }); return }
+  const route = await resolveCerebellumRouteForAgent(c.sub)
+  if (route === 'byoa') {
+    const built = buildAgendaClassifierRequest({ persona, agenda })
+    if (built.verdict) {
+      res.json(await finalizeAgendaVerdict(agenda, built.verdict))
+      return
+    }
+    res.json({ instructions: built.instructions, input: built.input, agenda })
+    return
+  }
+  const verdict = await classifyAgendaActionable({ persona, companyId: c.companyId, agenda, agentId: c.sub })
+  res.json(await finalizeAgendaVerdict(agenda, verdict))
+}))
+
+// Verdict submission half of the byoa daemon-poll pair above: the daemon ran
+// EngineAdapter.classify() locally (or its own deterministic fallback if that
+// failed) on the `/agenda` payload and posts the result here. Re-gathers the
+// agenda fresh (cheap DB reads; the small staleness window vs. the payload
+// fetch is the same tolerance `/inbox-triage/payload` already accepts) so the
+// stall-claim + brief use current data, then shares the exact same tail as the
+// remote path.
+runtimeRouter.post('/agenda/verdict', withAgent(async (c, req, res) => {
+  if (!c.companyId) { res.json({ actionable: false }); return }
+  const body = req.body as { actionable?: unknown; focus?: unknown; reason?: unknown } | undefined
+  const verdict: AgendaVerdict = {
+    actionable: body?.actionable === true,
+    focus: typeof body?.focus === 'string' ? body.focus.slice(0, 240) : '',
+    reason: typeof body?.reason === 'string' ? body.reason.slice(0, 240) : '',
+  }
+  const agenda = await gatherAgentAgenda(c.sub, c.companyId)
+  res.json(await finalizeAgendaVerdict(agenda, verdict))
 }))
 
 runtimeRouter.post('/memory/query', withAgent(async (c, req, res) => {
