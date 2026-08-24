@@ -682,9 +682,10 @@ async function requireLocalEngine(): Promise<EngineId[]> {
   const engines = await detectEngines()
   if (engines.length === 0) throw new Error(missingEngineMessage())
   // zcode's CLI surface is young — its help text has drifted ahead of the
-  // arg parser before. Record the runtime version at pairing so any later
-  // drift report has the number that behaved this way (the AppImage cache
-  // also re-extracts on upgrade via its size+mtime key, see engine.ts).
+  // arg parser before. Echo the runtime version at pairing AND every daemon
+  // start (this runs from both) so a later drift report has the number that
+  // behaved this way — the line changes visibly across a desktop-app upgrade
+  // (the AppImage cache also re-extracts via its size+mtime key, see engine.ts).
   if (engines.includes('zcode')) {
     const version = zcodeEngineVersion()
     const source = resolveZcodeLauncher()?.source

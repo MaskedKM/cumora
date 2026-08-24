@@ -2446,7 +2446,7 @@ export function zcodeEngineVersion(env: NodeJS.ProcessEnv = process.env): string
     if (!launcher) return null
     const out = execFileSync(launcher.command, [...launcher.prefix, 'version'], {
       env, timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8',
-    })
+    }).replace(ANSI_RE, '')
     const m = out.match(/(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)
     return m ? m[1] : (out.trim().slice(0, 32) || null)
   } catch {
