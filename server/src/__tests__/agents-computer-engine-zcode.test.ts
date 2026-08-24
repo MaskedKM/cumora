@@ -336,9 +336,21 @@ test('zcode envelope parser: object passthrough, non-envelope falls back to text
   assert.equal(other.envelope, null, 'a JSON object without envelope markers is raw text')
 })
 
-test('zcode readZcodeMainModel: absent/malformed config resolves null', () => {
+test('zcode readZcodeMainModel: absent/malformed config resolves null', async () => {
+  // HOME must be pinned to a nonexistent dir: the fallback is the REAL
+  // homedir, and a dev box with a logged-in zcode (~/.zcode/cli/config.json)
+  // would otherwise flip this assertion — the test must not depend on
+  // machine state.
   assert.equal(readZcodeMainModel({ HOME: '/nonexistent-zcode-home' } as NodeJS.ProcessEnv), null)
-  assert.equal(readZcodeMainModel({} as NodeJS.ProcessEnv), null)
+  // Malformed configs (unparseable JSON, or model.main not a string) must
+  // fall through the same catch, not throw.
+  const root = await mkdtemp(join(tmpdir(), 'cumora-engine-zcode-bad-'))
+  tempDirs.push(root)
+  await mkdir(join(root, '.zcode', 'cli'), { recursive: true })
+  await writeFile(join(root, '.zcode', 'cli', 'config.json'), '{not json', 'utf8')
+  assert.equal(readZcodeMainModel({ HOME: root } as NodeJS.ProcessEnv), null)
+  await writeFile(join(root, '.zcode', 'cli', 'config.json'), JSON.stringify({ model: { main: 42 } }), 'utf8')
+  assert.equal(readZcodeMainModel({ HOME: root } as NodeJS.ProcessEnv), null)
 })
 
 /**
