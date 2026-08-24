@@ -50,6 +50,13 @@
 4. classify/probe:`--mode plan` + `--disallowed-tools "Bash Edit Write"`,同样可用 `--json` 拿 usage;小模型不可切(ZCODE_HOME 方案否决)→ 跑默认模型、如实上报。
 5. seedHome:`ensureCommonHome` + AGENTS.md(总是重写,persona 编辑要生效)。
 
+## 补充发现:项目级配置与 per-agent 模型(2026-08-24 二轮验证)
+
+- zcode 支持**项目级配置** `<cwd>/.zcode/config.json`(或 `zcode.json`),从 cwd 向上发现;其 `model.main` 覆盖用户级钉死(实测:用户级 kimi/k3 → 项目级 kimi/kimi-for-coding,contextWindow 256k 证实生效)。
+- **provider 表不跨层合并**:项目配置必须自带 `provider.{id}` 完整条目(apiKey/baseURL 从用户级复制),否则报 `Model provider X is missing baseURL`。
+- env 重定向出口不存在:ZCODE_HOME 仅用于遥测设备 id;userConfigPath 是程序内参数;无 ZCODE_CONFIG。
+- → Cumora 的 per-agent 模型落地:daemon 在 agent home 写 `.zcode/config.json`(issue #15),UI 模型字段因此生效。
+
 ## 环境引导备忘(本机复现)
 
 ```sh

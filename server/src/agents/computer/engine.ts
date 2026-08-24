@@ -21,7 +21,7 @@
  * `cumora` tool regardless of how we parse stdout.
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
-import { mkdir, writeFile, access, mkdtemp } from 'node:fs/promises'
+import { mkdir, rm, writeFile, access, mkdtemp } from 'node:fs/promises'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, delimiter as PATH_DELIMITER } from 'node:path'
@@ -97,6 +97,13 @@ export interface EnginePersona {
   name: string
   role: string | null
   systemPrompt: string | null
+  /** Per-agent big-brain model override, when the server sent one. Most
+   *  adapters consume this per-turn via --model; zcode has no such flag and
+   *  instead pins it into a project-level config in the home (see
+   *  ZcodeAdapter.seedHome). */
+  model?: string | null
+  /** Per-agent small-brain (fast) model override — same treatment. */
+  fastModel?: string | null
 }
 
 export interface EngineRunArgs {
@@ -300,8 +307,10 @@ export interface EngineAdapter {
   /** Binary name probed on PATH (e.g. 'claude'). */
   readonly bin: string
   /** Lay out the agent's home so the engine reads persona/memory natively.
-   *  Idempotent and non-destructive: never clobbers an existing memory file. */
-  seedHome(home: string, persona: EnginePersona): Promise<void>
+   *  Idempotent and non-destructive: never clobbers an existing memory file.
+   *  `env` (optional) is the engine subprocess env — adapters that read the
+   *  operator's engine config (zcode) need its HOME. */
+  seedHome(home: string, persona: EnginePersona, env?: NodeJS.ProcessEnv): Promise<void>
   /** Run one headless turn. Resolves with the process exit code. */
   run(args: EngineRunArgs): Promise<EngineRunResult>
   /** Start a PERSISTENT process. Returns null if this engine has no persistent
@@ -2340,16 +2349,31 @@ function zcodeUsageToEngineUsage(u: ZcodeEnvelope['usage']): EngineUsage | undef
   }
 }
 
-/** The model id the operator's CLI config pins for main turns, for honest
- *  ledger attribution (the CLI itself reports no model in the envelope). */
-export function readZcodeMainModel(env: NodeJS.ProcessEnv = process.env): string | null {
+/** Read the operator-level CLI config (best-effort). */
+function readZcodeUserConfig(env: NodeJS.ProcessEnv = process.env): { model?: { main?: unknown; lite?: unknown }; provider?: Record<string, unknown> } | null {
   try {
     const home = env.HOME || homedir()
-    const cfg = JSON.parse(readFileSync(join(home, '.zcode', 'cli', 'config.json'), 'utf8')) as { model?: { main?: unknown } }
-    return typeof cfg.model?.main === 'string' && cfg.model.main ? cfg.model.main : null
+    return JSON.parse(readFileSync(join(home, '.zcode', 'cli', 'config.json'), 'utf8'))
   } catch {
     return null
   }
+}
+
+/** The model id this agent's turns actually run on, for honest ledger
+ *  attribution (the CLI itself reports no model in the envelope). Two layers:
+ *  the agent home's PROJECT config (`<home>/.zcode/config.json`, written by
+ *  seedHome when the UI set a per-agent model) wins; else the operator's
+ *  user-level pin. */
+export function readZcodeMainModel(env: NodeJS.ProcessEnv = process.env, cwd?: string): string | null {
+  const ref = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+  if (cwd) {
+    try {
+      const proj = JSON.parse(readFileSync(join(cwd, '.zcode', 'config.json'), 'utf8')) as { model?: { main?: unknown } }
+      const main = ref(proj.model?.main)
+      if (main) return main
+    } catch { /* no/invalid project config — fall through to the user pin */ }
+  }
+  return ref(readZcodeUserConfig(env)?.model?.main)
 }
 
 /** Parse the `-p --json` stdout. The envelope is the whole output; anything
@@ -2514,9 +2538,10 @@ function spawnZcodeJson(
       }
       const usage = zcodeUsageToEngineUsage(envelope.usage)
       // Honest attribution: the envelope names no model, so report the id the
-      // operator's config pins. When the config is unreadable we still owe the
-      // ledger a row — a greppable placeholder rather than dropping the hop.
-      const model = readZcodeMainModel(opts.env) ?? 'zcode-unknown-model'
+      // agent's own config resolves to (project override in its home, else the
+      // operator's pin). When neither is readable we still owe the ledger a
+      // row — a greppable placeholder rather than dropping the hop.
+      const model = readZcodeMainModel(opts.env, opts.cwd) ?? 'zcode-unknown-model'
       if (exitCode === 0 && usage && opts.onHopUsage) {
         try {
           opts.onHopUsage({ model, usage, latencyMs: Date.now() - startedAt, hopIndex: 1 })
@@ -2625,7 +2650,7 @@ class ZcodeAdapter implements EngineAdapter {
     return Promise.resolve({ ok: true, detail: '', skipped: true })
   }
 
-  async seedHome(home: string, persona: EnginePersona): Promise<void> {
+  async seedHome(home: string, persona: EnginePersona, env: NodeJS.ProcessEnv = process.env): Promise<void> {
     await ensureCommonHome(home)
     // The persona header points at `skills/` as the agent's skill directory —
     // create it like Claude (.claude/skills) and Cursor (.cursor/skills) do,
@@ -2640,6 +2665,40 @@ class ZcodeAdapter implements EngineAdapter {
       PERSONA_HEADER(persona, { personaFile: 'AGENTS.md', skillsDir: 'skills/' }),
       'utf8',
     )
+    await this.writeModelConfig(home, persona, env)
+  }
+
+  /** Pin the per-agent model (UI `model` / `fastModel`) via zcode's PROJECT
+   *  config at `<home>/.zcode/config.json` — verified to override the
+   *  operator's user-level pin (docs/byoa-zcode-notes.md). The provider table
+   *  does NOT merge across config layers, so the referenced provider entry is
+   *  copied verbatim from the operator's `~/.zcode/cli/config.json` (with its
+   *  apiKey). No model set → remove any stale override so the machine-level
+   *  pin (and clearing the field in the UI) behaves as expected. */
+  private async writeModelConfig(home: string, persona: EnginePersona, env: NodeJS.ProcessEnv): Promise<void> {
+    const projPath = join(home, '.zcode', 'config.json')
+    const model = persona.model?.trim() || null
+    const providerId = model?.includes('/') ? model.split('/')[0] : null
+    if (!model || !providerId) {
+      if (model && !providerId) {
+        console.warn(`[zcode] agent model "${model}" is not in provider/model form (e.g. kimi/k3) — leaving the machine-level pin in place`)
+      }
+      await rm(projPath, { force: true })
+      return
+    }
+    const entry = (readZcodeUserConfig(env)?.provider ?? {})[providerId] as Record<string, unknown> | undefined
+    if (!entry || typeof entry !== 'object') {
+      console.warn(`[zcode] provider "${providerId}" not found in ~/.zcode/cli/config.json — add it there first (or run the CLI login), leaving the machine-level pin in place`)
+      await rm(projPath, { force: true })
+      return
+    }
+    const fastModel = persona.fastModel?.trim()
+    const proj = {
+      model: { main: model, ...(fastModel ? { lite: fastModel } : {}) },
+      provider: { [providerId]: entry },
+    }
+    await mkdir(join(home, '.zcode'), { recursive: true })
+    await writeFile(projPath, JSON.stringify(proj, null, 2), 'utf8')
   }
 
   // No startSession: `zcode app-server` exists but driving a persistent

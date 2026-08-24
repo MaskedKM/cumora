@@ -1170,7 +1170,14 @@ class AgentRunner {
   }
 
   async start(): Promise<void> {
-    await this.adapter.seedHome(this.home, { id: this.agent.id, name: this.agent.name, role: this.agent.role, systemPrompt: this.agent.systemPrompt })
+    // model/fastModel ride the persona: engines with a --model flag consume
+    // them per-turn instead, but seedHome is the one hook every engine gets,
+    // and zcode pins them into a project-level config here.
+    await this.adapter.seedHome(
+      this.home,
+      { id: this.agent.id, name: this.agent.name, role: this.agent.role, systemPrompt: this.agent.systemPrompt, model: this.engineModel(), fastModel: this.engineFastModel() },
+      this.engineEnv(),
+    )
     await writeShim(this.binDir)
     await this.loadSessionId()
     void this.streamLoop()
