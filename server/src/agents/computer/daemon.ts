@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, writeFile, readFile, chmod, rm, stat, copyFile, truncate } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
-import { join, dirname } from 'node:path'
+import { delimiter, join, dirname } from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -785,11 +785,26 @@ export const CUMORA_SHIM = `#!/usr/bin/env node
 })().catch((e) => { console.error('cumora:', (e && e.message) || e); process.exit(70) })
 `
 
-async function writeShim(binDir: string): Promise<void> {
+/** PowerShell only resolves files on PATH through PATHEXT, so the extensionless
+ *  POSIX shim needs a .cmd launcher on Windows. Keep the Node program itself in
+ *  one file so both launchers exercise the exact same argument/HTTP path. */
+export const CUMORA_WINDOWS_SHIM = '@echo off\r\nnode "%~dp0cumora" %*\r\n'
+
+export function prependAgentBinToPath(binDir: string, currentPath = process.env.PATH ?? ''): string {
+  return currentPath ? `${binDir}${delimiter}${currentPath}` : binDir
+}
+
+export async function writeShim(
+  binDir: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
   await mkdir(binDir, { recursive: true })
   const shim = join(binDir, 'cumora')
   await writeFile(shim, CUMORA_SHIM, 'utf8')
   await chmod(shim, 0o755)
+  if (platform === 'win32') {
+    await writeFile(join(binDir, 'cumora.cmd'), CUMORA_WINDOWS_SHIM, 'utf8')
+  }
 }
 
 // ─── pairing ────────────────────────────────────────────────────────────
@@ -1252,7 +1267,7 @@ class AgentRunner {
   private engineEnv(): NodeJS.ProcessEnv {
     return {
       ...process.env,
-      PATH: `${this.binDir}:${process.env.PATH ?? ''}`,
+      PATH: prependAgentBinToPath(this.binDir),
       CUMORA_AGENT_RUNTIME_URL: `${this.cfg.serverUrl}/runtime`,
       CUMORA_AGENT_RUNTIME_TOKEN: this.token,
       // A long-lived engine reads the FRESH token from this file (the env token

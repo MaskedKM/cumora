@@ -6,12 +6,14 @@
 import assert from 'node:assert/strict'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { afterEach, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { getAdapter, resolveSpawn, type EngineHopReport, type EngineRunResult } from '../agents/computer/engine.js'
 
 const IS_WIN = process.platform === 'win32'
+const ORIGINAL_PATH = process.env.PATH
+const ORIGINAL_PATHEXT = process.env.PATHEXT
 const tempDirs: string[] = []
 // Sessions spawn a child process. Track them so a FAILING assertion still tears
 // the child down — otherwise it outlives the test and the runner never exits.
@@ -19,6 +21,10 @@ const liveSessions: Array<{ stop(): void }> = []
 
 afterEach(async () => {
   for (const s of liveSessions.splice(0)) { try { s.stop() } catch { /* already gone */ } }
+  if (ORIGINAL_PATH === undefined) delete process.env.PATH
+  else process.env.PATH = ORIGINAL_PATH
+  if (ORIGINAL_PATHEXT === undefined) delete process.env.PATHEXT
+  else process.env.PATHEXT = ORIGINAL_PATHEXT
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
@@ -158,6 +164,93 @@ test('grok adapter seeds AGENTS.md and reports sessionId from stream-json', asyn
     assert.equal(r.shell, true, '.cmd must run via the shell')
     assert.equal(r.wantsStdinPrompt, true, '.cmd needs the big prompt via stdin')
   })
+
+test('resolveSpawn runs a native Windows executable without cmd.exe', { skip: !IS_WIN }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cumora-resolve-exe-'))
+  tempDirs.push(root)
+  const binDir = join(root, 'bin')
+  await mkdir(binDir)
+  await writeFile(join(binDir, 'codex.exe'), '', 'utf8')
+  process.env.PATH = `${binDir};${ORIGINAL_PATH ?? ''}`
+  process.env.PATHEXT = '.EXE;.CMD;.BAT;.COM'
+
+  const r = resolveSpawn('codex')
+
+  assert.equal(r.command.toLowerCase().endsWith('codex.exe'), true)
+  assert.equal(r.shell, false, 'native executables must bypass cmd.exe argument parsing')
+  assert.equal(r.wantsStdinPrompt, false)
+})
+
+test('Codex one-shot paths send prompts through stdin', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cumora-codex-stdin-'))
+  tempDirs.push(root)
+  const binDir = join(root, 'bin')
+  const home = join(root, 'home')
+  await mkdir(binDir)
+  await mkdir(home)
+
+  const capture = join(binDir, 'capture.js')
+  await writeFile(
+    capture,
+    "let stdin = ''\n" +
+    "process.stdin.setEncoding('utf8')\n" +
+    "process.stdin.on('data', (chunk) => { stdin += chunk })\n" +
+    "process.stdin.on('end', () => process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), stdin })))\n",
+    'utf8',
+  )
+  if (IS_WIN) {
+    await writeFile(join(binDir, 'codex.cmd'), '@echo off\r\nnode "%~dp0capture.js" %*\r\n', 'utf8')
+  } else {
+    const launcher = join(binDir, 'codex')
+    await writeFile(launcher, '#!/bin/sh\nexec node "$(dirname "$0")/capture.js" "$@"\n', 'utf8')
+    await chmod(launcher, 0o755)
+  }
+  process.env.PATH = `${binDir}${delimiter}${ORIGINAL_PATH ?? ''}`
+
+  const adapter = getAdapter('codex')
+  const longPrompt = `line one with spaces & shell characters\n${'x'.repeat(12_000)}`
+  const logs: string[] = []
+  const run = await adapter.run({
+    home,
+    prompt: longPrompt,
+    env: { ...process.env },
+    model: 'test-model',
+    fastModel: null,
+    onLog: (line) => logs.push(line),
+    signal: new AbortController().signal,
+  })
+  assert.equal(run.exitCode, 0)
+  const runCapture = JSON.parse(logs.at(-1) ?? '{}') as { argv?: string[]; stdin?: string }
+  assert.deepEqual(runCapture.argv, [
+    'exec', '--model', 'test-model',
+    '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '-',
+  ])
+  assert.equal(runCapture.stdin, longPrompt)
+
+  const triagePrompt = 'triage prompt with spaces\nand a second line'
+  const triage = await adapter.classify({
+    cwd: home,
+    prompt: triagePrompt,
+    env: { ...process.env },
+    model: 'triage-model',
+    signal: new AbortController().signal,
+  })
+  const triageCapture = JSON.parse(triage.text) as { argv?: string[]; stdin?: string }
+  assert.deepEqual(triageCapture.argv, [
+    'exec', '--model', 'triage-model', '--skip-git-repo-check', '-',
+  ])
+  assert.equal(triageCapture.stdin, triagePrompt)
+
+  const probe = await adapter.probe({
+    tier: 'big',
+    cwd: home,
+    env: { ...process.env },
+    signal: new AbortController().signal,
+  })
+  const probeCapture = JSON.parse(probe.text) as { argv?: string[]; stdin?: string }
+  assert.deepEqual(probeCapture.argv, ['exec', '--skip-git-repo-check', '-'])
+  assert.equal(probeCapture.stdin, 'Connectivity check. Reply with exactly: OK')
+})
 
 // ── Codex app-server handshake failures must kill the SESSION ────────────────
 // The handshake is one-shot: threadReq is consumed at the initialize ack, and

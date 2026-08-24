@@ -69,7 +69,7 @@ export function resolveSpawn(bin: string): { command: string; shell: boolean; wa
       const candidate = join(dir, bin + ext)
       if (existsSync(candidate)) {
         const isBatch = /\.(cmd|bat)$/i.test(candidate)
-        return { command: candidate, shell: true, wantsStdinPrompt: isBatch }
+        return { command: candidate, shell: isBatch, wantsStdinPrompt: isBatch }
       }
     }
   }
@@ -1330,10 +1330,11 @@ class CodexAdapter implements EngineAdapter {
     const model = ['--model', args.model || 'gpt-5.4-mini']
     const { command, shell } = resolveSpawn(this.bin)
     const argv = flags.length
-      ? ['exec', ...flags, args.prompt]
-      : ['exec', ...model, '--skip-git-repo-check', args.prompt]
+      ? ['exec', ...flags, '-']
+      : ['exec', ...model, '--skip-git-repo-check', '-']
     return spawnCapture(command, argv, {
       cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog, shell,
+      stdinText: args.prompt,
     })
   }
 
@@ -1343,9 +1344,9 @@ class CodexAdapter implements EngineAdapter {
     // for a tool-free one-token reply.
     const model = args.tier === 'small' ? ['--model', triageModel('gpt-5.4-mini')] : []
     const { command, shell } = resolveSpawn(this.bin)
-    const argv = ['exec', ...model, '--skip-git-repo-check', DOCTOR_PROMPT]
+    const argv = ['exec', ...model, '--skip-git-repo-check', '-']
     return spawnCapture(command, argv, {
-      cwd: args.cwd, env: args.env, signal: args.signal, shell,
+      cwd: args.cwd, env: args.env, signal: args.signal, shell, stdinText: DOCTOR_PROMPT,
     })
   }
 
@@ -1464,7 +1465,7 @@ class CodexAdapter implements EngineAdapter {
       : ['--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check']
     const model = args.model ? ['--model', args.model] : []
     const { command, shell } = resolveSpawn(this.bin)
-    return spawnEngine(command, ['exec', ...model, ...base, args.prompt], args, { shell })
+    return spawnEngine(command, ['exec', ...model, ...base, '-'], args, { shell, stdinText: args.prompt })
   }
 
   startSession(args: EngineSessionArgs): EngineSession | null {
