@@ -8,6 +8,7 @@ import { useAuth } from '@/stores/auth'
 import { Avatar } from '@/components/Avatar'
 import { Checkbox } from '@/components/Checkbox'
 import { LanguagePicker } from '@/components/LanguagePicker'
+import { CliMethodPicker, useCliLaunch } from '@/components/CliMethodPicker'
 import { useT, type MessageKey } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { isWindows } from '@/lib/runtime'
@@ -783,8 +784,11 @@ function ComputersTab() {
 
   const origin = getPairingServerOrigin()
   const serverFlag = origin ? ` --server ${origin}` : ''
+  // Launch method for the pairing + repair commands: published npm package vs
+  // a local repo build. Persisted — see CliMethodPicker.
+  const { method, setMethod, localPath, setLocalPath, cli } = useCliLaunch()
   const engineFlag = engine === 'claude' ? '' : ` --engine ${engine}`
-  const pairCommand = code ? `npx cumora@latest agent computer --pair ${code}${serverFlag}${engineFlag}${asService ? ' --install-service' : ''}` : ''
+  const pairCommand = code ? `${cli} agent computer --pair ${code}${serverFlag}${engineFlag}${asService ? ' --install-service' : ''}` : ''
   const list = Object.values(byId).sort((a, b) =>
     (a.kind === 'cloud' ? 0 : 1) - (b.kind === 'cloud' ? 0 : 1) || a.name.localeCompare(b.name))
 
@@ -829,7 +833,7 @@ function ComputersTab() {
             const n = agentCount(c.id, c.kind === 'cloud')
             const repairable = c.kind !== 'cloud'
             const expanded = repairFor === c.id
-            const repairCmd = repairCode ? `npx cumora@latest agent computer --pair ${repairCode}${serverFlag}` : ''
+            const repairCmd = repairCode ? `${cli} agent computer --pair ${repairCode}${serverFlag}` : ''
             return (
               <div key={c.id} className="bg-cloud rounded-[14px]" style={{ border: '1px solid var(--ink-100)' }}>
                 <div
@@ -900,6 +904,7 @@ function ComputersTab() {
             </div>
             {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static copy from the locale bundle, not user input */}
             <div className="text-[11.5px] text-ink-500 mb-2.5 italic font-display" dangerouslySetInnerHTML={{ __html: t('me.engineRequired') }} />
+            <CliMethodPicker method={method} onMethod={setMethod} localPath={localPath} onLocalPath={setLocalPath} />
             <div className="flex items-center gap-2.5 mb-2.5">
               <span className="text-[12px] text-ink-500">{t('me.engineLabel')}</span>
               <div className="inline-flex rounded-[9px] p-0.5" style={{ background: 'var(--ink-100)' }}>

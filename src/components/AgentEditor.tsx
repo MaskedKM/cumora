@@ -8,6 +8,7 @@ import { useAuth } from '@/stores/auth'
 import { Input } from '@/components/Input'
 import { TextArea } from '@/components/TextArea'
 import { Select } from '@/components/Select'
+import { CliMethodPicker, useCliLaunch } from '@/components/CliMethodPicker'
 import type { Participant, EngineId } from '@/types'
 import { useT } from '@/lib/i18n'
 
@@ -59,8 +60,11 @@ export function AgentEditor({ agent, onClose }: Props) {
   const isByoa = !!selectedComputer && selectedComputer.kind !== 'cloud'
   const selectedComputerOffline = isByoa && selectedComputer.status !== 'online'
   const origin = getPairingServerOrigin()
+  // Launch method for the re-pair command — shared with the other pairing
+  // surfaces via localStorage (see CliMethodPicker).
+  const { method, setMethod, localPath, setLocalPath, cli } = useCliLaunch()
   const repairCommand = repairCode
-    ? `npx cumora@latest agent computer --pair ${repairCode}${origin ? ` --server ${origin}` : ''}`
+    ? `${cli} agent computer --pair ${repairCode}${origin ? ` --server ${origin}` : ''}`
     : ''
 
   useEffect(() => { void useComputers.getState().refresh() }, [])
@@ -329,6 +333,7 @@ export function AgentEditor({ agent, onClose }: Props) {
                   <div className="text-[11.5px] text-coral-deep bg-coral-soft rounded-[8px] p-2">{repairErr}</div>
                 ) : repairCommand ? (
                   <>
+                    <CliMethodPicker method={method} onMethod={setMethod} localPath={localPath} onLocalPath={setLocalPath} />
                     <pre className="bg-ink-900 text-cloud rounded-[9px] p-2.5 text-[11.5px] overflow-x-auto whitespace-pre-wrap break-all font-mono select-all">
                       {repairCommand}
                     </pre>

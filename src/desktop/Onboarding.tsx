@@ -3,6 +3,7 @@ import { api, getPairingServerOrigin } from '@/api/client'
 import { useComputers } from '@/stores/computers'
 import { isWindows } from '@/lib/runtime'
 import { TitleBar } from '@/desktop/TitleBar'
+import { CliMethodPicker, useCliLaunch } from '@/components/CliMethodPicker'
 import { useT } from '@/lib/i18n'
 
 /**
@@ -38,12 +39,15 @@ export function Onboarding() {
   }, [copied])
 
   const origin = getPairingServerOrigin()
+  // Launch method for the pairing command: published npm package vs a local
+  // repo build. Persisted — see CliMethodPicker.
+  const { method, setMethod, localPath, setLocalPath, cli } = useCliLaunch()
   // Every non-default engine, not just Codex: without the flag the daemon
   // auto-detects and the server takes engines[0] as this computer's DEFAULT, so
   // picking Grok on a machine that also has Claude silently paired it to Claude.
   const engineFlag = engine === 'claude' ? '' : ` --engine ${engine}`
   const serviceFlag = asService ? ' --install-service' : ''
-  const cmd = code ? `npx cumora@latest agent computer --pair ${code}${origin ? ` --server ${origin}` : ''}${engineFlag}${serviceFlag}` : ''
+  const cmd = code ? `${cli} agent computer --pair ${code}${origin ? ` --server ${origin}` : ''}${engineFlag}${serviceFlag}` : ''
 
   async function getCode() {
     setErr(null); setBusy(true)
@@ -87,6 +91,7 @@ export function Onboarding() {
                 <div className="text-[11.5px] text-ink-500 mb-2.5 italic font-display">
                   {t('onboard.tokenHint')}
                 </div>
+                <CliMethodPicker method={method} onMethod={setMethod} localPath={localPath} onLocalPath={setLocalPath} />
                 <div className="flex items-center gap-2.5 mb-2.5">
                   <span className="text-[12px] text-ink-500">{t('onboard.engine')}</span>
                   <div className="inline-flex rounded-[9px] p-0.5" style={{ background: 'var(--ink-100)' }}>
