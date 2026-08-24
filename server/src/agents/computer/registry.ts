@@ -45,7 +45,7 @@ export async function announceComputerOnline(computerId: string, companyId: stri
 }
 
 /** Engines a paired (non-cloud) computer is allowed to advertise. */
-const PAIRABLE_ENGINES: ReadonlySet<string> = new Set(['claude', 'codex', 'grok', 'cursor'])
+const PAIRABLE_ENGINES: ReadonlySet<string> = new Set(['claude', 'codex', 'grok', 'cursor', 'zcode'])
 
 export interface ComputerRow {
   id: string

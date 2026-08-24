@@ -622,6 +622,9 @@ function authFailureHint(engine: EngineId, detail: string): string {
   if (engine === 'cursor') {
     return 'Open a terminal on that computer and run `cursor-agent login` (or fix its quota / API key), then wake the agent again.'
   }
+  if (engine === 'zcode') {
+    return 'On that computer, finish the zcode CLI login (`node <zcode.cjs> login`, which writes ~/.zcode/cli/config.json) or fix its plan quota, then wake the agent again. See docs/byoa-zcode-notes.md.'
+  }
   return 'Open Codex on that computer and refresh its login or quota, then wake the agent again.'
 }
 
@@ -634,6 +637,7 @@ function missingEngineMessage(): string {
     '  - Codex: install the `codex` CLI, then run `codex` once to sign in',
     '  - Grok Build: install the `grok` CLI, then run `grok login` once',
     '  - Cursor Agent: install Cursor (the `cursor-agent` CLI ships with it), then run `cursor-agent login`',
+    '  - ZCode: install the ZCode desktop app, then run `node <app>/resources/glm/zcode.cjs login` once (or set CUMORA_ZCODE_BIN)',
     '',
     'After that, rerun:',
     '  npx cumora@latest agent computer --pair <code>',
