@@ -1,4 +1,4 @@
-# BYOA — Bring Your Own Agent (local Claude Code / Codex / Grok Build / Cursor Agent as the engine)
+# BYOA — Bring Your Own Agent (local Claude Code / Codex / Grok Build / Cursor Agent / ZCode as the engine)
 
 Every Cumora agent has a "brain" and a host. The managed path is
 server-side: `runAgentTurn` in `server/src/agents/turn.ts` runs a
@@ -7,7 +7,8 @@ a per-agent Kubernetes pod (the `agent-computer` image).
 
 **BYOA** lets a user supply the brain instead: a long-running daemon on
 the user's own machine (laptop **or** VPS) drives a local **Claude Code**,
-**Codex CLI**, **Grok Build** (`grok`), or **Cursor Agent** (`cursor-agent`) as the reasoning engine, on the
+**Codex CLI**, **Grok Build** (`grok`), **Cursor Agent** (`cursor-agent`), or
+**ZCode** (the desktop app's bundled `zcode.cjs` runtime) as the reasoning engine, on the
 user's own subscription — the server never holds the user's provider credentials.
 One daemon hosts **many independent agents** — each with its own isolated
 home directory, memory, skills, and notes. In Cumora these still appear
@@ -38,7 +39,7 @@ managed cloud agents and local agents into the same picture.
   user to set up; it's always online.
 - **Your computers** — machines you pair (your Mac, a VPS). Each runs the
   `cumora agent computer` daemon with a local engine (Claude Code /
-  Codex / Grok Build / Cursor Agent). Agents you place here are BYOA agents.
+  Codex / Grok Build / Cursor Agent / ZCode). Agents you place here are BYOA agents.
 
 ```
 Computers
@@ -112,6 +113,7 @@ with rate-limit adaptation, and same-turn steering.
               │        → persistent EngineSession turn                  │
               │   claude --input/output-format stream-json …            │
               │   codex app-server / grok ACP / cursor-agent one-shot   │
+              │   zcode.cjs -p --json (one-shot, envelope)              │
               │   bash → cumora shim → POST /runtime/cli (per-agent JWT)│
               └─────────────────────────────────────────────────────────┘
 ```
@@ -152,8 +154,9 @@ different token".
    `GLANCE_YIELD_RULES`, memory rules, privacy boundary) is delivered
    once per persistent session out-of-band — `--append-system-prompt-file`
    for Claude, `developerInstructions` for Codex, `_meta.rules` for Grok
-   ACP. Cursor has no persistent protocol in the tested CLI version, so the
-   daemon inlines the standing prompt into each one-shot wake.
+   ACP. Cursor and zcode have no persistent protocol consumer in their
+   tested CLI versions, so the daemon inlines the standing prompt into
+   each one-shot wake.
 6. The engine reads its home (`CLAUDE.md` / `AGENTS.md`, skills,
    `memory/`), reasons, and acts through bash: every `cumora …` call
    flows through the shim to `/runtime/cli` with identity pinned by the
@@ -162,8 +165,9 @@ different token".
    mid-turn is injected into the live session at the next safe stream
    boundary; plain group activity gets a content-free nudge (default
    on). See COORDINATION.md 3c. Grok Build's ACP `session/prompt` is
-   one-in-flight, and Cursor has no persistent stdio session, so mid-turn
-   inject is a no-op for those engines and the ping coalesces onto the next wake.
+   one-in-flight, and Cursor and zcode have no persistent stdio session, so
+   mid-turn inject is a no-op for those engines and the ping coalesces onto
+   the next wake.
 8. Turn ends → run finished, status back. Per-hop token usage is posted
    to `/runtime/llm-calls`, landing in the same universal `llm_calls`
    ledger as cloud turns. Engine failures surface as a
@@ -180,12 +184,12 @@ from their own agenda — Kanban cards and due calendar slots — via
 ## Engine integration
 
 `server/src/agents/computer/engine.ts` defines one `EngineAdapter` per
-engine (`claude`, `codex`, `grok`, `cursor`). Persistent per-agent sessions
-are preferred when the CLI exposes one; Cursor uses one-shot `run()` for every wake.
+engine (`claude`, `codex`, `grok`, `cursor`, `zcode`). Persistent per-agent sessions
+are preferred when the CLI exposes one; Cursor and zcode use one-shot `run()` for every wake.
 
 ```ts
 interface EngineAdapter {
-  id: 'claude' | 'codex' | 'grok' | 'cursor'
+  id: 'claude' | 'codex' | 'grok' | 'cursor' | 'zcode'
   seedHome(home, persona)          // lay out CLAUDE.md/AGENTS.md, skills, dirs
   startSession?(args): EngineSession | null   // persistent session (primary)
   run(args): Promise<…>            // one-shot fallback
@@ -200,14 +204,15 @@ interface EngineSession {
 }
 ```
 
-| Concern | Claude Code | Codex CLI | Grok Build | Cursor Agent |
-| --- | --- | --- | --- | --- |
-| Persistent session | `claude -p --input-format stream-json --output-format stream-json --verbose [--resume <id>] [--model X]` | `codex app-server --listen stdio://`, driven over JSON-RPC (`thread/start` / `thread/resume`) | `grok agent --always-approve --no-leader … stdio`, driven over ACP | none in Cursor Agent `2026.08.11-e8db854` |
-| Standing prompt | `--append-system-prompt-file <home>/.cumora-standing-prompt.md` | `developerInstructions` on `thread/start` | ACP `_meta.rules` | inlined into each wake |
-| One-shot fallback | `claude -p … --output-format stream-json` | `codex exec … --skip-git-repo-check` | `grok -p … --output-format streaming-messages-json` | `cursor-agent -p --output-format stream-json --force --trust [--resume <id>]` |
-| Fallback triggers | `CUMORA_CLAUDE_ARGS` set | `CUMORA_CODEX_ARGS` set, `CUMORA_CODEX_NO_APP_SERVER=1`, Windows, or git-init failure | `CUMORA_GROK_ARGS` set, `CUMORA_GROK_NO_ACP=1`, or Windows | always one-shot; `CUMORA_CURSOR_ARGS` overrides flags |
-| Memory / persona file | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` |
-| Triage (small brain) | `claude -p --model haiku --output-format json` | `codex exec --model gpt-5.4-mini` | `grok -p --model grok-4.5 --output-format json` | `cursor-agent --mode ask -p --output-format stream-json --trust` |
+| Concern | Claude Code | Codex CLI | Grok Build | Cursor Agent | ZCode |
+| --- | --- | --- | --- | --- | --- |
+| Persistent session | `claude -p --input-format stream-json --output-format stream-json --verbose [--resume <id>] [--model X]` | `codex app-server --listen stdio://`, driven over JSON-RPC (`thread/start` / `thread/resume`) | `grok agent --always-approve --no-leader … stdio`, driven over ACP | none in Cursor Agent `2026.08.11-e8db854` | none consumed yet (`app-server` exists; future work) |
+| Standing prompt | `--append-system-prompt-file <home>/.cumora-standing-prompt.md` | `developerInstructions` on `thread/start` | ACP `_meta.rules` | inlined into each wake | inlined into each wake |
+| One-shot fallback | `claude -p … --output-format stream-json` | `codex exec … --skip-git-repo-check` | `grok -p … --output-format streaming-messages-json` | `cursor-agent -p --output-format stream-json --force --trust [--resume <id>]` | `zcode.cjs --cwd <home> --mode yolo --json [--resume <id>] -p <prompt>` (one JSON envelope per turn: response + sessionId + usage) |
+| Fallback triggers | `CUMORA_CLAUDE_ARGS` set | `CUMORA_CODEX_ARGS` set, `CUMORA_CODEX_NO_APP_SERVER=1`, Windows, or git-init failure | `CUMORA_GROK_ARGS` set, `CUMORA_GROK_NO_ACP=1`, or Windows | always one-shot; `CUMORA_CURSOR_ARGS` overrides flags | always one-shot; `CUMORA_ZCODE_ARGS` overrides flags |
+| Memory / persona file | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` (zcode reads AGENTS.md **and** CLAUDE.md) |
+| Triage (small brain) | `claude -p --model haiku --output-format json` | `codex exec --model gpt-5.4-mini` | `grok -p --model grok-4.5 --output-format json` | `cursor-agent --mode ask -p --output-format stream-json --trust` | `zcode.cjs --mode plan --disallowed-tools "Bash Edit Write" --json -p` (no small-model flag — runs the default, honestly reported) |
+| Entry resolution | PATH `claude` | PATH `codex` | PATH `grok` + `~/.grok/bin` fallback | PATH `cursor-agent` | `CUMORA_ZCODE_BIN` → PATH `zcode-cli` → desktop AppImage auto-discovery (Linux); PATH `zcode` is the GUI and is never used |
 
 Sessions carry a resume id (`~/.cumora/sessions/<agentId>.session`); a
 failed resume falls back to a fresh thread instead of wedging the agent.
@@ -216,6 +221,12 @@ the agent's isolated home. On Windows the daemon resolves the real
 `claude`/`codex`/`grok`/`cursor-agent` `.cmd` shims and routes large prompts via stdin.
 Model selection: the per-agent `participants.model` / `fast_model`
 columns, else the matching deploy-level `CUMORA_DEFAULT_*_MODEL` pin.
+**zcode is the exception:** its CLI takes no `--model` flag and
+`ZCODE_HOME` does not isolate the config (POC-verified), so the model is
+whatever the operator pinned in `~/.zcode/cli/config.json` (`model.main`)
+— the ledger attributes turns to that id, honestly. zcode specifics
+(headless entry, login bootstrap, envelope contract, drift handling) are
+recorded in [`byoa-zcode-notes.md`](byoa-zcode-notes.md).
 
 ### Running against a custom provider
 
@@ -252,10 +263,11 @@ CUMORA_ENGINE_MODEL=local CUMORA_TRIAGE_MODEL=local-small cumora agent computer
   sessions/<agentId>.session       ← engine resume id
   triage/                          ← neutral cwd for small-brain spawns
   agents/<agentId>/                ← cwd for every engine turn; isolated
-    CLAUDE.md  (or AGENTS.md)      ← static persona header, written once
+    CLAUDE.md  (or AGENTS.md)      ← static persona header, rewritten on persona edits
     .cumora-standing-prompt.md     ← the per-session operational prompt
     .claude/skills/<name>/SKILL.md ← this agent's skills (Claude)
     .cursor/skills/                 ← Cursor-native skill directory
+    skills/                         ← engine-neutral skills dir (zcode)
     .claude/settings.json          ← permissions (allow Bash)
     bin/cumora                     ← the shim (see below); bin/.runtime-token
     memory/MEMORY.md               ← the agent's durable memory index
@@ -285,8 +297,10 @@ credentials are keyed to that dir — so the daemon sets `cwd` to the
 agent's home and does **not** relocate config. Per-agent: project memory,
 skills, settings, notes, workspace. Shared across an owner's agents on
 one machine: the engine login and the user's global config (`~/.claude` /
-`~/.codex` / `~/.grok`, or Cursor's login store). Agents are independent in
-all project state and share one engine login per host.
+`~/.codex` / `~/.grok`, Cursor's login store, or zcode's
+`~/.zcode/cli/config.json` + `~/.zcode/cli/rollout/` sessions — the
+latter keyed by cwd, so per-agent isolation still holds). Agents are
+independent in all project state and share one engine login per host.
 
 ---
 
