@@ -2,26 +2,27 @@
  * EngineAdapter — the pluggable "brain" for a BYOA agent.
  *
  * A BYOA agent's reasoning loop is delegated to a local CLI engine running
- * on the user's machine: Claude Code, Codex, Grok Build, or Cursor Agent. The daemon (daemon.ts) hands
- * each wake to an adapter, which spawns the engine headlessly in the agent's
- * isolated home directory. The engine reads its persona + memory + skills
- * from that home natively (CLAUDE.md / AGENTS.md, .claude/skills, …) and acts
- * on Cumora through the `cumora` shim the daemon puts on its PATH.
+ *  on the user's machine: Claude Code, Codex, Grok Build, Cursor Agent, or
+ *  ZCode. The daemon (daemon.ts) hands
+ *  each wake to an adapter, which spawns the engine headlessly in the agent's
+ *  isolated home directory. The engine reads its persona + memory + skills
+ *  from that home natively (CLAUDE.md / AGENTS.md, .claude/skills, …) and acts
+ *  on Cumora through the `cumora` shim the daemon puts on its PATH.
  *
  * This module is intentionally standalone — only Node builtins — so the
  * daemon can run on a machine with no Cumora DB/Redis access.
  *
  * NOTE on engine flags: the exact non-interactive / permission flags differ
- * across engine versions. We pick sensible defaults for an isolated,
- * user-owned runner and let the user override via env
- * (CUMORA_CLAUDE_ARGS / CUMORA_CODEX_ARGS / CUMORA_GROK_ARGS /
- *  CUMORA_CURSOR_ARGS, space-split). Correctness of the
+ *  across engine versions. We pick sensible defaults for an isolated,
+ *  user-owned runner and let the user override via env
+ *  (CUMORA_CLAUDE_ARGS / CUMORA_CODEX_ARGS / CUMORA_GROK_ARGS /
+ *  CUMORA_CURSOR_ARGS / CUMORA_ZCODE_ARGS, space-split). Correctness of the
  * loop does not depend on the structured output — the agent acts via the
  * `cumora` tool regardless of how we parse stdout.
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile, access, mkdtemp } from 'node:fs/promises'
-import { existsSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, delimiter as PATH_DELIMITER } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
@@ -86,10 +87,10 @@ export function resolveSpawn(bin: string): { command: string; shell: boolean; wa
   return { command: bin, shell: true, wantsStdinPrompt: true }
 }
 
-export type EngineId = 'claude' | 'codex' | 'grok' | 'cursor'
+export type EngineId = 'claude' | 'codex' | 'grok' | 'cursor' | 'zcode'
 
 /** The pairable engine ids, in the daemon's default detection order. */
-export const ENGINE_IDS: EngineId[] = ['claude', 'codex', 'grok', 'cursor']
+export const ENGINE_IDS: EngineId[] = ['claude', 'codex', 'grok', 'cursor', 'zcode']
 
 export interface EnginePersona {
   id: string
@@ -2262,11 +2263,364 @@ class CursorAdapter implements EngineAdapter {
   // the session id it reports (see the section note).
 }
 
+// ─── zcode ───────────────────────────────────────────────────────────────
+//
+// ZCode (Z.AI's agent CLI) has no standalone CLI distribution yet: the
+// headless entry is the Node script `resources/glm/zcode.cjs` bundled inside
+// the ZCode desktop install. On Linux that install is an AppImage whose mount
+// path drifts per version, so `resolveZcodeLauncher` resolves, in order:
+//
+//   1. CUMORA_ZCODE_BIN — operator points at a zcode.cjs (run with the same
+//      node that runs the daemon) or an executable wrapper (run directly).
+//   2. `zcode-cli` on PATH — reserved for a future CLI-only distribution.
+//   3. The desktop AppImage (Linux): parse the Exec= line of
+//      ~/.local/share/applications/zcode.desktop, one-shot
+//      `--appimage-extract resources/glm/zcode.cjs` into a cache dir keyed by
+//      the AppImage's size+mtime (an upgrade invalidates the key and
+//      re-extracts), and run the extracted script with the daemon's node.
+//
+// A bare `zcode` on PATH is deliberately NOT used — that is the Electron
+// GUI; spawning it headlessly opens a window (and trips the chrome-sandbox
+// SUID check on some Linux boxes). Contract details were verified against
+// CLI runtime 0.16.3 — see docs/byoa-zcode-notes.md.
+//
+// Wake shape (one-shot, like Cursor; there is no persistent stdio protocol
+// consumer yet — `zcode app-server` is a future path):
+//
+//   node zcode.cjs --cwd <home> --mode yolo --no-color --json \
+//     [--resume <sessionId>] -p <prompt>
+//
+// `--json` makes the process print ONE envelope on stdout at turn end:
+//   { sessionId, response, usage: { inputTokens, outputTokens,
+//     cacheReadTokens, cacheWriteTokens, reasoningTokens }, projection }
+// `response` is the turn text, `sessionId` is stable across `--resume`s (it
+// feeds the daemon's existing resumeSessionId pipeline), and usage maps
+// 1:1 onto EngineUsage — so unlike Cursor there is no stream to fold, and
+// unlike pre-0.16 plans no "unmeasured" degradation. A stale --resume exits
+// 1 with "Session not found" → run() self-heals by retrying once without
+// --resume (the same move CodexSession makes on a failed thread/resume).
+//
+// Triage/probe use the READ-ONLY `--mode plan` plus a tool denylist: plan
+// mode alone blocked every write attempt in the POC; the denylist is defense
+// in depth. zcode has no small-model CLI flag (and ZCODE_HOME does not
+// isolate the config, so no per-agent model pin), so classify honestly runs
+// the default model and reports the id pinned in the operator's
+// `~/.zcode/cli/config.json` (`model.main`) — the Cursor-style honesty rule.
+
+/** The zcode `--json` envelope's usage block (camelCase, provider-sourced). */
+interface ZcodeUsage {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+}
+
+interface ZcodeEnvelope {
+  sessionId?: unknown
+  response?: unknown
+  usage?: ZcodeUsage
+}
+
+/** Normalize the envelope usage onto EngineUsage; reasoning folds into
+ *  output_tokens (EngineUsage has no reasoning field, and it is output-side
+ *  spend). Undefined when the engine reported nothing. */
+function zcodeUsageToEngineUsage(u: ZcodeEnvelope['usage']): EngineUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const input = num(u.inputTokens)
+  const cacheRead = num(u.cacheReadTokens)
+  // inputTokens includes the cached portion (verified in the POC: input 21295
+  // with cacheRead 17600) — report non-cached input like ClaudeSession does.
+  return {
+    input_tokens: Math.max(0, input - cacheRead),
+    output_tokens: num(u.outputTokens) + num(u.reasoningTokens),
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: num(u.cacheWriteTokens),
+  }
+}
+
+/** The model id the operator's CLI config pins for main turns, for honest
+ *  ledger attribution (the CLI itself reports no model in the envelope). */
+export function readZcodeMainModel(env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const home = env.HOME || homedir()
+    const cfg = JSON.parse(readFileSync(join(home, '.zcode', 'cli', 'config.json'), 'utf8')) as { model?: { main?: unknown } }
+    return typeof cfg.model?.main === 'string' && cfg.model.main ? cfg.model.main : null
+  } catch {
+    return null
+  }
+}
+
+/** Parse the `-p --json` stdout. The envelope is the whole output; anything
+ *  that isn't it (custom args, a future CLI change) falls back to raw text. */
+export function parseZcodeEnvelope(stdout: string): { envelope: ZcodeEnvelope | null; text: string } {
+  const text = stdout.replace(ANSI_RE, '').trim()
+  if (!text.startsWith('{')) return { envelope: null, text }
+  try {
+    const parsed = JSON.parse(text) as ZcodeEnvelope
+    if (parsed && typeof parsed === 'object' && ('response' in parsed || 'sessionId' in parsed)) {
+      return { envelope: parsed, text }
+    }
+  } catch { /* not the envelope — raw text */ }
+  return { envelope: null, text }
+}
+
+export interface ZcodeLauncher {
+  /** Executable to spawn. */
+  command: string
+  /** argv before the per-call flags (e.g. [path/to/zcode.cjs] when command is node). */
+  prefix: string[]
+  /** Where it came from — surfaced by doctor / pairing logs. */
+  source: string
+}
+
+function zcodeMissingMessage(): string {
+  return 'zcode headless entry not found. Install the ZCode desktop app (Linux AppImage) and log in once '
+    + '(`node <app>/resources/glm/zcode.cjs login`), or point CUMORA_ZCODE_BIN at a zcode.cjs / wrapper. '
+    + 'See docs/byoa-zcode-notes.md.'
+}
+
+/** Resolve how to launch the headless zcode CLI (see the section note for the
+ *  order and rationale). Synchronous: extraction (the only slow step) is a
+ *  one-time cache fill. Exported for tests and detectEngines. */
+export function resolveZcodeLauncher(env: NodeJS.ProcessEnv = process.env): ZcodeLauncher | null {
+  const override = env.CUMORA_ZCODE_BIN?.trim()
+  if (override) {
+    return override.endsWith('.cjs')
+      ? { command: process.execPath, prefix: [override], source: 'CUMORA_ZCODE_BIN' }
+      : { command: override, prefix: [], source: 'CUMORA_ZCODE_BIN' }
+  }
+  for (const dir of (env.PATH ?? '').split(PATH_DELIMITER)) {
+    if (!dir) continue
+    // POSIX-style `zcode-cli` only: there is no Windows distribution, and a
+    // hypothetical `.cmd` shim would need resolveSpawn's shell treatment.
+    const candidate = join(dir, 'zcode-cli')
+    if (!IS_WIN && existsSync(candidate)) return { command: candidate, prefix: [], source: 'PATH:zcode-cli' }
+  }
+  // Desktop AppImage (Linux). The .desktop file the installer writes is the
+  // stable pointer to the AppImage; the AppImage itself mounts at a drifting
+  // /tmp path, so extract the one file we need into a content-keyed cache.
+  if (process.platform === 'linux') {
+    try {
+      const home = env.HOME || homedir()
+      const desktop = readFileSync(join(home, '.local', 'share', 'applications', 'zcode.desktop'), 'utf8')
+      const execLine = desktop.split('\n').find((l) => l.startsWith('Exec='))
+      // First token of the Exec value; honors a quoted path (spaces) and
+      // drops trailing arguments/field codes (%U and friends).
+      const execValue = execLine?.slice('Exec='.length).trim() ?? ''
+      const quoted = execValue.match(/^"([^"]+)"/)
+      const appimage = (quoted?.[1] ?? execValue.split(/\s+/)[0]) || ''
+      if (appimage && existsSync(appimage) && !appimage.includes('.mount_')) {
+        const st = statSync(appimage)
+        const cacheRoot = env.XDG_CACHE_HOME || join(home, '.cache')
+        const cacheDir = join(cacheRoot, 'cumora', 'zcode', `${st.size}-${Math.floor(st.mtimeMs)}`)
+        const cjs = join(cacheDir, 'zcode.cjs')
+        if (!existsSync(cjs)) {
+          const tmp = mkdtempSync(join(tmpdir(), 'cumora-zcode-'))
+          try {
+            execFileSync(appimage, ['--appimage-extract', 'resources/glm/zcode.cjs'], { cwd: tmp, stdio: 'ignore' })
+            mkdirSync(cacheDir, { recursive: true })
+            // Fill via temp + rename so a crash mid-copy can't leave a partial
+            // file that existsSync would treat as a permanent cache hit.
+            const staging = `${cjs}.tmp-${process.pid}`
+            copyFileSync(join(tmp, 'squashfs-root', 'resources', 'glm', 'zcode.cjs'), staging)
+            renameSync(staging, cjs)
+          } finally {
+            rmSync(tmp, { recursive: true, force: true })
+          }
+        }
+        return { command: process.execPath, prefix: [cjs], source: `appimage:${appimage}` }
+      }
+    } catch { /* not installed / unreadable — fall through to "missing" */ }
+  }
+  return null
+}
+
+/** Run one `-p --json` call and fold the envelope into an EngineRunResult.
+ *  One hop report fires when the envelope carried usage — zcode reports
+ *  usage once per turn, so emitting more would double-count. */
+function spawnZcodeJson(
+  launcher: ZcodeLauncher,
+  argv: string[],
+  opts: {
+    cwd: string
+    env: NodeJS.ProcessEnv
+    signal: AbortSignal
+    onLog?: (line: string) => void
+    onHopUsage?: (r: EngineHopReport) => void
+  },
+): Promise<EngineRunResult & { text: string }> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now()
+    const child = spawn(launcher.command, [...launcher.prefix, ...argv], {
+      cwd: opts.cwd, env: opts.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    })
+    const onAbort = (): void => { child.kill('SIGTERM') }
+    opts.signal.addEventListener('abort', onAbort, { once: true })
+    if (opts.signal.aborted) onAbort()
+    // StringDecoder so a multibyte char split at a pipe boundary can't
+    // corrupt the envelope (same reason spawnEngine carries one).
+    const decoder = new StringDecoder('utf8')
+    let stdout = ''
+    let settled = false
+    const stderrTail: string[] = []
+    child.stdout?.on('data', (buf: Buffer) => { stdout += decoder.write(buf) })
+    child.stderr?.on('data', (buf: Buffer) => { for (const l of buf.toString('utf8').split('\n')) { const c = cleanLine(l); if (c) { pushTail(stderrTail, c); opts.onLog?.(c) } } })
+    const finish = (code: number | null, signalName: NodeJS.Signals | null): void => {
+      if (settled) return
+      settled = true
+      opts.signal.removeEventListener('abort', onAbort)
+      stdout += decoder.end()
+      const exitCode = code ?? (signalName ? 128 : 1)
+      const { envelope, text } = parseZcodeEnvelope(stdout)
+      if (!envelope) {
+        resolve({
+          exitCode,
+          error: exitCode === 0 ? undefined : failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [text] }),
+          text,
+        })
+        return
+      }
+      const usage = zcodeUsageToEngineUsage(envelope.usage)
+      // Honest attribution: the envelope names no model, so report the id the
+      // operator's config pins. When the config is unreadable we still owe the
+      // ledger a row — a greppable placeholder rather than dropping the hop.
+      const model = readZcodeMainModel(opts.env) ?? 'zcode-unknown-model'
+      if (exitCode === 0 && usage && opts.onHopUsage) {
+        try {
+          opts.onHopUsage({ model, usage, latencyMs: Date.now() - startedAt, hopIndex: 1 })
+        } catch { /* ledger best-effort, never break the stream */ }
+      }
+      resolve({
+        exitCode,
+        error: exitCode === 0 ? undefined : failurePreview({ exitCode, signalName, stderr: stderrTail, stdout: [typeof envelope.response === 'string' ? envelope.response : text] }),
+        text: typeof envelope.response === 'string' ? envelope.response : text,
+        sessionId: typeof envelope.sessionId === 'string' && envelope.sessionId ? envelope.sessionId : null,
+        usage,
+        model,
+      })
+    }
+    child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      opts.signal.removeEventListener('abort', onAbort)
+      resolve({ exitCode: 1, error: err instanceof Error ? err.message : String(err), text: '' })
+    })
+    // Normal end: wait for 'close' so the last of stdout is parsed. Torn-down
+    // end: settle on 'exit' instead — the engine's own children hold the
+    // stdio pipes, and once aborted the remaining output is moot (same fix
+    // spawnEngine carries for daemon shutdown drain).
+    child.on('close', (code, signalName) => { finish(code, signalName) })
+    child.on('exit', (code, signalName) => { if (opts.signal.aborted) finish(code, signalName) })
+  })
+}
+
+class ZcodeAdapter implements EngineAdapter {
+  readonly id = 'zcode' as const
+  /** Probed generically by detectEngines; the CUMORA_ZCODE_BIN / AppImage
+   *  paths are covered by resolveZcodeLauncher's own detectEngines branch. */
+  readonly bin = 'zcode-cli'
+
+  async run(args: EngineRunArgs): Promise<EngineRunResult> {
+    const launcher = resolveZcodeLauncher(args.env)
+    if (!launcher) return { exitCode: 1, error: zcodeMissingMessage() }
+    const prompt = stripLoneSurrogates(args.prompt)
+    const flags = extraArgs('CUMORA_ZCODE_ARGS')
+    const resume = args.resumeSessionId ? ['--resume', args.resumeSessionId] : []
+    if (flags.length) {
+      // Whole user-owned flag override → opaque print mode (same escape hatch
+      // as the other engines): we can't assume the --json envelope, so no
+      // usage/hop ledger — but keep --resume + -p so session continuity
+      // survives the override.
+      return spawnEngine(launcher.command, [...launcher.prefix, ...flags, ...resume, '-p', prompt], args)
+    }
+    const base = ['--cwd', args.home, '--mode', 'yolo', '--no-color', '--json', ...resume, '-p', prompt]
+    const r = await spawnZcodeJson(launcher, base, {
+      cwd: args.home, env: args.env, signal: args.signal, onLog: args.onLog, onHopUsage: args.onHopUsage,
+    })
+    // Stale resume (session wiped from ~/.zcode, or an id left over from a
+    // different engine after an engine switch) must not wedge the agent:
+    // retry once without --resume, mirroring CodexSession's resume→fresh
+    // thread fallback.
+    if (r.error && args.resumeSessionId && /Session not found/i.test(r.error)) {
+      args.onLog?.(`[zcode] session ${args.resumeSessionId} not found — starting a fresh session`)
+      return spawnZcodeJson(launcher, ['--cwd', args.home, '--mode', 'yolo', '--no-color', '--json', '-p', prompt], {
+        cwd: args.home, env: args.env, signal: args.signal, onLog: args.onLog, onHopUsage: args.onHopUsage,
+      })
+    }
+    return r
+  }
+
+  private async ask(prompt: string, args: {
+    cwd: string
+    env: NodeJS.ProcessEnv
+    signal: AbortSignal
+    onLog?: (line: string) => void
+  }): Promise<EngineRunResult & { text: string }> {
+    const flags = extraArgs('CUMORA_TRIAGE_ARGS')
+    const launcher = resolveZcodeLauncher(args.env)
+    if (!launcher) return { exitCode: 1, error: zcodeMissingMessage(), text: '' }
+    if (flags.length) {
+      // User-owned triage flag set → plain print mode, raw text back (the
+      // shared override discipline; no envelope to fold).
+      const r = await spawnCapture(launcher.command, [...launcher.prefix, ...flags, '-p', prompt], {
+        cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog,
+      })
+      return { exitCode: r.error ? 1 : 0, error: r.error, text: r.text, sessionId: null }
+    }
+    return spawnZcodeJson(launcher, ['--cwd', args.cwd, '--mode', 'plan', '--no-color', '--json', '--disallowed-tools', 'Bash Edit Write', '-p', stripLoneSurrogates(prompt)], {
+      cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog,
+    })
+  }
+
+  async classify(args: EngineClassifyArgs): Promise<EngineClassifyResult> {
+    // zcode has no cheap-model flag and no config isolation (POC point 6), so
+    // triage runs the operator's default model and reports it honestly — the
+    // same policy CursorAdapter applies to its account-gated aliases.
+    const r = await this.ask(args.prompt, { cwd: args.cwd, env: args.env, signal: args.signal, onLog: args.onLog })
+    return { text: r.text, error: r.error, usage: r.usage, model: r.model ?? undefined }
+  }
+
+  async probe(args: EngineProbeArgs): Promise<EngineClassifyResult> {
+    // 'big' and 'small' are the same model on this engine (no small tier) —
+    // probe reports what actually runs, like Cursor.
+    const r = await this.ask(DOCTOR_PROMPT, { cwd: args.cwd, env: args.env, signal: args.signal })
+    return { text: r.text, error: r.error, usage: r.usage, model: r.model ?? undefined }
+  }
+
+  probeWake(_args: EngineWakeProbeArgs): Promise<EngineWakeProbeResult> {
+    // No distinct wake path to probe: no persistent protocol consumer in this
+    // adapter, so the wake is the SAME one-shot spawn probe() exercises.
+    return Promise.resolve({ ok: true, detail: '', skipped: true })
+  }
+
+  async seedHome(home: string, persona: EnginePersona): Promise<void> {
+    await ensureCommonHome(home)
+    // Always rewrite so persona edits land without a fresh home (Claude/Codex
+    // semantics; Grok's write-once would freeze persona edits). POC point 4:
+    // zcode reads BOTH AGENTS.md and CLAUDE.md from its cwd — AGENTS.md is
+    // the cross-engine convention.
+    await writeFile(
+      join(home, 'AGENTS.md'),
+      PERSONA_HEADER(persona, { personaFile: 'AGENTS.md', skillsDir: 'skills/' }),
+      'utf8',
+    )
+  }
+
+  // No startSession: `zcode app-server` exists but driving a persistent
+  // JSON-RPC session over it is future work (see the tracking issue); the
+  // daemon runs the one-shot run() per wake and --resume keeps context.
+}
+
 const ADAPTERS: Record<EngineId, EngineAdapter> = {
   claude: new ClaudeAdapter(),
   codex: new CodexAdapter(),
   grok: new GrokAdapter(),
   cursor: new CursorAdapter(),
+  zcode: new ZcodeAdapter(),
 }
 
 export function getAdapter(id: EngineId): EngineAdapter {
@@ -2279,6 +2633,9 @@ export async function detectEngines(): Promise<EngineId[]> {
   const present = await Promise.all(ids.map(async (id) => {
     if (await binOnPath(ADAPTERS[id].bin)) return id
     if (id === 'grok' && resolveGrokBin()) return id
+    // zcode's real entry is not a PATH binary — the launcher covers the
+    // CUMORA_ZCODE_BIN override, a future `zcode-cli`, and the AppImage.
+    if (id === 'zcode' && resolveZcodeLauncher()) return id
     return null
   }))
   return present.filter((x): x is EngineId => x !== null)
@@ -2359,6 +2716,9 @@ export async function runEngineDoctor(opts?: {
   return Promise.all(ids.map(async (id): Promise<EngineHealth> => {
     const adapter = ADAPTERS[id]
     const path = (await resolveBinPath(adapter.bin)) ?? (id === 'grok' ? resolveGrokBin(env) : null)
+      // zcode's entry is usually not a PATH binary — mirror detectEngines and
+      // let the launcher (CUMORA_ZCODE_BIN / AppImage) satisfy the doctor.
+      ?? (id === 'zcode' ? (resolveZcodeLauncher(env)?.command ?? null) : null)
     if (!path) return { id, installed: false, path: null, big: null, small: null, wake: null }
     const probeTier = async (tier: 'big' | 'small'): Promise<BrainHealth> => {
       const controller = new AbortController()

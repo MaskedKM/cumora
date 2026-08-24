@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     'Usage:\n' +
     '  npx cumora@latest agent computer --pair <code> [--server <url>]   pair this machine\n' +
     '  npx cumora@latest agent computer [--server <url>]                 start the daemon\n\n' +
-    'Needs `claude` (Claude Code), `codex`, `grok` (Grok Build), or `cursor-agent` (Cursor) on PATH. Get a pairing code from\n' +
+    'Needs `claude` (Claude Code), `codex`, `grok` (Grok Build), `cursor-agent` (Cursor), or the ZCode desktop app (set CUMORA_ZCODE_BIN to its zcode.cjs) on the machine. Get a pairing code from\n' +
     'Cumora → You → Computers → Add a computer.\n',
   )
   process.exit(argv.length ? 1 : 0)

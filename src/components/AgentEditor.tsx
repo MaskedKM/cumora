@@ -241,7 +241,7 @@ export function AgentEditor({ agent, onClose }: Props) {
           <Field
             label={isByoa ? t('agent.modelLabelByoa') : t('agent.modelLabel')}
             hint={isByoa
-              ? `${t('agent.modelHintByoaPrefix')} ${engine === 'codex' ? t('agent.modelHintByoaCodex') : engine === 'grok' ? t('agent.modelHintByoaGrok') : engine === 'cursor' ? t('agent.modelHintByoaCursor') : t('agent.modelHintByoaClaude')} ${t('agent.modelHintByoaSuffix')}`
+              ? `${t('agent.modelHintByoaPrefix')} ${engine === 'codex' ? t('agent.modelHintByoaCodex') : engine === 'grok' ? t('agent.modelHintByoaGrok') : engine === 'cursor' ? t('agent.modelHintByoaCursor') : engine === 'zcode' ? t('agent.modelHintByoaZcode') : t('agent.modelHintByoaClaude')} ${t('agent.modelHintByoaSuffix')}`
               : t('agent.modelHintCloud')}
           >
             <Input
@@ -263,7 +263,9 @@ export function AgentEditor({ agent, onClose }: Props) {
                   ? t('agent.fastHintByoaGrok')
                   : engine === 'cursor'
                     ? t('agent.fastHintByoaCursor')
-                    : t('agent.fastHintByoaClaude')}
+                    : engine === 'zcode'
+                      ? t('agent.fastHintByoaZcode')
+                      : t('agent.fastHintByoaClaude')}
             >
               <Input
                 type="text"
@@ -311,7 +313,7 @@ export function AgentEditor({ agent, onClose }: Props) {
                   options={(selectedComputer.availableEngines.length
                     ? selectedComputer.availableEngines
                     : (['claude'] as EngineId[])
-                  ).map((en) => ({ value: en, label: en === 'claude' ? t('agent.engineClaude') : en === 'codex' ? t('agent.engineCodex') : en === 'grok' ? t('agent.engineGrok') : en === 'cursor' ? t('agent.engineCursor') : en }))}
+                  ).map((en) => ({ value: en, label: en === 'claude' ? t('agent.engineClaude') : en === 'codex' ? t('agent.engineCodex') : en === 'grok' ? t('agent.engineGrok') : en === 'cursor' ? t('agent.engineCursor') : en === 'zcode' ? t('agent.engineZcode') : en }))}
                 />
               </div>
             )}
