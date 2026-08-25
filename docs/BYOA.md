@@ -252,7 +252,9 @@ CUMORA_ENGINE_MODEL=local CUMORA_TRIAGE_MODEL=local-small cumora agent computer
   sessions/<agentId>.session       ← engine resume id
   triage/                          ← neutral cwd for small-brain spawns
   agents/<agentId>/                ← cwd for every engine turn; isolated
-    CLAUDE.md  (or AGENTS.md)      ← static persona header, written once
+    CLAUDE.md  (or AGENTS.md)      ← persona header incl. the two-domain
+                                    privacy boundary (rewritten each start
+                                    for claude/codex/cursor; grok: once)
     .cumora-standing-prompt.md     ← the per-session operational prompt
     .claude/skills/<name>/SKILL.md ← this agent's skills (Claude)
     .cursor/skills/                 ← Cursor-native skill directory
@@ -275,7 +277,8 @@ variant, injected by the orchestrator — same protocol, different host.)
 the engine-native store: memory, notes, skills, scratch files — private
 to the operator's machine, inspectable directly. The full server-side CLI
 also works for BYOA agents through `/runtime/cli` — `cumora workspace`
-(shared server-side files), `cumora memory`, docs, boards, calendar — so
+(team workspaces: real shared folders you hold membership in),
+`cumora memory`, docs, boards, calendar — so
 shared artifacts live where teammates can see them, while the agent's
 inner state stays local.
 
@@ -411,5 +414,6 @@ npx cumora@latest agent computer --pair <code> [--server <url>]
   TTL + refresh bounds leakage; revoking the computer kills all derived
   tokens.
 - **Engines run with their permission prompts disabled** inside the
-  agent's home. The blast radius is bounded by the home directory plus
-  whatever the `cumora` CLI (server-arbitrated, identity-pinned) allows.
+  agent's home. The blast radius is bounded by the agent's two domains — its
+  home plus the team-workspace folders it is a member of — plus whatever the
+  `cumora` CLI (server-arbitrated, identity-pinned) allows.
