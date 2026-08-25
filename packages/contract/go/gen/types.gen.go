@@ -389,11 +389,11 @@ const (
 
 // Defines values for ShippingVerificationStatus.
 const (
-	Failed  ShippingVerificationStatus = "failed"
-	Passed  ShippingVerificationStatus = "passed"
-	Pending ShippingVerificationStatus = "pending"
-	Running ShippingVerificationStatus = "running"
-	Waived  ShippingVerificationStatus = "waived"
+	ShippingVerificationStatusFailed  ShippingVerificationStatus = "failed"
+	ShippingVerificationStatusPassed  ShippingVerificationStatus = "passed"
+	ShippingVerificationStatusPending ShippingVerificationStatus = "pending"
+	ShippingVerificationStatusRunning ShippingVerificationStatus = "running"
+	ShippingVerificationStatusWaived  ShippingVerificationStatus = "waived"
 )
 
 // Defines values for Status.
@@ -511,6 +511,14 @@ const (
 	RecordEventJSONBodyLevelError RecordEventJSONBodyLevel = "error"
 	RecordEventJSONBodyLevelInfo  RecordEventJSONBodyLevel = "info"
 	RecordEventJSONBodyLevelWarn  RecordEventJSONBodyLevel = "warn"
+)
+
+// Defines values for FinishRunJSONBodyStatus.
+const (
+	FinishRunJSONBodyStatusCompleted FinishRunJSONBodyStatus = "completed"
+	FinishRunJSONBodyStatusFailed    FinishRunJSONBodyStatus = "failed"
+	FinishRunJSONBodyStatusRunning   FinishRunJSONBodyStatus = "running"
+	FinishRunJSONBodyStatusSkipped   FinishRunJSONBodyStatus = "skipped"
 )
 
 // Defines values for StatusHeartbeatJSONBodyStatus.
@@ -1114,7 +1122,7 @@ type MeResponse struct {
 		Email         string   `json:"email"`
 		EmailVerified bool     `json:"emailVerified"`
 		Id            string   `json:"id"`
-		IsAdmin       *bool    `json:"isAdmin,omitempty"`
+		IsAdmin       bool     `json:"isAdmin"`
 		Name          string   `json:"name"`
 		Providers     []string `json:"providers"`
 	} `json:"user"`
@@ -2284,8 +2292,8 @@ type ResolveConversationCompanyJSONBody struct {
 
 // RuntimeMarkReadJSONBody defines parameters for RuntimeMarkRead.
 type RuntimeMarkReadJSONBody struct {
-	ConversationId string  `json:"conversationId"`
-	UpToMessageId  *string `json:"upToMessageId,omitempty"`
+	ConversationId string `json:"conversationId"`
+	UpToMessageId  string `json:"upToMessageId"`
 }
 
 // RecordEventJSONBody defines parameters for RecordEvent.
@@ -2313,7 +2321,13 @@ type RecordLlmCallJSONBody map[string]interface{}
 type MemoryQueryJSONBody = map[string]interface{}
 
 // PostNoticeJSONBody defines parameters for PostNotice.
-type PostNoticeJSONBody map[string]interface{}
+type PostNoticeJSONBody struct {
+	ConversationId string `json:"conversationId"`
+	DedupeKey      string `json:"dedupeKey"`
+	DedupeTtlSec   *int   `json:"dedupeTtlSec,omitempty"`
+	NoticeKind     string `json:"noticeKind"`
+	Text           string `json:"text"`
+}
 
 // StartRunJSONBody defines parameters for StartRun.
 type StartRunJSONBody struct {
@@ -2324,7 +2338,18 @@ type StartRunJSONBody struct {
 }
 
 // FinishRunJSONBody defines parameters for FinishRun.
-type FinishRunJSONBody map[string]interface{}
+type FinishRunJSONBody struct {
+	Error         *string                 `json:"error"`
+	Model         *string                 `json:"model"`
+	Status        FinishRunJSONBodyStatus `json:"status"`
+	Summary       *string                 `json:"summary,omitempty"`
+	TokenCount    *int                    `json:"tokenCount,omitempty"`
+	ToolCallCount *int                    `json:"toolCallCount,omitempty"`
+	Usage         *map[string]interface{} `json:"usage"`
+}
+
+// FinishRunJSONBodyStatus defines parameters for FinishRun.
+type FinishRunJSONBodyStatus string
 
 // RunHeartbeatJSONBody defines parameters for RunHeartbeat.
 type RunHeartbeatJSONBody map[string]interface{}
@@ -2362,10 +2387,19 @@ type RuntimeTypingJSONBody struct {
 }
 
 // WorklogClaimJSONBody defines parameters for WorklogClaim.
-type WorklogClaimJSONBody map[string]interface{}
+type WorklogClaimJSONBody struct {
+	ScopeKey string `json:"scopeKey"`
+	Subject  string `json:"subject"`
+	TaskType string `json:"taskType"`
+	TtlSec   *int   `json:"ttlSec,omitempty"`
+}
 
 // WorklogReleaseJSONBody defines parameters for WorklogRelease.
-type WorklogReleaseJSONBody map[string]interface{}
+type WorklogReleaseJSONBody struct {
+	ScopeKey string `json:"scopeKey"`
+	Subject  string `json:"subject"`
+	TaskType string `json:"taskType"`
+}
 
 // EmailInboundWebhookJSONBody defines parameters for EmailInboundWebhook.
 type EmailInboundWebhookJSONBody map[string]interface{}
