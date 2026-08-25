@@ -68,7 +68,7 @@ jobs:
     # checkout falls back to the REST tarball (image has no git).
     runs-on: [self-hosted, linux, ser8]
     container:
-      image: node:24-bookworm-slim
+      image: node:24-bookworm
     timeout-minutes: 30
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     services:
@@ -111,15 +111,28 @@ jobs:
       # install doesn't pull in.
       - name: Install Email Worker dependencies
         run: npm ci --prefix workers/email-gate
-      - name: Unit tests
-        run: npm test --silent
-      # Enable pgvector for the integration suite (unit tests don't need
-      # it) via the repo's pg client.
+      # Some unit tests read app_settings (e.g. the agenda classifier's
+      # cerebellum-route lookup), so the suite needs the schema present —
+      # locally that's the dev DB; in CI we migrate the service DB first.
+      # pgvector must be enabled BEFORE migrate (vector columns).
       - name: Enable pgvector extension
         run: >-
           node -e "const {Client}=require('pg');(async()=>{
           const c=new Client({connectionString:process.env.DATABASE_URL});
           await c.connect(); await c.query('CREATE EXTENSION IF NOT EXISTS vector');
           await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
+      - name: Migrate test schema
+        run: npm run migrate
+      - name: Unit tests
+        run: npm test --silent
       - name: Integration tests
         run: npm run test:integration
+      # The container runs as root but shares the workspace with the host
+      # runner user — give ownership back so the next host job (quick)
+      # can clean the workspace. Without this, root-owned files from the
+      # container break the host job's checkout with EACCES.
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: >-
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
