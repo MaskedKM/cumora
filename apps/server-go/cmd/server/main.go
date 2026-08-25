@@ -47,6 +47,12 @@ func main() {
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
 	core.Mount(coreRouter, pool)
+	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
+	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
+	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
+	coreRouter.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+	})
 	mux.Handle("/api/", authMiddleware(coreRouter))
 	// 后续域(#53 会话起)同样:各自 Mount 后经 authMiddleware 串接。
 

@@ -5,10 +5,15 @@
 package core
 
 import (
+	"context"
+	"crypto/md5"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -124,7 +129,7 @@ func wsTicket(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expiresAt": expiresAt})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expiresAt": expiresAt.UTC()})
 	}
 }
 
@@ -208,16 +213,55 @@ func accountDelete(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		// 软删 + PII 清空 + 会话全灭(baseline 语义;审计写失败不阻断)
-		_, _ = db.ExecContext(r.Context(), `
-			UPDATE users SET deleted_at = NOW(),
-			  email = 'deleted+' || id || '@deleted.local',
-			  display_name = 'Deleted user', email_verified_at = NULL
-			WHERE id = $1`, uid)
-		_, _ = db.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id = $1`, uid)
-		_, _ = db.ExecContext(r.Context(), `DELETE FROM user_identities WHERE user_id = $1`, uid)
+		tx, err := db.BeginTx(r.Context(), nil)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer tx.Rollback()
+
+		var email sql.NullString
+		err = tx.QueryRowContext(r.Context(),
+			`SELECT email FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&email)
+		if err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "account already deleted or not found")
+			return
+		}
+		// 软删 + PII 全清(哨兵邮箱保 UNIQUE + 审计线索;对齐 baseline 字段集)
+		sentinel := "deleted+" + uid + "@cumora.invalid"
+		if _, err := tx.ExecContext(r.Context(), `
+			UPDATE users SET deleted_at = NOW(), email = $2, display_name = 'Deleted user',
+			  password_hash = NULL, avatar_url = NULL, email_verified_at = NULL
+			WHERE id = $1`, uid, sentinel); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, q := range []string{
+			`DELETE FROM sessions WHERE user_id = $1`,
+			`DELETE FROM ws_tickets WHERE user_id = $1`,
+			`DELETE FROM user_identities WHERE user_id = $1`,
+			`UPDATE participants SET departed_at = NOW() WHERE id = $1 AND kind = 'human' AND departed_at IS NULL`,
+		} {
+			if _, err := tx.ExecContext(r.Context(), q, uid); err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// 审计失败不阻断(fire-and-forget,与 baseline 一致)
+		go db.Exec(`INSERT INTO audit_events (user_id, kind, ip, user_agent, detail)
+			VALUES ($1, 'account_deleted', NULLIF($2,''), NULLIF($3,''), $4::jsonb)`,
+			uid, r.RemoteAddr, r.UserAgent(), `{"email":`+jsonString(email.String)+`}`)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func companiesList(db *sql.DB) http.HandlerFunc {
@@ -245,7 +289,9 @@ func companiesList(db *sql.DB) http.HandlerFunc {
 		out := []row{}
 		for rows.Next() {
 			var x row
-			if rows.Scan(&x.ID, &x.Name, &x.Slug, &x.CreatedAt, &x.Role) == nil {
+			var ca time.Time
+			if rows.Scan(&x.ID, &x.Name, &x.Slug, &ca, &x.Role) == nil {
+				x.CreatedAt = ca.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 				out = append(out, x)
 			}
 		}
@@ -263,45 +309,142 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 			Name string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Name == "" {
+		name := strings.TrimSpace(body.Name)
+		if len(name) > 80 {
+			name = name[:80]
+		}
+		if name == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "name required")
 			return
 		}
-		slug := slugify(body.Name)
-		// 唯一 slug(冲突追加随机后缀,与 baseline 撞名重试语义一致)
-		var count int
-		_ = db.QueryRowContext(r.Context(), `SELECT count(*) FROM companies WHERE slug = $1 OR slug LIKE $1 || '-%'`, slug).Scan(&count)
-		if count > 0 {
-			slug = slug + "-" + authn.NewToken()[:6]
-		}
-		id := "co-" + authn.NewToken()[:10]
-		_, err := db.ExecContext(r.Context(), `
-			INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
-			id, body.Name, slug, uid)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		// tier 限(对齐 assertUserCompanyLimit / TIER_LIMITS)
+		var tier sql.NullString
+		var companyCount int
+		if err := db.QueryRowContext(r.Context(), `
+			SELECT u.tier, COUNT(cm.company_id)::int FROM users u
+			  LEFT JOIN company_members cm ON cm.user_id = u.id
+			 WHERE u.id = $1 GROUP BY u.tier`, uid).Scan(&tier, &companyCount); err != nil {
+			httpx.WriteError(w, http.StatusUnauthorized, "session points to missing user")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(),
-			`INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'owner')`, id, uid)
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id, "name": body.Name, "slug": slug, "role": "owner"})
+		t := "free"
+		if tier.Valid {
+			t = strings.ToLower(tier.String)
+		}
+		limit := tierCompanies(t)
+		if companyCount >= limit {
+			httpx.WriteError(w, http.StatusForbidden, fmt.Sprintf("%s tier users can belong to at most %d companies", t, limit))
+			return
+		}
+		baseSlug := slugify(name)
+		slug := baseSlug
+		id := "co-" + authn.NewToken()[:10]
+		for attempt := 0; attempt < 3; attempt++ {
+			_, err := db.ExecContext(r.Context(), `
+				INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
+				id, name, slug, uid)
+			if err != nil {
+				if strings.Contains(err.Error(), "duplicate key") {
+					slug = baseSlug + "-" + authn.NewToken()[:4]
+					id = "co-" + authn.NewToken()[:10]
+					continue
+				}
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			_, _ = db.ExecContext(r.Context(),
+				`INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'owner')`, id, uid)
+			// 镜像 signup 的"人也是参与者"(幂等;同人多司时参与者行归首司)
+			var displayName, email sql.NullString
+			_ = db.QueryRowContext(r.Context(),
+				`SELECT display_name, email FROM users WHERE id = $1`, uid).Scan(&displayName, &email)
+			dn := uid
+			if displayName.Valid {
+				dn = displayName.String
+			}
+			var avatar any
+			if email.Valid {
+				avatar = gravatarURL(email.String)
+			}
+			initial := "U"
+			if dn != "" {
+				initial = strings.ToUpper(dn[:1])
+			}
+			_, _ = db.ExecContext(r.Context(), `
+				INSERT INTO participants (id, kind, name, initial, avatar_bg, avatar_url, status, company_id)
+				VALUES ($1, 'human', $2, $3, '#FF8870', $4, 'avail', $5)
+				ON CONFLICT (id, company_id) DO NOTHING`, uid, dn, initial, avatar, id)
+			joinAllHands(r.Context(), db, id, uid)
+			go db.Exec(`INSERT INTO audit_events (user_id, company_id, kind, ip, user_agent, detail)
+				VALUES ($1, $2, 'company_create', NULLIF($3,''), NULLIF($4,''), $5::jsonb)`,
+				uid, id, r.RemoteAddr, r.UserAgent(),
+				fmt.Sprintf(`{"name":%s,"slug":%s}`, jsonString(name), jsonString(slug)))
+			httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id, "name": name, "slug": slug, "role": "owner"})
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, "failed to create company after retries")
 	}
 }
 
+// tierCompanies 对齐 TIER_LIMITS(free=3/pro=10/max=25)。
+func tierCompanies(t string) int {
+	switch t {
+	case "pro":
+		return 10
+	case "max":
+		return 25
+	default:
+		return 3
+	}
+}
+
+// gravatarURL 对齐 gravatarUrlForEmail(lower-trim-md5,d=identicon,s=256)。
+func gravatarURL(email string) string {
+	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return fmt.Sprintf("https://www.gravatar.com/avatar/%x?d=identicon&s=256", sum)
+}
+
+// joinAllHands:#all-hands 会话加入/创建(对齐 onboardCompany.joinAllHands 最小面)。
+func joinAllHands(ctx context.Context, db *sql.DB, companyID, participantID string) {
+	var convID string
+	err := db.QueryRowContext(ctx, `
+		SELECT id FROM conversations WHERE company_id = $1 AND tag = 'team' LIMIT 1`, companyID).Scan(&convID)
+	if err != nil {
+		convID = "c-allhands-" + authn.NewToken()[:10]
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO conversations (id, company_id, kind, title, members, tag)
+			VALUES ($1, $2, 'group', 'Everyone', $3::jsonb, 'team')`,
+			convID, companyID, fmt.Sprintf(`[%q]`, participantID)); err != nil {
+			return
+		}
+	} else {
+		_, _ = db.ExecContext(ctx, `
+			UPDATE conversations SET members = members || $2::jsonb WHERE id = $1`,
+			convID, fmt.Sprintf(`[%q]`, participantID))
+	}
+}
+
+// slugify 对齐 baseline:[^a-z0-9]+ 运行折叠为单个 -,去首尾 -,截 40,
+// 空则 'company'。
 func slugify(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, c := range s {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-			out = append(out, c)
-		case c >= 'A' && c <= 'Z':
-			out = append(out, c+32)
-		case c == ' ', c == '-', c == '_':
-			out = append(out, '-')
+	low := strings.ToLower(s)
+	var b strings.Builder
+	prevDash := false
+	for _, c := range low {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			b.WriteRune(c)
+			prevDash = false
+		} else if !prevDash && b.Len() > 0 {
+			b.WriteByte('-')
+			prevDash = true
 		}
 	}
-	if len(out) == 0 {
-		return "team"
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 40 {
+		out = out[:40]
 	}
-	return string(out)
+	if out == "" {
+		return "company"
+	}
+	return out
 }

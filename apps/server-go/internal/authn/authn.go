@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"strings"
 	"time"
 )
 
@@ -73,12 +74,12 @@ func ResolveSession(ctx context.Context, db *sql.DB, token string) (userID strin
 	return uid, true
 }
 
-// Bearer 从 Authorization 头(或 x-session-token)取令牌。
+// Bearer 从 Authorization 头(或 x-session-token)取令牌;两侧均 trim。
 func Bearer(header, altHeader string) string {
 	if len(header) > 7 && header[:7] == "Bearer " {
-		return header[7:]
+		return strings.TrimSpace(header[7:])
 	}
-	return altHeader
+	return strings.TrimSpace(altHeader)
 }
 
 // CreateWsTicket 一次性 WS 票据(60s)。
