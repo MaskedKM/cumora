@@ -1379,6 +1379,66 @@ export const api = {
     }),
   deleteDocument: (id: string) =>
     http<{ ok: boolean }>(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /* ============== Team workspaces (shared real folders) ============== */
+  listWorkspaces: () =>
+    http<ApiWorkspaceSummary[]>('/workspaces'),
+  getWorkspace: (id: string) =>
+    http<ApiWorkspaceDetail>(`/workspaces/${encodeURIComponent(id)}`),
+  listWorkspaceFiles: (id: string, path: string) =>
+    http<{ path: string; entries: ApiWorkspaceFileEntry[] }>(
+      `/workspaces/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`,
+    ),
+  readWorkspaceFile: (id: string, path: string) =>
+    http<{ path: string; body: string; size: number; modifiedAt: string }>(
+      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+    ),
+  writeWorkspaceFile: (id: string, path: string, body: string) =>
+    http<{ ok: boolean; path: string }>(
+      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+      { method: 'PUT', body: JSON.stringify({ body }) },
+    ),
+}
+
+export interface ApiWorkspaceSummary {
+  id: string
+  name: string
+  isDefault: boolean
+  createdAt: string
+  explicitMemberCount: number
+}
+
+export interface ApiWorkspaceMember {
+  participantId: string
+  name: string
+  kind: string
+  addedAt: string | null
+  source: 'explicit' | 'implicit'
+}
+
+export interface ApiWorkspaceAssociation {
+  kind: 'project' | 'board_card' | 'document'
+  targetId: string
+  createdAt: string
+}
+
+export interface ApiWorkspaceDetail {
+  id: string
+  name: string
+  isDefault: boolean
+  createdAt: string
+  unboundAt: string | null
+  unboundBy: string | null
+  folderPath?: string
+  members: ApiWorkspaceMember[]
+  associations: ApiWorkspaceAssociation[]
+}
+
+export interface ApiWorkspaceFileEntry {
+  name: string
+  dir: boolean
+  size: number | null
+  modifiedAt: string | null
 }
 
 export interface ApiDocument {
