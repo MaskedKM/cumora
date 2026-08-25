@@ -3,16 +3,16 @@
 #
 # Runs on the ser8 self-hosted fleet (labels: self-hosted,linux,ser8).
 # The two runner slots share one 4-core/4GB cgroup, so this workflow is
-# exactly TWO jobs — quick (guards + lint + typecheck) and tests (unit +
-# integration against service containers) — to match the fleet's
-# parallelism and keep per-job npm ci overhead down. BOTH jobs run in
-# node:24 containers: PR code never executes as the host runner user
-# (the runner is in the docker group, i.e. host-root-equivalent), and
-# container jobs get git + node from the image with no setup-node.
-# pgvector is enabled via the repo's own pg client (no host psql).
+# THREE jobs — quick (guards + lint + typecheck, node:24 container),
+# go (gofmt + vet + build of apps/server-go, golang:1.24 container),
+# tests (unit + integration, node:24 container + service containers) —
+# matching the fleet's parallelism. ALL jobs run in containers: PR code
+# never executes as the host runner user (runner is docker-group =
+# host-root-equivalent). pgvector is enabled via the repo's own pg client.
 #
-# Deliberate boundary: compilation/artifact work (electron-builder,
-# docker image builds, releases) does NOT run on the self-hosted fleet.
+# Deliberate boundary: heavy artifact work (electron-builder, docker
+# image builds, releases) does NOT run on the self-hosted fleet; the go
+# job's compile is a check, not an artifact publish.
 #
 # Self-hosted on a public repo: never run code from fork PRs — both
 # jobs skip unless the PR head is this repo.
@@ -73,6 +73,22 @@ jobs:
         run: |
           WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
           chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
+
+  go:
+    name: Go (gofmt + vet + build)
+    runs-on: [self-hosted, linux, ser8]
+    container:
+      image: golang:1.24-bookworm
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
+    env:
+      GOCACHE: /tmp/gocache
+    steps:
+      - uses: actions/checkout@v4
+      - name: gofmt check
+        run: test -z "$(gofmt -l apps/server-go)" || (gofmt -l apps/server-go; exit 1)
+      - name: vet + build
+        run: cd apps/server-go && go vet ./... && go build ./...
 
   tests:
     name: Unit + integration
