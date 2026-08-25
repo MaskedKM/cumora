@@ -20,7 +20,7 @@ import {
   applyLocalUpdate as docApplyLocalUpdate,
   broadcastAwareness as docBroadcastAwareness,
   type DocSubscriber,
-} from './documents/rooms.js'
+} from './documents/relay.js'
 import { randomUUID } from 'node:crypto'
 
 interface AuthedSocket {

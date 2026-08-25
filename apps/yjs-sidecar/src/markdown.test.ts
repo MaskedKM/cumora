@@ -6,7 +6,7 @@ import {
   markdownToProseMirrorContent,
   markdownToYXml,
   parseInlineMarkdown,
-} from '../documents/markdown.js'
+} from './markdown.js'
 
 test('parseInlineMarkdown converts common marks', () => {
   assert.deepEqual(parseInlineMarkdown('Use **bold**, *italic*, ~~gone~~, `code`, and [docs](https://cumora.ai).'), [

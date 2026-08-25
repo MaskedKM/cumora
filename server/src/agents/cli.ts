@@ -5664,7 +5664,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       // structure (not a single 1500-char paragraph) in the rich editor.
       const body = typeof parsed.flags.body === 'string' ? unescapeChat(parsed.flags.body) : ''
       if (body) {
-        const { applyAgentEdit } = await import('../documents/rooms.js')
+        const { applyAgentEdit } = await import('../documents/relay.js')
         await applyAgentEdit(id, companyId, me, [{ kind: 'append', text: body }])
       }
       await publishDocChanged(companyId, id, 'document.created', me)
@@ -5690,7 +5690,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id, title FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { readDocumentText } = await import('../documents/rooms.js')
+    const { readDocumentText } = await import('../documents/relay.js')
     const body = await readDocumentText(docId, companyId)
     if (parsed.flags.json) return ok(JSON.stringify({ id: docId, title: rows[0].title, body }, null, 2))
     return ok([
@@ -5709,7 +5709,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { applyAgentEdit } = await import('../documents/rooms.js')
+    const { applyAgentEdit } = await import('../documents/relay.js')
     await applyAgentEdit(docId, companyId, me, [{ kind: 'append', text }])
     await publishDocChanged(companyId, docId, 'document.updated', me)
     return ok(`appended ${text.length} chars to ${docId}`, [{
@@ -5733,7 +5733,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { applyAgentEdit } = await import('../documents/rooms.js')
+    const { applyAgentEdit } = await import('../documents/relay.js')
     await applyAgentEdit(docId, companyId, me, [{ kind: 'insertParagraph', at: 'start', text }])
     await publishDocChanged(companyId, docId, 'document.updated', me)
     return ok(`prepended ${text.length} chars to ${docId}`, [{
@@ -5796,7 +5796,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { applyAgentEdit, isAnchoredImagePlacement } = await import('../documents/rooms.js')
+    const { applyAgentEdit, isAnchoredImagePlacement } = await import('../documents/relay.js')
     const result = await applyAgentEdit(docId, companyId, me, [{ kind: 'image', src, alt: alt || null, placement }])
 
     // Anchor miss is a HARD error now — falling back to end-of-doc on a
@@ -5847,11 +5847,11 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const match: import('../documents/rooms.js').AgentImageDeleteMatch =
+    const match: import('../../../apps/yjs-sidecar/src/markdown.js').AgentImageDeleteMatch =
       srcExact ? { by: 'src', src: srcExact }
         : srcContains ? { by: 'src-contains', substring: srcContains }
           : { by: 'alt', alt: altMatch }
-    const { applyAgentEdit } = await import('../documents/rooms.js')
+    const { applyAgentEdit } = await import('../documents/relay.js')
     const result = await applyAgentEdit(docId, companyId, me, [{ kind: 'imageDelete', match }])
     if (result.imagesDeleted === 0) {
       return err(`no images in ${docId} matched the criterion`)
@@ -5878,7 +5878,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { applyAgentEdit } = await import('../documents/rooms.js')
+    const { applyAgentEdit } = await import('../documents/relay.js')
     const r = await applyAgentEdit(docId, companyId, me, [{ kind: 'replace', find, replace }])
     if (r.replaced === 0) return err(`text not found in ${docId}: ${JSON.stringify(find).slice(0, 80)}`)
     await publishDocChanged(companyId, docId, 'document.updated', me)
@@ -5904,7 +5904,7 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT company_id FROM documents WHERE id = $1 LIMIT 1`, [docId],
     )
     if (rows.length === 0 || rows[0].company_id !== companyId) return err(`document ${docId} not found`)
-    const { applyAgentEdit } = await import('../documents/rooms.js')
+    const { applyAgentEdit } = await import('../documents/relay.js')
     const r = await applyAgentEdit(docId, companyId, me, [{ kind: 'replaceBlock', anchorText: anchor, text }])
     if (r.blocksReplaced === 0) return err(`no block containing ${JSON.stringify(anchor).slice(0, 80)} in ${docId}`)
     await publishDocChanged(companyId, docId, 'document.updated', me)
