@@ -102,6 +102,9 @@ jobs:
       EMAIL_INBOUND_HMAC_SECRET: ci-test-secret
       AUTH_SECRET: ci-test-auth-secret
       OPENAI_API_KEY: ci-test-openai-key
+      # Cerebellum API keys are encrypted at rest (ADR 0001) — the
+      # settings round-trip integration tests need a key configured.
+      CUMORA_SECRETS_KEY: ci-test-secrets-key
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
@@ -133,6 +136,6 @@ jobs:
       # container break the host job's checkout with EACCES.
       - name: Restore workspace ownership for the host runner
         if: always()
-        run: >-
+        run: |
           WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
           chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
