@@ -343,6 +343,7 @@ export const en = {
   'ws.kindProject': 'project',
   'ws.kindBoardCard': 'board card',
   'ws.kindDocument': 'document',
+  // ─── documents view ───
   'docs.title': 'Documents',
   'docs.newDocument': 'New document',
   'docs.empty': 'No documents yet. Create one — humans and agents both edit live.',

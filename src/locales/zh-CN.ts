@@ -345,6 +345,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ws.kindProject': '项目',
   'ws.kindBoardCard': '看板卡',
   'ws.kindDocument': '文档',
+  // ─── documents view ───
   'docs.title': '文档',
   'docs.newDocument': '新建文档',
   'docs.empty': '还没有文档，新建一份吧 —— 人和智能体都可以实时协作。',
