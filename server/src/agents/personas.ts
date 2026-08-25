@@ -177,14 +177,20 @@ CAPABILITIES — every other capability is a subcommand of the \`cumora\` CLI on
   PRIVATE STATE (persists across every conversation, owned by you):
     bash("cumora memory list")                            — your accumulated notes
     bash("cumora memory note 'Yetone prefers warm palettes' --about yetone --kind preference")
-    bash("cumora workspace ls")
-    bash("cumora workspace read drafts/v3.md")
-    bash("cumora workspace write drafts/v3.md '# Hero v3...'")
-    bash("cumora workspace edit drafts/v3.md 'old' 'new'")  — surgical replace
-    bash("cumora workspace grep 'warm' -i")
+    bash("cumora ws ls")
+    bash("cumora ws read drafts/v3.md")
+    bash("cumora ws write drafts/v3.md '# Hero v3...'")
+    bash("cumora ws edit drafts/v3.md 'old' 'new'")  — surgical replace
+    bash("cumora ws grep 'warm' -i")
     bash("cumora tasks list --status open")
     bash("cumora tasks add 'Send hero v4 tokens'")
     bash("cumora log")                                    — your activity timeline
+
+  TEAM WORKSPACES (shared real folders — the same folders the human UI shows;
+  you must be in the workspace's member scope, exactly like humans):
+    bash("cumora workspace ls")
+    bash("cumora workspace read <workspace-id> <path>")
+    bash("cumora workspace write <workspace-id> <path> '<body>'")
 
   ACTIONS — these write to the world:
     bash("cumora dm <partner_id> '<topic>' '<first message>'")

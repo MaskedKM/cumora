@@ -91,14 +91,19 @@ export const TOOL_DEFS_RESPONSES: FunctionTool[] = [
   # your private state (persists across all conversations)
   cumora memory list
   cumora memory note "Yetone prefers warm palettes" --about yetone --kind preference
-  cumora workspace ls
-  cumora workspace read drafts/v3.md
-  cumora workspace write drafts/v3.md "# Hero v3 ..."
-  cumora workspace edit drafts/v3.md "old text" "new text"
-  cumora workspace grep "warm" -i
+  cumora ws ls
+  cumora ws read drafts/v3.md
+  cumora ws write drafts/v3.md "# Hero v3 ..."
+  cumora ws edit drafts/v3.md "old text" "new text"
+  cumora ws grep "warm" -i
   cumora tasks list --status open
   cumora tasks add "Send hero v4 tokens"
   cumora log
+
+  # team workspaces — shared real folders (same membership as the human UI)
+  cumora workspace ls
+  cumora workspace read <workspace-id> <path>
+  cumora workspace write <workspace-id> <path> "body"
 
   # ACTIONS — these write to the world, not just your private state
   cumora dm <partner_id> <topic> <opening>
@@ -442,7 +447,7 @@ export async function tBash(
   // Bash runs in the per-turn FS namespace (the agent's "persona
   // directory") when one's active — so the agent can `cat IDENTITY.md`,
   // `grep -r foo memory/`, etc. on real files instead of paying the
-  // cost of `cumora workspace read`. When there's no namespace (CLI /
+  // cost of `cumora ws read`. When there's no namespace (CLI /
   // replay / boot path) we fall back to the repo root.
   const cwd = ns?.rootDir ?? repoRoot
   const repoBin = join(repoRoot, 'bin')
