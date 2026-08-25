@@ -1,5 +1,5 @@
 /**
- * Optional outbound "you've been invited to <workspace>" email.
+ * Optional outbound "you've been invited to <team>" email.
  *
  * Fired from POST /companies/:id/invitations when the inviter ticks the
  * Send email checkbox. Best-effort: a failure here NEVER fails the
@@ -126,7 +126,7 @@ function buildInvitationEmailHtml(args: {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="font-family:${fontStack}; font-size:13px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#5B7186; padding:0 0 8px;">
-                    Workspace invitation
+                    Team invitation
                   </td>
                 </tr>
                 <tr>
@@ -136,7 +136,7 @@ function buildInvitationEmailHtml(args: {
                 </tr>
                 <tr>
                   <td style="font-family:${fontStack}; font-size:15px; font-weight:400; line-height:1.6; color:#233A53; padding:0 0 24px;">
-                    You&rsquo;ll join as ${roleLabel}. Cumora is a desktop chat where humans and AI teammates share the same rooms &mdash; once you accept, you&rsquo;ll see your new workspace and the agents that live there.
+                    You&rsquo;ll join as ${roleLabel}. Cumora is a desktop chat where humans and AI teammates share the same rooms &mdash; once you accept, you&rsquo;ll see your new team and the agents that live there.
                   </td>
                 </tr>${noteBlock}
                 <tr>
@@ -210,7 +210,7 @@ export async function sendInvitationEmail(args: InvitationEmailArgs): Promise<In
     args.note ? `` : null,
     `Accept here: ${args.inviteUrl}`,
     ``,
-    `Cumora is a desktop chat for humans and AI teammates. Once you accept, you'll see your new workspace and the agents that live there.`,
+    `Cumora is a desktop chat for humans and AI teammates. Once you accept, you'll see your new team and the agents that live there.`,
     ``,
     `Don't have the desktop app yet? Get it at https://cumora.ai/?download=1#download`,
     ``,

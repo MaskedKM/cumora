@@ -203,7 +203,7 @@ async function companyHumanSeatInfo(companyId: string, db: Queryable = pool): Pr
 async function assertCompanyHumanLimit(companyId: string, db: Queryable = pool): Promise<void> {
   const seats = await companyHumanSeatInfo(companyId, db)
   if (seats.used >= seats.limit) {
-    throw new HttpError(403, `${seats.tier} tier workspaces can have at most ${seats.limit} human members`)
+    throw new HttpError(403, `${seats.tier} tier teams can have at most ${seats.limit} human members`)
   }
 }
 
@@ -219,7 +219,7 @@ async function assertCompanyAgentLimit(companyId: string, db: Queryable = pool):
     [companyId],
   )
   if ((rows[0]?.agentCount ?? 0) >= limit) {
-    throw new HttpError(403, `${tier} tier workspaces can have at most ${limit} active agents`)
+    throw new HttpError(403, `${tier} tier teams can have at most ${limit} active agents`)
   }
 }
 
@@ -277,8 +277,8 @@ function requestedDevMode(req: Request): boolean {
  * role is in `allowedRoles`. Used for owner/admin-only mutations (agent
  * CRUD, project edit/archive) — by default `PRIVILEGED_ROLES` = owner+admin.
  *
- * Throws 403 with a stable message string; the frontend matches on it to
- * surface the "ask an owner" affordance.
+ * Throws 403 with a stable message string; nothing matches on the exact wording,
+ * but keep changes here deliberate and greppable.
  */
 async function requireCompanyRole(
   req: Request & AuthedRequest,
@@ -291,7 +291,7 @@ async function requireCompanyRole(
   )
   const role = rows[0]?.role ?? 'member'
   if (!allowedRoles.has(role)) {
-    throw new HttpError(403, 'this action requires an owner or admin of the workspace')
+    throw new HttpError(403, 'this action requires an owner or admin of the team')
   }
   return { userId, companyId, role }
 }
@@ -1371,7 +1371,7 @@ api.post('/companies/:id/invitations', safe(async (req, res) => {
       [companyId, email],
     )
     if (existing[0]) {
-      res.status(409).json({ error: 'that email is already a member of this workspace' })
+      res.status(409).json({ error: 'that email is already a member of this team' })
       return
     }
     // Also collapse duplicate ACTIVE invites — re-issuing for the same email
@@ -1389,7 +1389,7 @@ api.post('/companies/:id/invitations', safe(async (req, res) => {
   const humanSeats = await companyHumanSeatInfo(companyId)
   const remaining = humanSeats.limit - humanSeats.used
   if (remaining <= 0) {
-    throw new HttpError(403, `${humanSeats.tier} tier workspaces can have at most ${humanSeats.limit} human members`)
+    throw new HttpError(403, `${humanSeats.tier} tier teams can have at most ${humanSeats.limit} human members`)
   }
   maxUses = Math.min(maxUses, remaining)
 
@@ -3752,7 +3752,7 @@ api.post('/email/send', async (req, res) => {
     // because we don't own gmail.com). ensureParticipantAddress mints
     // <userId>.<slug>@<EMAIL_DOMAIN> if the column was still null.
     const sender = await ensureParticipantAddress(me, tenant)
-    if (!sender) { res.status(400).json({ error: 'no email address available for your account in this workspace' }); return }
+    if (!sender) { res.status(400).json({ error: 'no email address available for your account in this team' }); return }
 
     const toResolved: { addr: string; name: string | null }[] = []
     const ccResolved: { addr: string; name: string | null }[] = []
@@ -3923,7 +3923,7 @@ api.post('/email/reply/:messageId', async (req, res) => {
     // Sender must use a cumora-domain From line (Resend won't accept
     // user's gmail/outlook). Same scheme as agents.
     const sender = await ensureParticipantAddress(me, tenant)
-    if (!sender) { res.status(400).json({ error: 'no email address available for your account in this workspace' }); return }
+    if (!sender) { res.status(400).json({ error: 'no email address available for your account in this team' }); return }
     // Pull the user's auth email too — used to dedupe self out of the
     // reply-to list (the original may have CC'd me at my real address).
     const { rows: ue } = await pool.query<{ email: string | null }>(
@@ -5698,14 +5698,14 @@ api.post('/calendar/events', async (req, res) => {
       `SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
       [assigneeId, companyId],
     )
-    if (!p[0]) throw new HttpError(400, 'assigneeId not found in this workspace')
+    if (!p[0]) throw new HttpError(400, 'assigneeId not found in this team')
   }
   if (targetConversationId) {
     const { rows: c } = await pool.query(
       `SELECT 1 FROM conversations WHERE id = $1 AND company_id = $2 LIMIT 1`,
       [targetConversationId, companyId],
     )
-    if (!c[0]) throw new HttpError(400, 'targetConversationId not found in this workspace')
+    if (!c[0]) throw new HttpError(400, 'targetConversationId not found in this team')
   }
 
   const id = `ce-${randomUUID()}`
