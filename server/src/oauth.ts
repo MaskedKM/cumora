@@ -34,9 +34,7 @@ import { pool } from './db/pool.js'
 import { redis } from './redis.js'
 import { env } from './env.js'
 import { audit, createSession, gravatarUrlForEmail } from './auth.js'
-import { onboardStarterAgents, joinAllHands } from './onboardCompany.js'
-import { companyTier } from './tier.js'
-import { ensureCloudComputer, cloudComputerId } from './agents/computer/registry.js'
+import { joinAllHands } from './onboardCompany.js'
 import { storage } from './storage.js'
 import { provisionUser as provisionSub2apiUser, sub2apiConfigured } from './sub2api.js'
 import { isWaitlistEnabled, enqueueWaitlist, isAllowlistedAdmin } from './admin.js'
@@ -325,23 +323,10 @@ export async function completeFlow(
  *  identity_token path). The caller is responsible for getting the
  *  `profile` populated however it can (REST userinfo, JWT claims,
  *  etc.) before invoking this. */
-/** Length of the Pro trial granted to net-new users signing up with
- *  Sign in with Apple (the native iOS path — the ONLY signup that gets a
- *  trial). Exists so the App Store review experience (and every fresh
- *  SIWA user) lands in a LIVE workspace — cloud starter agents that
- *  actually respond — instead of free-tier BYOA-only onboarding that asks
- *  them to pair a computer first. The trial-sweep worker downgrades the
- *  tier back to 'free' after expiry. */
-const APPLE_SIGNUP_TRIAL_DAYS = 7
-
 export async function findOrCreateUserByProfile(
   p: Provider,
   profile: NormalizedProfile,
   inviteToken: string | null = null,
-  /** Grant the Apple-signup Pro trial when this is a brand-new user.
-   *  Only the native SIWA route passes true; existing users (Paths A/B)
-   *  are never re-granted. */
-  appleSignupTrial = false,
 ): Promise<CompletionResult> {
   // Find-or-create. Race-safe by leaning on (provider, provider_id) PK and
   // (email_lower) lookup inside a single transaction.
@@ -404,16 +389,10 @@ export async function findOrCreateUserByProfile(
     // leave a stray "Their Name's workspace" they never wanted (the
     // invite-onboarding bug, pre-fix).
     const userId = `u-${randomUUID().slice(0, 12)}`
-    // Apple signups start on a Pro trial (see APPLE_SIGNUP_TRIAL_DAYS) so
-    // their first session has working cloud starter agents. Committed with
-    // the user row, so the post-commit companyTier() check below sees 'pro'
-    // and seeds the cloud starters immediately.
-    const trialTier = appleSignupTrial ? 'pro' : 'free'
     await client.query(
-      `INSERT INTO users (id, email, display_name, password_hash, email_verified_at, is_admin, tier, pro_trial_expires_at)
-         VALUES ($1, $2, $3, NULL, NOW(), $4, $5,
-                 CASE WHEN $5 = 'pro' THEN NOW() + make_interval(days => $6) END)`,
-      [userId, profile.email, profile.displayName, isAllowlistedAdmin(profile.email), trialTier, APPLE_SIGNUP_TRIAL_DAYS],
+      `INSERT INTO users (id, email, display_name, password_hash, email_verified_at, is_admin, tier)
+         VALUES ($1, $2, $3, NULL, NOW(), $4, 'free')`,
+      [userId, profile.email, profile.displayName, isAllowlistedAdmin(profile.email)],
     )
     await client.query(
       `INSERT INTO user_identities (provider, provider_id, user_id, email_lower)
@@ -466,16 +445,8 @@ export async function findOrCreateUserByProfile(
     // Skipped on the invite path: the user is about to land in the inviter's
     // workspace, which already has its own agents + #all-hands.
     if (companyId) {
-      // Starter agents are always created ONTO a Computer. Paid tier's
-      // Computer is the managed Cumora Cloud (set up now), so seed there
-      // immediately. Free tier is BYOA-only — its starters are deferred until
-      // the user pairs their own computer (POST /api/computers/pair).
-      try {
-        if ((await companyTier(companyId)) !== 'free') {
-          await ensureCloudComputer(companyId)
-          await onboardStarterAgents(companyId, { computerId: cloudComputerId(companyId), engine: 'managed' })
-        }
-      } catch (e) { console.warn('[oauth] starter onboarding failed', e) }
+      // BYOA is the only execution tier (ADR 0003): the starter team is
+      // deferred until the user pairs a computer (POST /api/computers/pair).
       try { await joinAllHands({ companyId, participantId: userId }) } catch (e) { console.warn('[oauth] join all-hands failed', e) }
     }
 
@@ -490,7 +461,7 @@ export async function findOrCreateUserByProfile(
           cumoraUserId: userId,
           email: profile.email,
           displayName: profile.displayName,
-          tier: trialTier,
+          tier: 'free',
         })
         await pool.query(
           `UPDATE users SET sub2api_user_id = $1, sub2api_api_key = $2 WHERE id = $3`,
@@ -663,13 +634,12 @@ export async function handleAppleNativeSignIn(args: {
 
   let result: CompletionResult
   try {
-    // Native SIWA route — the only signup path that grants the Pro trial.
     result = await findOrCreateUserByProfile('apple', {
       providerId: claims.sub,
       email,
       displayName,
       avatarUrl: null,
-    }, args.inviteToken ?? null, true)
+    }, args.inviteToken ?? null)
   } catch (e) {
     if (e instanceof WaitlistedError) {
       await audit({

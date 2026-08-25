@@ -498,7 +498,17 @@ export async function backfillStarterAgents(): Promise<void> {
   if (rows.length === 0) return
   console.log(`[onboard] backfilling ${rows.length} compan${rows.length === 1 ? 'y' : 'ies'} (agents and/or DMs)`)
   for (const { id } of rows) {
-    try { await onboardStarterAgents(id) }
+    try {
+      // BYOA-only (ADR 0003): only seed starters onto companies that
+      // already have a paired (non-cloud) computer. Companies without
+      // one get their starters at pair time.
+      const { rows: paired } = await pool.query(
+        `SELECT 1 FROM computers WHERE company_id = $1 AND kind <> 'cloud' AND revoked_at IS NULL LIMIT 1`,
+        [id],
+      )
+      if (paired.length === 0) continue
+      await onboardStarterAgents(id)
+    }
     catch (e) { console.warn(`[onboard] backfill failed for ${id}`, e) }
   }
 }

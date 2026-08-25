@@ -22,7 +22,6 @@ import { startStaleAgentRunSweeper } from './agents/observability.js'
 import { sweepOfflineComputers } from './agents/computer/registry.js'
 import { sweepStaleNamespaces } from './agents/runtime/fs-namespace.js'
 import { runtimeRouter } from './agents/runtime/server.js'
-import { startCompletedPodGc, startClusterFuseMonitor, startChromeProfilePvcGc } from './agents/runtime/orchestrator.js'
 import { inboundEmailRouter } from './api/inbound-email.js'
 import { startEmailRetryWorker } from './email-retry.js'
 import { startEmailGcWorker } from './email-gc.js'
@@ -30,11 +29,9 @@ import { startDbGcWorker } from './db-gc.js'
 import { startCalendarScheduler } from './calendar.js'
 import { startPollExpirationSweeper } from './polls.js'
 import { startLlmRollupRefresher } from './agents/llm-rollup.js'
-import { startTrialSweepWorker } from './trial-sweep.js'
 import { seedAdmins } from './admin.js'
 import { migrateCerebellumSettingsFromEnv } from './cerebellum-settings.js'
 import { notifyAlert } from './alerting.js'
-import { startShippingMaintenance } from './shipping-maintenance.js'
 
 async function main() {
   await ensureSchemaWithBootRetry()
@@ -294,10 +291,6 @@ async function main() {
   startEmailGcWorker()
   startDbGcWorker()
 
-  // Mobile Pro-trial expiry — hourly sweep that downgrades lapsed trials
-  // back to free (mirrors sub2api via the same path the admin UI uses).
-  startTrialSweepWorker()
-
   // Calendar dispatcher — once a minute, scan calendar_events for due
   // occurrences and post the scheduled prompt into the target conversation
   // (which wakes the assignee agent via the same mailbox path).
@@ -317,44 +310,7 @@ async function main() {
   // so one replica refreshes. LLM_ROLLUP_INTERVAL_MS=0 disables.
   startLlmRollupRefresher()
 
-  // Product shipping loop maintenance — promotes missed production
-  // readbacks to visible overdue friction and mines repeated agent completion
-  // failures into deduplicated improvement signals.
-  startShippingMaintenance()
-
-  // Agent-pod garbage collection — sweep Succeeded/Failed/Unknown
-  // agent pods older than 5min. Plain Pods don't have TTL-after-
-  // finished, so without this leftover idle-exit pods accumulate
-  // indefinitely. ENABLE_AGENT_POD_GC=false disables (e.g. local dev
-  // without kubectl).
-  if (process.env.ENABLE_AGENT_POD_GC !== 'false') {
-    startCompletedPodGc()
-    console.log('[boot] agent-pod GC running every 60s')
-  }
-
-  // Chrome-profile PVC garbage collection — reclaims volumes for
-  // off-boarded agents and for agents idle > CHROME_PVC_GC_IDLE_DAYS.
-  // At $0.10/GB·month per PVC this becomes the main cost driver as
-  // the agent population grows; without it, abandoned profiles
-  // accumulate forever. ENABLE_CHROME_PVC_GC=false disables (e.g.
-  // emptyDir-mode clusters that never create PVCs in the first place).
-  if (process.env.ENABLE_CHROME_PVC_GC !== 'false') {
-    startChromeProfilePvcGc({
-      intervalMs: env.CHROME_PVC_GC_INTERVAL_MS,
-      idleThresholdMs: env.CHROME_PVC_GC_IDLE_DAYS * 24 * 60 * 60_000,
-    })
-  }
-
-  // Cluster fuse-pressure monitor — periodic check that fires
-  // notifyAlert when pending agent pods stay above 20 (or fuse
-  // utilization ≥ 95%) for 5min sustained. ENABLE_CLUSTER_MONITOR=false
-  // disables. Pairs with the FUSE admission control in ensurePod.
-  if (process.env.ENABLE_CLUSTER_MONITOR !== 'false') {
-    startClusterFuseMonitor()
-    console.log('[boot] cluster fuse-pressure monitor running every 60s')
-  }
-
-  // Agent run orphan sweeper — if a pod finishes during server
+  // Agent run orphan sweeper — if a daemon run finishes during server
   // rolling restart / NEG cutover, its final /runtime/runs/:id/finish
   // call can be lost after all semantic work is done. Active turns
   // update agent_runs.updated_at through status heartbeats/events, so

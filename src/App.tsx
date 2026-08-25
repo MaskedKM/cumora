@@ -49,8 +49,8 @@ function AuthedApp() {
   // list to load before deciding, to avoid a flash of onboarding.
   const activeTier = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.tier)
   const computersLoaded = useComputers((s) => s.loaded)
-  const hasOwnComputer = useComputers((s) => Object.values(s.byId).some((c) => c.kind !== 'cloud'))
-  const ownComputerCount = useComputers((s) => Object.values(s.byId).filter((c) => c.kind !== 'cloud').length)
+  const hasOwnComputer = useComputers((s) => Object.values(s.byId).length > 0)
+  const ownComputerCount = useComputers((s) => Object.values(s.byId).length)
   // Free tier is BYOA-only: gate the app into onboarding whenever a free
   // workspace has no paired (non-cloud) computer — pairing a machine is how a
   // free user activates their agents. We previously ALSO required
@@ -81,7 +81,7 @@ function AuthedApp() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault()
         setForceOnboarding((v) => {
-          if (!v) baselineRef.current = Object.values(useComputers.getState().byId).filter((c) => c.kind !== 'cloud').length
+          if (!v) baselineRef.current = Object.values(useComputers.getState().byId).length
           return !v
         })
       }

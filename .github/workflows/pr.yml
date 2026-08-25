@@ -1,4 +1,5 @@
-# PR checks — fast feedback on every pull request to main.
+# PR checks — fast feedback on every pull request to main / my-custom
+# (the fork's working branch — the Go-migration ticket stream targets it).
 #
 # Intentionally cheap: just tsc on both projects, plus `npm test` if a
 # test script exists. No Docker, no GCP auth, no secrets — these run
@@ -8,7 +9,7 @@ name: PR
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, my-custom]
 
 # Cancel superseded runs on the same PR — saves CI minutes when you
 # push twice in a row.

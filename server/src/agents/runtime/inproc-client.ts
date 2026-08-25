@@ -20,11 +20,11 @@ import { CH_MESSAGE_NEW, CH_TYPING, publish, redis } from '../../redis.js'
 import { notifyAlert } from '../../alerting.js'
 import { freshenAttachmentUrl, type StoredAttachment } from '../../storage.js'
 
-/** Re-sign attachment download URLs just-in-time when loading messages for an
- *  agent turn. The url stored in `messages.attachment` is signed with a TTL
- *  (R2_URL_TTL_SECONDS, default 1h) and goes stale; by the time an agent uses
- *  it — cloud vision fetch, the text-context link, or a BYOA engine opening the
- *  link — the HMAC has expired → 403 → "can't see the image". Re-sign each row's
+/** Refresh attachment download URLs just-in-time when loading messages for
+ *  an agent turn. In the presigned-GET R2 mode the stored url goes stale
+ *  after its TTL; by the time an agent uses it — vision fetch, the
+ *  text-context link, or a BYOA engine opening the link — it would 403 →
+ *  "can't see the image". Re-sign each row's
  *  attachment so every consumer gets a URL valid for a fresh TTL. Best-effort:
  *  freshenAttachmentUrl keeps the stored url on any failure. */
 async function refreshAttachmentUrls(rows: ReadonlyArray<{ attachment?: unknown }>): Promise<void> {

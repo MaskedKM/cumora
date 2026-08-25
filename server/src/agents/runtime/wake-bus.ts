@@ -17,7 +17,7 @@
  * unsubscribe when the last local SSE drops. `deliver` publishes; the
  * publish count tells the scheduler whether ANY server in the cluster
  * has a live pod for this agent — if 0, the agent is resting cluster-
- * wide and the orchestrator spins one up.
+ * wide and the daemon reconnects.
  *
  * Multiple subscribers per agent on the same server are allowed (the
  * agent's Pod may reconnect briefly during a rolling restart). Events
@@ -190,7 +190,7 @@ function installRedisSubscriber(): void {
  * Mint a wake event for one agent and publish it to the cluster.
  * Returns the number of subscribers Redis reported (i.e. how many
  * servers received the event). 0 means no Pod is connected anywhere
- * in the cluster — the caller can ensurePod to spin one up.
+ * — the daemon catches up via inbox drain on reconnect.
  */
 export async function deliver(agentId: string, partial: WakeEventPayload): Promise<number> {
   // `partial` is the discriminated union minus the base fields. The

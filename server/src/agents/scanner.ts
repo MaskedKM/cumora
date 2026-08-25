@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { pool } from '../db/pool.js'
-import { wakeAgent } from './scheduler.js'
-import type { AgentTurnOptions } from './turn.js'
+import { wakeAgent, type WakeOptions } from './scheduler.js'
 
 interface ScanRecentMessage {
   message_id: string
@@ -187,7 +186,7 @@ export async function runBackgroundScans(): Promise<void> {
       const roster = await loadRoster(agent.company_id)
       const brief = buildBackgroundScanBrief({ agent, roster, recent })
       await recordScanWake(agent, fingerprint)
-      const backgroundBrief: NonNullable<AgentTurnOptions['backgroundBrief']> = {
+      const backgroundBrief: NonNullable<WakeOptions['backgroundBrief']> = {
         source: 'background_scanner',
         title: 'Recent company activity scan',
         body: brief,

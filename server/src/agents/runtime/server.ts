@@ -1,14 +1,14 @@
 /**
- * `/runtime/*` — HTTP surface that agent-runner pods talk to.
+ * `/runtime/*` — HTTP surface that BYOA daemons talk to.
  *
- * Every endpoint maps 1:1 to a method on `AgentRuntimeClient`. The pod
+ * Every endpoint maps 1:1 to a method on `AgentRuntimeClient`. The daemon
  * never accesses Postgres or Redis directly; it issues an HTTP call,
  * the server delegates to `inprocClient`, and the response is the same
  * JSON shape declared in `client.ts`.
  *
  * Auth: every request carries `Authorization: Bearer <agent-runtime
  * JWT>`. The JWT pins `{ agentId, companyId }`. Endpoints take the
- * agentId from the *token* (not the request body) so a compromised pod
+ * agentId from the *token* (not the request body) so a compromised daemon
  * can't operate as someone else's agent.
  *
  * Mount at `/runtime` from `server/src/index.ts`. Not nested under
@@ -28,7 +28,6 @@ import { buildAgendaClassifierRequest } from '../agenda-triage-core.js'
 import { consumeAgentTurnToken } from '../scheduler.js'
 import { touchAgentRun, recordTriage, type TriageSource } from '../observability.js'
 import { buildRuntimeArgv } from './cli-argv.js'
-import { attachFsEndpoints } from './fs-endpoints.js'
 import { inprocClient } from './inproc-client.js'
 import { verifyAgentToken, type AgentRuntimeClaims } from './jwt.js'
 import { attachWakeStream, } from './wake-bus.js'
@@ -72,7 +71,7 @@ function withAgent(
 export const runtimeRouter: Router = Router()
 runtimeRouter.use(authMiddleware as never)
 
-// ─── wake stream: server pushes events to the agent's long-running pod ─
+// ─── wake stream: server pushes events to the agent's daemon ─
 
 runtimeRouter.get('/wake-stream', withAgent(async (c, _req, res) => {
   await attachWakeStream(c.sub, res)
@@ -80,17 +79,13 @@ runtimeRouter.get('/wake-stream', withAgent(async (c, _req, res) => {
   // client disconnects.
 }))
 
-// ─── workspace FS: the Pod's FUSE driver lives over these endpoints ─
-
-attachFsEndpoints(runtimeRouter, withAgent)
-
 // ─── canonical action surface: cumora CLI ──────────────────────────
 //
-// Pods don't run the cumora CLI in-process (they have no DB access).
-// Instead the in-pod `cumora` binary is a thin curl shim that POSTs
+// Daemons don't run the cumora CLI in-process (they have no DB access).
+// Instead the on-host `cumora` binary is a thin curl shim that POSTs
 // argv here; we run it on the server's behalf. Auth: bearer token is
 // the same agent-runtime JWT; we *strip* any `--as` the caller passed
-// and inject the token's pinned agentId so a compromised pod can't
+// and inject the token's pinned agentId so a compromised daemon can't
 // impersonate another agent.
 runtimeRouter.post('/cli', withAgent(async (c, req, res) => {
   const body = req.body as { argv?: unknown } | undefined
@@ -162,7 +157,7 @@ runtimeRouter.get('/inbox-triage/payload', withAgent(async (c, _req, res) => {
   // Content-blind cost floor (NOT a loop decision). The daemon self-polls every
   // 20s, bypassing the scheduler's fan-out rate limit, so a runaway could spin
   // the local model unbounded. Bound it by the agent's activation budget — same
-  // counter the cloud fan-out uses. Whether to reply is still 100% the small
+  // counter the wake path uses. Whether to reply is still 100% the small
   // model's call (it sees "thread heat" and goes quiet on agent-only threads);
   // this only stops cost from running away if the model fails to.
   if (convoIds.length > 0 && !(await consumeAgentTurnToken(c.sub))) {
@@ -184,8 +179,8 @@ runtimeRouter.get('/inbox-triage/payload', withAgent(async (c, _req, res) => {
     gatherClaimsByConvo(inbox),
     persona.companyId ? inprocClient.humanRecentlyActive(persona.companyId).catch(() => false) : Promise.resolve(false),
   ])
-  // Pure GATE — TRULY identical to the cloud agent's triage. Cloud (turn.ts) calls
-  // classifyInboxTriage WITHOUT `strict`, i.e. the lenient prompt that biases toward
+  // Pure GATE — the daemon-side triage path calls the classifier WITHOUT
+  // `strict`, i.e. the lenient prompt that biases toward
   // "relevant → wake". BYOA used to pass strict:true — the long, aggressive
   // skip-everything prompt (ACK-loop / duplicate / thread-heat suppression) meant as
   // a token-saving conservative gate. That divergence is exactly why BYOA went silent
@@ -568,7 +563,7 @@ runtimeRouter.post('/runs/:runId/finish', withAgent(async (_c, req, res) => {
 
 // ─── steering busy heartbeat ────────────────────────────────────────
 //
-// The pod's HttpRuntimeClient pings these every ~2s during a turn so
+// The daemon pings these every ~2s during a turn so
 // the cumora-server's message-routing path can tell at a glance
 // whether an agent is currently mid-turn (→ deliver a steer event)
 // or idle (→ deliver a normal wake). agentId comes from the JWT, not
@@ -675,7 +670,7 @@ runtimeRouter.get('/worklog/peek', withAgent(async (_c, req, res) => {
 
 // ─── steering dedup: advance per-agent conversation_reads cursor ─────
 //
-// At turn end the pod tells us which messages it already consumed via
+// At turn end the daemon tells us which messages it already consumed via
 // a mid-turn steer drain, so the next wake's loadInbox doesn't surface
 // them again. agentId from JWT (c.sub).
 runtimeRouter.post('/conversation/mark-read', withAgent(async (c, req, res) => {

@@ -1,11 +1,8 @@
 # BYOA — Bring Your Own Agent (local Claude Code / Codex / Grok Build / Cursor Agent as the engine)
 
-Every Cumora agent has a "brain" and a host. The managed path is
-server-side: `runAgentTurn` in `server/src/agents/turn.ts` runs a
-multi-hop loop against the OpenAI Responses API, with the agent's body in
-a per-agent Kubernetes pod (the `agent-computer` image).
-
-**BYOA** lets a user supply the brain instead: a long-running daemon on
+Every Cumora agent has a "brain" and a host. **BYOA is the only
+execution tier** (ADR 0003 — the managed cloud-pod loop was removed with
+the rest of the Cumora Cloud machinery): a long-running daemon on
 the user's own machine (laptop **or** VPS) drives a local **Claude Code**,
 **Codex CLI**, **Grok Build** (`grok`), or **Cursor Agent** (`cursor-agent`) as the reasoning engine, on the
 user's own subscription — the server never holds the user's provider credentials.
@@ -28,23 +25,17 @@ the host; it reuses everything else.
 
 ## The Computer — the unifying host concept
 
-Rather than bolt BYOA on as a special case, **Computer** is a first-class
-product concept that every agent shares: *an agent always runs on some
-Computer.* One mental model — "my agents live on machines" — folds
-managed cloud agents and local agents into the same picture.
+**Computer** is a first-class product concept that every agent shares:
+*an agent always runs on some Computer*, and every Computer is a machine
+you paired. One mental model — "my agents live on machines."
 
-- **Cumora Cloud** — a built-in, managed Computer (one per company).
-  Engine is `managed` (the server's own `turn.ts` loop). Nothing for the
-  user to set up; it's always online.
 - **Your computers** — machines you pair (your Mac, a VPS). Each runs the
   `cumora agent computer` daemon with a local engine (Claude Code /
-  Codex / Grok Build / Cursor Agent). Agents you place here are BYOA agents.
+  Codex / Grok Build / Cursor Agent).
 
 ```
 Computers
 ──────────────────────────────
-☁  Cumora Cloud      ● online
-   engine: managed · 4 agents
 
 💻 MacBook Pro        ● online
    Claude Code · 3 agents
@@ -56,27 +47,18 @@ Computers
 
 A Computer surfaces its **status** (online/offline/busy), its
 **engine(s)**, and the **agents** it hosts with their live activity.
-Creating an agent is "pick which Computer it lives on" — Cumora Cloud, or
-one of yours. An agent's card shows a chip for its Computer; if that
-Computer goes offline, the agent shows as *sleeping* rather than broken.
-There is no "special" BYOA agent, only agents on different Computers.
+Creating an agent is "pick which Computer it lives on". An agent's card
+shows a chip for its Computer; if that Computer goes offline, the agent
+shows as *sleeping* rather than broken.
 
 ---
 
-## How this differs from the managed loop
+## The wake → turn path
 
 ```
-  MANAGED (server brain, in a k8s pod)
-  ────────────────────────────────────
-  msg.new ─► scheduler.wakeOne ─► ensurePod (kubectl) ─► pod
-                                                          │
-                       turn.ts hop loop ◄─────────────────┘
-                       getLlmClient → OpenAI Responses API
-                       bash → `cumora` shim → /runtime/cli → DB
-
   BYOA (user brain, in a local daemon)
   ────────────────────────────────────
-  msg.new ─► scheduler.wakeOne ─► (BYOA host: SKIP pod) ─► publish wake
+  msg.new ─► scheduler.wakeOne ─► publish wake
                                                               │
         cumora agent computer (daemon, laptop/VPS) ◄──────────┘ SSE
         debounce → small-brain triage → persistent engine session turn
@@ -166,7 +148,7 @@ different token".
    inject is a no-op for those engines and the ping coalesces onto the next wake.
 8. Turn ends → run finished, status back. Per-hop token usage is posted
    to `/runtime/llm-calls`, landing in the same universal `llm_calls`
-   ledger as cloud turns. Engine failures surface as a
+   ledger as server-side turns. Engine failures surface as a
    `byoa_engine_failed` notice (with auth hints); provider rate limits
    are absorbed silently (cooldown + pacer), never leaked into chat.
 
@@ -269,9 +251,7 @@ CUMORA_ENGINE_MODEL=local CUMORA_TRIAGE_MODEL=local-small cumora agent computer
 `<home>/bin/cumora` and prepends to the engine's `PATH`. It POSTs argv to
 `/runtime/cli`, reads its token from `bin/.runtime-token` (refreshed by
 the daemon before expiry), and supports `--file <path>` / `--stdin` to
-pass long bodies without shell mangling. (The similar
-`server/docker/agent-computer-cumora.sh` curl shim is the **cloud pod**
-variant, injected by the orchestrator — same protocol, different host.)
+pass long bodies without shell mangling.
 
 **Local state and server state are complementary.** The home directory is
 the engine-native store: memory, notes, skills, scratch files — private
@@ -315,14 +295,15 @@ CREATE TABLE computers (
 
 -- participants carry their host + engine + models
 --   computer_id  TEXT   (FK → computers.id)
---   engine       TEXT   ('managed' | 'claude' | 'codex' | 'grok' | 'cursor')
+--   engine       TEXT   ('claude' | 'codex' | 'grok' | 'cursor')
 --   model        TEXT   (big-brain override)
 --   fast_model   TEXT   (small-brain override)
 ```
 
-Every company gets a `kind='cloud'` "Cumora Cloud" row; `computers.kind`
-is what the scheduler branches on. Companies also hold a persistent
-pairing token (`companies.pair_token`) shown in the Add-Computer UI.
+Companies hold a persistent pairing token (`companies.pair_token`) shown
+in the Add-Computer UI. (Legacy pre-fork data may still contain
+`kind='cloud'` rows / `'managed'` engines — unsupported since ADR 0003,
+and excluded by the kind guards.)
 
 ---
 
@@ -364,7 +345,7 @@ owning user's session.
   it with a summary — the UI shows "thinking" and a run history exactly
   like managed agents.
 - **Cost**: per-hop token usage goes to `/runtime/llm-calls` — the same
-  universal `llm_calls` ledger the cloud path writes, so BYOA and cloud
+  universal `llm_calls` ledger the server writes, so BYOA and server-side
   turns are comparable in the admin dashboards. Triage spend is tracked
   separately via `/runtime/triage`.
 - **Failures**: engine errors post a `byoa_engine_failed` notice (with

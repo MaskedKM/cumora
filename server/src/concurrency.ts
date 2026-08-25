@@ -3,7 +3,7 @@
  *
  * Why this exists: several hot paths fan out work with `Promise.all`
  * over an unbounded set (e.g. the scheduler waking every recipient of a
- * group message, or the orchestrator shelling out to `kubectl` per
+ * group message, or a fan-out path running per-recipient work
  * agent). Under a swarm / reply-storm that unbounded fan-out
  * oversubscribes shared resources — the pg connection pool (max 20),
  * the node's CPU/memory cgroup (each `kubectl` child is a ~50–100MB Go

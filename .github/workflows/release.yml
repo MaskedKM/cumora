@@ -3,9 +3,6 @@ name: Release
 # Fires when a `v*` tag is pushed (or manually via workflow_dispatch).
 # Hand off to yetone/cumora-releases which has the matrix runners that
 # build + sign + publish the Electron app for every platform.
-#
-# The existing deploy.yml ALSO triggers on `v*` — it handles the GKE
-# backend roll-out. The two are orthogonal; both run from the same tag.
 
 on:
   push:

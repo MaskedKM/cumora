@@ -179,18 +179,6 @@ export const env = {
   R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY ?? '',
   R2_PUBLIC_BASE: (process.env.R2_PUBLIC_BASE ?? '').replace(/\/+$/, ''),
   /**
-   * HMAC secret shared between this server (URL signer) and the Cloudflare
-   * Worker fronting `cdn.cumora.ai`. When set, R2 public URLs are emitted
-   * with `?exp=<unix>&sig=<hex>` and the Worker validates both before
-   * proxying R2 reads. Leave blank to skip signing (URLs served unsigned —
-   * fine in local dev, NOT for prod).
-   */
-  R2_URL_SIGNING_SECRET: process.env.R2_URL_SIGNING_SECRET ?? '',
-  /** TTL (seconds) baked into each signed URL. Keep short — message
-   *  attachments are re-signed on every read, so users never see expired
-   *  links during normal browsing. Default 1 hour. */
-  R2_URL_TTL_SECONDS: Number(process.env.R2_URL_TTL_SECONDS ?? 3600),
-  /**
    * Base URL of an Agent Skills hub — any HTTP service that implements
    * the contract below. Agents use it via `cumora skills search/install`.
    * Leave blank to disable the hub commands; agents can still create
@@ -222,58 +210,11 @@ export const env = {
    */
   AGENT_RUNTIME_SECRET: process.env.AGENT_RUNTIME_SECRET ?? DEV_AGENT_RUNTIME_SECRET,
   /**
-   * Full URL the agent-runner pod uses to reach the cumora server's
-   * `/runtime` API (note the trailing path). From OrbStack K8s a pod
-   * talks to the host via `host.docker.internal`. Override in prod
-   * with the in-cluster service URL — typically something like
-   * `http://cumora-server.default.svc.cluster.local:5181/runtime`.
-   */
-  AGENT_RUNTIME_SERVER_URL: process.env.AGENT_RUNTIME_SERVER_URL ?? `http://host.docker.internal:${process.env.PORT ?? 5181}/runtime`,
-  /**
-   * Per-agent pod idle timeout. After this many ms with no wake
-   * events, the Pod sets the agent's status to `resting`, gracefully
-   * shuts down, and the K8s Pod is gone. The PVC stays so the next
-   * wake re-uses the same workspace.
-   *
-   * Default 3 minutes — was 10 min before the FUSE-cap incident on
-   * 2026-05-20, when post-crashloop-recovery thundering-herd spawned
-   * hundreds of idle pods that each held a /dev/fuse slot for 10 min
-   * each, blowing past the cluster's 50-slot cap. 3 min still
-   * absorbs bouncy conversation cold-starts (each pod cold-start is
-   * ~5s with PVC bound) and lets fuse slots recycle 3× faster.
-   */
-  AGENT_IDLE_MS: Number(process.env.AGENT_IDLE_MS ?? 3 * 60_000),
-  /**
-   * Pod no-work-detected fast-exit timeout (ms). If a pod boots,
-   * runs its bootstrap inbox-drain, and then receives NO further
-   * SSE wake/steer event within this window, it self-exits to free
-   * the /dev/fuse slot. Distinct from AGENT_IDLE_MS, which is the
-   * "I've done work, now I've been quiet for a while" timer.
-   *
-   * Default 90s — covers crashloop-recovery scenarios where a wake
-   * fired against a resting agent, ensurePod spawned a pod, the
-   * pod's bootstrap drain handled the queued message, and then no
-   * follow-up wake arrives. Without this, the pod would sit on the
-   * FUSE slot until AGENT_IDLE_MS elapsed even though it had no
-   * pending work.
-   */
-  AGENT_NO_WORK_MS: Number(process.env.AGENT_NO_WORK_MS ?? 90_000),
-  /**
-   * App-level ceiling for concurrently active agent pods. This is
-   * intentionally separate from the generic-device-plugin's advertised
-   * /dev/fuse count: GKE can expose hundreds of logical FUSE slots per
-   * node, but CPU, memory, API-server churn, and provider concurrency
-   * are the real production ceiling. The orchestrator admits new pods
-   * against min(cluster fuse capacity, this value). Set <=0 to rely on
-   * the cluster resource only.
-   */
-  AGENT_POD_ADMISSION_MAX: Number(process.env.AGENT_POD_ADMISSION_MAX ?? 40),
-  /**
    * Max concurrent recipients the scheduler triages + wakes at once,
    * PER server replica. The wake fan-out for a group message used to be
    * an unbounded `Promise.all` over every recipient — each running a
    * 3-query triage (loadPersona/loadInbox/loadContext) + a support-model
-   * call + ensurePod. Under a swarm reply-storm that stampeded the pg
+   * call. Under a swarm reply-storm that stampeded the pg
    * pool (max 20): triage timed out acquiring a connection, fell open,
    * woke the agent anyway, which generated more messages → more wakes →
    * a self-amplifying loop that survived restarts (the 2026-05-27
@@ -283,17 +224,6 @@ export const env = {
    * still get connections. Set <=0 to fall back to 1 (never unbounded).
    */
   WAKE_FANOUT_CONCURRENCY: Number(process.env.WAKE_FANOUT_CONCURRENCY ?? 6),
-  /**
-   * Max concurrent `kubectl` child processes the orchestrator spawns,
-   * PER server replica. Each kubectl is a ~50–100MB Go binary that
-   * counts against the pod's memory/CPU cgroup; an unbounded burst of
-   * them (one+ per wake during a storm) can OOM-kill or CPU-throttle the
-   * server pod itself. This cap also closes the pod-admission race —
-   * with bounded concurrency the admit check (used < cap) no longer
-   * fires hundreds of times before any pod actually starts. Set <=0 to
-   * fall back to 1.
-   */
-  KUBECTL_MAX_CONCURRENCY: Number(process.env.KUBECTL_MAX_CONCURRENCY ?? 8),
   /**
    * Comma-separated allow-list of origins for CORS. The browser only
    * sends an Origin header for cross-origin requests, so leaving this
@@ -443,19 +373,6 @@ export const env = {
    *  event. Set to 0 to disable (polls then stay open forever even after
    *  their declared expiration — manual close still works). */
   POLL_SWEEP_INTERVAL_MS: Number(process.env.POLL_SWEEP_INTERVAL_MS ?? 60_000),
-  /** Interval between chrome-profile PVC garbage-collection passes.
-   *  Each pass lists all `app=cumora-agent` PVCs, joins against
-   *  participants + agent_runs, and drops PVCs whose agent has been
-   *  off-boarded OR hasn't run in CHROME_PVC_GC_IDLE_DAYS. Default
-   *  hourly cadence — the work is sized for off-the-clock cleanup,
-   *  not real-time. Set to 0 to disable. */
-  CHROME_PVC_GC_INTERVAL_MS: Number(process.env.CHROME_PVC_GC_INTERVAL_MS ?? 60 * 60_000),
-  /** How many days an agent must be inactive before its
-   *  chrome-profile PVC is reclaimed. 30d is the sweet spot: long
-   *  enough that idle but in-use agents (weekend / vacation) don't
-   *  lose login state, short enough that abandoned agents don't
-   *  accumulate $0.10/month forever. */
-  CHROME_PVC_GC_IDLE_DAYS: Number(process.env.CHROME_PVC_GC_IDLE_DAYS ?? 30),
   /** Bearer token gating GET /api/metrics. Unset → endpoint returns 404
    *  (don't leak internal counts to unauthenticated callers in deploys
    *  that haven't set up Prometheus yet). When set, scrapers pass it as

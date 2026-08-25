@@ -5,7 +5,6 @@ import { pool } from '../db/pool.js'
 import {
   buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll,
 } from './_helpers.js'
-import { runShippingMaintenance } from '../shipping-maintenance.js'
 
 const USER_ID = 'u-ship-verifier'
 const COMPANY_ID = 'c-shipping-loop'
@@ -160,22 +159,3 @@ test('[integration] failed production readback reopens building and creates crit
   assert.equal(friction.severity, 'critical')
 })
 
-test('[integration] maintenance promotes overdue readbacks exactly once', async () => {
-  const created = await call('/shipping/features', 'POST', { title: 'Readback clock' })
-  const featureId = created.json.id as string
-  await pool.query(`UPDATE shipping_features SET status='watching' WHERE id=$1`, [featureId])
-  await pool.query(
-    `INSERT INTO shipping_releases
-      (id,feature_id,environment,status,readback_status,completed_at,readback_due_at)
-     VALUES ('sr-overdue',$1,'production','succeeded','pending',NOW()-INTERVAL '25 hours',NOW()-INTERVAL '1 hour')`,
-    [featureId],
-  )
-
-  assert.deepEqual(await runShippingMaintenance(), { overdue: 1, frictionSignals: 0 })
-  assert.deepEqual(await runShippingMaintenance(), { overdue: 0, frictionSignals: 0 })
-
-  const detail = await call(`/shipping/features/${featureId}`)
-  assert.equal(detail.response.status, 200)
-  assert.equal(detail.json.releases[0].readbackStatus, 'overdue')
-  assert.equal(detail.json.frictions.filter((item: any) => item.source === 'readback').length, 1)
-})

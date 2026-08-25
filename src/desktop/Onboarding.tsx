@@ -131,9 +131,6 @@ export function Onboarding() {
             )}
           </div>
 
-          <p className="text-[12px] text-ink-400 mt-4">
-            {t('onboard.cloudCta')} <span className="text-skype-deep">{t('onboard.upgradePro')}</span> {t('onboard.cloudRun')}
-          </p>
         </div>
       </main>
     </div>

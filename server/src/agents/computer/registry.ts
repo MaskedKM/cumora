@@ -1,10 +1,11 @@
 /**
  * Computer registry — server-side state + auth for BYOA "Computers".
  *
- * A Computer is the host an agent runs on (see docs/BYOA.md). Cumora Cloud
- * is the built-in managed computer; the user pairs their own machines (a
- * Mac, a VPS) which run the `cumora agent computer` daemon and a local
- * engine (Claude Code / Codex / Grok Build / Cursor Agent).
+ * A Computer is the host an agent runs on (see docs/BYOA.md): a
+ * user-paired machine (a Mac, a VPS) running the `cumora agent computer`
+ * daemon and a local engine (Claude Code / Codex / Grok Build / Cursor
+ * Agent). BYOA is the only execution tier (ADR 0003); legacy cloud
+ * rows may still exist in the DB and are excluded by kind guards.
  *
  * This module owns the data-access + credential plumbing so the route
  * layer (api/router.ts) stays thin and this logic stays unit-testable:
@@ -19,8 +20,8 @@ import { pool } from '../../db/pool.js'
 import { publish, CH_STATUS } from '../../redis.js'
 import { signAgentToken } from '../runtime/jwt.js'
 
-export type ComputerKind = 'cloud' | 'local' | 'vps'
-export type EngineId = 'managed' | 'claude' | 'codex' | 'grok' | 'cursor'
+export type ComputerKind = 'local' | 'vps'
+export type EngineId = 'claude' | 'codex' | 'grok' | 'cursor'
 export type ComputerStatus = 'online' | 'offline' | 'busy'
 
 /** How long a paired computer can go without a heartbeat before the sweep
@@ -44,7 +45,7 @@ export async function announceComputerOnline(computerId: string, companyId: stri
   await broadcastComputerStatus(computerId, companyId, 'online')
 }
 
-/** Engines a paired (non-cloud) computer is allowed to advertise. */
+/** Engines a paired computer is allowed to advertise. */
 const PAIRABLE_ENGINES: ReadonlySet<string> = new Set(['claude', 'codex', 'grok', 'cursor'])
 
 export interface ComputerRow {
@@ -59,10 +60,10 @@ export interface ComputerRow {
   paired_at: string | null
   revoked_at: string | null
   created_at: string
-  /** The cumora daemon's reported version; NULL for cloud or a pre-version daemon. */
+  /** The cumora daemon's reported version; NULL for a pre-version daemon. */
   daemon_version: string | null
   /** TRUE = runs under the --install-service supervisor (launchd/systemd),
-   *  FALSE = a manually-run foreground command, NULL = cloud / an old daemon
+   *  FALSE = a manually-run foreground command, NULL = an old daemon
    *  that doesn't report it. Drives run-mode-specific update instructions. */
   daemon_supervised: boolean | null
 }
@@ -72,7 +73,7 @@ export interface ComputerWithUpgrade extends ComputerRow {
   /** The newest published cumora version (npm 'latest'), or null if unknown. */
   latest_daemon_version: string | null
   /** True iff this is a BYOA daemon running behind the latest version (or one so
-   *  old it never reported a version). Cloud computers are never outdated. */
+   *  old it never reported a version). */
   daemon_outdated: boolean
 }
 
@@ -110,23 +111,6 @@ const AGENT_TOKEN_TTL_SECONDS = 2 * 60 * 60 // 2h; daemon refreshes before expir
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('base64url')
-}
-
-/** Deterministic id for a company's managed Cumora Cloud computer, so it can
- *  be resolved without a lookup and stays idempotent across migrations. */
-export function cloudComputerId(companyId: string): string {
-  return `cloud-${companyId}`
-}
-
-/** Idempotently create the managed Cumora Cloud computer for a company.
- *  Called at company-creation time (the migration back-fills existing ones). */
-export async function ensureCloudComputer(companyId: string): Promise<void> {
-  await pool.query(
-    `INSERT INTO computers (id, company_id, name, kind, available_engines, status)
-     VALUES ($1, $2, 'Cumora Cloud', 'cloud', '["managed"]'::jsonb, 'online')
-     ON CONFLICT (id) DO NOTHING`,
-    [cloudComputerId(companyId), companyId],
-  )
 }
 
 /** Return the company's persistent add-computer token, minting it once on first
@@ -375,16 +359,17 @@ export async function listAgentsForComputer(computerId: string): Promise<
   })
 }
 
-/** All computers visible to a company (Cumora Cloud + the user's paired ones),
- *  each annotated with whether its daemon is outdated vs the latest published
- *  cumora version — so the app can surface an upgrade banner. */
+/** All computers visible to a company (the user's paired machines; legacy
+ *  cloud rows are excluded), each annotated with whether its daemon is
+ *  outdated vs the latest published cumora version — so the app can
+ *  surface an upgrade banner. */
 export async function listComputers(companyId: string): Promise<ComputerWithUpgrade[]> {
   const { rows } = await pool.query<ComputerRow>(
     `SELECT id, company_id, owner_user_id, name, kind, available_engines, status,
             last_seen_at, paired_at, revoked_at, created_at, daemon_version, daemon_supervised
        FROM computers
-      WHERE company_id = $1 AND revoked_at IS NULL
-      ORDER BY (kind = 'cloud') DESC, created_at ASC`,
+      WHERE company_id = $1 AND kind <> 'cloud' AND revoked_at IS NULL
+      ORDER BY created_at ASC`,
     [companyId],
   )
   const latest = await getLatestDaemonVersion()
@@ -395,45 +380,15 @@ export async function listComputers(companyId: string): Promise<ComputerWithUpgr
     // latest. A daemon that never reported a version (NULL) is pre-feature →
     // definitionally old → outdated.
     daemon_outdated:
-      r.kind !== 'cloud' && latest != null &&
+      latest != null &&
       (r.daemon_version == null || versionGt(latest, r.daemon_version)),
   }))
 }
 
-export interface AgentHost {
-  /** kind of computer the agent runs on, or null if unassigned (treat as cloud). */
-  kind: ComputerKind | null
-  /** the agent's company — lets the scheduler check the company's tier. */
-  companyId: string | null
-}
-
-/** Resolve where an agent runs + its company. Not cached: this sits on the
- *  scheduler's cold path (wakeOne only calls it for a resting agent with no
- *  live subscriber), and it's a single indexed lookup — a PK probe on
- *  participants + a PK LEFT JOIN on computers. An in-process cache here would
- *  be both pointless (cold path) and unsafe (each replica caches independently,
- *  so reassignments/tier changes go stale per-pod). LEFT JOIN so an unassigned
- *  agent (computer_id NULL) still returns its companyId with a null kind. */
-export async function resolveAgentHost(agentId: string): Promise<AgentHost> {
-  const { rows } = await pool.query<{ kind: ComputerKind | null; company_id: string | null }>(
-    `SELECT c.kind, p.company_id FROM participants p
-       LEFT JOIN computers c ON c.id = p.computer_id
-      WHERE p.id = $1 AND p.kind = 'agent' LIMIT 1`,
-    [agentId],
-  )
-  return { kind: rows[0]?.kind ?? null, companyId: rows[0]?.company_id ?? null }
-}
-
-/** A BYOA host (user-paired) runs a daemon, not a server-managed pod. */
-export function isByoaKind(kind: ComputerKind | null): boolean {
-  return kind === 'local' || kind === 'vps'
-}
-
-/** Assign an agent to a computer (move it between Cumora Cloud and a paired
- *  machine). Resolves the engine: 'managed' for cloud, else the requested
- *  engine if the computer advertises it, else the computer's first engine.
- *  Returns the resolved { kind, engine } or null if the computer/agent is
- *  invalid for this company. */
+/** Assign an agent to a computer (move it between paired machines). Resolves
+ *  the engine: the requested engine if the computer advertises it, else the
+ *  computer's first engine. Returns the resolved { kind, engine } or null if
+ *  the computer/agent is invalid for this company. */
 export async function assignAgentToComputer(args: {
   agentId: string
   companyId: string
@@ -442,22 +397,17 @@ export async function assignAgentToComputer(args: {
 }): Promise<{ kind: ComputerKind; engine: EngineId } | null> {
   const { rows } = await pool.query<{ kind: ComputerKind; available_engines: string[] }>(
     `SELECT kind, available_engines FROM computers
-      WHERE id = $1 AND company_id = $2 AND revoked_at IS NULL LIMIT 1`,
+      WHERE id = $1 AND company_id = $2 AND kind <> 'cloud' AND revoked_at IS NULL LIMIT 1`,
     [args.computerId, args.companyId],
   )
   const computer = rows[0]
   if (!computer) return null
 
-  let engine: EngineId
-  if (computer.kind === 'cloud') {
-    engine = 'managed'
-  } else {
-    const advertised = computer.available_engines ?? []
-    const requested = args.engine && PAIRABLE_ENGINES.has(args.engine) ? (args.engine as EngineId) : null
-    const pick = (requested && advertised.includes(requested) ? requested : advertised[0]) as EngineId | undefined
-    if (!pick) return null // a paired computer with no usable engine
-    engine = pick
-  }
+  const advertised = computer.available_engines ?? []
+  const requested = args.engine && PAIRABLE_ENGINES.has(args.engine) ? (args.engine as EngineId) : null
+  const pick = (requested && advertised.includes(requested) ? requested : advertised[0]) as EngineId | undefined
+  if (!pick) return null // a paired computer with no usable engine
+  const engine = pick
 
   const { rowCount } = await pool.query(
     `UPDATE participants SET computer_id = $1, engine = $2
@@ -469,7 +419,7 @@ export async function assignAgentToComputer(args: {
 }
 
 /** Revoke a paired computer: the device token + every derived agent JWT stop
- *  working, and its agents go offline. Cloud computers cannot be revoked. */
+ *  working, and its agents go offline. */
 export async function revokeComputer(args: { computerId: string; companyId: string }): Promise<boolean> {
   const { rowCount } = await pool.query(
     `UPDATE computers SET revoked_at = NOW(), status = 'offline', credential_hash = NULL

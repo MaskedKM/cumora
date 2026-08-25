@@ -4,8 +4,8 @@
  *
  *   ./node_modules/.bin/tsx scripts-gen-welcome-email-assets.ts
  *
- * Produces TWO objects on R2 at deterministic, unsigned keys so the URLs
- * never expire (`email/` isn't in storage.ts SIGNED_PREFIXES):
+ * Produces TWO objects on R2 at deterministic keys so the URLs never
+ * expire (`email/` isn't in storage.ts STORAGE_KEY_PREFIXES):
  *
  *   email/welcome-hero.png   ← 1536x1024 painterly cloudscape, GPT-Image-2
  *   email/logo.png           ← mirror of public/logo.png for inline use

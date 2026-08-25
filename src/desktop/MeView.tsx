@@ -740,8 +740,8 @@ function SkypeSoundSection() {
 // Brand and engine names stay in English in every locale. The values
 // below are display labels surfaced to users when we list computers —
 // products keep their own casing.
-const ENGINE_LABEL: Record<string, string> = { managed: 'Cumora', claude: 'Claude Code', codex: 'Codex', grok: 'Grok Build', cursor: 'Cursor' }
-const KIND_ICON: Record<string, string> = { cloud: '☁', local: '💻', vps: '🖥' }
+const ENGINE_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok Build', cursor: 'Cursor' }
+const KIND_ICON: Record<string, string> = { local: '💻', vps: '🖥' }
 const STATUS_COLOR: Record<string, string> = { online: '#3BB273', busy: '#E6A23C', offline: 'var(--ink-300)' }
 
 function ComputersTab() {
@@ -785,13 +785,11 @@ function ComputersTab() {
   const serverFlag = origin ? ` --server ${origin}` : ''
   const engineFlag = engine === 'claude' ? '' : ` --engine ${engine}`
   const pairCommand = code ? `npx cumora@latest agent computer --pair ${code}${serverFlag}${engineFlag}${asService ? ' --install-service' : ''}` : ''
-  const list = Object.values(byId).sort((a, b) =>
-    (a.kind === 'cloud' ? 0 : 1) - (b.kind === 'cloud' ? 0 : 1) || a.name.localeCompare(b.name))
+  const list = Object.values(byId).sort((a, b) => a.name.localeCompare(b.name))
 
-  function agentCount(computerId: string, isCloud: boolean): number {
+  function agentCount(computerId: string): number {
     return Object.values(participants).filter((p) =>
-      p.kind === 'agent' && !p.departedAt &&
-      (p.computerId === computerId || (isCloud && !p.computerId))).length
+      p.kind === 'agent' && !p.departedAt && p.computerId === computerId).length
   }
 
   // Clicking "Add a computer" just mints a pairing token and shows the command.
@@ -826,15 +824,14 @@ function ComputersTab() {
 
         <div className="grid gap-3">
           {list.map((c) => {
-            const n = agentCount(c.id, c.kind === 'cloud')
-            const repairable = c.kind !== 'cloud'
+            const n = agentCount(c.id)
             const expanded = repairFor === c.id
             const repairCmd = repairCode ? `npx cumora@latest agent computer --pair ${repairCode}${serverFlag}` : ''
             return (
               <div key={c.id} className="bg-cloud rounded-[14px]" style={{ border: '1px solid var(--ink-100)' }}>
                 <div
-                  className={cn('p-4 flex items-center gap-4 rounded-[14px]', repairable && 'cursor-pointer hover:bg-sky-50/50')}
-                  onClick={repairable ? () => void toggleRepair(c.id) : undefined}>
+                  className={'p-4 flex items-center gap-4 rounded-[14px] cursor-pointer hover:bg-sky-50/50'}
+                  onClick={() => void toggleRepair(c.id)}>
                   <div className="text-[22px] w-8 text-center">{KIND_ICON[c.kind] ?? '🖥'}</div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -854,20 +851,16 @@ function ComputersTab() {
                     <div className="text-[12px] text-ink-500 mt-0.5">
                       {c.availableEngines.map((e) => ENGINE_LABEL[e] ?? e).join(', ') || '—'}
                       {' · '}{n === 1 ? t('me.agentsCountOne', { n }) : t('me.agentsCountOther', { n })}
-                      {repairable && c.daemonVersion && (
+                      {c.daemonVersion && (
                         <>{' · '}<span className="font-mono text-[11px] text-ink-400">{t('me.daemonVersion', { version: c.daemonVersion })}</span></>
                       )}
                     </div>
                   </div>
-                  {repairable && (
-                    <>
-                      <span className="text-[12px] font-semibold text-skype-deep">{expanded ? t('me.hideAction') : t('me.reconnect')}</span>
-                      <button onClick={(e) => { e.stopPropagation(); void remove(c.id, c.name) }}
-                        className="text-[12px] font-semibold text-coral-deep hover:underline px-2 py-1">
-                        {t('me.remove')}
-                      </button>
-                    </>
-                  )}
+                  <span className="text-[12px] font-semibold text-skype-deep">{expanded ? t('me.hideAction') : t('me.reconnect')}</span>
+                  <button onClick={(e) => { e.stopPropagation(); void remove(c.id, c.name) }}
+                    className="text-[12px] font-semibold text-coral-deep hover:underline px-2 py-1">
+                    {t('me.remove')}
+                  </button>
                 </div>
                 {expanded && (
                   <div className="px-4 pb-4 pt-3 border-t border-ink-100">

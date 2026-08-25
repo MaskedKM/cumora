@@ -31,7 +31,7 @@ import { storage, type StorageObject } from './storage.js'
 import { inc } from './metrics.js'
 
 /** Prefix in object storage where every email attachment lives. Hardcoded
- *  here AND in storage.ts SIGNED_PREFIXES — keep in sync. */
+ *  here AND in storage.ts STORAGE_KEY_PREFIXES — keep in sync. */
 const STORAGE_PREFIX = 'email-attachments/'
 
 /** How recent an object must be to be spared from GC. Spans both:
