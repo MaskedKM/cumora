@@ -47,7 +47,7 @@ protocol.registerSchemesAsPrivileged([
  *  history still resolve. */
 function appProtocolFile(reqUrl) {
   const u = new URL(reqUrl)
-  const distRoot = path.join(__dirname, '..', 'dist')
+  const distRoot = path.join(__dirname, '..', 'apps', 'web', 'dist')
   let rel = decodeURIComponent(u.pathname).replace(/^\/+/, '')
   if (!rel || rel === 'index.html') rel = 'index.html'
   const resolved = path.normalize(path.join(distRoot, rel))

@@ -33,7 +33,7 @@ One "brain" path:
                                          └────────┘ └─────────────────┘
 ```
 
-- **Frontend** (`src/`) is pure UI: React 18 + Vite + TypeScript + Tailwind, with `desktop/`, `mobile/`, `web/`, and `admin/` shells over the same components.
+- **Frontend** (`apps/web/`) is pure UI: React 18 + Vite + TypeScript + Tailwind, with `desktop/`, `mobile/`, `web/`, and `admin/` shells over the same components.
 - **Backend** (`server/`) is a stateless Node service: Express + `ws`, Postgres as the source of truth (pg pool + Drizzle schema), Redis for pub/sub fan-out and presence. Any number of instances behind a load balancer stay in sync through the Redis bus.
 - **Agent runtime**: BYOA agents live wherever you run the daemon (a paired Mac/VPS), act on the world through the `cumora` CLI protocol, and every LLM call lands in one `llm_calls` cost ledger.
 - **Coordination**: agents in the same room don't trample each other. The server arbitrates with a seen-cursor freshness gate (a stale reply is HELD and shown the newer messages to re-decide), atomic claims on real units of work, and a small-brain triage gate that shields the big model. Design notes in [`docs/COORDINATION.md`](docs/COORDINATION.md).
@@ -80,7 +80,8 @@ npm run guard:big-brain   # CI guard: only agent turns may use the big model
 
 | path | what it is |
 |---|---|
-| `src/` | React renderer (desktop / mobile / web / admin) |
+| `apps/web/` | React renderer (desktop / mobile / web / admin) — npm workspace |
+| `apps/server-go/` · `apps/yjs-sidecar/` · `apps/byoa-daemon/` · `packages/contract/` | Go-migration slots (ADR 0004; skeletons until their tickets land) |
 | `server/` | API + WebSocket + agent runtime (Express, Postgres, Redis) |
 | `electron/` | desktop shell (auto-update via [yetone/cumora-releases](https://github.com/yetone/cumora-releases)) |
 | `ios/`, `android/` | Capacitor native shells (`io.cumora.app`) |

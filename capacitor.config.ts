@@ -16,7 +16,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
 const config: CapacitorConfig = {
   appId: 'io.cumora.app',
   appName: 'Cumora',
-  webDir: 'dist',
+  webDir: 'apps/web/dist',
   ios: {
     contentInset: 'never',
     backgroundColor: '#FAFCFE',

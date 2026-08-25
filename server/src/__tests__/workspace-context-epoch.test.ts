@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { commitIfEpochCurrent } from '../../../src/stores/contextEpoch'
+import { commitIfEpochCurrent } from '../../../apps/web/src/stores/contextEpoch'
 
 interface Deferred<T> {
   promise: Promise<T>

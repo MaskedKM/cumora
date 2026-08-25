@@ -34,7 +34,7 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - name: tsc (client)
-        run: npx tsc --noEmit
+        run: npm run typecheck
       - name: tsc (server)
         run: npm run server:typecheck
 

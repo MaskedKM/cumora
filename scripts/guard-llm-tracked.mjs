@@ -42,7 +42,6 @@ const SKIP = /(__tests__|__integration__|\.test\.ts$|\.d\.ts$|scripts\/)/
 const ALLOW = new Set([
   'server/src/llm.ts',
   'server/src/agents/llm-ledger.ts',
-  'server/src/agents/turn.ts',
 ])
 
 const ROOT_LEN = ROOT.length + 1

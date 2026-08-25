@@ -1,0 +1,7 @@
+{
+  "name": "@cumora/contract",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "OpenAPI 单一契约源与双侧代码生成产物(#48 填充:oapi-codegen / openapi-typescript)"
+}

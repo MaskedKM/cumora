@@ -3,7 +3,7 @@
 Cumora's mobile clients deliver chat-message notifications when the app
 is backgrounded or killed — iOS via APNs, Android via FCM. When
 the app is foregrounded the in-app `NotificationToasts` stack handles
-presentation instead — see `src/components/NotificationToasts.tsx`.
+presentation instead — see `apps/web/src/components/NotificationToasts.tsx`.
 
 This doc covers the **manual setup** required outside the codebase: the
 Apple Developer Portal / Firebase config plus the env vars the server

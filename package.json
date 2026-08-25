@@ -2,6 +2,10 @@
   "name": "cumora",
   "private": true,
   "version": "0.2.2",
+  "workspaces": [
+    "apps/web",
+    "packages/contract"
+  ],
   "type": "module",
   "main": "electron/main.cjs",
   "bin": {
@@ -20,11 +24,11 @@
   },
   "scripts": {
     "setup": "npm install && npm install --prefix workers/email-gate",
-    "dev": "vite --port 5180 --strictPort",
+    "dev": "npm run dev -w apps/web",
     "dev:all": "concurrently -k -n web,api -c blue,magenta \"npm:dev\" \"npm:server:dev\"",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host --port 5180",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run build -w apps/web",
+    "preview": "npm run preview -w apps/web",
+    "typecheck": "npm run typecheck -w apps/web",
     "server:dev": "tsx watch server/src/index.ts",
     "server:start": "tsx server/src/index.ts",
     "server:typecheck": "tsc -p server/tsconfig.json --noEmit",
@@ -137,7 +141,7 @@
       }
     ],
     "files": [
-      "dist/**/*",
+      "apps/web/dist/**/*",
       "electron/**/*",
       "build/icon.png",
       "build/tray-template*.png",

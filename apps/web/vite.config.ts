@@ -9,6 +9,9 @@ const HTTP_TARGET = process.env.CUMORA_DEV_API_TARGET || 'http://localhost:5181'
 const WS_TARGET = HTTP_TARGET.replace(/^http/, 'ws')
 
 export default defineConfig({
+  // Env files stay at the repo root (shared with the TS server's dotenv
+  // load) even though the web app now lives in apps/web.
+  envDir: path.resolve(__dirname, '../..'),
   plugins: [react()],
   // The renderer uses relative URLs through the Vite proxy, but commands
   // copied from the UI run outside that proxy and need the API origin.
