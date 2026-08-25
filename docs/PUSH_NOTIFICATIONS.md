@@ -25,8 +25,8 @@ recipient calculation) is already in the repo.
 | FCM sender (HTTP v1, service-account JWT) | `server/src/fcm.ts` |
 | Recipient filter (skips author, currently-online users, muted convos) | `computeMessageRecipients` in `server/src/push.ts` |
 | Outbound dispatch on new message | inside POST `/conversations/:id/messages` |
-| Client lifecycle (request perms, register, deep-link, sign-out) | `src/lib/push.ts` + `src/mobile/MobileApp.tsx` + `src/mobile/MobileMe.tsx` |
-| User preference `notify.push` (in-app kill switch) | `TOGGLE_PREFS` in `src/mobile/MobileMe.tsx` |
+| Client lifecycle (request perms, register, deep-link, sign-out) | `apps/web/src/lib/push.ts` + `apps/web/src/mobile/MobileApp.tsx` + `apps/web/src/mobile/MobileMe.tsx` |
+| User preference `notify.push` (in-app kill switch) | `TOGGLE_PREFS` in `apps/web/src/mobile/MobileMe.tsx` |
 
 The server soft-disables push when APNs / FCM credentials are absent:
 `/push/register` still accepts tokens (so the device side keeps working

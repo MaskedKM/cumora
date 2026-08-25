@@ -7,12 +7,12 @@ machine with Xcode 15+ and Ruby/CocoaPods installed.
 ## Architecture summary
 
 - **Renderer**: the same Vite/React bundle that ships in Electron
-  (`src/`). Mobile vs desktop is chosen by `useIsMobile()` in
-  `src/lib/utils.ts`. On iOS/Android, Capacitor's native bridge sets
+  (`apps/web/src/`). Mobile vs desktop is chosen by `useIsMobile()` in
+  `apps/web/src/lib/utils.ts`. On iOS/Android, Capacitor's native bridge sets
   `window.Capacitor.isNativePlatform()` to `true`, which forces the
   mobile shell regardless of viewport size (handles iPad split-view).
 - **Native shell**: Capacitor 8.x. Config lives in
-  `capacitor.config.ts`. Plugins wired through `src/lib/native.ts`:
+  `capacitor.config.ts`. Plugins wired through `apps/web/src/lib/native.ts`:
   status bar, splash screen, keyboard, app (back button), haptics.
 - **Backend**: same API as the desktop app — the committed
   `.env.production` sets `VITE_CUMORA_API_BASE=https://api.cumora.ai`,
@@ -41,7 +41,7 @@ npm run mobile:sync
 
 ```bash
 # Iterate against a live web bundle in the simulator. Capacitor will
-# load index.html from the bundled dist/ — for hot reload point
+# load index.html from the bundled apps/web/dist/ — for hot reload point
 # server.url at your laptop's LAN IP (NOT checked in).
 npm run mobile:ios:run
 ```

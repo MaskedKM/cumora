@@ -20,7 +20,7 @@ const DEV_URL = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5180'
 // Registering `app://cumora/` as a privileged scheme + serving every
 // request out of the packaged `dist/` directory normalises both classes
 // of paths: absolute `/foo` and relative `./foo` both end up as
-// `app://cumora/<path>` and resolve to `<resources>/dist/<path>`. The
+// `app://cumora/<path>` and resolve to `<resources>/apps/web/dist/<path>`. The
 // renderer otherwise can't tell it isn't running over plain http(s).
 //
 // Why `cumora` as the hostname (not `localhost`): the renderer's Origin
