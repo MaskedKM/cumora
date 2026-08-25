@@ -175,7 +175,8 @@ test('[integration] memory delete: removes the row by id', async () => {
 test('[integration] workspace write/edit/delete emit typed CLI side effects', async () => {
   const { companyId, agentId } = await seedCompanyWithAgent()
 
-  const write = await runCli(['--as', agentId, 'workspace', 'write', 'notes/todo.md', 'ship harness'])
+  // `ws` is the Private Area surface (ADR 0002: `workspace` = team surface).
+  const write = await runCli(['--as', agentId, 'ws', 'write', 'notes/todo.md', 'ship harness'])
   assert.equal(write.ok, true, `workspace write failed: ${write.text}`)
   assert.deepEqual(write.sideEffects, [{
     event: 'workspace.file_written',
@@ -186,7 +187,7 @@ test('[integration] workspace write/edit/delete emit typed CLI side effects', as
     bodyLength: 'ship harness'.length,
   }])
 
-  const edit = await runCli(['--as', agentId, 'workspace', 'edit', 'notes/todo.md', 'ship', 'harden'])
+  const edit = await runCli(['--as', agentId, 'ws', 'edit', 'notes/todo.md', 'ship', 'harden'])
   assert.equal(edit.ok, true, `workspace edit failed: ${edit.text}`)
   assert.deepEqual(edit.sideEffects, [{
     event: 'workspace.file_updated',
@@ -198,7 +199,7 @@ test('[integration] workspace write/edit/delete emit typed CLI side effects', as
     bodyLength: 'harden harness'.length,
   }])
 
-  const del = await runCli(['--as', agentId, 'workspace', 'delete', 'notes/todo.md'])
+  const del = await runCli(['--as', agentId, 'ws', 'delete', 'notes/todo.md'])
   assert.equal(del.ok, true, `workspace delete failed: ${del.text}`)
   assert.deepEqual(del.sideEffects, [{
     event: 'workspace.file_deleted',

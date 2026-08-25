@@ -21,6 +21,13 @@ import {
   parseMemoryPath,
 } from './memory-scope.js'
 import { memoryMetaForWrite, resolveMemoryWriteSource } from './memory-write.js'
+import {
+  WorkspaceError,
+  ensureDefaultWorkspace,
+  readWorkspaceFile,
+  resolveWorkspaceAccess,
+  writeWorkspaceFile,
+} from '../workspaces/core.js'
 
 // Every CLI result flows through ok()/err(), so scrubbing lone UTF-16 surrogates
 // here means CLI output (read by agents as tool results) can never carry a split
@@ -192,6 +199,11 @@ INTROSPECTION:
   tools-log [--agent <id>] [--limit N]
   participants-status
 
+TEAM WORKSPACES  (shared real folders; same membership as the human UI):
+  workspace ls [--as <id>]
+  workspace read <workspace-id> <path> [--as <id>]
+  workspace write <workspace-id> <path> <body> [--as <id>]
+
 PRIVATE TO EACH AGENT  (these write/read state owned by --as):
   memory list [--as <id>] [--about <subject>] [--kind <kind>] [--limit N] [--in <convo>] [--all]
   memory note <body> [--as <id>] [--about <subject>] [--kind <kind>] [--in <convo>]
@@ -201,13 +213,12 @@ PRIVATE TO EACH AGENT  (these write/read state owned by --as):
   log [--as <id>] [--limit N]
   log note <body> [--as <id>]
 
-  workspace ls [--as <id>]
-  workspace read <path> [--as <id>]
-  workspace write <path> <body> [--as <id>]
-  workspace edit <path> <old> <new> [--all]    # surgical replace; default fails if old not unique
-  workspace grep <pattern> [-i]                # regex across all your files
-  workspace delete <path> [--as <id>]
-  ws ...                                       # alias for workspace
+  ws ls [--as <id>]                            # your Private Area (agent-private files)
+  ws read <path> [--as <id>]
+  ws write <path> <body> [--as <id>]
+  ws edit <path> <old> <new> [--all]           # surgical replace; default fails if old not unique
+  ws grep <pattern> [-i]                       # regex across all your files
+  ws delete <path> [--as <id>]
 
   tasks list [--as <id>] [--status open|doing|done]
   tasks add <title> [--as <id>]
@@ -3894,6 +3905,70 @@ async function cmdLog(parsed: ParsedArgs): Promise<CliResult> {
   ].join('\n'))
 }
 
+/* ============== team workspaces (shared real folders) ==============
+ * Per ADR 0002 the bare word `workspace` belongs to the TEAM surface;
+ * the agent-private area answers only to `ws` (cmdWorkspace below).
+ * Membership goes through the same core as the human HTTP API, so agents
+ * and humans get identical scope rules and identical rejections — a
+ * non-member agent sees 'not a member of this workspace' just like a
+ * non-member human. */
+async function cmdTeamWorkspace(parsed: ParsedArgs): Promise<CliResult> {
+  const op = parsed.positional[0]
+  const me = resolveAs(parsed)
+  const tenant = await agentCompany(me)
+  if (!tenant) return err(`no company for ${me} — team workspaces need a team`)
+  const usage = 'usage: workspace ls | workspace read <id> <path> | workspace write <id> <path> <body> [--as id]'
+  if (op === 'ls') {
+    await ensureDefaultWorkspace(pool, tenant)
+    const { rows } = await pool.query(
+      `SELECT id, name, is_default, created_at FROM workspaces WHERE company_id = $1 ORDER BY created_at ASC`,
+      [tenant],
+    )
+    if (parsed.flags.json) return ok(JSON.stringify(rows, null, 2))
+    return ok([
+      `${rows.length} team workspace(s):`,
+      '',
+      ...rows.map((r) => `  ${r.id.padEnd(50)} ${r.is_default ? '[default] ' : ''}${r.name}`),
+    ].join('\n'))
+  }
+  const id = parsed.positional[1]
+  if (!id) return err(usage)
+  let workspace: Awaited<ReturnType<typeof resolveWorkspaceAccess>>
+  try {
+    workspace = await resolveWorkspaceAccess(pool, { companyId: tenant, participantId: me, workspaceId: id })
+    if (op === 'read') {
+      const path = parsed.positional[2]
+      if (!path) return err('usage: workspace read <id> <path> [--as id]')
+      const file = await readWorkspaceFile(workspace.folder_path, path)
+      return ok(file.body)
+    }
+    if (op === 'write') {
+      const path = parsed.positional[2]
+      const body = parsed.positional.slice(3).join(' ')
+      if (!path || !body) return err('usage: workspace write <id> <path> <body> [--as id]')
+      await writeWorkspaceFile(workspace.folder_path, path, body)
+      return ok(`wrote ${path} in ${workspace.name} (${body.length} chars)`, [
+        {
+          event: 'team_workspace.file_written',
+          command: 'workspace write',
+          agentId: me,
+          companyId: tenant,
+          workspaceId: workspace.id,
+          path,
+          bodyLength: body.length,
+        },
+      ])
+    }
+  } catch (e) {
+    if (e instanceof WorkspaceError) return err(e.message)
+    throw e
+  }
+  return err(usage)
+}
+
+/** The agent's Private Area (ADR 0002 vocabulary): per-agent files under
+ *  agent_workspace. Reached only via the `ws` alias — the word
+ *  `workspace` belongs to the team surface (cmdTeamWorkspace above). */
 async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
   const op = parsed.positional[0]
   const me = resolveAs(parsed)
@@ -3908,16 +3983,16 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
       [me],
     )
     if (parsed.flags.json) return ok(JSON.stringify(rows, null, 2))
-    if (rows.length === 0) return ok(`(${me}'s workspace is empty)`)
+    if (rows.length === 0) return ok(`(${me}'s Private Area is empty)`)
     return ok([
-      `${rows.length} file(s) in ${me}'s workspace:`,
+      `${rows.length} file(s) in ${me}'s Private Area:`,
       '',
       ...rows.map((r) => `  ${r.path.padEnd(40)} ${new Date(r.updated_at).toLocaleString()}`),
     ].join('\n'))
   }
   if (op === 'read') {
     const path = parsed.positional[1]
-    if (!path) return err('usage: workspace read <path> [--as id]')
+    if (!path) return err('usage: ws read <path> [--as id]')
     const { rows } = await pool.query<{ body: string; updated_at: string }>(
       `SELECT body, updated_at FROM agent_workspace WHERE agent_id = $1 AND path = $2`,
       [me, path],
@@ -3928,7 +4003,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
   if (op === 'write') {
     const path = parsed.positional[1]
     const body = parsed.positional.slice(2).join(' ')
-    if (!path || !body) return err('usage: workspace write <path> <body> [--as id]')
+    if (!path || !body) return err('usage: ws write <path> <body> [--as id]')
     const memMeta = path.startsWith('memory/')
       ? await memoryMetaForWrite(me, { path })
       : null
@@ -3953,7 +4028,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
   }
   if (op === 'delete') {
     const path = parsed.positional[1]
-    if (!path) return err('usage: workspace delete <path> [--as id]')
+    if (!path) return err('usage: ws delete <path> [--as id]')
     const r = await pool.query(`DELETE FROM agent_workspace WHERE agent_id = $1 AND path = $2`, [me, path])
     if ((r.rowCount ?? 0) === 0) return err(`no file at ${path}`)
     return ok(`deleted ${path}`, [{
@@ -3968,7 +4043,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
     const path = parsed.positional[1]
     const oldStr = parsed.positional[2]
     const newStr = parsed.positional[3] ?? ''
-    if (!path || oldStr === undefined) return err('usage: workspace edit <path> <old> <new> [--as id]')
+    if (!path || oldStr === undefined) return err('usage: ws edit <path> <old> <new> [--all] [--as id]')
     const { rows } = await pool.query<{ body: string }>(
       `SELECT body FROM agent_workspace WHERE agent_id = $1 AND path = $2`, [me, path],
     )
@@ -3994,7 +4069,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
   }
   if (op === 'grep') {
     const pattern = parsed.positional[1]
-    if (!pattern) return err('usage: workspace grep <pattern> [--as id]')
+    if (!pattern) return err('usage: ws grep <pattern> [--as id]')
     let re: RegExp
     try { re = new RegExp(pattern, parsed.flags.i ? 'gi' : 'g') } catch { return err(`bad regex: ${pattern}`) }
     const { rows } = await pool.query<{ path: string; body: string }>(
@@ -4012,7 +4087,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
     if (hits.length === 0) return ok(`(no matches for /${pattern}/ in ${me}'s workspace)`)
     return ok([`${hits.length} match(es):`, '', ...hits].join('\n'))
   }
-  return err(`usage: workspace <ls|read|write|edit|grep|delete> [...]`)
+  return err(`usage: ws <ls|read|write|edit|grep|delete> [...]`)
 }
 
 async function cmdTasks(parsed: ParsedArgs): Promise<CliResult> {
@@ -5993,7 +6068,7 @@ export async function runCli(argv: string[]): Promise<CliResult> {
       case 'memory':              return await cmdMemory(parsed)
       case 'climate':             return await cmdClimate(parsed)
       case 'log':                 return await cmdLog(parsed)
-      case 'workspace':
+      case 'workspace':           return await cmdTeamWorkspace(parsed)
       case 'ws':                  return await cmdWorkspace(parsed)
       case 'tasks':               return await cmdTasks(parsed)
       case 'calendar':            return await cmdCalendar(parsed)
