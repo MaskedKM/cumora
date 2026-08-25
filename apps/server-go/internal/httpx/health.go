@@ -23,7 +23,6 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 // MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)。
 // 形状对齐 TS baseline:{ok, ts(ms)};池耗尽时 1s 超时兜底返回确定性 503。
 func MountHealth(mux *http.ServeMux, pool interface {
-	Ping() error
 	PingContext(ctx context.Context) error
 }) {
 	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, _ *http.Request) {

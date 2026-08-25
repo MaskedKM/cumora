@@ -29,7 +29,7 @@ func envOr(key, fallback string) string {
 }
 
 // withSSLModeDisabled 在 URL 未显式指定 sslmode 时追加 disable —— 自托管
-// 本机 pg 默认无 TLS,pq 默认 prefer 会握手失败(TS 侧 pg 驱动默认不要求)。
+// 本机 pg 默认无 TLS,pgx 默认 prefer 会握手失败(TS 侧 pg 驱动默认不要求)。
 func withSSLModeDisabled(url string) string {
 	if strings.Contains(url, "sslmode=") {
 		return url

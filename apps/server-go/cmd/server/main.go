@@ -34,7 +34,7 @@ func main() {
 	defer pool.Close()
 
 	if err := db.Migrate(pool, cfg.MigrationsDir); err != nil {
-		slog.Error("goose migrate failed", "err", err)
+		slog.Error("go_migrations apply failed", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("schema at baseline", "migrations", cfg.MigrationsDir)

@@ -6,6 +6,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -33,12 +34,20 @@ func Open(url string) (*sql.DB, error) {
 // 正式 goose 若引入可平滑接管——其默认表名 goose_db_version 不冲突)。
 func Migrate(db *sql.DB, dir string) error {
 	// 双实例并发靴的 CREATE TABLE IF NOT EXISTS 竞态防护(pg_type 重复键)。
-	if _, err := db.Exec(`SELECT pg_advisory_lock(hashtext('cumora_go_migrations'))`); err != nil {
+	// 持锁于单条借出连接——池可能把两条 Exec 派给不同连接,跨连接 unlock
+	// 会静默失效而锁悬挂。
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migration conn: %w", err)
+	}
+	defer conn.Close() // 会话锁随连接关闭释放
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('cumora_go_migrations'))`); err != nil {
 		return fmt.Errorf("advisory lock: %w", err)
 	}
-	defer db.Exec(`SELECT pg_advisory_unlock(hashtext('cumora_go_migrations'))`)
+	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext('cumora_go_migrations'))`)
 
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS go_migrations (
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS go_migrations (
 		id SERIAL PRIMARY KEY,
 		name TEXT NOT NULL UNIQUE,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -68,7 +77,7 @@ func Migrate(db *sql.DB, dir string) error {
 		if err != nil {
 			return err
 		}
-		tx, err := db.Begin()
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
