@@ -33,6 +33,9 @@ jobs:
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 15
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
+    env:
+      # CI never runs Electron — skip its ~100MB binary postinstall.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,12 +60,17 @@ jobs:
 
   tests:
     name: Unit + integration
+    # The whole job runs IN a container on the runner's Docker. Services
+    # share the job network and are reached by service name (postgres,
+    # redis) — no host ports are published, so concurrent PRs (two runner
+    # slots) and any services already on the host can never collide on
+    # 5432/6379. node:24 ships the toolchain (no setup-node needed);
+    # checkout falls back to the REST tarball (image has no git).
     runs-on: [self-hosted, linux, ser8]
+    container:
+      image: node:24-bookworm-slim
     timeout-minutes: 30
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
-    # `npm test` (server/src/__tests__ + workers) boots env.ts and opens
-    # Postgres/Redis connections, so both suites need the same service
-    # containers — without them tests hang on ECONNREFUSED until timeout.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -70,8 +78,6 @@ jobs:
           POSTGRES_USER: cumora
           POSTGRES_PASSWORD: cumora
           POSTGRES_DB: cumora_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U cumora -d cumora_test"
           --health-interval 5s
@@ -79,17 +85,16 @@ jobs:
           --health-retries 10
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      INTEGRATION_DATABASE_URL: postgres://cumora:cumora@localhost:5432/cumora_test
-      DATABASE_URL: postgres://cumora:cumora@localhost:5432/cumora_test
-      REDIS_URL: redis://localhost:6379
+      # Service hostnames resolve on the job's docker network.
+      INTEGRATION_DATABASE_URL: postgres://cumora:cumora@postgres:5432/cumora_test
+      DATABASE_URL: postgres://cumora:cumora@postgres:5432/cumora_test
+      REDIS_URL: redis://redis:6379
       # Force mock Resend — the runner enforces this too, but doubling
       # up here makes a misconfiguration loud. Values are dummy for CI.
       RESEND_API_KEY: ''
@@ -97,12 +102,9 @@ jobs:
       EMAIL_INBOUND_HMAC_SECRET: ci-test-secret
       AUTH_SECRET: ci-test-auth-secret
       OPENAI_API_KEY: ci-test-openai-key
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'npm'
       - run: npm ci
       # `npm test` runs workers/**/*.test.ts too, and the email-gate
       # worker has its own dependencies (postal-mime) that the root
@@ -112,7 +114,7 @@ jobs:
       - name: Unit tests
         run: npm test --silent
       # Enable pgvector for the integration suite (unit tests don't need
-      # it). The runner host has no psql — use the repo's pg client.
+      # it) via the repo's pg client.
       - name: Enable pgvector extension
         run: >-
           node -e "const {Client}=require('pg');(async()=>{
