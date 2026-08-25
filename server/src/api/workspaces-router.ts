@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/pro
 import { dirname, basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Pool } from 'pg'
 import type { AuthedRequest } from '../auth.js'
+import { UPLOAD_DIR } from '../storage.js'
 
 type CompanyContext = { userId: string; companyId: string }
 type CompanyRoleContext = CompanyContext & { role: string }
@@ -89,6 +90,36 @@ async function resolveInside(root: string, raw: unknown): Promise<{ abs: string;
   return { abs: real, rel: relative(root, real) }
 }
 
+/** Each team has exactly one default workspace whose member scope is the
+ *  entire team — the referent of "everyone reads and writes the same real
+ *  files". Lazily provisioned and self-healing on every list call, so
+ *  existing companies get one without a migration and new ones without a
+ *  creation hook. Unlike operator-bound folders, its folder is
+ *  product-managed under UPLOAD_DIR (workspaces/<companyId>). Provisioning
+ *  fails loud: if the folder can't be created, listing 500s rather than
+ *  silently omitting the team's core artifact. */
+async function ensureDefaultWorkspace(pool: Pool, companyId: string): Promise<void> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`,
+    [companyId],
+  )
+  if (rows[0]) return
+  const folder = join(UPLOAD_DIR, 'workspaces', companyId)
+  await mkdir(folder, { recursive: true })
+  const folderReal = await realpath(folder)
+  await pool
+    .query(
+      `INSERT INTO workspaces (id, company_id, name, folder_path, is_default)
+       VALUES ($1, $2, $3, $4, TRUE)
+       ON CONFLICT DO NOTHING`,
+      [`ws-default-${companyId}`, companyId, 'Team files', folderReal],
+    )
+    .catch((e: unknown) => {
+      if ((e as { code?: string }).code !== '23505') throw e
+      // Lost the one-per-company race — the winner's row is correct.
+    })
+}
+
 async function requireWorkspaceMember(
   deps: WorkspacesRouterDeps,
   req: Request & AuthedRequest,
@@ -96,6 +127,9 @@ async function requireWorkspaceMember(
 ): Promise<{ userId: string; companyId: string; workspace: WorkspaceRow }> {
   const { userId, companyId } = await deps.requireCompany(req)
   const workspace = await loadWorkspace(deps.pool, companyId, workspaceId)
+  // The default workspace's member scope is the entire team — company
+  // membership (just proven by requireCompany) IS workspace membership.
+  if (workspace.is_default) return { userId, companyId, workspace }
   // Membership = explicit row ∪ participants of associated targets,
   // computed live so the scope follows participant changes on the targets
   // with no sync hooks. Participant model per kind mirrors
@@ -268,6 +302,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
 
   router.get('/', async (req, res) => {
     const { companyId } = await deps.requireCompany(req)
+    await ensureDefaultWorkspace(pool, companyId)
     const { rows } = await pool.query(
       `SELECT w.id, w.name, w.is_default AS "isDefault", w.created_at AS "createdAt",
               count(m.participant_id)::int AS "explicitMemberCount"
@@ -303,6 +338,13 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
     )
 
     const implicitIds = await implicitMembers(pool, workspace.id, companyId)
+    if (workspace.is_default) {
+      const all = await pool.query<{ id: string }>(
+        `SELECT id FROM participants WHERE company_id = $1 AND departed_at IS NULL`,
+        [companyId],
+      )
+      for (const row of all.rows) implicitIds.add(row.id)
+    }
     const explicitIds = new Set(explicit.rows.map((r) => r.participantId))
     const derivedOnly = [...implicitIds].filter((pid) => !explicitIds.has(pid))
     let implicitRows: Array<{ participantId: string; name: string; kind: string; source: string; addedAt: null }> = []

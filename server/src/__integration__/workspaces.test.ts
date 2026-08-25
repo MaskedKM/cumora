@@ -247,7 +247,7 @@ test('company members outside the scope are denied file operations; other compan
 
   const list = await fetch(`${memberBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
   assert.equal(list.status, 200)
-  assert.equal(((await list.json()) as unknown[]).length, 1) // visible, just not accessible
+  assert.ok(((await list.json()) as Array<{ id: string }>).some((r) => r.id === id)) // visible, just not accessible
 
   const detailRes = await fetch(`${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   assert.equal(detailRes.status, 200)
@@ -569,4 +569,62 @@ test('cross-company isolation: associations only see same-company targets', asyn
   const { id } = await createWorkspaceJson()
   assert.equal((await associate(id, 'project', 'p-b')).status, 404) // B's project invisible to A
   assert.equal((await associate(id, 'project', 'p-ws')).status, 201) // same-company works
+})
+
+// ---------- Default workspace (#30) ----------
+
+async function defaultWorkspaceId(base: string = ownerBase): Promise<string> {
+  const res = await fetch(`${base}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
+  const rows = (await res.json()) as Array<{ id: string; isDefault: boolean }>
+  return (rows.find((r) => r.isDefault) as { id: string }).id
+}
+
+test('every team gets exactly one default workspace, self-healing on repeat listing', async () => {
+  const firstId = await defaultWorkspaceId()
+  assert.match(firstId, /^ws-default-/)
+  const again = await fetch(`${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
+  const rows = (await again.json()) as Array<{ id: string; isDefault: boolean }>
+  const defaults = rows.filter((r) => r.isDefault)
+  assert.equal(defaults.length, 1)
+  assert.equal(defaults[0].id, firstId)
+})
+
+test('default workspace: whole team reads and writes without being added; scope follows company membership', async () => {
+  const defId = await defaultWorkspaceId()
+  assert.equal(await writeAs(defId, 'a.txt', memberBase), 200) // never explicitly added
+
+  const read = await fetch(`${memberBase}/api/workspaces/${defId}/file${q('a.txt')}`, {
+    headers: jsonHeaders(COMPANY),
+  })
+  assert.equal(read.status, 200)
+  assert.equal(((await read.json()) as { body: string }).body, 'x')
+
+  const detail = (await (
+    await fetch(`${ownerBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY) })
+  ).json()) as { folderPath: string; members: Array<{ participantId: string; source: string }> }
+  assert.ok(detail.folderPath.includes('workspaces')) // product-managed folder
+  const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
+  assert.equal(sources.get(MEMBER), 'implicit')
+  assert.equal(sources.get(AGENT), 'implicit') // humans and agents alike
+  assert.equal(sources.get(OWNER), 'implicit') // the whole team, not an explicit list
+
+  await pool.query(`DELETE FROM company_members WHERE company_id = $1 AND user_id = $2`, [COMPANY, MEMBER])
+  assert.equal(await writeAs(defId, 'b.txt', memberBase), 403) // out of the team
+  await pool.query(
+    `INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`,
+    [COMPANY, MEMBER],
+  )
+  assert.equal(await writeAs(defId, 'b.txt', memberBase), 200) // back in
+})
+
+test('cross-company: another company cannot reach a team default workspace by its deterministic id', async () => {
+  const defId = await defaultWorkspaceId()
+  assert.equal(
+    (await fetch(`${outsiderBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY_B) })).status,
+    404,
+  )
+  assert.equal(
+    (await fetch(`${outsiderBase}/api/workspaces/${defId}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
+    404,
+  )
 })
