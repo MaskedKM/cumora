@@ -2,7 +2,10 @@
 // Go 侧新增一律 CUMORA_GO_ 前缀。
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
 	ListenAddr     string
@@ -14,7 +17,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		ListenAddr:    envOr("CUMORA_GO_LISTEN", ":5190"),
-		DatabaseURL:   envOr("DATABASE_URL", "postgres://localhost:5432/cumora"),
+		DatabaseURL:   withSSLModeDisabled(envOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
 		MigrationsDir: envOr("CUMORA_GO_MIGRATIONS", "migrations"),
 		InstanceID:    envOr("INSTANCE_ID", "go-1"),
 	}
@@ -25,4 +28,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// withSSLModeDisabled 在 URL 未显式指定 sslmode 时追加 disable —— 自托管
+// 本机 pg 默认无 TLS,pq 默认 prefer 会握手失败(TS 侧 pg 驱动默认不要求)。
+func withSSLModeDisabled(url string) string {
+	if strings.Contains(url, "sslmode=") {
+		return url
+	}
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	return url + sep + "sslmode=disable"
 }
