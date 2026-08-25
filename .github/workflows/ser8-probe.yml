@@ -1,0 +1,18 @@
+# One-off environment probe for the ser8 self-hosted runner (throwaway).
+name: ser8-probe
+on:
+  push:
+    branches: [ci-ser8-probe]
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, ser8]
+    steps:
+      - run: uname -a
+      - run: node --version || true
+      - run: npm --version || true
+      - run: docker --version || true
+      - run: psql --version || true
+      - run: redis-cli --version || true
+      - run: df -h . | tail -1
+      - run: nproc
