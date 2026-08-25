@@ -319,13 +319,13 @@ export const en = {
   'cal.monthUnitPlural': 'months',
   'cal.yearUnitPlural': 'years',
   // ─── documents view ───────────────────────────────────────────────
+  // ─── workspaces view ───
   'ws.title': 'Workspaces',
   'ws.members': 'Member scope',
   'ws.explicit': 'explicit',
   'ws.implicit': 'implicit',
   'ws.associations': 'Associations',
   'ws.none': 'None yet',
-  'ws.files': 'Files',
   'ws.emptyDir': '(empty folder)',
   'ws.default': 'default',
   'ws.up': 'Up',
@@ -340,8 +340,6 @@ export const en = {
   'ws.tooLarge': 'File too large to open (2 MB cap)',
   'ws.notMember': 'You are not in this workspace\'s member scope',
   'ws.unbound': 'This workspace is unbound — files are read-only history',
-  'ws.folder': 'Folder',
-  'ws.openFailed': 'Could not open the file',
   'ws.kindProject': 'project',
   'ws.kindBoardCard': 'board card',
   'ws.kindDocument': 'document',

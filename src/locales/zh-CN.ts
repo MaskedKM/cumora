@@ -321,13 +321,13 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'cal.monthUnitPlural': '个月',
   'cal.yearUnitPlural': '年',
   // ─── 文档 ─────────────────────────────────────────────────────────
+  // ─── 工作区视图 ───
   'ws.title': '工作区',
   'ws.members': '成员范围',
   'ws.explicit': '显式',
   'ws.implicit': '隐式',
   'ws.associations': '关联',
   'ws.none': '暂无',
-  'ws.files': '文件',
   'ws.emptyDir': '（空文件夹）',
   'ws.default': '默认',
   'ws.up': '上一级',
@@ -342,8 +342,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ws.tooLarge': '文件过大，无法打开（上限 2MB）',
   'ws.notMember': '你不在该工作区的成员范围内',
   'ws.unbound': '该工作区已解绑 —— 文件为只读历史',
-  'ws.folder': '文件夹',
-  'ws.openFailed': '无法打开该文件',
   'ws.kindProject': '项目',
   'ws.kindBoardCard': '看板卡',
   'ws.kindDocument': '文档',

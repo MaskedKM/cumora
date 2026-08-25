@@ -12,6 +12,7 @@ import { ResizeHandle } from '../components/ResizeHandle'
 import { TextArea } from '../components/TextArea'
 import { Input } from '../components/Input'
 import { CodeBlock, RichBody } from '../components/Message'
+import { useDocuments } from '../stores/documents'
 
 const CODE_LANGS: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', mjs: 'javascript',
@@ -60,6 +61,8 @@ function FilePreview({ path, body }: { path: string; body: string }) {
 export function WorkspacesView() {
   const t = useT()
   const { width, onResizeStart } = useResizableWidth('sidebar:workspaces', 280, { min: 220, max: 480 })
+  const docList = useDocuments((s) => s.list)
+  const docLoad = useDocuments((s) => s.load)
 
   const [list, setList] = useState<ApiWorkspaceSummary[]>([])
   const [listError, setListError] = useState<string | null>(null)
@@ -69,7 +72,7 @@ export function WorkspacesView() {
   const [dirPath, setDirPath] = useState('')
   const [entries, setEntries] = useState<ApiWorkspaceFileEntry[] | null>(null)
   const [filesError, setFilesError] = useState<string | null>(null)
-  const [openFile, setOpenFile] = useState<{ path: string; body: string } | null>(null)
+  const [openFile, setOpenFile] = useState<{ wsId: string; path: string; body: string } | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [fileError, setFileError] = useState<string | null>(null)
@@ -91,6 +94,10 @@ export function WorkspacesView() {
     return () => { cancelled = true }
   }, [])
 
+  // Document titles for the associations rail (best effort — projects and
+  // board cards have no frontend store, those stay as ids).
+  useEffect(() => { void docLoad() }, [docLoad])
+
   useEffect(() => {
     if (!selectedId) { setDetail(null); setDetailError(null); return }
     let cancelled = false
@@ -100,6 +107,11 @@ export function WorkspacesView() {
     setEditing(false)
     setDirPath('')
     setEntries(null)
+    setFilesError(null)
+    setFileError(null)
+    setCreating(false)
+    setNewPath('')
+    setSavedTick(0)
     api.getWorkspace(selectedId)
       .then((d) => { if (!cancelled) setDetail(d) })
       .catch((e) => { if (!cancelled) setDetailError(e instanceof Error ? e.message : String(e)) })
@@ -107,40 +119,52 @@ export function WorkspacesView() {
   }, [selectedId])
 
   const reloadDir = useCallback(() => {
+    setFilesError(null)
     if (!selectedId || detail?.unboundAt) return
     let cancelled = false
-    setFilesError(null)
     api.listWorkspaceFiles(selectedId, dirPath)
       .then((r) => { if (!cancelled) setEntries(r.entries) })
       .catch((e) => {
         if (cancelled) return
         setEntries(null)
-        setFilesError(e instanceof ApiError && e.status === 403 ? t('ws.notMember') : e instanceof Error ? e.message : String(e))
+        setFilesError(
+          e instanceof ApiError && e.status === 403 ? t('ws.notMember')
+            : e instanceof ApiError && e.status === 410 ? t('ws.unbound')
+              : e instanceof Error ? e.message : String(e),
+        )
       })
     return () => { cancelled = true }
   }, [selectedId, dirPath, detail?.unboundAt, t])
 
   useEffect(() => { reloadDir() }, [reloadDir])
 
-  const dirty = editing && openFile !== null && draft !== openFile.body
+  const dirty = editing && openFile !== null && openFile.wsId === selectedId && draft !== openFile.body
   const guardDirty = () => !dirty || confirm(t('ws.dirtyConfirm'))
+  // Switching views via the Rail can't be intercepted from here — unsaved
+  // edits are lost on view switch (same trade-off as the documents editor).
+  const closeFile = () => {
+    setOpenFile(null)
+    setEditing(false)
+    setSavedTick(0)
+  }
 
   const openEntry = async (entry: ApiWorkspaceFileEntry) => {
     if (!selectedId) return
     const path = joinPath(dirPath, entry.name)
+    if (!guardDirty()) return
+    setFileError(null)
     if (entry.dir) {
-      if (!guardDirty()) return
-      setOpenFile(null)
-      setEditing(false)
-      setFileError(null)
+      closeFile()
       setDirPath(path)
       return
     }
-    if (!guardDirty()) return
-    setFileError(null)
     try {
       const f = await api.readWorkspaceFile(selectedId, path)
-      setOpenFile({ path, body: f.body })
+      if (openFile !== null || editing) {
+        // a previous file was open — reset the saved flash for the new one
+        setSavedTick(0)
+      }
+      setOpenFile({ wsId: selectedId, path, body: f.body })
       setEditing(false)
     } catch (e) {
       if (e instanceof ApiError && e.status === 413) setFileError(t('ws.tooLarge'))
@@ -149,11 +173,11 @@ export function WorkspacesView() {
   }
 
   const save = async () => {
-    if (!selectedId || !openFile || !editing) return
+    if (!selectedId || !openFile || !editing || openFile.wsId !== selectedId) return
     setSaving(true)
     try {
       await api.writeWorkspaceFile(selectedId, openFile.path, draft)
-      setOpenFile({ path: openFile.path, body: draft })
+      setOpenFile({ wsId: selectedId, path: openFile.path, body: draft })
       setEditing(false)
       setSavedTick((n) => n + 1)
       void reloadDir()
@@ -167,14 +191,16 @@ export function WorkspacesView() {
   const createFile = async () => {
     if (!selectedId || !newPath.trim()) return
     if (!guardDirty()) return
+    setFileError(null)
     const path = newPath.trim().replace(/^\/+/, '')
     try {
       await api.writeWorkspaceFile(selectedId, path, '')
       setCreating(false)
       setNewPath('')
-      setOpenFile({ path, body: '' })
+      setOpenFile({ wsId: selectedId, path, body: '' })
       setDraft('')
       setEditing(true)
+      setSavedTick(0)
       void reloadDir()
     } catch (e) {
       setFileError(e instanceof Error ? e.message : String(e))
@@ -182,18 +208,20 @@ export function WorkspacesView() {
   }
 
   const breadcrumb = dirPath ? dirPath.split('/') : []
+  const docTitles = new Map(docList.map((d) => [d.id, d.title]))
+  const activeFile = openFile && openFile.wsId === selectedId ? openFile : null
 
   return (
     <div className="h-full grid" style={{ gridTemplateColumns: `${width}px 1fr` }}>
-      <aside className="min-w-0 h-full flex flex-col border-r border-ink-100 bg-paper">
+      <aside className="relative min-w-0 h-full flex flex-col border-r border-ink-100 bg-paper">
         <div className="px-4 pt-4 pb-2 text-[13px] font-semibold text-stone-800">{t('ws.title')}</div>
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-          {listError && <div className="px-2 py-1 text-[12.5px] text-coral-600">{listError}</div>}
+          {listError && <div className="px-2 py-1 text-[12.5px] text-coral-deep">{listError}</div>}
           {list.map((w) => (
             <button
               key={w.id}
               type="button"
-              onClick={() => setSelectedId(w.id)}
+              onClick={() => { if (guardDirty()) setSelectedId(w.id) }}
               className={cnRow(selectedId === w.id)}
               title={w.name}
             >
@@ -206,8 +234,8 @@ export function WorkspacesView() {
             </button>
           ))}
         </div>
+        <ResizeHandle onMouseDown={onResizeStart} />
       </aside>
-      <ResizeHandle onMouseDown={onResizeStart} />
 
       <main className="min-w-0 h-full flex flex-col bg-cloud">
         {!selectedId || (detailError && !detail) ? (
@@ -226,7 +254,7 @@ export function WorkspacesView() {
                 </span>
               )}
               {detail.unboundAt && (
-                <span className="rounded-full bg-coral-100 px-2 py-0.5 text-[10.5px] font-medium text-coral-700">
+                <span className="rounded-full bg-coral-soft px-2 py-0.5 text-[10.5px] font-medium text-coral-deep">
                   {t('ws.unbound')}
                 </span>
               )}
@@ -240,116 +268,125 @@ export function WorkspacesView() {
             <div className="flex-1 min-h-0 grid" style={{ gridTemplateColumns: 'minmax(0, 1fr) 264px' }}>
               {/* Files */}
               <section className="min-w-0 h-full flex flex-col border-r border-ink-100">
-                <div className="flex items-center gap-1.5 border-b border-ink-100 px-4 py-2 text-[12px] text-ink-500">
-                  <button
-                    type="button"
-                    disabled={!dirPath}
-                    onClick={() => { if (guardDirty()) { setOpenFile(null); setEditing(false); setDirPath(parentDir(dirPath)) } }}
-                    className="rounded-lg px-1.5 py-0.5 hover:bg-cloud disabled:opacity-40"
-                  >
-                    {t('ws.up')}
-                  </button>
-                  <span className="truncate font-mono text-ink-400">/{breadcrumb.join('/')}</span>
-                  {!detail.unboundAt && (
-                    <button
-                      type="button"
-                      onClick={() => { if (guardDirty()) { setOpenFile(null); setEditing(false); setCreating(true) } }}
-                      className="ml-auto rounded-lg px-2 py-0.5 text-skype-deep hover:bg-cloud"
-                    >
-                      {t('ws.newFile')}
-                    </button>
-                  )}
-                </div>
-
-                {filesError ? (
-                  <div className="px-4 py-3 text-[12.5px] text-coral-600">{filesError}</div>
-                ) : creating ? (
-                  <div className="flex items-center gap-2 px-4 py-2">
-                    <Input
-                      autoFocus
-                      value={newPath}
-                      onChange={(e) => setNewPath(e.target.value)}
-                      placeholder={t('ws.newFilePh')}
-                      className="flex-1"
-                      onKeyDown={(e) => { if (e.key === 'Enter') void createFile(); if (e.key === 'Escape') setCreating(false) } }
-                    />
-                    <button type="button" onClick={() => void createFile()} className="rounded-lg bg-skype px-2.5 py-1 text-[12px] font-medium text-white">
-                      {t('ws.create')}
-                    </button>
-                    <button type="button" onClick={() => setCreating(false)} className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud">
-                      {t('ws.cancel')}
-                    </button>
-                  </div>
-                ) : openFile ? (
-                  <div className="flex-1 min-h-0 flex flex-col">
-                    <div className="flex items-center gap-2 border-b border-ink-100 px-4 py-1.5">
-                      <span className="truncate font-mono text-[11.5px] text-ink-500">{openFile.path}</span>
-                      {savedTick > 0 && !editing && !dirty && (
-                        <span className="text-[11px] text-skype-deep">{t('ws.saved')}</span>
-                      )}
-                      {editing ? (
-                        <>
-                          <button
-                            type="button"
-                            disabled={saving}
-                            onClick={() => void save()}
-                            className="ml-auto rounded-lg bg-skype px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50"
-                          >
-                            {t('ws.save')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => { setEditing(false); setDraft(openFile.body) }}
-                            className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud"
-                          >
-                            {t('ws.cancel')}
-                          </button>
-                        </>
-                      ) : (
-                        !detail.unboundAt && (
-                          <button
-                            type="button"
-                            onClick={() => { setDraft(openFile.body); setEditing(true); setSavedTick(0) }}
-                            className="ml-auto rounded-lg px-2 py-1 text-[12px] text-skype-deep hover:bg-cloud"
-                          >
-                            {t('ws.edit')}
-                          </button>
-                        )
-                      )}
-                    </div>
-                    {fileError && <div className="px-4 py-1.5 text-[12px] text-coral-600">{fileError}</div>}
-                    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
-                      {editing ? (
-                        <TextArea
-                          value={draft}
-                          onChange={(e) => setDraft(e.target.value)}
-                          className="h-full font-mono text-[12.5px] leading-[1.6]"
-                          spellCheck={false}
-                        />
-                      ) : (
-                        <FilePreview path={openFile.path} body={openFile.body} />
-                      )}
-                    </div>
+                {detail.unboundAt ? (
+                  <div className="flex-1 grid place-items-center px-6 text-center text-[13px] text-ink-400">
+                    {t('ws.unbound')}
                   </div>
                 ) : (
-                  <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
-                    {entries === null ? null : entries.length === 0 ? (
-                      <div className="px-2 py-2 text-[12.5px] text-ink-400">{t('ws.emptyDir')}</div>
-                    ) : (
-                      entries.map((e) => (
-                        <button
-                          key={e.name}
-                          type="button"
-                          onClick={() => void openEntry(e)}
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-stone-700 hover:bg-stone-50"
-                        >
-                          <span className={e.dir ? 'font-medium' : ''}>{e.dir ? '📁' : '📄'}</span>
-                          <span className="truncate">{e.name}</span>
-                          <span className="ml-auto shrink-0 text-[11px] text-ink-400">{e.dir ? '' : bytes(e.size)}</span>
+                  <>
+                    <div className="flex items-center gap-1.5 border-b border-ink-100 px-4 py-2 text-[12px] text-ink-500">
+                      <button
+                        type="button"
+                        disabled={!dirPath}
+                        onClick={() => { if (guardDirty()) { closeFile(); setDirPath(parentDir(dirPath)) } }}
+                        className="rounded-lg px-1.5 py-0.5 hover:bg-cloud disabled:opacity-40"
+                      >
+                        {t('ws.up')}
+                      </button>
+                      <span className="truncate font-mono text-ink-400">/{breadcrumb.join('/')}</span>
+                      <button
+                        type="button"
+                        onClick={() => { if (guardDirty()) { closeFile(); setCreating(true) } }}
+                        className="ml-auto rounded-lg px-2 py-0.5 text-skype-deep hover:bg-cloud"
+                      >
+                        {t('ws.newFile')}
+                      </button>
+                    </div>
+
+                    {fileError && <div className="border-b border-ink-100 px-4 py-1.5 text-[12px] text-coral-deep">{fileError}</div>}
+
+                    {filesError ? (
+                      <div className="px-4 py-3 text-[12.5px] text-coral-deep">{filesError}</div>
+                    ) : creating ? (
+                      <div className="flex items-center gap-2 px-4 py-2">
+                        <Input
+                          autoFocus
+                          value={newPath}
+                          onChange={(e) => setNewPath(e.target.value)}
+                          placeholder={t('ws.newFilePh')}
+                          className="flex-1"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createFile()
+                            if (e.key === 'Escape') { setCreating(false); setNewPath('') }
+                          } }
+                        />
+                        <button type="button" onClick={() => void createFile()} className="rounded-lg bg-skype px-2.5 py-1 text-[12px] font-medium text-white">
+                          {t('ws.create')}
                         </button>
-                      ))
+                        <button type="button" onClick={() => { setCreating(false); setNewPath('') }} className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud">
+                          {t('ws.cancel')}
+                        </button>
+                      </div>
+                    ) : activeFile ? (
+                      <div className="flex-1 min-h-0 flex flex-col">
+                        <div className="flex items-center gap-2 border-b border-ink-100 px-4 py-1.5">
+                          <span className="truncate font-mono text-[11.5px] text-ink-500" title={activeFile.path}>{activeFile.path}</span>
+                          {savedTick > 0 && !editing && !dirty && (
+                            <span className="text-[11px] text-skype-deep">{t('ws.saved')}</span>
+                          )}
+                          {editing ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={() => void save()}
+                                className="ml-auto rounded-lg bg-skype px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50"
+                              >
+                                {t('ws.save')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { setEditing(false); setDraft(activeFile.body) }}
+                                className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud"
+                              >
+                                {t('ws.cancel')}
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => { setDraft(activeFile.body); setEditing(true); setSavedTick(0) }}
+                              className="ml-auto rounded-lg px-2 py-1 text-[12px] text-skype-deep hover:bg-cloud"
+                            >
+                              {t('ws.edit')}
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+                          {editing ? (
+                            <TextArea
+                              value={draft}
+                              onChange={(e) => setDraft(e.target.value)}
+                              className="h-full font-mono text-[12.5px] leading-[1.6]"
+                              spellCheck={false}
+                            />
+                          ) : (
+                            <FilePreview path={activeFile.path} body={activeFile.body} />
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
+                        {entries === null ? null : entries.length === 0 ? (
+                          <div className="px-2 py-2 text-[12.5px] text-ink-400">{t('ws.emptyDir')}</div>
+                        ) : (
+                          entries.map((e) => (
+                            <button
+                              key={e.name}
+                              type="button"
+                              onClick={() => void openEntry(e)}
+                              title={e.name}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-stone-700 hover:bg-stone-50"
+                            >
+                              <span className={e.dir ? 'font-medium' : ''}>{e.dir ? '📁' : '📄'}</span>
+                              <span className="truncate">{e.name}</span>
+                              <span className="ml-auto shrink-0 text-[11px] text-ink-400">{e.dir ? '' : bytes(e.size)}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </>
                 )}
               </section>
 
@@ -358,13 +395,10 @@ export function WorkspacesView() {
                 <div className="text-[12px] font-semibold text-stone-800">{t('ws.members')}</div>
                 <div className="mt-2 flex flex-col gap-1.5">
                   {detail.members.map((m) => (
-                    <div key={m.participantId} className="flex items-center gap-2 text-[12.5px] text-stone-700">
+                    <div key={m.participantId} className="flex items-center gap-2 text-[12.5px] text-stone-700" title={m.name}>
                       <span className="truncate">{m.name}</span>
-                      {m.kind === 'agent' && <span className="shrink-0 text-[10.5px] text-ink-400">agent</span>}
-                      <span
-                        className={cnPill(m.source)}
-                        title={m.source === 'explicit' ? t('ws.explicit') : t('ws.implicit')}
-                      >
+                      {m.kind === 'agent' && <span className="shrink-0 text-[10.5px] text-ink-400">{t('common.agent')}</span>}
+                      <span className={cnPill(m.source)} title={m.source === 'explicit' ? t('ws.explicit') : t('ws.implicit')}>
                         {m.source === 'explicit' ? t('ws.explicit') : t('ws.implicit')}
                       </span>
                     </div>
@@ -376,11 +410,13 @@ export function WorkspacesView() {
                     <div className="text-[12.5px] text-ink-400">{t('ws.none')}</div>
                   ) : (
                     detail.associations.map((a, i) => (
-                      <div key={`${a.kind}:${a.targetId}:${i}`} className="flex items-center gap-2 text-[12.5px] text-stone-700">
-                        <span className="rounded-md bg-stone-100 px-1.5 py-0.5 text-[10.5px] text-stone-600">
+                      <div key={`${a.kind}:${a.targetId}:${i}`} className="flex items-center gap-2 text-[12.5px] text-stone-700" title={a.targetId}>
+                        <span className="shrink-0 rounded-md bg-stone-100 px-1.5 py-0.5 text-[10.5px] text-stone-600">
                           {a.kind === 'project' ? t('ws.kindProject') : a.kind === 'board_card' ? t('ws.kindBoardCard') : t('ws.kindDocument')}
                         </span>
-                        <span className="truncate font-mono text-[11.5px] text-ink-500">{a.targetId}</span>
+                        <span className="truncate">
+                          {a.kind === 'document' ? (docTitles.get(a.targetId) ?? a.targetId) : a.targetId}
+                        </span>
                       </div>
                     ))
                   )}
@@ -402,6 +438,6 @@ function cnRow(active: boolean): string {
 
 function cnPill(source: 'explicit' | 'implicit'): string {
   return `ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-    source === 'explicit' ? 'bg-gold/20 text-amber-700' : 'bg-skype/10 text-skype-deep'
+    source === 'explicit' ? 'bg-gold/20 text-gold-deep' : 'bg-skype/10 text-skype-deep'
   }`
 }
