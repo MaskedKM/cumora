@@ -4,7 +4,7 @@
 # `npm publish` prompts for an interactive OTP every release. An npm
 # *automation* token bypasses 2FA for writes, so CI can publish without a
 # human-entered code — mirroring how the server already auto-deploys on
-# push to main (build.yml → deploy.yml).
+# push to main.
 #
 # Setup (one-time): create an automation token at
 #   npmjs.com → Access Tokens → Generate → "Automation"

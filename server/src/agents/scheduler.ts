@@ -20,10 +20,9 @@ import { deliver as deliverWake, deliverSteer, type PollWakeBrief } from './runt
 import { isAgentBusy } from './runtime/inproc-client.js'
 import { Semaphore } from '../concurrency.js'
 
-/** Bounds how many recipients the wake fan-out triages + wakes at once
- *  (per replica). See env.WAKE_FANOUT_CONCURRENCY — this is the
- *  backpressure that stops a swarm reply-storm from oversubscribing the
- *  pg pool and tripping the triage fail-open amplification loop. */
+/** Bounds how many recipients the wake fan-out wakes at once (per
+ *  replica). See env.WAKE_FANOUT_CONCURRENCY — backpressure so a swarm
+ *  reply-storm can't oversubscribe the pg pool. */
 const wakeFanoutSem = new Semaphore(env.WAKE_FANOUT_CONCURRENCY)
 
 /** Optional payload attached to a wake that the busy-agent path should
@@ -106,7 +105,7 @@ const AGENT_TURN_RATE_PER_MINUTE = 30
 
 /** Consume one agent-turn token (rolling 60s window). Returns false when the
  *  agent is over its content-blind activation budget. Fail-open on Redis errors.
- *  Shared by the cloud fan-out and the BYOA triage endpoint so one agent has one
+ *  Shared by wake() and the BYOA triage endpoint so one agent has one
  *  budget across both paths. */
 export async function consumeAgentTurnToken(agentId: string): Promise<boolean> {
   try {

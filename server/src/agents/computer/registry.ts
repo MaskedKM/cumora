@@ -73,7 +73,7 @@ export interface ComputerWithUpgrade extends ComputerRow {
   /** The newest published cumora version (npm 'latest'), or null if unknown. */
   latest_daemon_version: string | null
   /** True iff this is a BYOA daemon running behind the latest version (or one so
-   *  old it never reported a version). Cloud computers are never outdated. */
+   *  old it never reported a version). */
   daemon_outdated: boolean
 }
 
@@ -359,15 +359,16 @@ export async function listAgentsForComputer(computerId: string): Promise<
   })
 }
 
-/** All computers visible to a company (Cumora Cloud + the user's paired ones),
- *  each annotated with whether its daemon is outdated vs the latest published
- *  cumora version — so the app can surface an upgrade banner. */
+/** All computers visible to a company (the user's paired machines; legacy
+ *  cloud rows are excluded), each annotated with whether its daemon is
+ *  outdated vs the latest published cumora version — so the app can
+ *  surface an upgrade banner. */
 export async function listComputers(companyId: string): Promise<ComputerWithUpgrade[]> {
   const { rows } = await pool.query<ComputerRow>(
     `SELECT id, company_id, owner_user_id, name, kind, available_engines, status,
             last_seen_at, paired_at, revoked_at, created_at, daemon_version, daemon_supervised
        FROM computers
-      WHERE company_id = $1 AND revoked_at IS NULL
+      WHERE company_id = $1 AND kind <> 'cloud' AND revoked_at IS NULL
       ORDER BY created_at ASC`,
     [companyId],
   )
@@ -382,29 +383,6 @@ export async function listComputers(companyId: string): Promise<ComputerWithUpgr
       latest != null &&
       (r.daemon_version == null || versionGt(latest, r.daemon_version)),
   }))
-}
-
-export interface AgentHost {
-  /** kind of computer the agent runs on, or null if unassigned. */
-  kind: ComputerKind | null
-  companyId: string | null
-}
-
-/** Resolve where an agent runs + its company. Not cached: this sits on the
- *  scheduler's cold path (wakeOne only calls it for a resting agent with no
- *  live subscriber), and it's a single indexed lookup — a PK probe on
- *  participants + a PK LEFT JOIN on computers. An in-process cache here would
- *  be both pointless (cold path) and unsafe (each replica caches independently,
- *  so reassignments/tier changes go stale per-pod). LEFT JOIN so an unassigned
- *  agent (computer_id NULL) still returns its companyId with a null kind. */
-export async function resolveAgentHost(agentId: string): Promise<AgentHost> {
-  const { rows } = await pool.query<{ kind: ComputerKind | null; company_id: string | null }>(
-    `SELECT c.kind, p.company_id FROM participants p
-       LEFT JOIN computers c ON c.id = p.computer_id
-      WHERE p.id = $1 AND p.kind = 'agent' LIMIT 1`,
-    [agentId],
-  )
-  return { kind: rows[0]?.kind ?? null, companyId: rows[0]?.company_id ?? null }
 }
 
 /** Assign an agent to a computer (move it between paired machines). Resolves

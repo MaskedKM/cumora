@@ -251,8 +251,7 @@ CUMORA_ENGINE_MODEL=local CUMORA_TRIAGE_MODEL=local-small cumora agent computer
 `<home>/bin/cumora` and prepends to the engine's `PATH`. It POSTs argv to
 `/runtime/cli`, reads its token from `bin/.runtime-token` (refreshed by
 the daemon before expiry), and supports `--file <path>` / `--stdin` to
-pass long bodies without shell mangling. (The similar
-The daemon writes this shim itself when it pairs.)
+pass long bodies without shell mangling.
 
 **Local state and server state are complementary.** The home directory is
 the engine-native store: memory, notes, skills, scratch files — private

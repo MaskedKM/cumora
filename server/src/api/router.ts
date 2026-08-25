@@ -1098,15 +1098,11 @@ api.post('/computers/pair', safe(async (req, res) => {
             )`,
         [paired.computerId, engine, paired.companyId],
       )
-      // Seed starters for free companies that have none yet (idempotent — a
+      // Seed starters for companies that have none yet (idempotent — a
       // company that already has the team is marked seeded and this no-ops).
       await onboardStarterAgents(paired.companyId, { computerId: paired.computerId, engine })
-      // NOTE: we deliberately do NOT delete the company's managed cloud computer
-      // row here. It's now unused (its agents moved to the paired machine) and
-      // already hidden from free users by the editor's tier filter; leaving it
-      // avoids any churn/edge cases from removing a referenced row mid-flow.
     }
-  } catch (e) { console.warn('[computers] free-tier pair onboarding failed', e) }
+  } catch (e) { console.warn('[computers] pair onboarding failed', e) }
   // Now the roster is ready — announce the computer online so the desktop's
   // post-onboarding reload sees a fully-seeded workspace.
   await announceComputerOnline(paired.computerId, paired.companyId)

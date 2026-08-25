@@ -13,8 +13,8 @@ export { buildTriageRequest } from './triage-core.js'
  *  non-system message — the authoritative "real work is happening here" signal fed into
  *  triage (`buildTriageRequest`). scopeKey = conversation_id, the exact scope
  *  `cumora claim --in <convo>` writes under. Best-effort per convo so a Redis
- *  hiccup on one conversation can't starve the whole gate. Shared by BOTH the
- *  cloud path (below) and the BYOA `/inbox-triage/payload` route so Cloud ≡ BYOA. */
+ *  hiccup on one conversation can't starve the whole gate. Used by the
+ *  BYOA `/inbox-triage/payload` route. */
 export async function gatherClaimsByConvo(inbox: InboxRow[]): Promise<ClaimsByConvo> {
   const convoIds = [...new Set(inbox.filter((m) => m.kind !== 'system').map((m) => m.conversation_id))]
   const entries = await Promise.all(convoIds.map(async (cid) => {

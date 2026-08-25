@@ -918,7 +918,7 @@ export const api = {
   repairComputer: (id: string) =>
     http<{ code: string; expiresInSeconds: number | null }>(
       `/computers/${encodeURIComponent(id)}/repair`, { method: 'POST', body: '{}' }),
-  /** Move an agent to a computer, choosing its engine (Cumora Cloud = managed). */
+  /** Move an agent to a computer, choosing its engine. */
   assignAgentComputer: (agentId: string, computerId: string, engine?: EngineId) =>
     http<{ ok: boolean; kind: ComputerKind; engine: EngineId }>(
       `/agents/${encodeURIComponent(agentId)}/computer`,
