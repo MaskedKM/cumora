@@ -17,6 +17,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -41,8 +42,19 @@ func main() {
 
 	mux := http.NewServeMux()
 	httpx.MountHealth(mux, pool)
-	// 域路由按票挂载(#52 认证 → #53 会话 → …),全部经 httpx 助手以对齐
-	// 契约(packages/contract)与镜像断言。
+
+	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
+	authMiddleware := httpx.Authn(pool)
+	coreRouter := http.NewServeMux()
+	core.Mount(coreRouter, pool)
+	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
+	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
+	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
+	coreRouter.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+	})
+	mux.Handle("/api/", authMiddleware(coreRouter))
+	// 后续域(#53 会话起)同样:各自 Mount 后经 authMiddleware 串接。
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
