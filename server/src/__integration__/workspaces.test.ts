@@ -132,11 +132,11 @@ test('owner creates a workspace bound to a real folder and becomes its first exp
   assert.equal(rows[0].company_id, COMPANY)
   assert.equal(rows[0].folder_path, boundDir) // stored realpath-resolved
 
-  const members = await pool.query<{ source: string }>(
-    `SELECT source FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
+  const members = await pool.query(
+    `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
     [ws.id, OWNER],
   )
-  assert.equal(members.rows[0].source, 'explicit')
+  assert.equal(members.rowCount, 1)
 })
 
 test('folderPath must be an absolute path to an existing directory', async () => {
@@ -361,4 +361,185 @@ test('a symlink inside the folder pointing outside is refused', async () => {
     (await fetch(`${ownerBase}/api/workspaces/${id}/file${q('leak.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
     400,
   )
+})
+
+// ---------- Association fixtures (#29) ----------
+
+async function seedProjectWithConversation(memberIds: string[]): Promise<void> {
+  await pool.query(
+    `INSERT INTO projects (id, company_id, name) VALUES ('p-ws', $1, 'WS Project') ON CONFLICT DO NOTHING`,
+    [COMPANY],
+  )
+  await pool.query(
+    `INSERT INTO conversations (id, company_id, kind, title, members, project_id)
+     VALUES ('cv-ws', $1, 'group', 'WS Conv', $2::jsonb, 'p-ws')
+     ON CONFLICT DO NOTHING`,
+    [COMPANY, JSON.stringify(memberIds)],
+  )
+}
+
+async function seedBoardCard(opts: { assignee: string | null; mentions: string[]; creator: string }): Promise<void> {
+  await pool.query(
+    `INSERT INTO boards (id, company_id, title, created_by) VALUES ('b-ws', $1, 'WS Board', $2) ON CONFLICT DO NOTHING`,
+    [COMPANY, OWNER],
+  )
+  await pool.query(
+    `INSERT INTO board_columns (id, board_id, title, position) VALUES ('col-ws', 'b-ws', 'To Do', 0) ON CONFLICT DO NOTHING`,
+  )
+  await pool.query(
+    `INSERT INTO board_cards (id, board_id, column_id, title, position, assignee_id, mentions, created_by)
+     VALUES ('card-ws', 'b-ws', 'col-ws', 'Deliver', 0, $1, $2::jsonb, $3)
+     ON CONFLICT DO NOTHING`,
+    [opts.assignee, JSON.stringify(opts.mentions), opts.creator],
+  )
+}
+
+async function seedDocument(id: string, creator: string, collaborators: string[]): Promise<void> {
+  await pool.query(
+    `INSERT INTO documents (id, company_id, title, created_by, collaborators)
+     VALUES ($1, $2, 'WS Req Doc', $3, $4::jsonb)
+     ON CONFLICT DO NOTHING`,
+    [id, COMPANY, creator, JSON.stringify(collaborators)],
+  )
+}
+
+async function associate(
+  workspaceId: string,
+  kind: string,
+  targetId: string,
+  base: string = ownerBase,
+): Promise<Response> {
+  return fetch(`${base}/api/workspaces/${workspaceId}/associations`, {
+    method: 'POST',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ kind, targetId }),
+  })
+}
+
+async function writeAs(workspaceId: string, path: string, base: string): Promise<number> {
+  const res = await fetch(`${base}/api/workspaces/${workspaceId}/file${q(path)}`, {
+    method: 'PUT',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ body: 'x' }),
+  })
+  return res.status
+}
+
+async function detailJson(workspaceId: string, base: string = ownerBase): Promise<{
+  members: Array<{ participantId: string; source: string }>
+  associations: Array<{ kind: string; targetId: string }>
+}> {
+  const res = await fetch(`${base}/api/workspaces/${workspaceId}`, { headers: jsonHeaders(COMPANY) })
+  return (await res.json()) as {
+    members: Array<{ participantId: string; source: string }>
+    associations: Array<{ kind: string; targetId: string }>
+  }
+}
+
+test('project association: conversation members become implicit members and the scope follows membership', async () => {
+  await seedProjectWithConversation([MEMBER, AGENT])
+  const { id } = await createWorkspaceJson()
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
+
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // implicit via the project's conversation
+
+  const detail = await detailJson(id)
+  const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
+  assert.equal(sources.get(OWNER), 'explicit')
+  assert.equal(sources.get(MEMBER), 'implicit')
+  assert.equal(sources.get(AGENT), 'implicit')
+  assert.deepEqual(detail.associations.map((a) => `${a.kind}:${a.targetId}`), ['project:p-ws'])
+
+  await pool.query(`UPDATE conversations SET members = '["AGENT"]'::jsonb WHERE id = 'cv-ws'`)
+  assert.equal(await writeAs(id, 'b.txt', memberBase), 403) // left the conversation → out of scope
+})
+
+test('board card association: assignee + mentions are implicit, the creator is not, and reassignment follows', async () => {
+  await seedBoardCard({ assignee: AGENT, mentions: [], creator: MEMBER })
+  const { id } = await createWorkspaceJson()
+  assert.equal((await associate(id, 'board_card', 'card-ws')).status, 201)
+
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 403) // creator deliberately not a participant
+
+  await pool.query(`UPDATE board_cards SET assignee_id = $1 WHERE id = 'card-ws'`, [MEMBER])
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+})
+
+test('document association: creator + collaborators implicit; collaborator edits via API and access follows', async () => {
+  await seedDocument('doc-ws', OWNER, [AGENT])
+  await seedDocument('doc-ws2', MEMBER, [])
+  const { id } = await createWorkspaceJson()
+  assert.equal((await associate(id, 'document', 'doc-ws', memberBase)).status, 201) // any member may associate docs
+  assert.equal((await associate(id, 'document', 'doc-ws2', ownerBase)).status, 201)
+
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // creator of doc-ws2
+
+  const before = await detailJson(id)
+  assert.equal(new Map(before.members.map((m) => [m.participantId, m.source])).get(AGENT), 'implicit')
+
+  // collaborator editing: non-creator member refused, creator may edit
+  const forbidden = await fetch(`${memberBase}/api/documents/doc-ws/collaborators`, {
+    method: 'PUT',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ participantIds: [MEMBER] }),
+  })
+  assert.equal(forbidden.status, 403)
+  assert.equal(
+    (
+      await fetch(`${ownerBase}/api/documents/doc-ws/collaborators`, {
+        method: 'PUT',
+        headers: jsonHeaders(COMPANY),
+        body: JSON.stringify({ participantIds: ['nope'] }),
+      })
+    ).status,
+    400,
+  )
+  const edit = await fetch(`${ownerBase}/api/documents/doc-ws/collaborators`, {
+    method: 'PUT',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ participantIds: [] }),
+  })
+  assert.equal(edit.status, 200)
+
+  const after = await detailJson(id)
+  assert.equal(new Map(after.members.map((m) => [m.participantId, m.source])).get(AGENT), undefined)
+})
+
+test('association lifecycle: kind whitelist, unknown target, duplicate, delete revokes implicit access', async () => {
+  await seedProjectWithConversation([MEMBER])
+  const { id } = await createWorkspaceJson()
+
+  assert.equal((await associate(id, 'conversation', 'cv-ws')).status, 400)
+  assert.equal((await associate(id, 'project', 'nope')).status, 404)
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 409)
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+
+  const del = await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+    method: 'DELETE',
+    headers: jsonHeaders(COMPANY),
+  })
+  assert.equal(del.status, 200)
+  assert.equal(await writeAs(id, 'b.txt', memberBase), 403)
+  assert.deepEqual((await detailJson(id)).associations, [])
+  assert.equal(
+    (
+      await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+        method: 'DELETE',
+        headers: jsonHeaders(COMPANY),
+      })
+    ).status,
+    404,
+  )
+})
+
+test('association rights: project and board_card need owner/admin, document does not', async () => {
+  await seedProjectWithConversation([AGENT])
+  await seedBoardCard({ assignee: null, mentions: [], creator: OWNER })
+  await seedDocument('doc-ws', OWNER, [])
+  const { id } = await createWorkspaceJson()
+
+  assert.equal((await associate(id, 'project', 'p-ws', memberBase)).status, 403)
+  assert.equal((await associate(id, 'board_card', 'card-ws', memberBase)).status, 403)
+  assert.equal((await associate(id, 'document', 'doc-ws', memberBase)).status, 201)
 })

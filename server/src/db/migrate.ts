@@ -1760,22 +1760,47 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE INDEX IF NOT EXISTS idx_workspaces_company
   ON workspaces(company_id, created_at ASC);
 
--- Member scope of a workspace. 'explicit' rows are manually managed
--- (added/removed through the API); 'implicit' rows will be derived from
--- associations (projects / board cards / documents) by the Association
--- ticket — derived rows are written here too so membership checks stay a
--- single lookup.
+-- Member scope of a workspace: EXPLICIT members only. Implicit membership
+-- (participants of associated work items) is derived live at read/check
+-- time from workspace_associations below — never materialized here — so
+-- the scope automatically follows participant changes on the targets.
 CREATE TABLE IF NOT EXISTS workspace_members (
   workspace_id   TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   participant_id TEXT NOT NULL,
-  source         TEXT NOT NULL DEFAULT 'explicit',
   added_by       TEXT,
   created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (workspace_id, participant_id),
-  CONSTRAINT workspace_members_source_check CHECK (source IN ('explicit','implicit'))
+  PRIMARY KEY (workspace_id, participant_id)
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_members_participant
   ON workspace_members(participant_id);
+
+-- Association links one of the three work-item kinds to a workspace; the
+-- target's participants thereby hold implicit workspace membership.
+-- Participant model per kind:
+--   project    → union of members of conversations attached to the project
+--   board_card → assignee + mentions (agenda-triage semantics: the creator
+--                is deliberately NOT a participant)
+--   document   → creator + collaborators[] (column added below)
+CREATE TABLE IF NOT EXISTS workspace_associations (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id    TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  target_kind   TEXT NOT NULL,
+  target_id     TEXT NOT NULL,
+  created_by    TEXT,
+  created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  CONSTRAINT workspace_associations_kind_check CHECK (target_kind IN ('project','board_card','document')),
+  CONSTRAINT workspace_associations_unique UNIQUE (workspace_id, target_kind, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_associations_target
+  ON workspace_associations(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_associations_workspace
+  ON workspace_associations(workspace_id);
+
+-- Documents get an explicit collaborator set — their access model was
+-- company-wide with only per-user traces (update authors, mentions), which
+-- is not a participant set workspace membership can derive from.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS collaborators JSONB NOT NULL DEFAULT '[]'::jsonb;
 `
 
 /** Postgres advisory-lock key for serializing concurrent

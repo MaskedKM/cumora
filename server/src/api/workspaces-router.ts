@@ -96,12 +96,108 @@ async function requireWorkspaceMember(
 ): Promise<{ userId: string; companyId: string; workspace: WorkspaceRow }> {
   const { userId, companyId } = await deps.requireCompany(req)
   const workspace = await loadWorkspace(deps.pool, companyId, workspaceId)
+  // Membership = explicit row ∪ participants of associated targets,
+  // computed live so the scope follows participant changes on the targets
+  // with no sync hooks. Participant model per kind mirrors
+  // implicitMembers() below.
   const { rows } = await deps.pool.query(
-    `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2 LIMIT 1`,
-    [workspace.id, userId],
+    `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
+     UNION ALL
+     SELECT 1
+       FROM workspace_associations a
+      WHERE a.workspace_id = $1 AND a.company_id = $3
+        AND (
+          (a.target_kind = 'project' AND EXISTS (
+             SELECT 1 FROM conversations c
+              WHERE c.project_id = a.target_id AND c.company_id = $3
+                AND c.members @> to_jsonb(ARRAY[$2::text])))
+          OR (a.target_kind = 'board_card' AND EXISTS (
+             SELECT 1 FROM board_cards bc
+              JOIN boards b ON b.id = bc.board_id
+              WHERE bc.id = a.target_id AND b.company_id = $3
+                AND (bc.assignee_id = $2 OR bc.mentions @> to_jsonb($2::text))))
+          OR (a.target_kind = 'document' AND EXISTS (
+             SELECT 1 FROM documents d
+              WHERE d.id = a.target_id AND d.company_id = $3
+                AND (d.created_by = $2 OR d.collaborators @> to_jsonb($2::text))))
+        )
+      LIMIT 1`,
+    [workspace.id, userId, companyId],
   )
   if (!rows[0]) throw new WorkspaceError(403, 'not a member of this workspace')
   return { userId, companyId, workspace }
+}
+
+const ASSOCIATION_KINDS = new Set(['project', 'board_card', 'document'])
+
+async function assertTargetExists(
+  pool: Pool,
+  companyId: string,
+  kind: string,
+  targetId: string,
+): Promise<void> {
+  const { rows } = await pool.query(
+    kind === 'project'
+      ? `SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`
+      : kind === 'board_card'
+        ? `SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
+            WHERE bc.id = $1 AND b.company_id = $2 LIMIT 1`
+        : `SELECT 1 FROM documents WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [targetId, companyId],
+  )
+  if (!rows[0]) throw new WorkspaceError(404, `associated ${kind} not found in this company`)
+}
+
+/** Distinct participant ids holding implicit membership via associations.
+ *  Per-kind participant model (the single source of truth, mirrored in the
+ *  requireWorkspaceMember query): project → members of the project's
+ *  conversations; board_card → assignee + mentions (creator excluded,
+ *  matching agenda-triage semantics); document → creator + collaborators. */
+async function implicitMembers(pool: Pool, workspaceId: string, companyId: string): Promise<Set<string>> {
+  const [projects, cards, docs] = await Promise.all([
+    pool.query<{ pid: string }>(
+      `SELECT DISTINCT x.pid
+         FROM workspace_associations a,
+         LATERAL (SELECT jsonb_array_elements_text(c.members) AS pid
+                    FROM conversations c
+                   WHERE c.project_id = a.target_id AND c.company_id = $2) x
+        WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'project'`,
+      [workspaceId, companyId],
+    ),
+    pool.query<{ pid: string }>(
+      `SELECT DISTINCT x.pid
+         FROM workspace_associations a,
+         LATERAL (SELECT bc.assignee_id AS pid
+                    FROM board_cards bc JOIN boards b ON b.id = bc.board_id
+                   WHERE bc.id = a.target_id AND b.company_id = $2
+                  UNION ALL
+                  SELECT jsonb_array_elements_text(bc.mentions) AS pid
+                    FROM board_cards bc JOIN boards b ON b.id = bc.board_id
+                   WHERE bc.id = a.target_id AND b.company_id = $2) x
+        WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'board_card'`,
+      [workspaceId, companyId],
+    ),
+    pool.query<{ pid: string }>(
+      `SELECT DISTINCT x.pid
+         FROM workspace_associations a,
+         LATERAL (SELECT d.created_by AS pid
+                    FROM documents d
+                   WHERE d.id = a.target_id AND d.company_id = $2
+                  UNION ALL
+                  SELECT jsonb_array_elements_text(d.collaborators) AS pid
+                    FROM documents d
+                   WHERE d.id = a.target_id AND d.company_id = $2) x
+        WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'document'`,
+      [workspaceId, companyId],
+    ),
+  ])
+  const out = new Set<string>()
+  for (const q of [projects, cards, docs]) {
+    for (const row of q.rows) {
+      if (row.pid) out.add(row.pid)
+    }
+  }
+  return out
 }
 
 export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
@@ -144,8 +240,8 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
       // workspace with an empty member scope would be unusable (and
       // unmanageable for anyone but other admins).
       await client.query(
-        `INSERT INTO workspace_members (workspace_id, participant_id, source, added_by)
-         VALUES ($1, $2, 'explicit', $2)`,
+        `INSERT INTO workspace_members (workspace_id, participant_id, added_by)
+         VALUES ($1, $2, $2)`,
         [id, userId],
       )
       await client.query('COMMIT')
@@ -187,8 +283,14 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
   router.get('/:id', async (req, res) => {
     const { userId, companyId } = await deps.requireCompany(req)
     const workspace = await loadWorkspace(pool, companyId, req.params.id)
-    const members = await pool.query(
-      `SELECT m.participant_id AS "participantId", p.name, p.kind, m.source,
+
+    const explicit = await pool.query<{
+      participantId: string
+      name: string
+      kind: string
+      addedAt: Date
+    }>(
+      `SELECT m.participant_id AS "participantId", p.name, p.kind,
               m.created_at AS "addedAt"
          FROM workspace_members m
          JOIN participants p ON p.id = m.participant_id AND p.company_id = $2
@@ -196,6 +298,29 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
         ORDER BY m.created_at ASC`,
       [workspace.id, companyId],
     )
+
+    const implicitIds = await implicitMembers(pool, workspace.id, companyId)
+    const explicitIds = new Set(explicit.rows.map((r) => r.participantId))
+    const derivedOnly = [...implicitIds].filter((pid) => !explicitIds.has(pid))
+    let implicitRows: Array<{ participantId: string; name: string; kind: string; source: string; addedAt: null }> = []
+    if (derivedOnly.length > 0) {
+      const found = await pool.query<{ participantId: string; name: string; kind: string }>(
+        `SELECT p.id AS "participantId", p.name, p.kind
+           FROM participants p
+          WHERE p.company_id = $1 AND p.id = ANY($2::text[]) AND p.departed_at IS NULL`,
+        [companyId, derivedOnly],
+      )
+      implicitRows = found.rows.map((r) => ({ ...r, source: 'implicit', addedAt: null }))
+    }
+
+    const associations = await pool.query(
+      `SELECT target_kind AS kind, target_id AS "targetId", created_at AS "createdAt"
+         FROM workspace_associations
+        WHERE workspace_id = $1
+        ORDER BY created_at ASC`,
+      [workspace.id],
+    )
+
     const role = await pool.query<{ role: string }>(
       `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
       [companyId, userId],
@@ -207,7 +332,11 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
       isDefault: workspace.is_default,
       createdAt: workspace.created_at,
       ...(privileged ? { folderPath: workspace.folder_path } : {}),
-      members: members.rows,
+      members: [
+        ...explicit.rows.map((r) => ({ ...r, source: 'explicit' })),
+        ...implicitRows,
+      ],
+      associations: associations.rows,
     })
   })
 
@@ -222,8 +351,8 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
     )
     if (!participant[0]) throw new WorkspaceError(404, 'participant not found in this company')
     const { rowCount } = await pool.query(
-      `INSERT INTO workspace_members (workspace_id, participant_id, source, added_by)
-       VALUES ($1, $2, 'explicit', $3)
+      `INSERT INTO workspace_members (workspace_id, participant_id, added_by)
+       VALUES ($1, $2, $3)
        ON CONFLICT DO NOTHING`,
       [workspace.id, participantId, userId],
     )
@@ -231,18 +360,59 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
     res.status(201).json({ ok: true })
   })
 
-  // Only explicit rows are deletable here; implicit membership is owned by
-  // the association derivation (removal happens by ending the association
-  // or leaving the associated item).
+  // Only explicit rows are deletable here; implicit membership ends by
+  // ending the association or leaving the associated item.
   router.delete('/:id/members/:participantId', async (req, res) => {
     const { companyId } = await deps.requireCompanyRole(req)
     const workspace = await loadWorkspace(pool, companyId, req.params.id)
     const { rowCount } = await pool.query(
       `DELETE FROM workspace_members
-        WHERE workspace_id = $1 AND participant_id = $2 AND source = 'explicit'`,
+        WHERE workspace_id = $1 AND participant_id = $2`,
       [workspace.id, req.params.participantId],
     )
     if (!rowCount) throw new WorkspaceError(404, 'not an explicit member of this workspace')
+    res.json({ ok: true })
+  })
+
+  // Association rights: projects and board cards gate on owner/admin
+  // (associating grants folder access to every conversation member /
+  // assignee); a document is associable by any company member.
+  router.post('/:id/associations', async (req, res) => {
+    const body = req.body ?? {}
+    const kind = text(body.kind, 20)
+    const targetId = text(body.targetId, 100)
+    if (!ASSOCIATION_KINDS.has(kind)) {
+      throw new WorkspaceError(400, 'kind must be one of project, board_card, document')
+    }
+    if (!targetId) throw new WorkspaceError(400, 'targetId required')
+    const { userId, companyId } =
+      kind === 'document' ? await deps.requireCompany(req) : await deps.requireCompanyRole(req)
+    const workspace = await loadWorkspace(pool, companyId, req.params.id)
+    await assertTargetExists(pool, companyId, kind, targetId)
+    const id = `wa-${randomUUID().slice(0, 10)}`
+    const { rowCount } = await pool.query(
+      `INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
+      [id, workspace.id, companyId, kind, targetId, userId],
+    )
+    if (rowCount === 0) throw new WorkspaceError(409, 'already associated with this workspace')
+    res.status(201).json({ ok: true, kind, targetId })
+  })
+
+  router.delete('/:id/associations/:kind/:targetId', async (req, res) => {
+    const kind = String(req.params.kind)
+    if (!ASSOCIATION_KINDS.has(kind)) {
+      throw new WorkspaceError(400, 'kind must be one of project, board_card, document')
+    }
+    const authed = kind === 'document' ? await deps.requireCompany(req) : await deps.requireCompanyRole(req)
+    const workspace = await loadWorkspace(pool, authed.companyId, req.params.id)
+    const { rowCount } = await pool.query(
+      `DELETE FROM workspace_associations
+        WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
+      [workspace.id, authed.companyId, kind, req.params.targetId],
+    )
+    if (!rowCount) throw new WorkspaceError(404, 'no such association on this workspace')
     res.json({ ok: true })
   })
 

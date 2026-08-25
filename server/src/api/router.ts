@@ -6046,6 +6046,52 @@ api.put('/documents/:id', safe(async (req, res) => {
   res.json({ ok: true, title })
 }))
 
+// Collaborator set of a document — the participant model that workspace
+// association derives implicit membership from (the creator always counts
+// separately; collaborators are editable here). Same governance rule as
+// delete: creator or owner/admin.
+api.put('/documents/:id/collaborators', safe(async (req, res) => {
+  const { userId, companyId } = await requireCompany(req)
+  const id = String(req.params.id)
+  const body = (req.body ?? {}) as { participantIds?: unknown }
+  if (!Array.isArray(body.participantIds)) {
+    throw new HttpError(400, 'participantIds (string[]) required')
+  }
+  const ids = [
+    ...new Set(
+      body.participantIds.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean),
+    ),
+  ].slice(0, 100)
+  const { rows } = await pool.query<{ created_by: string }>(
+    `SELECT created_by FROM documents WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  )
+  if (!rows[0]) throw new HttpError(404, 'not found')
+  if (rows[0].created_by !== userId) {
+    const { rows: roleRows } = await pool.query<{ role: string }>(
+      `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
+      [companyId, userId],
+    )
+    const role = roleRows[0]?.role ?? 'member'
+    if (!PRIVILEGED_ROLES.has(role)) throw new HttpError(403, 'only the creator or an owner can edit collaborators')
+  }
+  if (ids.length > 0) {
+    const { rows: found } = await pool.query<{ id: string }>(
+      `SELECT id FROM participants WHERE company_id = $1 AND id = ANY($2::text[]) AND departed_at IS NULL`,
+      [companyId, ids],
+    )
+    const known = new Set(found.map((r) => r.id))
+    const missing = ids.filter((v) => !known.has(v))
+    if (missing.length > 0) throw new HttpError(400, `unknown active participant(s): ${missing.join(', ')}`)
+  }
+  await pool.query(
+    `UPDATE documents SET collaborators = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+    [id, JSON.stringify(ids)],
+  )
+  await publishDocumentChanged(companyId, id, 'document.updated', userId)
+  res.json({ ok: true, collaborators: ids })
+}))
+
 api.delete('/documents/:id', safe(async (req, res) => {
   const { userId, companyId } = await requireCompany(req)
   const id = String(req.params.id)
