@@ -21,6 +21,11 @@ import {
   parseMemoryPath,
 } from './memory-scope.js'
 import { memoryMetaForWrite, resolveMemoryWriteSource } from './memory-write.js'
+import {
+  syncBinding, readFileAtVersion, pinCurrentVersion, writeFileAtVersion,
+  SandboxViolation, FileConflictError, FileDeletedError,
+  type FileBindingRow,
+} from '../documents/files.js'
 
 // Every CLI result flows through ok()/err(), so scrubbing lone UTF-16 surrogates
 // here means CLI output (read by agents as tool results) can never carry a split
@@ -5891,6 +5896,166 @@ async function cmdDoc(parsed: ParsedArgs): Promise<CliResult> {
   return err(`unknown doc op: ${op}\nusage: doc {ls|create|read|append|prepend|image|image-delete|replace|rename|delete} ...`)
 }
 
+/** Load this agent's tenant's one file_bindings row. Distinct namespace
+ *  from `cumora ws` (agent-private, not addressable across agents) by
+ *  design — see the file-dimension requirement doc for why the two must
+ *  never share a word root. */
+async function loadFileBinding(companyId: string): Promise<FileBindingRow | null> {
+  const { rows } = await pool.query<{ id: string; local_root: string; created_by: string }>(
+    `SELECT id, local_root, created_by FROM file_bindings WHERE company_id = $1`,
+    [companyId],
+  )
+  const row = rows[0]
+  if (!row) return null
+  return { id: row.id, companyId, localRoot: row.local_root, createdBy: row.created_by }
+}
+
+async function fileRowByPath(bindingId: string, relPath: string): Promise<{ id: string; currentVersion: bigint } | null> {
+  const { rows } = await pool.query<{ id: string; current_version: string }>(
+    `SELECT id, current_version FROM files WHERE binding_id = $1 AND rel_path = $2`,
+    [bindingId, relPath],
+  )
+  const row = rows[0]
+  return row ? { id: row.id, currentVersion: BigInt(row.current_version) } : null
+}
+
+async function cmdFiles(parsed: ParsedArgs): Promise<CliResult> {
+  const op = parsed.positional[0] ?? 'ls'
+  const me = resolveAs(parsed)
+  const companyId = await agentCompany(me)
+  if (!companyId) return err(`unknown agent ${me} (no company)`)
+
+  if (op === 'ls' || op === 'list') {
+    const binding = await loadFileBinding(companyId)
+    // Verification standard #0 (isolation baseline): unbound reads report
+    // "unbound", never a crash or an empty-looking success.
+    if (!binding) return err('no folder bound for this workspace — run `cumora bind <local-path>` first')
+    const { rows } = await pool.query<{ id: string; rel_path: string; current_version: string; deleted_at: Date | null }>(
+      `SELECT id, rel_path, current_version, deleted_at FROM files WHERE binding_id = $1 ORDER BY rel_path`,
+      [binding.id],
+    )
+    if (parsed.flags.json) return ok(JSON.stringify(rows, null, 2))
+    if (rows.length === 0) return ok(`(no files tracked yet — run \`cumora files sync\` to scan ${binding.localRoot})`)
+    return ok([
+      `${rows.length} file(s) bound at ${binding.localRoot}:`,
+      '',
+      // [deleted] marks a path removed from local_root by the user and
+      // soft-deleted by sync — history is kept (files read still works),
+      // but files write refuses. Not hidden from ls: silently dropping it
+      // would make the tombstone invisible, not just the disk file.
+      ...rows.map((r) => `  ${r.id.padEnd(24)} v${r.current_version}  ${r.rel_path}${r.deleted_at ? '  [deleted]' : ''}`),
+    ].join('\n'))
+  }
+
+  if (op === 'sync') {
+    const binding = await loadFileBinding(companyId)
+    if (!binding) return err('no folder bound for this workspace — run `cumora bind <local-path>` first')
+    const result = await syncBinding(binding, me)
+    const parts = [`synced ${result.synced} file(s)`]
+    if (result.deleted.length > 0) parts.push(`${result.deleted.length} deleted (removed from disk): ${result.deleted.join(', ')}`)
+    if (result.conflicted.length > 0) {
+      parts.push(`${result.conflicted.length} conflicted (version moved during sync, not applied): ${result.conflicted.join(', ')}`)
+    }
+    return ok(parts.join('; '))
+  }
+
+  if (op === 'read') {
+    const relPath = parsed.positional[1]
+    if (!relPath) return err('usage: files read <path> [--version N]')
+    const binding = await loadFileBinding(companyId)
+    if (!binding) return err('no folder bound for this workspace — run `cumora bind <local-path>` first')
+    const fileRow = await fileRowByPath(binding.id, relPath)
+    if (!fileRow) return err(`${relPath}: not found — run \`cumora files sync\` if it was added recently`)
+
+    // A single logical request resolves `current` exactly once and threads
+    // that pin through — never re-resolves mid-request (Wren MUST FIX 1).
+    const requestedVersion = typeof parsed.flags.version === 'string' && /^\d+$/.test(parsed.flags.version)
+      ? BigInt(parsed.flags.version)
+      : await pinCurrentVersion(fileRow.id)
+    if (requestedVersion === null) return err(`${relPath}: not found`)
+
+    const result = await readFileAtVersion(fileRow.id, requestedVersion)
+    if (!result) return err(`${relPath}: not found at version ${requestedVersion}`)
+
+    if (parsed.flags.json) {
+      return ok(JSON.stringify({
+        path: relPath, version: result.version.toString(),
+        contentHash: result.contentHash, snapshotHash: result.snapshotHash,
+        deleted: result.deleted,
+        content: result.content.toString('utf8'),
+      }, null, 2))
+    }
+    // contentHash is THIS file's own hash — use it (not snapshotHash) for
+    // "is this file's content correct" checks. snapshotHash is only useful
+    // for "did two reads land on the same snapshot" comparisons. `deleted`
+    // must be surfaced, not silently ignored — this is exactly the
+    // acceptance gap Nova found: read returning old content as if nothing
+    // happened is what let a since-deleted file look alive.
+    const deletedNote = result.deleted ? ', DELETED locally — this is last-known content, not current disk state' : ''
+    return ok(
+      `# ${relPath} (v${result.version}, sha256:${result.contentHash.slice(0, 12)}, snapshot:${result.snapshotHash.slice(0, 12)}${deletedNote})\n\n` +
+      result.content.toString('utf8'),
+    )
+  }
+
+  if (op === 'write') {
+    const relPath = parsed.positional[1]
+    if (!relPath) return err('usage: files write <path> --version N <content>')
+    if (typeof parsed.flags.version !== 'string' || !/^\d+$/.test(parsed.flags.version)) {
+      return err('usage: files write <path> --version N <content> — --version is the CAS token from `files read`, required')
+    }
+    const content = joinBodyArgs(parsed, 2)
+    const binding = await loadFileBinding(companyId)
+    if (!binding) return err('no folder bound for this workspace — run `cumora bind <local-path>` first')
+    const fileRow = await fileRowByPath(binding.id, relPath)
+    if (!fileRow) return err(`${relPath}: not found — run \`cumora files sync\` if it was added recently`)
+
+    try {
+      const newVersion = await writeFileAtVersion(
+        binding, fileRow.id, relPath, BigInt(parsed.flags.version), Buffer.from(content, 'utf8'), me,
+      )
+      return ok(`wrote ${relPath} — now at version ${newVersion}`, [{
+        event: 'file.written',
+        command: 'files write',
+        fileId: fileRow.id,
+        actorId: me,
+        companyId,
+        visibleToUser: true,
+      }])
+    } catch (e) {
+      if (e instanceof FileConflictError) {
+        return err(`HELD — write NOT applied. ${e.message}. Someone else changed this file since you read it — ` +
+          `\`cumora files read ${relPath}\` for the current version and re-apply your change on top.`, 2)
+      }
+      if (e instanceof FileDeletedError) return err(`refused: ${e.message}`, 2)
+      if (e instanceof SandboxViolation) return err(`refused: ${e.message}`)
+      throw e
+    }
+  }
+
+  return err(`unknown files op: ${op}\nusage: files {ls|sync|read|write} ...`)
+}
+
+async function cmdBind(parsed: ParsedArgs): Promise<CliResult> {
+  const me = resolveAs(parsed)
+  const companyId = await agentCompany(me)
+  if (!companyId) return err(`unknown agent ${me} (no company)`)
+
+  const localRoot = parsed.positional[0]
+  if (!localRoot) return err('usage: bind <local-path>')
+
+  const existing = await loadFileBinding(companyId)
+  const { randomUUID } = await import('node:crypto')
+  const bindingId = existing?.id ?? randomUUID()
+  await pool.query(
+    `INSERT INTO file_bindings (id, company_id, local_root, created_by)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (company_id) DO UPDATE SET local_root = EXCLUDED.local_root, updated_at = NOW()`,
+    [bindingId, companyId, localRoot, me],
+  )
+  return ok(`bound ${localRoot} to this workspace — run \`cumora files sync\` to scan it`)
+}
+
 async function runTool(toolName: string, parsed: ParsedArgs): Promise<CliResult> {
   const built = buildToolArgs(toolName, parsed)
   if ('error' in built) return err(built.error)
@@ -6040,6 +6205,8 @@ export async function runCli(argv: string[]): Promise<CliResult> {
       case 'kanban':              return await cmdBoard(parsed)
       case 'card':                return await cmdCard(parsed)
       case 'doc':                 return await cmdDoc(parsed)
+      case 'files':               return await cmdFiles(parsed)
+      case 'bind':                return await cmdBind(parsed)
       case 'react':               return await runTool('react', parsed)
       case 'dm':                  return await runTool('dm_with', parsed)
       case 'pull-group':          return await runTool('pull_group', parsed)

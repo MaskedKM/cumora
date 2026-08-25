@@ -53,6 +53,10 @@ release/
 # Runtime-generated user content (AI portraits + image uploads)
 server/uploads/
 
+# Runtime-generated shared-files snapshots (server/src/documents/files.ts) —
+# one immutable copy per synced version, never source-controlled content.
+server/file-snapshots/
+
 # Backup files left by one-off scripts (e.g. icon regeneration)
 *.prev.png
 

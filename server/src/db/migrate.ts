@@ -1410,6 +1410,86 @@ CREATE INDEX IF NOT EXISTS idx_document_mentions_recipient
 CREATE INDEX IF NOT EXISTS idx_document_mentions_doc
   ON document_mentions(document_id, created_at DESC);
 
+-- ============== Shared files (bound local folder, snapshot + CAS) =======
+-- Team-shared, read-write view onto a folder on one member's local disk.
+-- Unlike documents (Yjs CRDTs — always mergeable, never conflict), this is
+-- a strong-consistency model: every write is compare-and-swap against the
+-- version it was read at, and a conflicting write is rejected outright,
+-- never silently merged.
+--
+--   - file_bindings is one row per bound local folder (one per company today).
+--   - files is the metadata index of paths known inside a binding.
+--   - file_snapshots holds one immutable content blob per version; large
+--     content lives in the storage.ts blob backend, this table only keeps
+--     the storage key + hash, matching how document content-addresses
+--     large attachments elsewhere in this schema.
+--   - current_version on files is the CAS field: writers must supply the
+--     version they last read, and the UPDATE is a no-op (0 rows) if it has
+--     since moved — the caller sees that as a conflict, not an error.
+CREATE TABLE IF NOT EXISTS file_bindings (
+  id            TEXT PRIMARY KEY,
+  company_id    TEXT NOT NULL,
+  local_root    TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_bindings_company
+  ON file_bindings(company_id);
+
+CREATE TABLE IF NOT EXISTS files (
+  id               TEXT PRIMARY KEY,
+  binding_id       TEXT NOT NULL REFERENCES file_bindings(id) ON DELETE CASCADE,
+  company_id       TEXT NOT NULL,
+  -- Path relative to the binding's local_root. Never an absolute path or
+  -- one containing '..' segments — enforced in files.ts before any row
+  -- referencing it is written, not just at the local-disk boundary.
+  rel_path         TEXT NOT NULL,
+  -- Monotonically increasing per file. This IS the CAS token: a write
+  -- must name the version it read, and the UPDATE below only succeeds
+  -- if current_version still matches.
+  current_version  BIGINT NOT NULL DEFAULT 0,
+  created_by       TEXT NOT NULL,
+  created_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_binding_path
+  ON files(binding_id, rel_path);
+CREATE INDEX IF NOT EXISTS idx_files_company
+  ON files(company_id);
+-- Deletion propagation gap found during acceptance (2026-08-25, Nova): a
+-- file removed from local_root and then synced stayed tracked forever —
+-- writes against it would recreate it on the user's disk with zero
+-- warning, on the most trust-sensitive path (writing back to their real
+-- filesystem). deleted_at is a soft-delete marker set by syncBinding when
+-- a tracked path is no longer found on disk; historical snapshots are
+-- kept (the "intentional retention" reading stays valid), but read
+-- reports deleted and write refuses once this is set.
+ALTER TABLE files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
+
+CREATE TABLE IF NOT EXISTS file_snapshots (
+  file_id       TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  version       BIGINT NOT NULL,
+  -- storage.ts blob key for the content at this version — content itself
+  -- is never inlined here, this table stays small regardless of file size.
+  storage_key   TEXT NOT NULL,
+  content_hash  TEXT NOT NULL,
+  author_id     TEXT NOT NULL,
+  created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (file_id, version)
+);
+-- Snapshot-wide composite digest (git-tree-style: every file's path + hash,
+-- in sorted order). Proves "two reads landed on the same snapshot" — but is
+-- IDENTICAL across every file within one snapshot, so it cannot prove any
+-- single file's content is correct; content_hash above (this file's own
+-- hash) is what verification standard #3 actually needs. Added after
+-- Nova's acceptance run caught that content_hash was being overwritten
+-- with the composite instead — this feature has shipped zero real rows so
+-- far (still on its dev branch), so no backfill is needed, just the column.
+ALTER TABLE file_snapshots ADD COLUMN IF NOT EXISTS snapshot_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_file_snapshots_file
+  ON file_snapshots(file_id, version DESC);
+
 -- ============== Polls ====================================================
 -- A poll is just a messages row with kind='poll'. The structured payload
 -- (question, options, mode, expires_at, closed_at, closed_reason) lives in
