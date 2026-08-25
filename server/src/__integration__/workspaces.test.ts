@@ -605,6 +605,7 @@ test('default workspace: whole team reads and writes without being added; scope 
   assert.ok(detail.folderPath.includes('workspaces')) // product-managed folder
   const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
   assert.equal(sources.get(MEMBER), 'implicit')
+  assert.equal(sources.get(AGENT), 'implicit') // humans and agents alike
   assert.equal(sources.get(OWNER), 'implicit') // the whole team, not an explicit list
 
   await pool.query(`DELETE FROM company_members WHERE company_id = $1 AND user_id = $2`, [COMPANY, MEMBER])
@@ -614,4 +615,16 @@ test('default workspace: whole team reads and writes without being added; scope 
     [COMPANY, MEMBER],
   )
   assert.equal(await writeAs(defId, 'b.txt', memberBase), 200) // back in
+})
+
+test('cross-company: another company cannot reach a team default workspace by its deterministic id', async () => {
+  const defId = await defaultWorkspaceId()
+  assert.equal(
+    (await fetch(`${outsiderBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY_B) })).status,
+    404,
+  )
+  assert.equal(
+    (await fetch(`${outsiderBase}/api/workspaces/${defId}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
+    404,
+  )
 })

@@ -95,7 +95,9 @@ async function resolveInside(root: string, raw: unknown): Promise<{ abs: string;
  *  files". Lazily provisioned and self-healing on every list call, so
  *  existing companies get one without a migration and new ones without a
  *  creation hook. Unlike operator-bound folders, its folder is
- *  product-managed under UPLOAD_DIR (workspaces/<companyId>). */
+ *  product-managed under UPLOAD_DIR (workspaces/<companyId>). Provisioning
+ *  fails loud: if the folder can't be created, listing 500s rather than
+ *  silently omitting the team's core artifact. */
 async function ensureDefaultWorkspace(pool: Pool, companyId: string): Promise<void> {
   const { rows } = await pool.query(
     `SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`,
@@ -112,7 +114,8 @@ async function ensureDefaultWorkspace(pool: Pool, companyId: string): Promise<vo
        ON CONFLICT DO NOTHING`,
       [`ws-default-${companyId}`, companyId, 'Team files', folderReal],
     )
-    .catch(() => {
+    .catch((e: unknown) => {
+      if ((e as { code?: string }).code !== '23505') throw e
       // Lost the one-per-company race — the winner's row is correct.
     })
 }
