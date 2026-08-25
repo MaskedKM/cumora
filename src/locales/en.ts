@@ -318,7 +318,6 @@ export const en = {
   'cal.weekUnitPlural': 'weeks',
   'cal.monthUnitPlural': 'months',
   'cal.yearUnitPlural': 'years',
-  // ─── documents view ───────────────────────────────────────────────
   // ─── workspaces view ───
   'ws.title': 'Workspaces',
   'ws.members': 'Member scope',
