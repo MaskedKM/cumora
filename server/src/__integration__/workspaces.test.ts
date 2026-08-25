@@ -10,7 +10,7 @@
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll } from './_helpers.js'
@@ -343,4 +343,22 @@ test('folderPath is exposed only to owner/admin in the workspace detail', async 
   const memberRes = await fetch(`${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   const memberJson = (await memberRes.json()) as Record<string, unknown>
   assert.equal('folderPath' in memberJson, false)
+})
+
+test('reads beyond the 2 MB cap are refused with 413', async () => {
+  const { id } = await createWorkspaceJson()
+  await writeFile(join(boundDir, 'big.txt'), 'a'.repeat(3 * 1024 * 1024), 'utf8')
+  const res = await fetch(`${ownerBase}/api/workspaces/${id}/file${q('big.txt')}`, { headers: jsonHeaders(COMPANY) })
+  assert.equal(res.status, 413)
+})
+
+test('a symlink inside the folder pointing outside is refused', async () => {
+  const { id } = await createWorkspaceJson()
+  const secret = join(tmpRoot, 'secret-outside.txt')
+  await writeFile(secret, 'server secret', 'utf8')
+  await symlink(secret, join(boundDir, 'leak.txt'))
+  assert.equal(
+    (await fetch(`${ownerBase}/api/workspaces/${id}/file${q('leak.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
+    400,
+  )
 })

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Pool } from 'pg'
 import type { AuthedRequest } from '../auth.js'
 
@@ -54,21 +54,39 @@ async function loadWorkspace(pool: Pool, companyId: string, id: string): Promise
   return rows[0]
 }
 
-/** Resolve a caller-supplied path against the workspace folder and refuse
- *  anything that escapes it. `resolve()` normalizes `..` segments, so the
- *  `relative()` check afterwards turns an escape into a 400. Note this is
- *  a string-level guard, not a sandbox: members already hold full
- *  read/write inside the folder (and can create symlinks), so there is no
- *  privilege boundary below "inside vs outside the folder" to defend. */
-function resolveInside(root: string, raw: unknown): { abs: string; rel: string } {
-  const rel = typeof raw === 'string' ? raw.trim() : ''
-  if (rel.includes('\0')) throw new WorkspaceError(400, 'invalid path')
-  const abs = resolve(root, rel)
+function assertInside(root: string, abs: string): void {
   const fromRoot = relative(root, abs)
   if (fromRoot !== '' && (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))) {
     throw new WorkspaceError(400, 'path escapes the workspace folder')
   }
-  return { abs, rel: fromRoot }
+}
+
+/** Resolve a caller-supplied path against the workspace folder and refuse
+ *  anything that escapes it. Two layers: `resolve()` normalizes `..`
+ *  segments (string level), then `realpath()` re-checks the resolved
+ *  target so a host-created symlink inside the folder cannot point an
+ *  operation outside it (the root itself is realpath-resolved at bind
+ *  time). A not-yet-existing target (PUT creating a file) falls back to
+ *  realpath-ing its parent directory. Containment, not a sandbox: members
+ *  hold full read/write inside the folder; the only boundary defended is
+ *  inside vs outside. */
+async function resolveInside(root: string, raw: unknown): Promise<{ abs: string; rel: string }> {
+  const rel = typeof raw === 'string' ? raw.trim() : ''
+  if (rel.includes('\0')) throw new WorkspaceError(400, 'invalid path')
+  const abs = resolve(root, rel)
+  assertInside(root, abs)
+  let real = abs
+  try {
+    real = await realpath(abs)
+  } catch {
+    try {
+      real = join(await realpath(dirname(abs)), basename(abs))
+    } catch {
+      real = abs
+    }
+  }
+  assertInside(root, real)
+  return { abs: real, rel: relative(root, real) }
 }
 
 async function requireWorkspaceMember(
@@ -230,7 +248,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
 
   router.get('/:id/files', async (req, res) => {
     const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
-    const dir = resolveInside(workspace.folder_path, req.query.path)
+    const dir = await resolveInside(workspace.folder_path, req.query.path)
     if (!(await isDirectory(dir.abs))) {
       throw new WorkspaceError(400, 'path is not a directory inside the workspace folder')
     }
@@ -250,7 +268,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
 
   router.get('/:id/file', async (req, res) => {
     const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
-    const target = resolveInside(workspace.folder_path, req.query.path)
+    const target = await resolveInside(workspace.folder_path, req.query.path)
     if (target.rel === '') throw new WorkspaceError(400, 'path required')
     let s: Awaited<ReturnType<typeof stat>>
     try {
@@ -266,7 +284,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
 
   router.put('/:id/file', async (req, res) => {
     const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
-    const target = resolveInside(workspace.folder_path, req.query.path)
+    const target = await resolveInside(workspace.folder_path, req.query.path)
     if (target.rel === '') throw new WorkspaceError(400, 'path required')
     const content = (req.body ?? {}).body
     if (typeof content !== 'string') throw new WorkspaceError(400, 'body required (string)')
