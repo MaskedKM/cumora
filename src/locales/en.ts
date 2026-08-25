@@ -892,7 +892,7 @@ export const en = {
   'convene.entries': '{count} entries',
   'convene.sessionTitleFallback': 'live work session',
   // ─── artifact peek (boards / calendar / docs) ─────────────────────
-  'peek.openFull': 'Open full team',
+  'peek.openFull': 'Open full view',
   'peek.closeArtifact': 'Close artifact',
   'peek.closeButton': 'Close',
   'peek.labelBoard': 'Kanban board',

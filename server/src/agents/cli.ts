@@ -1249,7 +1249,7 @@ async function cmdShip(parsed: ParsedArgs): Promise<CliResult> {
       await client.query('ROLLBACK').catch(() => {})
       throw error
     } finally { client.release() }
-    return ok(`Created shipping contract ${id} for “${title}”. Three required evidence squares were seeded. Add invariants and assign independent verifiers in the Ship workspace.`)
+    return ok(`Created shipping contract ${id} for “${title}”. Three required evidence squares were seeded. Add invariants and assign independent verifiers in the Ship panel.`)
   }
   if (action === 'square') {
     const [featureId, squareId, status] = parsed.positional.slice(1)
@@ -1323,7 +1323,7 @@ async function cmdShip(parsed: ParsedArgs): Promise<CliResult> {
        VALUES ($1,$2,$3,$4,'agent-cli',$5,$6,$7)`,
       [id, companyId, featureId, me, title, typeof parsed.flags.description === 'string' ? parsed.flags.description : title, severity],
     )
-    return ok(`Captured friction ${id}${featureId ? ` on ${featureId}` : ''}. It is now visible in the Ship workspace.`)
+    return ok(`Captured friction ${id}${featureId ? ` on ${featureId}` : ''}. It is now visible in the Ship panel.`)
   }
   if (action === 'regression') {
     const featureId = parsed.positional[1]

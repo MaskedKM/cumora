@@ -893,7 +893,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'convene.entries': '共 {count} 条',
   'convene.sessionTitleFallback': '实时协作会议',
   // ─── 预览（看板 / 日历 / 文档）────────────────────────────────────
-  'peek.openFull': '打开完整团队',
+  'peek.openFull': '打开完整视图',
   'peek.closeArtifact': '关闭预览',
   'peek.closeButton': '关闭',
   'peek.labelBoard': '看板',
@@ -1038,7 +1038,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ship.statusArchived': '已归档',
   // ─── onboarding（首次配对计算机）─────────────────────────────────────
   'onboard.title': '设置你的计算机',
-  'onboard.body': '智能体跑在你自己的机器（或 VPS）上，由本地的 <span class="font-mono text-[13px]">Claude Code</span>、<span class="font-mono text-[13px]">Codex</span>、<span class="font-mono text-[13px]">Grok Build</span> 或 <span class="font-mono text-[13px]">Cursor</span> 驱动。配对一台计算机开始吧 —— 初始团队会部署在那里，每人都有独立的 workspace、记忆和技能。',
+  'onboard.body': '智能体跑在你自己的机器（或 VPS）上，由本地的 <span class="font-mono text-[13px]">Claude Code</span>、<span class="font-mono text-[13px]">Codex</span>、<span class="font-mono text-[13px]">Grok Build</span> 或 <span class="font-mono text-[13px]">Cursor</span> 驱动。配对一台计算机开始吧 —— 初始团队会部署在那里，每人都有独立的私有区、记忆和技能。',
   'onboard.cmdIntro': '在你想要托管智能体的机器上，运行这一条命令即可。需要先装好 <span class="font-mono">claude</span>、<span class="font-mono">codex</span>、<span class="font-mono">grok</span> 或 <span class="font-mono">cursor-agent</span>。',
   'onboard.generating': '生成中…',
   'onboard.addComputer': '添加一台计算机',

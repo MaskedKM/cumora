@@ -126,7 +126,7 @@ function buildInvitationEmailHtml(args: {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="font-family:${fontStack}; font-size:13px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#5B7186; padding:0 0 8px;">
-                    Workspace invitation
+                    Team invitation
                   </td>
                 </tr>
                 <tr>
