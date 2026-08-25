@@ -24,9 +24,11 @@ for (const f of ['server/src/index.ts', 'server/src/api/router.ts']) {
     MOUNTED_PREFIXES.add(m[1])
   }
 }
-// 相对挂载点:api 内挂 /admin|/shipping|/workspaces(= /api/*),index 挂 /runtime
+// 相对挂载点:api 内挂 /admin|/shipping|/workspaces(= /api/*),index 挂 /runtime。
+// 语义注意:哨兵按变量名含 router|Router 过滤挂载,子路由若以不含
+// router 字样的变量名挂载会逃过哨兵(但逃不过 ROUTERS 覆盖率对账)。
 const KNOWN = new Set([
-  '/api', '/webhooks/email', '/uploads', '/uploads/capabilities',
+  '/api', '/webhooks/email',
   '/admin', '/shipping', '/workspaces', '/runtime',
 ])
 const rogue = [...MOUNTED_PREFIXES].filter((x) => !KNOWN.has(x))

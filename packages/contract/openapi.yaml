@@ -63,7 +63,9 @@ paths:
             schema: { type: object, additionalProperties: true }
       responses:
         '200': { description: ok }
+        '400': { description: 报文非法 }
         '401': { description: 签名不符 }
+        '503': { description: 存储不可用 }
   /api/health:
     get:
       tags: [core]
@@ -1993,7 +1995,19 @@ paths:
                 name: { type: string }
                 folderPath: { type: string }
       responses:
-        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, folderPath, isDefault, createdAt]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  folderPath: { type: string }
+                  isDefault: { type: boolean }
+                  createdAt: { type: string, format: date-time }
   /api/workspaces/{id}:
     get:
       tags: [workspaces]
@@ -2027,7 +2041,7 @@ paths:
         - { name: participantId, in: path, required: true, schema: { type: string } }
       summary: 移除显式成员
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/workspaces/{id}/associations:
     post:
       tags: [workspaces]
@@ -2065,7 +2079,7 @@ paths:
         - { name: targetId, in: path, required: true, schema: { type: string } }
       summary: 解除关联
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/workspaces/{id}/files:
     get:
       tags: [workspaces]
@@ -2140,7 +2154,16 @@ paths:
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       summary: 安全解绑(不动文件)
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, unboundAt]
+                properties:
+                  ok: { type: boolean }
+                  unboundAt: { type: string, format: date-time }
   /api/admin/me:
     get:
       tags: [admin]
@@ -2905,7 +2928,15 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              required: [status]
+              properties:
+                status: { type: string, enum: [running, completed, failed, skipped] }
+                summary: { type: string }
+                error: { type: string, nullable: true }
+                toolCallCount: { type: integer }
+                tokenCount: { type: integer }
+                model: { type: string, nullable: true }
+                usage: { type: object, nullable: true, additionalProperties: true }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/busy/heartbeat:
@@ -2993,7 +3024,12 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              required: [scopeKey, taskType, subject]
+              properties:
+                scopeKey: { type: string }
+                taskType: { type: string }
+                subject: { type: string }
+                ttlSec: { type: integer }
       responses:
         '200':
           description: ok
@@ -3011,7 +3047,11 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              required: [scopeKey, taskType, subject]
+              properties:
+                scopeKey: { type: string }
+                taskType: { type: string }
+                subject: { type: string }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/worklog/peek:
@@ -3037,7 +3077,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [conversationId]
+              required: [conversationId, upToMessageId]
               properties:
                 conversationId: { type: string }
                 upToMessageId: { type: string }
@@ -3054,7 +3094,13 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              required: [conversationId, noticeKind, text, dedupeKey]
+              properties:
+                conversationId: { type: string }
+                noticeKind: { type: string }
+                text: { type: string }
+                dedupeKey: { type: string }
+                dedupeTtlSec: { type: integer }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
 components:
@@ -3612,7 +3658,7 @@ components:
       properties:
         user:
           type: object
-          required: [id, email, name, emailVerified, providers]
+          required: [id, email, name, emailVerified, isAdmin, providers]
           properties:
             id: { type: string }
             email: { type: string }

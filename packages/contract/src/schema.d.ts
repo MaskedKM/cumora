@@ -3259,7 +3259,7 @@ export interface components {
                 email: string;
                 name: string;
                 emailVerified: boolean;
-                isAdmin?: boolean;
+                isAdmin: boolean;
                 providers: string[];
             };
             companies: {
@@ -3871,8 +3871,22 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description 报文非法 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description 签名不符 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 存储不可用 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6876,7 +6890,14 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
+                    "application/json": {
+                        id: string;
+                        name: string;
+                        folderPath: string;
+                        isDefault: boolean;
+                        /** Format: date-time */
+                        createdAt: string;
+                    };
                 };
             };
         };
@@ -6949,7 +6970,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
+                    "application/json": components["schemas"]["Ok"];
                 };
             };
         };
@@ -7008,7 +7029,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
+                    "application/json": components["schemas"]["Ok"];
                 };
             };
         };
@@ -7120,7 +7141,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Ok"];
+                    "application/json": {
+                        ok: boolean;
+                        /** Format: date-time */
+                        unboundAt: string;
+                    };
                 };
             };
         };
@@ -8487,7 +8512,16 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    /** @enum {string} */
+                    status: "running" | "completed" | "failed" | "skipped";
+                    summary?: string;
+                    error?: string | null;
+                    toolCallCount?: number;
+                    tokenCount?: number;
+                    model?: string | null;
+                    usage?: {
+                        [key: string]: unknown;
+                    } | null;
                 };
             };
         };
@@ -8640,7 +8674,10 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    scopeKey: string;
+                    taskType: string;
+                    subject: string;
+                    ttlSec?: number;
                 };
             };
         };
@@ -8668,7 +8705,9 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    scopeKey: string;
+                    taskType: string;
+                    subject: string;
                 };
             };
         };
@@ -8717,7 +8756,7 @@ export interface operations {
             content: {
                 "application/json": {
                     conversationId: string;
-                    upToMessageId?: string;
+                    upToMessageId: string;
                 };
             };
         };
@@ -8743,7 +8782,11 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    conversationId: string;
+                    noticeKind: string;
+                    text: string;
+                    dedupeKey: string;
+                    dedupeTtlSec?: number;
                 };
             };
         };
