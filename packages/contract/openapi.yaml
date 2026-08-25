@@ -1930,9 +1930,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [collaboratorIds]
+              required: [participantIds]
               properties:
-                collaboratorIds: { type: array, items: { type: string } }
+                participantIds: { type: array, items: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/push/register:

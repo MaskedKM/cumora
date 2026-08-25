@@ -2016,7 +2016,7 @@ type RenameDocumentJSONBody struct {
 
 // SetDocumentCollaboratorsJSONBody defines parameters for SetDocumentCollaborators.
 type SetDocumentCollaboratorsJSONBody struct {
-	CollaboratorIds []string `json:"collaboratorIds"`
+	ParticipantIds []string `json:"participantIds"`
 }
 
 // ReplyEmailJSONBody defines parameters for ReplyEmail.

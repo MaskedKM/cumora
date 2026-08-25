@@ -6776,7 +6776,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    collaboratorIds: string[];
+                    participantIds: string[];
                 };
             };
         };

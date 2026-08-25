@@ -137,11 +137,11 @@ export async function buildTestApp(): Promise<import('express').Express> {
   return app
 }
 
-/** Build a test app with the full /api router mounted + a stubbed auth
- *  middleware that stamps every request as the given userId. Used for
- *  exercising auth-gated endpoints (HTML viewer, send/reply) without
- *  having to mint real sessions. The caller is responsible for seeding
- *  the user + company_members rows so requireCompany() succeeds. */
+/** 验收镜像的统一请求面(#49):同一 helper 既能打 in-process app(默认,
+ * 也是既有全部测试的形态),也能打任意 base URL——设 CUMORA_MIRROR_BASE
+ * 即可把整套镜像指向 Go 候选实现,差异即回归。 */
+export const MIRROR_BASE = process.env.CUMORA_MIRROR_BASE ?? ''
+
 export async function buildApiTestApp(userId: string): Promise<import('express').Express> {
   const expressMod = await import('express')
   const express = expressMod.default
