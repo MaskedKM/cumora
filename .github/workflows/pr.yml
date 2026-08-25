@@ -5,9 +5,11 @@
 # The two runner slots share one 4-core/4GB cgroup, so this workflow is
 # exactly TWO jobs — quick (guards + lint + typecheck) and tests (unit +
 # integration against service containers) — to match the fleet's
-# parallelism and keep per-job npm ci overhead down. Host has Docker
-# (service containers) but no node/psql — node comes from setup-node,
-# pgvector is enabled via the repo's own pg client.
+# parallelism and keep per-job npm ci overhead down. BOTH jobs run in
+# node:24 containers: PR code never executes as the host runner user
+# (the runner is in the docker group, i.e. host-root-equivalent), and
+# container jobs get git + node from the image with no setup-node.
+# pgvector is enabled via the repo's own pg client (no host psql).
 #
 # Deliberate boundary: compilation/artifact work (electron-builder,
 # docker image builds, releases) does NOT run on the self-hosted fleet.
@@ -27,10 +29,15 @@ concurrency:
   group: pr-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   quick:
     name: Quick (guards + lint + typecheck)
     runs-on: [self-hosted, linux, ser8]
+    container:
+      image: node:24-bookworm
     timeout-minutes: 15
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
@@ -38,25 +45,32 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-      - run: npm ci
       # P0 tripwire: the BIG (brain) model may ONLY do real, heavy tasks.
-      # Fast static scan before anything else — see scripts/guard-big-brain.mjs.
+      # Static scan runs BEFORE npm ci — no install, no deps — so a
+      # broken dependency tree can never mask the tripwire (the image
+      # ships node already).
       - name: Big-brain guard (P0)
         run: node scripts/guard-big-brain.mjs
       # P1 tripwire: every sub2api callsite must go through
       # getTrackedLlmClient() so the llm_calls ledger captures the spend.
       - name: LLM-tracked guard (P1)
         run: node scripts/guard-llm-tracked.mjs
+      - run: npm ci
       - name: Lint (Biome)
         run: npm run lint
       # `npm run typecheck` delegates to the apps/web workspace (root has
       # no tsconfig since the monorepo move); server keeps its own config.
-      - name: Typecheck (client + server)
-        run: npm run typecheck && npm run server:typecheck
+      - name: tsc (client)
+        run: npm run typecheck
+      - name: tsc (server)
+        run: npm run server:typecheck
+      # Container runs as root but shares the workspace with the host
+      # runner user — give ownership back (see the tests job's note).
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
 
   tests:
     name: Unit + integration
@@ -64,8 +78,8 @@ jobs:
     # share the job network and are reached by service name (postgres,
     # redis) — no host ports are published, so concurrent PRs (two runner
     # slots) and any services already on the host can never collide on
-    # 5432/6379. node:24 ships the toolchain (no setup-node needed);
-    # checkout falls back to the REST tarball (image has no git).
+    # 5432/6379. node:24-bookworm ships node + git (the codex engine
+    # tests init a git repo in the agent home).
     runs-on: [self-hosted, linux, ser8]
     container:
       image: node:24-bookworm
