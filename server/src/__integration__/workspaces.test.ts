@@ -408,10 +408,11 @@ async function associate(
   kind: string,
   targetId: string,
   base: string = ownerBase,
+  company: string = COMPANY,
 ): Promise<Response> {
   return fetch(`${base}/api/workspaces/${workspaceId}/associations`, {
     method: 'POST',
-    headers: jsonHeaders(COMPANY),
+    headers: jsonHeaders(company),
     body: JSON.stringify({ kind, targetId }),
   })
 }
@@ -462,7 +463,15 @@ test('board card association: assignee + mentions are implicit, the creator is n
   assert.equal(await writeAs(id, 'a.txt', memberBase), 403) // creator deliberately not a participant
 
   await pool.query(`UPDATE board_cards SET assignee_id = $1 WHERE id = 'card-ws'`, [MEMBER])
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // assignee path
+
+  await pool.query(`UPDATE board_cards SET assignee_id = NULL, mentions = $1::jsonb WHERE id = 'card-ws'`, [
+    JSON.stringify([MEMBER]),
+  ])
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // mentions path
+
+  await pool.query(`UPDATE board_cards SET mentions = '[]'::jsonb WHERE id = 'card-ws'`)
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 403) // no longer assignee or mentioned
 })
 
 test('document association: creator + collaborators implicit; collaborator edits via API and access follows', async () => {
@@ -521,6 +530,7 @@ test('association lifecycle: kind whitelist, unknown target, duplicate, delete r
   })
   assert.equal(del.status, 200)
   assert.equal(await writeAs(id, 'b.txt', memberBase), 403)
+  assert.equal(await writeAs(id, 'c.txt', ownerBase), 200) // explicit members unaffected by association churn
   assert.deepEqual((await detailJson(id)).associations, [])
   assert.equal(
     (
@@ -542,4 +552,21 @@ test('association rights: project and board_card need owner/admin, document does
   assert.equal((await associate(id, 'project', 'p-ws', memberBase)).status, 403)
   assert.equal((await associate(id, 'board_card', 'card-ws', memberBase)).status, 403)
   assert.equal((await associate(id, 'document', 'doc-ws', memberBase)).status, 201)
+})
+
+test('cross-company isolation: associations only see same-company targets', async () => {
+  await seedProjectWithConversation([MEMBER])
+  const dirB = await mkdtemp(join(tmpRoot, 'bound-b-'))
+  const bCreate = await createWorkspace({ base: outsiderBase, company: COMPANY_B, folderPath: dirB })
+  assert.equal(bCreate.status, 201)
+  const bId = ((await bCreate.json()) as { id: string }).id
+  await pool.query(
+    `INSERT INTO projects (id, company_id, name) VALUES ('p-b', $1, 'B Project') ON CONFLICT DO NOTHING`,
+    [COMPANY_B],
+  )
+
+  assert.equal((await associate(bId, 'project', 'p-ws', outsiderBase, COMPANY_B)).status, 404) // A's project invisible to B
+  const { id } = await createWorkspaceJson()
+  assert.equal((await associate(id, 'project', 'p-b')).status, 404) // B's project invisible to A
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 201) // same-company works
 })

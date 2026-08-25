@@ -1773,6 +1773,11 @@ CREATE TABLE IF NOT EXISTS workspace_members (
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_members_participant
   ON workspace_members(participant_id);
+-- Vestigial column from the #27 tracer (implicit rows were going to be
+-- materialized with a source tag); #29 computes implicit membership live
+-- instead. Databases that already ran the #27 DDL keep the column unless
+-- we drop it here.
+ALTER TABLE workspace_members DROP COLUMN IF EXISTS source;
 
 -- Association links one of the three work-item kinds to a workspace; the
 -- target's participants thereby hold implicit workspace membership.

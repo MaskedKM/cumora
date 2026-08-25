@@ -68,7 +68,6 @@ const TABLES_TO_WIPE: readonly string[] = [
   'workspace_members',
   'workspaces',
   'projects',
-  'conversations',
   'company_members',
   'participants',
   'users',

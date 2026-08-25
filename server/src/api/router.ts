@@ -6061,7 +6061,8 @@ api.put('/documents/:id/collaborators', safe(async (req, res) => {
     ...new Set(
       body.participantIds.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean),
     ),
-  ].slice(0, 100)
+  ]
+  if (ids.length > 100) throw new HttpError(400, 'too many participantIds (max 100)')
   const { rows } = await pool.query<{ created_by: string }>(
     `SELECT created_by FROM documents WHERE id = $1 AND company_id = $2`,
     [id, companyId],

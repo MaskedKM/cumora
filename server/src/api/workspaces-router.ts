@@ -106,6 +106,9 @@ async function requireWorkspaceMember(
      SELECT 1
        FROM workspace_associations a
       WHERE a.workspace_id = $1 AND a.company_id = $3
+        AND EXISTS (
+          SELECT 1 FROM participants p
+           WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
         AND (
           (a.target_kind = 'project' AND EXISTS (
              SELECT 1 FROM conversations c
@@ -267,7 +270,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
     const { companyId } = await deps.requireCompany(req)
     const { rows } = await pool.query(
       `SELECT w.id, w.name, w.is_default AS "isDefault", w.created_at AS "createdAt",
-              count(m.participant_id)::int AS "memberCount"
+              count(m.participant_id)::int AS "explicitMemberCount"
          FROM workspaces w
          LEFT JOIN workspace_members m ON m.workspace_id = w.id
         WHERE w.company_id = $1
