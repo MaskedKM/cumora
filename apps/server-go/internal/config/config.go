@@ -8,10 +8,9 @@ import (
 )
 
 type Config struct {
-	ListenAddr     string
-	DatabaseURL    string
-	MigrationsDir  string
-	InstanceID     string
+	ListenAddr    string
+	DatabaseURL   string
+	MigrationsDir string
 }
 
 func Load() Config {
@@ -19,7 +18,6 @@ func Load() Config {
 		ListenAddr:    envOr("CUMORA_GO_LISTEN", ":5190"),
 		DatabaseURL:   withSSLModeDisabled(envOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
 		MigrationsDir: envOr("CUMORA_GO_MIGRATIONS", "migrations"),
-		InstanceID:    envOr("INSTANCE_ID", "go-1"),
 	}
 }
 

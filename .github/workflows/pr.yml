@@ -74,6 +74,22 @@ jobs:
           WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
           chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
 
+  go:
+    name: Go (gofmt + vet + build)
+    runs-on: [self-hosted, linux, ser8]
+    container:
+      image: golang:1.24-bookworm
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
+    env:
+      GOCACHE: /tmp/gocache
+    steps:
+      - uses: actions/checkout@v4
+      - name: gofmt check
+        run: test -z "$(gofmt -l apps/server-go)" || (gofmt -l apps/server-go; exit 1)
+      - name: vet + build
+        run: cd apps/server-go && go vet ./... && go build ./...
+
   tests:
     name: Unit + integration
     # The whole job runs IN a container on the runner's Docker. Services

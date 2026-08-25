@@ -8,16 +8,16 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func Open(url string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", url)
+	db, err := sql.Open("pgx", url)
 	if err != nil {
 		return nil, err
 	}
@@ -29,15 +29,21 @@ func Open(url string) (*sql.DB, error) {
 	return db, nil
 }
 
-// Migrate 按文件名序执行 migrations/*.sql 中未应用的语句。
-// 骨架票用极简自管迁移表(__goose_baseline);#51 后可视需要换正式 goose。
+// Migrate 按文件名序执行 migrations/*.sql 中未应用的语句(自管 go_migrations 表;
+// 正式 goose 若引入可平滑接管——其默认表名 goose_db_version 不冲突)。
 func Migrate(db *sql.DB, dir string) error {
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS __goose_migrations (
+	// 双实例并发靴的 CREATE TABLE IF NOT EXISTS 竞态防护(pg_type 重复键)。
+	if _, err := db.Exec(`SELECT pg_advisory_lock(hashtext('cumora_go_migrations'))`); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+	defer db.Exec(`SELECT pg_advisory_unlock(hashtext('cumora_go_migrations'))`)
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS go_migrations (
 		id SERIAL PRIMARY KEY,
 		name TEXT NOT NULL UNIQUE,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`); err != nil {
-		return fmt.Errorf("ensure migrations table: %w", err)
+		return fmt.Errorf("ensure go_migrations table: %w", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -52,7 +58,7 @@ func Migrate(db *sql.DB, dir string) error {
 	sort.Strings(names)
 	for _, name := range names {
 		var exists bool
-		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM __goose_migrations WHERE name = $1)`, name).Scan(&exists); err != nil {
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM go_migrations WHERE name = $1)`, name).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -70,7 +76,7 @@ func Migrate(db *sql.DB, dir string) error {
 			tx.Rollback()
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO __goose_migrations (name) VALUES ($1)`, name); err != nil {
+		if _, err := tx.Exec(`INSERT INTO go_migrations (name) VALUES ($1)`, name); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -82,4 +88,4 @@ func Migrate(db *sql.DB, dir string) error {
 	return nil
 }
 
-func slogInfo(msg, name string) { log.Printf("[migrate] %s: %s", msg, name) }
+func slogInfo(msg, name string) { slog.Info("migration "+msg, "name", name) }

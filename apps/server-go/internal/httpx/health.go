@@ -3,6 +3,7 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -19,19 +20,22 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
 }
 
-// MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)——
-// 形状对齐 TS baseline:{ok, ts} / {ok}。pool 接受 *sql.DB。
-func MountHealth(mux *http.ServeMux, pool interface{ Ping() error }) {
+// MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)。
+// 形状对齐 TS baseline:{ok, ts(ms)};池耗尽时 1s 超时兜底返回确定性 503。
+func MountHealth(mux *http.ServeMux, pool interface {
+	Ping() error
+	PingContext(ctx context.Context) error
+}) {
 	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, _ *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
 	})
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		if err := pool.Ping(); err != nil {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := pool.PingContext(ctx); err != nil {
+			WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": nowUnix()})
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
 	})
 }
-
-func nowUnix() int64 { return time.Now().Unix() }
