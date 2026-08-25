@@ -318,7 +318,7 @@ export function InviteAcceptScreen({ token, onDone }: Props) {
                     background: 'var(--skype)',
                     boxShadow: '0 6px 16px -4px rgba(0, 168, 240, 0.5)',
                   }}
-                >{busy ? t('inviteAccept.joinBusy') : t('inviteAccept.joinAs', { company: companyName, role: inv.role })}</button>
+                >{busy ? t('inviteAccept.joinBusy') : t('inviteAccept.joinAs', { company: companyName, role: inv?.role })}</button>
                 <button
                   onClick={() => { clearPendingInvite(); onDone() }}
                   className="text-[12px] text-ink-400 hover:text-ink-700 transition font-display italic"

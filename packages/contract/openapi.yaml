@@ -1,0 +1,4289 @@
+openapi: 3.0.3
+info:
+  title: Cumora API
+  version: 0.2.2
+  description: |
+    Cumora 单一契约源(ADR 0004 · 票 #48)。覆盖全部存活路由域:
+    core(auth/me/companies/invitations)、computers/agents、conversations/messages、
+    email、projects、participants、boards、calendar、documents、push、uploads、
+    workspaces、observability、devtools、admin、shipping、runtime(BYOA daemon 专用面)。
+
+    ## WebSocket / SSE 事件面描述策略
+
+    本规范只描述 HTTP 面。两条长连接通道不建模为 paths:
+
+    - **WebSocket `/ws`** — 实时事件广播(message.new/delta、typing、participants/
+      computers 状态、board/doc/calendar 变更等,载荷见 web 端 WsEvent 联合类型)。
+      连接鉴权走 `/auth/ws-ticket` 票据。
+    - **SSE `/runtime/wake-stream`** — daemon 唤醒流(wake/steer 两类事件)。
+
+    两条通道的载荷形状刻意不入 components(逐事件契约由 #49 的 wire 级验收镜像
+    测试承载——同一套测试跑 TS 与 Go,差异即回归);规范只负责 HTTP 面。
+
+    ## 鉴权
+
+    - `sessionBearer` — 用户会话(Authorization: Bearer <token> + X-Company-Id 租户头)
+    - `agentRuntimeJWT` — BYOA daemon 的 per-agent runtime JWT(/runtime/* 全域)
+    - `deviceToken` — daemon 设备凭证(/api/computers/pair 等)
+    - 部分路由匿名(public/livez/og/auth 回调)
+servers:
+  - url: /
+  - url: http://localhost:5181
+tags:
+  - { name: core }
+  - { name: computers }
+  - { name: agents }
+  - { name: conversations }
+  - { name: email }
+  - { name: projects }
+  - { name: participants }
+  - { name: boards }
+  - { name: calendar }
+  - { name: documents }
+  - { name: push }
+  - { name: uploads }
+  - { name: workspaces }
+  - { name: observability }
+  - { name: devtools }
+  - { name: admin }
+  - { name: shipping }
+  - { name: runtime }
+security:
+  - sessionBearer: []
+paths:
+  /webhooks/email/inbound:
+    post:
+      tags: [core]
+      operationId: emailInboundWebhook
+      security: []
+      summary: Cloudflare email-gate 入站邮件回调(HMAC 签名验证,自有 JSON 解析器)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok }
+        '400': { description: 报文非法 }
+        '401': { description: 签名不符 }
+        '503': { description: 存储不可用 }
+  /api/health:
+    get:
+      tags: [core]
+      operationId: health
+      security: []
+      summary: 存活探测
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, ts]
+                properties:
+                  ok: { type: boolean }
+                  ts: { type: integer }
+  /api/livez:
+    get:
+      tags: [core]
+      operationId: livez
+      security: []
+      summary: 无依赖存活探测
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/og:
+    get:
+      tags: [core]
+      operationId: ogImage
+      security: []
+      summary: OG 图(二进制,非 JSON)
+      responses:
+        '200': { description: image/png }
+  /api/public/signup-config:
+    get:
+      tags: [core]
+      operationId: signupConfig
+      security: []
+      summary: 公开注册配置(waitlist 开关等)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/metrics:
+    get:
+      tags: [core]
+      operationId: metrics
+      security: []
+      summary: Prometheus 指标(?token= 门控)
+      responses:
+        '200': { description: text/plain }
+        '404': { description: 未配置 token }
+  /api/auth/start/{provider}:
+    get:
+      tags: [core]
+      operationId: authStart
+      security: []
+      summary: OAuth 跳转(302,浏览器导航)
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [google, github] } }
+        - { name: return, in: query, schema: { type: string } }
+        - { name: invite, in: query, schema: { type: string } }
+      responses:
+        '302': { description: 重定向至 IdP }
+  /api/auth/callback/{provider}:
+    get:
+      tags: [core]
+      operationId: authCallback
+      security: []
+      summary: OAuth 回调(落地 AUTH_DONE_URL)
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      responses:
+        '302': { description: 重定向回应用 }
+  /api/auth/apple/native:
+    post:
+      tags: [core]
+      operationId: authAppleNative
+      security: []
+      summary: iOS 原生 SIWA(identity_token 换会话)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityToken]
+              properties:
+                identityToken: { type: string }
+                name: { type: string, nullable: true }
+                inviteToken: { type: string, nullable: true }
+      responses:
+        '200':
+          description: 会话
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, user, companyId]
+                properties:
+                  token: { type: string }
+                  user:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      email: { type: string }
+                      displayName: { type: string }
+                  companyId: { type: string, nullable: true }
+  /api/auth/logout:
+    post:
+      tags: [core]
+      operationId: authLogout
+      summary: 注销当前会话
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/auth/ws-ticket:
+    post:
+      tags: [core]
+      operationId: authWsTicket
+      summary: 换取一次性 WS 票据
+      responses:
+        '200':
+          description: ticket
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket: { type: string }
+  /api/auth/me:
+    get:
+      tags: [core]
+      operationId: authMe
+      summary: 当前用户 + 公司列表 + 服务能力
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/MeResponse' } } } }
+  /api/me:
+    get:
+      tags: [core]
+      operationId: me
+      summary: 当前参与者概要
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, kind]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  kind: { type: string }
+  /api/me/account:
+    delete:
+      tags: [core]
+      operationId: deleteAccount
+      summary: 注销账户(软删 + PII 清除)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/me/quota:
+    get:
+      tags: [core]
+      operationId: getQuota
+      summary: sub2api 配额快照
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/QuotaResponse' } } } }
+  /api/me/preferences:
+    get:
+      tags: [core]
+      operationId: getPreferences
+      summary: 用户偏好(自由 KV)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+    put:
+      tags: [core]
+      operationId: putPreferences
+      summary: 整体覆写偏好
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/companies:
+    get:
+      tags: [core]
+      operationId: listCompanies
+      summary: 我的公司列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CompanySummary' }
+    post:
+      tags: [core]
+      operationId: createCompany
+      summary: 建公司
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, slug, role]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  slug: { type: string }
+                  role: { type: string }
+  /api/companies/{id}/invitations:
+    get:
+      tags: [core]
+      operationId: listInvitations
+      summary: 公司邀请列表(owner/admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invitation' }
+    post:
+      tags: [core]
+      operationId: createInvitation
+      summary: 铸造邀请(token 只返回一次)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, nullable: true }
+                role: { type: string, enum: [member, admin] }
+                note: { type: string, nullable: true }
+                multiUse: { type: boolean }
+                maxUses: { type: integer }
+                sendEmail: { type: boolean }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationWithToken' } } } }
+  /api/companies/{id}/invitations/{inviteId}:
+    delete:
+      tags: [core]
+      operationId: revokeInvitation
+      summary: 吊销邀请
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: inviteId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean }
+                  revoked: { type: boolean }
+  /api/invitations/{token}:
+    get:
+      tags: [core]
+      operationId: previewInvitation
+      security: []
+      summary: 公开预览邀请
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationPreview' } } } }
+  /api/invitations/{token}/accept:
+    post:
+      tags: [core]
+      operationId: acceptInvitation
+      summary: 兑现邀请(幂等)
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationAccept' } } } }
+  /api/projects:
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: 项目列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Project' }
+    post:
+      tags: [projects]
+      operationId: createProject
+      summary: 建项目
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                color: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, description, color, status]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  description: { type: string }
+                  color: { type: string, nullable: true }
+                  status: { type: string }
+  /api/projects/{id}:
+    put:
+      tags: [projects]
+      operationId: updateProject
+      summary: 改项目
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                color: { type: string, nullable: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/projects/{id}/archive:
+    post:
+      tags: [projects]
+      operationId: archiveProject
+      summary: 归档/恢复项目
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                archive: { type: boolean }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string }
+  /api/participants:
+    get:
+      tags: [participants]
+      operationId: getParticipants
+      summary: 全员(人+agent)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Participant' }
+  /api/computers:
+    get:
+      tags: [computers]
+      operationId: getComputers
+      summary: 本公司计算机(遗留 cloud 行已由 kind 守卫排除)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Computer' }
+    post:
+      tags: [computers]
+      operationId: requestPairingCode
+      summary: 申请配对码(持久公司级)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code]
+                properties:
+                  code: { type: string }
+                  expiresInSeconds: { type: integer, nullable: true }
+  /api/computers/{id}:
+    delete:
+      tags: [computers]
+      operationId: deleteComputer
+      summary: 吊销计算机(设备令牌+派生 JWT 全失效)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/computers/{id}/repair:
+    post:
+      tags: [computers]
+      operationId: repairComputer
+      summary: 重连码(保留计算机与其 agent)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code]
+                properties:
+                  code: { type: string }
+                  expiresInSeconds: { type: integer, nullable: true }
+  /api/computers/pair:
+    post:
+      tags: [computers]
+      operationId: pairComputer
+      security: [{ deviceToken: [] }]
+      summary: daemon 兑换配对码 → 设备凭证
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+                hostName: { type: string }
+                engines: { type: array, items: { type: string } }
+                version: { type: string }
+                supervised: { type: boolean }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [computerId, deviceToken]
+                properties:
+                  computerId: { type: string }
+                  deviceToken: { type: string }
+  /api/computers/me/agents:
+    get:
+      tags: [computers]
+      operationId: listAgentsForComputer
+      security: [{ deviceToken: [] }]
+      summary: daemon 拉取其托管的 agent 名册
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+  /api/computers/heartbeat:
+    post:
+      tags: [computers]
+      operationId: heartbeatComputer
+      security: [{ deviceToken: [] }]
+      summary: daemon 心跳(30s)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/agents/{id}/runtime-token:
+    post:
+      tags: [agents]
+      operationId: mintAgentRuntimeToken
+      security: [{ deviceToken: [] }]
+      summary: daemon 为 agent 铸 2h runtime JWT
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expiresAt]
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+  /api/agents:
+    post:
+      tags: [agents]
+      operationId: createAgent
+      summary: 建 agent
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentInput' }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
+  /api/agents/{id}:
+    put:
+      tags: [agents]
+      operationId: updateAgent
+      summary: 改 agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentInput' }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+    delete:
+      tags: [agents]
+      operationId: offboardAgent
+      summary: 离岸(软删)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, departedAt]
+                properties:
+                  ok: { type: boolean }
+                  departedAt: { type: string, format: date-time }
+  /api/agents/{id}/rehire:
+    post:
+      tags: [agents]
+      operationId: rehireAgent
+      summary: 复聘
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/agents/{id}/avatar/generate:
+    post:
+      tags: [agents]
+      operationId: generateAgentAvatar
+      summary: AI 生成头像
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: string }
+  /api/agents/{id}/computer:
+    post:
+      tags: [agents]
+      operationId: assignAgentComputer
+      summary: 指派计算机+引擎
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [computerId]
+              properties:
+                computerId: { type: string }
+                engine: { $ref: '#/components/schemas/EngineId' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, kind, engine]
+                properties:
+                  ok: { type: boolean }
+                  kind: { $ref: '#/components/schemas/ComputerKind' }
+                  engine: { $ref: '#/components/schemas/EngineId' }
+  /api/agents/autonomy:
+    get:
+      tags: [agents]
+      operationId: getAllAutonomy
+      summary: 自主度全表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Autonomy' }
+  /api/agents/{id}/autonomy:
+    get:
+      tags: [agents]
+      operationId: getAutonomy
+      summary: 单 agent 自主度
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Autonomy' } } } }
+    put:
+      tags: [agents]
+      operationId: putAutonomy
+      summary: 设自主度阈值
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [threshold]
+              properties:
+                threshold: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, threshold]
+                properties:
+                  ok: { type: boolean }
+                  threshold: { type: integer }
+  /api/conversations:
+    get:
+      tags: [conversations]
+      operationId: getConversations
+      summary: 会话列表(含未读/预览)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Conversation' }
+    post:
+      tags: [conversations]
+      operationId: createGroup
+      summary: 建群聊
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, members]
+              properties:
+                title: { type: string }
+                members: { type: array, items: { type: string } }
+                subtitle: { type: string }
+                projectId: { type: string, nullable: true }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, members, projectId]
+                properties:
+                  id: { type: string }
+                  members: { type: array, items: { type: string } }
+                  projectId: { type: string, nullable: true }
+  /api/conversations/direct:
+    post:
+      tags: [conversations]
+      operationId: openDirect
+      summary: 开/复用 DM
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otherId]
+              properties:
+                otherId: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, created]
+                properties:
+                  id: { type: string }
+                  created: { type: boolean }
+  /api/conversations/{id}/topic:
+    post:
+      tags: [conversations]
+      operationId: setTopic
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 设主题行
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topic: { type: string, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  topic: { type: string, nullable: true }
+  /api/conversations/{id}/title:
+    post:
+      tags: [conversations]
+      operationId: setTitle
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 改标题
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  title: { type: string }
+  /api/conversations/{id}/pin:
+    post:
+      tags: [conversations]
+      operationId: togglePin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 置顶开关
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pinned: { type: boolean }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  pinned: { type: boolean }
+  /api/conversations/{id}/mute:
+    post:
+      tags: [conversations]
+      operationId: setMute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 免啼(可带到期)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mute]
+              properties:
+                mute: { type: boolean }
+                until: { type: string, nullable: true, format: date-time }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  muted: { type: boolean }
+                  mutedUntil: { type: string, nullable: true, format: date-time }
+  /api/conversations/{id}/members:
+    post:
+      tags: [conversations]
+      operationId: addMember
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 拉人入会话
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  members: { type: array, items: { type: string } }
+                  alreadyIn: { type: boolean }
+  /api/conversations/{id}/leave:
+    post:
+      tags: [conversations]
+      operationId: leaveConversation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 退群
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  members: { type: array, items: { type: string } }
+  /api/conversations/{id}/typing:
+    post:
+      tags: [conversations]
+      operationId: emitTyping
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 输入态广播
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [done]
+              properties:
+                done: { type: boolean }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/conversations/{id}/read:
+    post:
+      tags: [conversations]
+      operationId: markRead
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 已读
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/conversations/{id}/project:
+    post:
+      tags: [projects]
+      operationId: attachProject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 会话挂/摘项目
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId: { type: string, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  projectId: { type: string, nullable: true }
+  /api/conversations/{id}/messages:
+    get:
+      tags: [conversations]
+      operationId: getMessages
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: before, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer } }
+      summary: 拉消息(倒序分页)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+    post:
+      tags: [conversations]
+      operationId: sendMessage
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 发消息(支持引用/附件/clientId 幂等)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string }
+                attachment: { $ref: '#/components/schemas/MessageAttachment' }
+                quotedMessageId: { type: string }
+                clientId: { type: string }
+      responses:
+        '200':
+          description: ok
+
+        '202':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, sequence]
+                properties:
+                  id: { type: string }
+                  sequence: { type: integer }
+  /api/conversations/{id}/messages/{rootId}/replies:
+    get:
+      tags: [conversations]
+      operationId: getReplies
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: rootId, in: path, required: true, schema: { type: string } }
+      summary: 引用线程的全部回复
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+  /api/messages/{id}/reactions:
+    post:
+      tags: [conversations]
+      operationId: toggleReaction
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 表情回应开关
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emoji]
+              properties:
+                emoji: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reactions]
+                properties:
+                  reactions:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReactionEntry' }
+  /api/polls:
+    post:
+      tags: [conversations]
+      operationId: createPoll
+      summary: 发起投票(kind=poll 消息)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, question, mode, options]
+              properties:
+                conversationId: { type: string }
+                question: { type: string }
+                mode: { type: string, enum: [single, multi] }
+                options: { type: array, items: { type: string } }
+                expiresInMinutes: { type: integer, nullable: true }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messageId, sequence, poll]
+                properties:
+                  messageId: { type: string }
+                  sequence: { type: integer }
+                  poll: { $ref: '#/components/schemas/PollPayload' }
+  /api/polls/{messageId}/vote:
+    post:
+      tags: [conversations]
+      operationId: castPollVote
+      parameters:
+        - { name: messageId, in: path, required: true, schema: { type: string } }
+      summary: 投票(替换本人既有选择)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [optionIds]
+              properties:
+                optionIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tallies, poll]
+                properties:
+                  tallies:
+                    type: array
+                    items: { $ref: '#/components/schemas/PollTally' }
+                  poll: { $ref: '#/components/schemas/PollPayload' }
+  /api/polls/{messageId}/close:
+    post:
+      tags: [conversations]
+      operationId: closePoll
+      parameters:
+        - { name: messageId, in: path, required: true, schema: { type: string } }
+      summary: 关闭投票(仅作者)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [closed, poll]
+                properties:
+                  closed: { type: boolean }
+                  poll: { $ref: '#/components/schemas/PollPayload' }
+  /api/email/send:
+    post:
+      tags: [email]
+      operationId: sendEmail
+      summary: 发新邮件线程
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, subject, body]
+              properties:
+                to: { type: array, items: { type: string } }
+                cc: { type: array, items: { type: string } }
+                subject: { type: string }
+                body: { type: string }
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    required: [key, filename, mimeType, sizeBytes]
+                    properties:
+                      key: { type: string }
+                      filename: { type: string }
+                      mimeType: { type: string }
+                      sizeBytes: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messageId, conversationId, transportStatus]
+                properties:
+                  messageId: { type: string }
+                  conversationId: { type: string }
+                  transportStatus: { type: string }
+                  mock: { type: boolean }
+                  error: { type: string, nullable: true }
+  /api/email/{messageId}/html:
+    get:
+      tags: [email]
+      operationId: fetchEmailHtml
+      parameters:
+        - { name: messageId, in: path, required: true, schema: { type: string } }
+      summary: 取消毒 HTML(204=无 HTML 部分;响应是 text/html 非 JSON)
+      responses:
+        '200': { description: text/html }
+        '204': { description: 无 HTML 部分 }
+  /api/email/reply/{messageId}:
+    post:
+      tags: [email]
+      operationId: replyEmail
+      parameters:
+        - { name: messageId, in: path, required: true, schema: { type: string } }
+      summary: 回复既有邮件(头域服务端推导)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string }
+                cc: { type: array, items: { type: string } }
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      filename: { type: string }
+                      mimeType: { type: string }
+                      sizeBytes: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messageId, conversationId, transportStatus]
+                properties:
+                  messageId: { type: string }
+                  conversationId: { type: string }
+                  transportStatus: { type: string }
+                  mock: { type: boolean }
+                  error: { type: string, nullable: true }
+  /api/search:
+    get:
+      tags: [core]
+      operationId: search
+      summary: 全域搜索
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/SearchResults' } } } }
+  /api/peek/agent-chats:
+    get:
+      tags: [observability]
+      operationId: getWhispers
+      summary: 窥视 agent 间会话
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Whisper' }
+  /api/peek/agent-chats/{id}/messages:
+    get:
+      tags: [observability]
+      operationId: getWhisperMessages
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 窥视会话消息
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WhisperMessage' }
+  /api/conversations/{id}/convene:
+    post:
+      tags: [conversations]
+      operationId: startConvene
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 召集多 agent 会议
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topic]
+              properties:
+                topic: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ConveneSession' } } } }
+    get:
+      tags: [conversations]
+      operationId: getActiveConvene
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 会话当前活跃会议(null=无)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConveneSession' }
+  /api/convene/{sessionId}/transcript:
+    get:
+      tags: [conversations]
+      operationId: getConveneTranscript
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string } }
+      summary: 会议转录
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConveneTranscript' }
+  /api/devtools/capabilities:
+    get:
+      tags: [devtools]
+      operationId: getDevtoolsCapabilities
+      summary: devtools 能力面
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/DevtoolsCapabilities' } } } }
+  /api/devtools/agent-workspace:
+    get:
+      tags: [devtools]
+      operationId: listAgentWorkspace
+      summary: agent 私有区文件清单
+      parameters:
+        - { name: agentId, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentWorkspaceFile' }
+  /api/devtools/agent-workspace/file:
+    get:
+      tags: [devtools]
+      operationId: readAgentWorkspaceFile
+      summary: 读 agent 私有区文件
+      parameters:
+        - { name: agentId, in: query, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AgentWorkspaceFileContent' } } } }
+  /api/agents/observability/runs:
+    get:
+      tags: [observability]
+      operationId: getAgentRuns
+      summary: agent 运行列表
+      parameters:
+        - { name: agentId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentRun' }
+  /api/agents/observability/runs/{id}/events:
+    get:
+      tags: [observability]
+      operationId: getAgentRunEvents
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      summary: 运行事件流
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentEvent' }
+  /api/agents/observability/triage:
+    get:
+      tags: [observability]
+      operationId: getTriageEconomics
+      summary: triage 成效台账
+      parameters:
+        - { name: agentId, in: query, schema: { type: string } }
+        - { name: sinceHours, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/TriageEconomics' } } } }
+  /api/agents/observability/llm-spend:
+    get:
+      tags: [observability]
+      operationId: getLlmSpend
+      summary: LLM 花费汇总
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /api/uploads/capabilities:
+    get:
+      tags: [uploads]
+      operationId: uploadCapabilities
+      summary: 上传能力探测
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/UploadCapabilities' } } } }
+  /api/uploads/presign:
+    post:
+      tags: [uploads]
+      operationId: presignUpload
+      summary: 预签名 PUT(R2 模式)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, mime, size]
+              properties:
+                name: { type: string }
+                mime: { type: string }
+                size: { type: integer }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/PresignResponse' } } } }
+  /api/uploads:
+    post:
+      tags: [uploads]
+      operationId: uploadBase64
+      summary: base64 上传(本地模式)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, mime, dataBase64]
+              properties:
+                name: { type: string }
+                mime: { type: string }
+                dataBase64: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MessageAttachment'
+                  - type: object
+                    required: [url, name, kind]
+  /api/uploads/refresh-url:
+    post:
+      tags: [uploads]
+      operationId: refreshUploadUrl
+      summary: 刷新过期 URL
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string }
+                key: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, url]
+                properties:
+                  key: { type: string }
+                  url: { type: string }
+  /api/boards:
+    get:
+      tags: [boards]
+      operationId: listBoards
+      summary: 看板列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BoardSummary' }
+    post:
+      tags: [boards]
+      operationId: createBoard
+      summary: 建看板
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                description: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
+  /api/boards/{id}:
+    get:
+      tags: [boards]
+      operationId: getBoard
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 看板快照(列+卡)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/BoardSnapshot' } } } }
+    patch:
+      tags: [boards]
+      operationId: updateBoard
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改看板
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+    delete:
+      tags: [boards]
+      operationId: deleteBoard
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 删看板
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/boards/{bid}/columns:
+    post:
+      tags: [boards]
+      operationId: addBoardColumn
+      parameters: [{ name: bid, in: path, required: true, schema: { type: string } }]
+      summary: 加列
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, position]
+                properties:
+                  id: { type: string }
+                  position: { type: number }
+  /api/boards/{bid}/columns/{cid}:
+    patch:
+      tags: [boards]
+      operationId: updateBoardColumn
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 改列(标题/位置)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                position: { type: number }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+    delete:
+      tags: [boards]
+      operationId: deleteBoardColumn
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 删列(卡随列走)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/boards/{id}/cards:
+    post:
+      tags: [boards]
+      operationId: createCard
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 建卡
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [columnId, title]
+              properties:
+                columnId: { type: string }
+                title: { type: string }
+                description: { type: string }
+                assigneeId: { type: string, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, position, mentions]
+                properties:
+                  id: { type: string }
+                  position: { type: number }
+                  mentions: { type: array, items: { type: string } }
+  /api/boards/{bid}/cards/{cid}:
+    patch:
+      tags: [boards]
+      operationId: updateCard
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 改卡(标题/描述/列/位/指派)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                position: { type: number }
+                columnId: { type: string }
+                assigneeId: { type: string, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  mentions: { type: array, items: { type: string } }
+    delete:
+      tags: [boards]
+      operationId: deleteCard
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 删卡
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/boards/{bid}/cards/{cid}/comments:
+    get:
+      tags: [boards]
+      operationId: listCardComments
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 卡评论
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BoardCardComment' }
+    post:
+      tags: [boards]
+      operationId: addCardComment
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      summary: 加评论(@提及解析)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, mentions]
+                properties:
+                  id: { type: string }
+                  mentions: { type: array, items: { type: string } }
+  /api/boards/{bid}/cards/{cid}/comments/{mid}:
+    delete:
+      tags: [boards]
+      operationId: deleteCardComment
+      parameters:
+        - { name: bid, in: path, required: true, schema: { type: string } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+        - { name: mid, in: path, required: true, schema: { type: string } }
+      summary: 删评论
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/cards/{id}:
+    get:
+      tags: [boards]
+      operationId: getBoardCard
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 跨看板卡反查(领卡 triage 入口)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/BoardCardLookup' } } } }
+  /api/calendar/events:
+    get:
+      tags: [calendar]
+      operationId: listCalendarEvents
+      summary: 日历事件(区间过滤)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/CalendarEvent' }
+    post:
+      tags: [calendar]
+      operationId: createCalendarEvent
+      summary: 建日历事件
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventInput'
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event: { $ref: '#/components/schemas/CalendarEvent' }
+  /api/calendar/events/{id}:
+    get:
+      tags: [calendar]
+      operationId: getCalendarEvent
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 单事件
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event: { $ref: '#/components/schemas/CalendarEvent' }
+    patch:
+      tags: [calendar]
+      operationId: updateCalendarEvent
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改事件(字段级校验)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventInput'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event: { $ref: '#/components/schemas/CalendarEvent' }
+    delete:
+      tags: [calendar]
+      operationId: deleteCalendarEvent
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 删事件
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/calendar/events/{id}/run-now:
+    post:
+      tags: [calendar]
+      operationId: runCalendarEventNow
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 立即触发一次
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+                  messageId: { type: string }
+                  conversationId: { type: string }
+                  error: { type: string }
+  /api/calendar/events/{id}/dispatches:
+    get:
+      tags: [calendar]
+      operationId: listCalendarDispatches
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 派发历史
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dispatches]
+                properties:
+                  dispatches:
+                    type: array
+                    items: { $ref: '#/components/schemas/CalendarDispatch' }
+  /api/documents:
+    get:
+      tags: [documents]
+      operationId: listDocuments
+      summary: 文档列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [documents]
+                properties:
+                  documents:
+                    type: array
+                    items: { $ref: '#/components/schemas/Document' }
+    post:
+      tags: [documents]
+      operationId: createDocument
+      summary: 建文档(Yjs 房间)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                conversationId: { type: string, nullable: true }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+  /api/documents/{id}:
+    get:
+      tags: [documents]
+      operationId: getDocument
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 单文档
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+    put:
+      tags: [documents]
+      operationId: renameDocument
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改标题
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  title: { type: string }
+    delete:
+      tags: [documents]
+      operationId: deleteDocument
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 删文档
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/documents/{id}/collaborators:
+    put:
+      tags: [documents]
+      operationId: setDocumentCollaborators
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 设协作者(关联参与者入工作区范围的入口)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [collaboratorIds]
+              properties:
+                collaboratorIds: { type: array, items: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/push/register:
+    post:
+      tags: [push]
+      operationId: registerPushDevice
+      summary: 注册推送令牌(幂等 upsert)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, token]
+              properties:
+                platform: { type: string, enum: [ios, android, web] }
+                token: { type: string }
+                appVersion: { type: string }
+                deviceModel: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/push/unregister:
+    post:
+      tags: [push]
+      operationId: unregisterPushDevice
+      summary: 软禁用推送令牌
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/workspaces:
+    get:
+      tags: [workspaces]
+      operationId: listWorkspaces
+      summary: 工作区列表(自动确保默认区)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkspaceSummary' }
+    post:
+      tags: [workspaces]
+      operationId: createWorkspace
+      summary: 建区(绑真实文件夹,1:1)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, folderPath]
+              properties:
+                name: { type: string }
+                folderPath: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, folderPath, isDefault, createdAt]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  folderPath: { type: string }
+                  isDefault: { type: boolean }
+                  createdAt: { type: string, format: date-time }
+  /api/workspaces/{id}:
+    get:
+      tags: [workspaces]
+      operationId: getWorkspace
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 工作区详情(路径仅特权成员可见)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+  /api/workspaces/{id}/members:
+    post:
+      tags: [workspaces]
+      operationId: addWorkspaceMember
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 加显式成员
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [participantId]
+              properties:
+                participantId: { type: string }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/workspaces/{id}/members/{participantId}:
+    delete:
+      tags: [workspaces]
+      operationId: removeWorkspaceMember
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: participantId, in: path, required: true, schema: { type: string } }
+      summary: 移除显式成员
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/workspaces/{id}/associations:
+    post:
+      tags: [workspaces]
+      operationId: addWorkspaceAssociation
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 关联三件套(项目/看板卡/文档)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, targetId]
+              properties:
+                kind: { type: string, enum: [project, board_card, document] }
+                targetId: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, kind, targetId]
+                properties:
+                  ok: { type: boolean }
+                  kind: { type: string, enum: [project, board_card, document] }
+                  targetId: { type: string }
+  /api/workspaces/{id}/associations/{kind}/{targetId}:
+    delete:
+      tags: [workspaces]
+      operationId: removeWorkspaceAssociation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [project, board_card, document] } }
+        - { name: targetId, in: path, required: true, schema: { type: string } }
+      summary: 解除关联
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/workspaces/{id}/files:
+    get:
+      tags: [workspaces]
+      operationId: listWorkspaceFiles
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+      summary: 范围制列目录
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, entries]
+                properties:
+                  path: { type: string }
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkspaceFileEntry' }
+  /api/workspaces/{id}/file:
+    get:
+      tags: [workspaces]
+      operationId: readWorkspaceFile
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+      summary: 读文件
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, body, size, modifiedAt]
+                properties:
+                  path: { type: string }
+                  body: { type: string }
+                  size: { type: integer }
+                  modifiedAt: { type: string, format: date-time }
+    put:
+      tags: [workspaces]
+      operationId: writeWorkspaceFile
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+      summary: 写文件
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  path: { type: string }
+  /api/workspaces/{id}/unbind:
+    post:
+      tags: [workspaces]
+      operationId: unbindWorkspace
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 安全解绑(不动文件)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, unboundAt]
+                properties:
+                  ok: { type: boolean }
+                  unboundAt: { type: string, format: date-time }
+  /api/admin/me:
+    get:
+      tags: [admin]
+      operationId: adminMe
+      summary: admin 会话自证
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, isAdmin]
+                properties:
+                  userId: { type: string }
+                  isAdmin: { type: boolean, enum: [true] }
+  /api/admin/settings:
+    get:
+      tags: [admin]
+      operationId: adminGetSettings
+      summary: 读设置(API key 只回 configured+掩码)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AdminSettings' } } } }
+    put:
+      tags: [admin]
+      operationId: adminPutSettings
+      summary: 写设置(cerebellum_api_key 写-only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/AdminSettings'
+                - type: object
+                  properties:
+                    cerebellum_api_key: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AdminSettings' } } } }
+  /api/admin/computers/available-engines:
+    get:
+      tags: [admin]
+      operationId: adminAvailableEngines
+      summary: 可配对引擎清单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/admin/users:
+    get:
+      tags: [admin]
+      operationId: adminListUsers
+      summary: 用户列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminUser' }
+  /api/admin/users/{id}:
+    get:
+      tags: [admin]
+      operationId: adminGetUser
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 用户详情(含公司)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUserDetail' } } } }
+    patch:
+      tags: [admin]
+      operationId: adminPatchUser
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改用户(tier/封禁)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tier: { type: string, enum: [free, pro, max] }
+                suspended: { type: boolean }
+                suspensionReason: { type: string, nullable: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUserDetail' } } } }
+  /api/admin/waitlist:
+    get:
+      tags: [admin]
+      operationId: adminListWaitlist
+      summary: 候补名单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminWaitlistEntry' }
+  /api/admin/waitlist/{id}/approve:
+    post:
+      tags: [admin]
+      operationId: adminApproveWaitlist
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 批准入列
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, companyId]
+                properties:
+                  userId: { type: string }
+                  companyId: { type: string, nullable: true }
+  /api/admin/waitlist/{id}/reject:
+    post:
+      tags: [admin]
+      operationId: adminRejectWaitlist
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 拒绝
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/admin/stats:
+    get:
+      tags: [admin]
+      operationId: adminStats
+      summary: 面板统计
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AdminStats' } } } }
+  /api/admin/observability/llm:
+    get:
+      tags: [admin]
+      operationId: adminLlmSummary
+      summary: LLM 汇总
+      parameters:
+        - { name: days, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /api/admin/observability/llm/calls:
+    get:
+      tags: [admin]
+      operationId: adminLlmCalls
+      summary: LLM 调用明细
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /api/shipping/overview:
+    get:
+      tags: [shipping]
+      operationId: getShippingOverview
+      summary: Ship 总览
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingOverview' } } } }
+  /api/shipping/friction:
+    get:
+      tags: [shipping]
+      operationId: listShippingFriction
+      summary: 摩擦收件箱
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ShippingFriction' }
+    post:
+      tags: [shipping]
+      operationId: createShippingFriction
+      summary: 报摩擦
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
+  /api/shipping/friction/{id}:
+    patch:
+      tags: [shipping]
+      operationId: updateShippingFriction
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改摩擦状态
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/shipping/features:
+    post:
+      tags: [shipping]
+      operationId: createShippingFeature
+      summary: 建特性
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                problem: { type: string }
+                desiredOutcome: { type: string }
+                contractSummary: { type: string }
+                priority: { type: string }
+                riskLevel: { type: string }
+                releaseTarget: { type: string, nullable: true }
+                builderIds: { type: array, items: { type: string } }
+                projectId: { type: string, nullable: true }
+                conversationId: { type: string, nullable: true }
+                documentId: { type: string, nullable: true }
+                boardCardId: { type: string, nullable: true }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}:
+    get:
+      tags: [shipping]
+      operationId: getShippingFeature
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 特性详情
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+    patch:
+      tags: [shipping]
+      operationId: updateShippingFeature
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改特性
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/transition:
+    post:
+      tags: [shipping]
+      operationId: transitionShippingFeature
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 状态机迁移
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/ShippingFeatureStatus' }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/invariants:
+    post:
+      tags: [shipping]
+      operationId: createShippingInvariant
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 加不变量
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                kind: { type: string }
+                required: { type: boolean }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/invariants/{invariantId}:
+    patch:
+      tags: [shipping]
+      operationId: updateShippingInvariant
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: invariantId, in: path, required: true, schema: { type: string } }
+      summary: 改不变量
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/verifications:
+    post:
+      tags: [shipping]
+      operationId: createShippingVerification
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 加验证方格
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                method: { type: string }
+                required: { type: boolean }
+                invariantId: { type: string, nullable: true }
+                ownerId: { type: string, nullable: true }
+                builderIds: { type: array, items: { type: string } }
+                dueAt: { type: string, nullable: true, format: date-time }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/verifications/{verificationId}:
+    patch:
+      tags: [shipping]
+      operationId: updateShippingVerification
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: verificationId, in: path, required: true, schema: { type: string } }
+      summary: 改验证(过格/豁免)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/releases:
+    post:
+      tags: [shipping]
+      operationId: createShippingRelease
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 建发布
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment]
+              properties:
+                environment: { type: string, enum: [development, staging, canary, production] }
+                version: { type: string }
+                commitSha: { type: string }
+                releaseNotes: { type: string }
+                rollbackPlan: { type: string }
+                knownGaps: { type: array, items: { type: object, additionalProperties: true } }
+                baseline: { type: array, items: { type: object, additionalProperties: true } }
+                readbackDueAt: { type: string, nullable: true, format: date-time }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/releases/{releaseId}/action:
+    post:
+      tags: [shipping]
+      operationId: shippingReleaseAction
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: releaseId, in: path, required: true, schema: { type: string } }
+      summary: 发布动作(开始/回滚/读回)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string }
+                evidence: { type: array, items: { type: object, additionalProperties: true } }
+                reason: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/regressions:
+    post:
+      tags: [shipping]
+      operationId: createShippingRegression
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 建回归资产
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /api/shipping/features/{id}/regressions/{regressionId}:
+    patch:
+      tags: [shipping]
+      operationId: updateShippingRegression
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: regressionId, in: path, required: true, schema: { type: string } }
+      summary: 改回归资产
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+  /runtime/wake-stream:
+    get:
+      tags: [runtime]
+      operationId: wakeStream
+      security: [{ agentRuntimeJWT: [] }]
+      summary: SSE 唤醒流(见 info 的事件面策略;长连接)
+      responses:
+        '200': { description: text/event-stream }
+  /runtime/cli:
+    post:
+      tags: [runtime]
+      operationId: runtimeCli
+      security: [{ agentRuntimeJWT: [] }]
+      summary: cumora CLI 出口(world actions;剥 --as)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [argv]
+              properties:
+                argv: { type: array, items: {} }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/persona:
+    get:
+      tags: [runtime]
+      operationId: loadPersona
+      security: [{ agentRuntimeJWT: [] }]
+      summary: agent 人设
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/conversation/company-id:
+    post:
+      tags: [runtime]
+      operationId: resolveConversationCompany
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 会话→公司
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              properties:
+                conversationId: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/inbox:
+    get:
+      tags: [runtime]
+      operationId: loadInbox
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 收件箱
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+  /runtime/inbox-triage/payload:
+    get:
+      tags: [runtime]
+      operationId: inboxTriagePayload
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 本地 triage 载荷(上下文打包)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/agenda:
+    get:
+      tags: [runtime]
+      operationId: loadAgenda
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 看板议程(领卡视角)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/agenda/verdict:
+    post:
+      tags: [runtime]
+      operationId: agendaVerdict
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 上报领卡裁决
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actionable: { type: boolean }
+                focus: { type: string }
+                reason: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/memory/query:
+    post:
+      tags: [runtime]
+      operationId: memoryQuery
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 记忆检索
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/context:
+    post:
+      tags: [runtime]
+      operationId: loadContext
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 会话上下文
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationIds]
+              properties:
+                conversationIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/climate:
+    get:
+      tags: [runtime]
+      operationId: loadClimate
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 房间氛围
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/skills:
+    get:
+      tags: [runtime]
+      operationId: loadSkills
+      security: [{ agentRuntimeJWT: [] }]
+      summary: agent 技能清单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+  /runtime/faces:
+    post:
+      tags: [runtime]
+      operationId: loadFaces
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 名册头像
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [participantIds]
+              properties:
+                participantIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/system-prompt:
+    get:
+      tags: [runtime]
+      operationId: loadSystemPrompt
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 系统提示词
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/roster:
+    get:
+      tags: [runtime]
+      operationId: loadRoster
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 团队名册
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+  /runtime/status:
+    post:
+      tags: [runtime]
+      operationId: reportStatus
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 上报状态
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/Status' }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/status/heartbeat:
+    post:
+      tags: [runtime]
+      operationId: statusHeartbeat
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 状态心跳
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [working, thinking, waiting] }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/typing:
+    post:
+      tags: [runtime]
+      operationId: runtimeTyping
+      security: [{ agentRuntimeJWT: [] }]
+      summary: agent 输入态
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              properties:
+                conversationId: { type: string }
+                done: { type: boolean }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/runs:
+    post:
+      tags: [runtime]
+      operationId: startRun
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 开 run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                trigger: { type: object, additionalProperties: true }
+                inputMessageIds: { type: array, items: { type: string } }
+                inboxCount: { type: integer }
+                fingerprint: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/events:
+    post:
+      tags: [runtime]
+      operationId: recordEvent
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 记事件
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runId, kind, title]
+              properties:
+                runId: { type: string }
+                kind: { type: string }
+                level: { type: string, enum: [debug, info, warn, error] }
+                title: { type: string }
+                data: { type: object, additionalProperties: true }
+                stage: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/triage:
+    post:
+      tags: [runtime]
+      operationId: recordTriage
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 记 triage 台账
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/llm-calls:
+    post:
+      tags: [runtime]
+      operationId: recordLlmCall
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 记 LLM 调用台账
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/runs/{runId}/heartbeat:
+    post:
+      tags: [runtime]
+      operationId: runHeartbeat
+      security: [{ agentRuntimeJWT: [] }]
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string } }]
+      summary: run 心跳
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/runs/{runId}/finish:
+    post:
+      tags: [runtime]
+      operationId: finishRun
+      security: [{ agentRuntimeJWT: [] }]
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string } }]
+      summary: 结 run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [running, completed, failed, skipped] }
+                summary: { type: string }
+                error: { type: string, nullable: true }
+                toolCallCount: { type: integer }
+                tokenCount: { type: integer }
+                model: { type: string, nullable: true }
+                usage: { type: object, nullable: true, additionalProperties: true }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/busy/heartbeat:
+    post:
+      tags: [runtime]
+      operationId: busyHeartbeat
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 忙租约心跳(steer 判定)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttlSec: { type: integer }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/busy/clear:
+    post:
+      tags: [runtime]
+      operationId: busyClear
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 清忙租约
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversationIds: { type: array, items: { type: string } }
+                ttlSec: { type: integer }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/thinking/mark:
+    post:
+      tags: [runtime]
+      operationId: thinkingMark
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 标记思考中
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationIds]
+              properties:
+                conversationIds: { type: array, items: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/thinking/unmark:
+    post:
+      tags: [runtime]
+      operationId: thinkingUnmark
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 解除思考
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversationIds: { type: array, items: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/thinking/peek:
+    get:
+      tags: [runtime]
+      operationId: thinkingPeek
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 窥思考态
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/worklog/claim:
+    post:
+      tags: [runtime]
+      operationId: worklogClaim
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 原子领工
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopeKey, taskType, subject]
+              properties:
+                scopeKey: { type: string }
+                taskType: { type: string }
+                subject: { type: string }
+                ttlSec: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /runtime/worklog/release:
+    post:
+      tags: [runtime]
+      operationId: worklogRelease
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 释放工
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopeKey, taskType, subject]
+              properties:
+                scopeKey: { type: string }
+                taskType: { type: string }
+                subject: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/worklog/peek:
+    get:
+      tags: [runtime]
+      operationId: worklogPeek
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 窥工单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+  /runtime/conversation/mark-read:
+    post:
+      tags: [runtime]
+      operationId: runtimeMarkRead
+      security: [{ agentRuntimeJWT: [] }]
+      summary: agent 已读
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, upToMessageId]
+              properties:
+                conversationId: { type: string }
+                upToMessageId: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/notices:
+    post:
+      tags: [runtime]
+      operationId: postNotice
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 系统通知
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, noticeKind, text, dedupeKey]
+              properties:
+                conversationId: { type: string }
+                noticeKind: { type: string }
+                text: { type: string }
+                dedupeKey: { type: string }
+                dedupeTtlSec: { type: integer }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+components:
+  securitySchemes:
+    sessionBearer:
+      type: http
+      scheme: bearer
+      description: 用户会话令牌;多租户路由另需 X-Company-Id 头
+    agentRuntimeJWT:
+      type: http
+      scheme: bearer
+      description: daemon 经 /api/agents/:id/runtime-token 领取的 per-agent JWT(2h)
+    deviceToken:
+      type: http
+      scheme: bearer
+      description: daemon 配对所得设备凭证(computers.pair 发放)
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        message: { type: string }
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    Id:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+    ComputerKind: { type: string, enum: [local, vps] }
+    ComputerStatus: { type: string, enum: [online, offline, busy] }
+    EngineId: { type: string, enum: [claude, codex, grok, cursor] }
+    ParticipantKind: { type: string, enum: [agent, human] }
+    Status: { type: string, enum: [avail, working, thinking, waiting, resting] }
+    ConversationKind: { type: string, enum: [group, direct, whisper, email] }
+    MessageKind:
+      type: string
+      enum: [text, tool, attachment, whisper-link, thought, system, email, poll]
+    # ── computers:DB 行直出,snake_case(与现役 ApiComputer 一致)──
+    Computer:
+      type: object
+      required: [id, company_id, owner_user_id, name, kind, available_engines, status]
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        owner_user_id: { type: string, nullable: true }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/ComputerKind' }
+        available_engines:
+          type: array
+          items: { $ref: '#/components/schemas/EngineId' }
+        status: { $ref: '#/components/schemas/ComputerStatus' }
+        last_seen_at: { type: string, nullable: true, format: date-time }
+        paired_at: { type: string, nullable: true, format: date-time }
+        daemon_version: { type: string, nullable: true }
+        daemon_supervised: { type: boolean, nullable: true }
+        latest_daemon_version: { type: string, nullable: true }
+        daemon_outdated: { type: boolean }
+    # ── 以下人读域为 handler 手工映射,camelCase(与现役 web 类型一致)──
+    Participant:
+      type: object
+      required: [id, kind, name, initial, avatarBg, status]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/ParticipantKind' }
+        name: { type: string }
+        role: { type: string, nullable: true }
+        initial: { type: string }
+        avatarBg: { type: string }
+        avatarUrl: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/Status' }
+        statusUpdatedAt: { type: string, format: date-time }
+        bio: { type: string, nullable: true }
+        tools: { type: array, items: { type: string }, nullable: true }
+        systemPrompt: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        fastModel: { type: string, nullable: true }
+        computerId: { type: string, nullable: true }
+        engine: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        departedAt: { type: string, nullable: true, format: date-time }
+    Conversation:
+      type: object
+      required: [id, kind, title, members, createdAt, updatedAt, unreadCount, lastMessage]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/ConversationKind' }
+        title: { type: string }
+        subtitle: { type: string, nullable: true }
+        topic: { type: string, nullable: true }
+        members: { type: array, items: { type: string } }
+        pinned: { type: boolean }
+        muted: { type: boolean }
+        mutedUntil: { type: string, nullable: true, format: date-time }
+        tag: { type: string, nullable: true }
+        pulledBy:
+          type: object
+          nullable: true
+          required: [agentId, at, reason]
+          properties:
+            agentId: { type: string }
+            at: { type: string, format: date-time }
+            reason: { type: string }
+        projectId: { type: string, nullable: true }
+        projectName: { type: string, nullable: true }
+        projectColor: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        unreadCount: { type: integer }
+        lastMessage:
+          type: object
+          nullable: true
+          required: [id, authorId, kind, body, createdAt, attachment, email]
+          properties:
+            id: { type: string }
+            authorId: { type: string }
+            kind: { type: string }
+            body: { type: string }
+            tool: {}
+            attachment:
+              type: object
+              nullable: true
+              properties:
+                name: { type: string }
+                kind: { type: string, enum: [img, pdf, file, fig] }
+            createdAt: { type: string, format: date-time }
+            email:
+              type: object
+              nullable: true
+              properties:
+                subject: { type: string }
+                direction: { type: string, enum: [in, out] }
+                from: { type: string }
+    PollOption:
+      type: object
+      required: [id, text]
+      properties:
+        id: { type: string }
+        text: { type: string }
+    PollPayload:
+      type: object
+      required: [question, mode, options, expiresAt, closedAt, closedReason]
+      properties:
+        question: { type: string }
+        mode: { type: string, enum: [single, multi] }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/PollOption' }
+        expiresAt: { type: string, nullable: true, format: date-time }
+        closedAt: { type: string, nullable: true, format: date-time }
+        closedReason: { type: string, nullable: true, enum: [expired, manual] }
+    PollTally:
+      type: object
+      required: [optionId, count, voterIds]
+      properties:
+        optionId: { type: string }
+        count: { type: integer }
+        voterIds: { type: array, items: { type: string } }
+    EmailAttachment:
+      type: object
+      required: [id, filename, mimeType, sizeBytes, url]
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        url: { type: string, nullable: true }
+        truncated: { type: boolean }
+    EmailFields:
+      type: object
+      required: [subject, from, to, cc, direction, transportStatus]
+      properties:
+        subject: { type: string }
+        from: { type: string }
+        to: { type: array, items: { type: string } }
+        cc: { type: array, items: { type: string } }
+        direction: { type: string, enum: [in, out] }
+        transportStatus: { type: string }
+        transportError: { type: string, nullable: true }
+        smtpMessageId: { type: string, nullable: true }
+        inReplyTo: { type: string, nullable: true }
+        hasHtml: { type: boolean }
+        autoSubmitted: { type: boolean }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/EmailAttachment' }
+    ReactionEntry:
+      type: object
+      required: [emoji, count]
+      properties:
+        emoji: { type: string }
+        count: { type: integer }
+        mine: { type: boolean }
+        users: { type: array, items: { type: string } }
+    QuotedSummary:
+      type: object
+      required: [id, authorId, kind, body, sequence]
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        authorName: { type: string }
+        kind: { $ref: '#/components/schemas/MessageKind' }
+        body: { type: string }
+        sequence: { type: integer }
+    MessageTool:
+      type: object
+      properties:
+        name: { type: string }
+        arg: { type: string }
+        status: { type: string }
+        detail: { type: string }
+        icon: { type: string, enum: [web, github, figma, db] }
+    MessageAttachment:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [img, pdf, file, fig] }
+        url: { type: string }
+        key: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        meta: { type: string }
+    Message:
+      type: object
+      required: [id, conversationId, authorId, kind, body, sequence]
+      properties:
+        id: { type: string }
+        conversationId: { type: string }
+        authorId: { type: string }
+        kind: { $ref: '#/components/schemas/MessageKind' }
+        body: { type: string }
+        at: { type: string, format: date-time, description: 仅 WS message.new 事件携带;REST 列表用 createdAt,store 层缺失时回填 } 
+        sequence: { type: integer }
+        createdAt: { type: string, format: date-time }
+        reactions:
+          type: array
+          items: { $ref: '#/components/schemas/ReactionEntry' }
+        tool: { $ref: '#/components/schemas/MessageTool' }
+        attachment: { $ref: '#/components/schemas/MessageAttachment' }
+        email: { $ref: '#/components/schemas/EmailFields' }
+        poll: { $ref: '#/components/schemas/PollPayload' }
+        pollTallies:
+          type: array
+          items: { $ref: '#/components/schemas/PollTally' }
+        quotedMessageId: { type: string, nullable: true }
+        quoted: { $ref: '#/components/schemas/QuotedSummary' }
+        replyCount: { type: integer }
+        clientId: { type: string }
+    Project:
+      type: object
+      required: [id, name, description, color, status, createdAt, archivedAt, conversationCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        color: { type: string, nullable: true }
+        status: { type: string, enum: [active, archived] }
+        createdAt: { type: string, format: date-time }
+        archivedAt: { type: string, nullable: true, format: date-time }
+        conversationCount: { type: integer }
+    QuotaWindow:
+      type: object
+      required: [usedUsd, limitUsd, windowStart]
+      properties:
+        usedUsd: { type: number }
+        limitUsd: { type: number, nullable: true }
+        windowStart: { type: string, nullable: true, format: date-time }
+    QuotaSnapshot:
+      type: object
+      required: [groupId, groupName, status, expiresAt, daily, weekly, monthly]
+      properties:
+        groupId: { type: integer }
+        groupName: { type: string, nullable: true }
+        status: { type: string }
+        expiresAt: { type: string, nullable: true, format: date-time }
+        daily: { $ref: '#/components/schemas/QuotaWindow' }
+        weekly: { $ref: '#/components/schemas/QuotaWindow' }
+        monthly: { $ref: '#/components/schemas/QuotaWindow' }
+    QuotaResponse:
+      type: object
+      required: [configured, snapshot]
+      properties:
+        configured: { type: boolean }
+        snapshot: { $ref: '#/components/schemas/QuotaSnapshot' }
+        error: { type: string }
+    UploadCapabilities:
+      type: object
+      required: [mode, presignSupported, maxBytes, allowedMimes]
+      properties:
+        mode: { type: string, enum: [local, r2] }
+        presignSupported: { type: boolean }
+        maxBytes: { type: integer }
+        allowedMimes: { type: array, items: { type: string } }
+    PresignResponse:
+      type: object
+      required: [uploadUrl, publicUrl, key, name, mime, size, kind]
+      properties:
+        uploadUrl: { type: string }
+        publicUrl: { type: string }
+        key: { type: string }
+        name: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        kind: { type: string, enum: [img, file] }
+    AgentInput:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        systemPrompt: { type: string }
+        bio: { type: string }
+        initial: { type: string }
+        avatarBg: { type: string }
+        avatarUrl: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        fastModel: { type: string, nullable: true }
+        tools: { type: array, items: { type: string } }
+    Whisper:
+      type: object
+      required: [id, kind, title, members, createdAt, updatedAt, msgCount]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [direct, group] }
+        title: { type: string }
+        members: { type: array, items: { type: string } }
+        agentA: { type: string, nullable: true }
+        agentB: { type: string, nullable: true }
+        about: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        msgCount: { type: integer }
+    WhisperMessage:
+      type: object
+      required: [id, conversationId, authorId, kind, body, sequence, createdAt]
+      properties:
+        id: { type: string }
+        conversationId: { type: string }
+        authorId: { type: string }
+        kind: { type: string }
+        body: { type: string }
+        sequence: { type: integer }
+        tool:
+          type: object
+          nullable: true
+          properties:
+            name: { type: string }
+            arg: { type: string }
+            status: { type: string }
+            detail: { type: string }
+            icon: { type: string }
+        createdAt: { type: string, format: date-time }
+    Autonomy:
+      type: object
+      required: [userId, agentId, threshold, pulled, led, dissolved]
+      properties:
+        userId: { type: string }
+        agentId: { type: string }
+        threshold: { type: integer }
+        pulled: { type: integer }
+        led: { type: integer }
+        dissolved: { type: integer }
+    AgentRunStatus: { type: string, enum: [running, completed, failed, skipped, stalled] }
+    AgentRun:
+      type: object
+      required: [id, agentId, agentName, agentRole, agentAvatarUrl, companyId, status, stage, summary, error, trigger, inputMessageIds, inboxCount, toolCallCount, tokenCount, fingerprint, startedAt, updatedAt, finishedAt, durationMs]
+      properties:
+        id: { type: string }
+        agentId: { type: string }
+        agentName: { type: string }
+        agentRole: { type: string, nullable: true }
+        agentAvatarUrl: { type: string, nullable: true }
+        companyId: { type: string }
+        status: { $ref: '#/components/schemas/AgentRunStatus' }
+        stage: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        trigger: { type: object, additionalProperties: true }
+        inputMessageIds: { type: array, items: { type: string } }
+        inboxCount: { type: integer }
+        toolCallCount: { type: integer }
+        tokenCount: { type: integer }
+        fingerprint: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: string, nullable: true, format: date-time }
+        durationMs: { type: integer }
+    TriageSource: { type: string, enum: [cloud, byoa-claude, byoa-codex, byoa-grok, byoa-cursor] }
+    TriageAgentRow:
+      type: object
+      required: [agentId, agentName, triageCount, skipCount, wakeCount, triageCostUsd, triageOverheadUsd, turnCount, avgTurnCostUsd, turnCacheHitRate, estimatedNetSavingsUsd]
+      properties:
+        agentId: { type: string }
+        agentName: { type: string }
+        triageCount: { type: number }
+        skipCount: { type: number }
+        wakeCount: { type: number }
+        triageCostUsd: { type: number }
+        triageOverheadUsd: { type: number }
+        turnCount: { type: number }
+        avgTurnCostUsd: { type: number }
+        turnCacheHitRate: { type: number }
+        estimatedNetSavingsUsd: { type: number }
+    TriageLedgerRow:
+      type: object
+      required: [id, agentId, agentName, source, actionable, inputTokens, cachedInputTokens, outputTokens, costUsd, costEstimated, measured, createdAt]
+      properties:
+        id: { type: string }
+        agentId: { type: string }
+        agentName: { type: string }
+        source: { $ref: '#/components/schemas/TriageSource' }
+        model: { type: string, nullable: true }
+        actionable: { type: boolean }
+        reason: { type: string, nullable: true }
+        inputTokens: { type: number }
+        cachedInputTokens: { type: number }
+        outputTokens: { type: number }
+        costUsd: { type: number }
+        costEstimated: { type: boolean }
+        measured: { type: boolean }
+        estSavingUsd: { type: number, nullable: true }
+        createdAt: { type: string, format: date-time }
+    TriageUnitPrice:
+      type: object
+      required: [role, model, inPer1M, cachedInPer1M, outPer1M, estimated]
+      properties:
+        role: { type: string, enum: [triage, turn] }
+        model: { type: string }
+        inPer1M: { type: number }
+        cachedInPer1M: { type: number }
+        outPer1M: { type: number }
+        estimated: { type: boolean }
+    TriagePriceRow:
+      type: object
+      required: [model, inPer1M, cachedInPer1M, cacheWritePer1M, outPer1M, estimated]
+      properties:
+        model: { type: string }
+        inPer1M: { type: number }
+        cachedInPer1M: { type: number }
+        cacheWritePer1M: { type: number }
+        outPer1M: { type: number }
+        estimated: { type: boolean }
+    TriageEconomics:
+      type: object
+      required: [sinceHours, triageCount, triageSkipCount, triageWakeCount, triageMeasuredCount, triageCostUsd, triageOverheadUsd, triageInputTokens, triageCachedInputTokens, triageOutputTokens, turnCount, turnCostUsd, avgTurnCostUsd, turnCacheHitRate, estimatedAvoidedUsd, estimatedNetSavingsUsd, costEstimated, byoaShare, unitPrices, priceTable, perAgent, recent]
+      properties:
+        sinceHours: { type: number }
+        triageCount: { type: number }
+        triageSkipCount: { type: number }
+        triageWakeCount: { type: number }
+        triageMeasuredCount: { type: number }
+        triageCostUsd: { type: number }
+        triageOverheadUsd: { type: number }
+        triageInputTokens: { type: number }
+        triageCachedInputTokens: { type: number }
+        triageOutputTokens: { type: number }
+        turnCount: { type: number }
+        turnCostUsd: { type: number }
+        avgTurnCostUsd: { type: number }
+        turnCacheHitRate: { type: number }
+        estimatedAvoidedUsd: { type: number }
+        estimatedNetSavingsUsd: { type: number }
+        costEstimated: { type: boolean }
+        byoaShare: { type: number }
+        unitPrices:
+          type: array
+          items: { $ref: '#/components/schemas/TriageUnitPrice' }
+        priceTable:
+          type: array
+          items: { $ref: '#/components/schemas/TriagePriceRow' }
+        perAgent:
+          type: array
+          items: { $ref: '#/components/schemas/TriageAgentRow' }
+        recent:
+          type: array
+          items: { $ref: '#/components/schemas/TriageLedgerRow' }
+    AgentEvent:
+      type: object
+      required: [id, runId, agentId, kind, level, title, createdAt]
+      properties:
+        id: { type: string }
+        runId: { type: string }
+        agentId: { type: string }
+        kind: { type: string }
+        level: { type: string, enum: [debug, info, warn, error] }
+        title: { type: string }
+        data: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    ConveneSession:
+      type: object
+      required: [id, conversation_id, title, flair, started_by, started_at, ended_at, state]
+      properties:
+        id: { type: string }
+        conversation_id: { type: string }
+        title: { type: string }
+        flair: { type: string, nullable: true }
+        started_by: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, nullable: true, format: date-time }
+        state: { type: string, enum: [live, ended] }
+    ConveneTranscript:
+      type: object
+      required: [id, sessionId, authorId, kind, body, sequence, createdAt]
+      properties:
+        id: { type: string }
+        sessionId: { type: string }
+        authorId: { type: string }
+        kind: { type: string, enum: [text, thought, tool, decision] }
+        body: { type: string }
+        sequence: { type: integer }
+        decision:
+          type: object
+          nullable: true
+          properties:
+            headline: { type: string }
+            body: { type: string }
+        createdAt: { type: string, format: date-time }
+    DevtoolsCapabilities:
+      type: object
+      required: [enabled, canEnable, localDev, productionDevMode, role]
+      properties:
+        enabled: { type: boolean }
+        canEnable: { type: boolean }
+        localDev: { type: boolean }
+        productionDevMode: { type: boolean }
+        role: { type: string }
+    AgentWorkspaceFile:
+      type: object
+      required: [path, size, lineCount, updatedAt]
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        lineCount: { type: integer }
+        updatedAt: { type: string, format: date-time }
+    AgentWorkspaceFileContent:
+      allOf:
+        - $ref: '#/components/schemas/AgentWorkspaceFile'
+        - type: object
+          required: [body]
+          properties:
+            body: { type: string }
+    ServerCapabilities:
+      type: object
+      required: [invitationEmail]
+      properties:
+        invitationEmail: { type: boolean }
+    MeResponse:
+      type: object
+      required: [user, companies, activeCompanyId, serverCapabilities]
+      properties:
+        user:
+          type: object
+          required: [id, email, name, emailVerified, isAdmin, providers]
+          properties:
+            id: { type: string }
+            email: { type: string }
+            name: { type: string }
+            emailVerified: { type: boolean }
+            isAdmin: { type: boolean }
+            providers: { type: array, items: { type: string } }
+        companies:
+          type: array
+          items:
+            type: object
+            required: [id, name, slug, role]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              slug: { type: string }
+              role: { type: string }
+              tier: { type: string }
+        activeCompanyId: { type: string, nullable: true }
+        serverCapabilities: { $ref: '#/components/schemas/ServerCapabilities' }
+    CompanySummary:
+      type: object
+      required: [id, name, slug, createdAt, role]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        createdAt: { type: string, format: date-time }
+        role: { type: string }
+    Invitation:
+      type: object
+      required: [id, email, role, note, maxUses, useCount, createdAt, expiresAt, revokedAt, lastAcceptedAt, lastAcceptedBy, invitedBy, inviterName, status]
+      properties:
+        id: { type: string }
+        email: { type: string, nullable: true }
+        role: { type: string, enum: [member, admin] }
+        note: { type: string, nullable: true }
+        maxUses: { type: integer }
+        useCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: string, nullable: true, format: date-time }
+        lastAcceptedAt: { type: string, nullable: true, format: date-time }
+        lastAcceptedBy: { type: string, nullable: true }
+        invitedBy: { type: string }
+        inviterName: { type: string, nullable: true }
+        status: { type: string, enum: [active, revoked, expired, consumed] }
+    InvitationEmailDelivery:
+      type: object
+      required: [attempted, ok, error, skipped]
+      properties:
+        attempted: { type: boolean }
+        ok: { type: boolean }
+        error: { type: string, nullable: true }
+        skipped: { type: string, nullable: true, enum: [no_email_config] }
+    InvitationWithToken:
+      type: object
+      required: [id, token, url, email, role, note, maxUses, useCount, createdAt, expiresAt, status, emailDelivery]
+      properties:
+        id: { type: string }
+        token: { type: string }
+        url: { type: string }
+        email: { type: string, nullable: true }
+        role: { type: string, enum: [member, admin] }
+        note: { type: string, nullable: true }
+        maxUses: { type: integer }
+        useCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        status: { type: string, enum: [active] }
+        emailDelivery: { $ref: '#/components/schemas/InvitationEmailDelivery' }
+    InvitationPreview:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [valid, revoked, expired, consumed, wrong_email, already_member, not_found]
+        invitation:
+          type: object
+          required: [role, company, multiUse]
+          properties:
+            role: { type: string }
+            email: { type: string, nullable: true }
+            note: { type: string, nullable: true }
+            expiresAt: { type: string, format: date-time }
+            createdAt: { type: string, format: date-time }
+            inviterName: { type: string, nullable: true }
+            company:
+              type: object
+              required: [id, name, slug]
+              properties:
+                id: { type: string }
+                name: { type: string }
+                slug: { type: string }
+            multiUse: { type: boolean }
+    InvitationAccept:
+      type: object
+      required: [ok, alreadyMember, company]
+      properties:
+        ok: { type: boolean, enum: [true] }
+        alreadyMember: { type: boolean }
+        company:
+          type: object
+          required: [id, name, slug, role]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            slug: { type: string }
+            role: { type: string }
+    BoardSummary:
+      type: object
+      required: [id, title, description, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    BoardColumn:
+      type: object
+      required: [id, title, position, createdAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        position: { type: number }
+        createdAt: { type: string, format: date-time }
+    BoardCard:
+      type: object
+      required: [id, boardId, columnId, title, description, position, assigneeId, mentions, commentCount, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        boardId: { type: string }
+        columnId: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        position: { type: number }
+        assigneeId: { type: string, nullable: true }
+        mentions: { type: array, items: { type: string } }
+        commentCount: { type: integer }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    BoardCardComment:
+      type: object
+      required: [id, authorId, body, mentions, createdAt]
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        body: { type: string }
+        mentions: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+    BoardSnapshot:
+      allOf:
+        - $ref: '#/components/schemas/BoardSummary'
+        - type: object
+          required: [columns, cards]
+          properties:
+            columns:
+              type: array
+              items: { $ref: '#/components/schemas/BoardColumn' }
+            cards:
+              type: array
+              items: { $ref: '#/components/schemas/BoardCard' }
+    BoardCardLookup:
+      type: object
+      required: [board, column, card]
+      properties:
+        board: { $ref: '#/components/schemas/BoardSummary' }
+        column: { $ref: '#/components/schemas/BoardColumn' }
+        card: { $ref: '#/components/schemas/BoardCard' }
+    CalendarEventKind: { type: string, enum: [personal, agent_task] }
+    CalendarEventStatus: { type: string, enum: [active, paused, done, cancelled] }
+    CalendarReminderChannel: { type: string, enum: [toast, email, both] }
+    RecurrenceRule:
+      type: object
+      required: [freq, interval]
+      properties:
+        freq: { type: string, enum: [daily, weekly, monthly, yearly] }
+        interval: { type: integer }
+        byweekday: { type: array, items: { type: integer, minimum: 0, maximum: 6 } }
+        until: { type: string, nullable: true, format: date-time }
+        count: { type: integer, nullable: true }
+    CalendarEvent:
+      type: object
+      required: [id, companyId, createdBy, kind, title, description, assigneeId, targetConversationId, agentPrompt, startAt, endAt, allDay, recurrence, status, lastFiredAt, reminderMinutesBefore, reminderChannel, isPrivate, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        companyId: { type: string }
+        createdBy: { type: string }
+        kind: { $ref: '#/components/schemas/CalendarEventKind' }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        assigneeId: { type: string, nullable: true }
+        targetConversationId: { type: string, nullable: true }
+        agentPrompt: { type: string, nullable: true }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, nullable: true, format: date-time }
+        allDay: { type: boolean }
+        recurrence: { $ref: '#/components/schemas/RecurrenceRule' }
+        status: { $ref: '#/components/schemas/CalendarEventStatus' }
+        lastFiredAt: { type: string, nullable: true, format: date-time }
+        reminderMinutesBefore: { type: integer, nullable: true }
+        reminderChannel:
+          allOf: [{ $ref: '#/components/schemas/CalendarReminderChannel' }]
+          nullable: true
+        isPrivate: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CalendarEventInput:
+      type: object
+      required: [title, startAt]
+      properties:
+        title: { type: string }
+        kind: { $ref: '#/components/schemas/CalendarEventKind' }
+        description: { type: string, nullable: true }
+        assigneeId: { type: string, nullable: true }
+        targetConversationId: { type: string, nullable: true }
+        agentPrompt: { type: string, nullable: true }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, nullable: true, format: date-time }
+        allDay: { type: boolean }
+        recurrence:
+          allOf: [{ $ref: '#/components/schemas/RecurrenceRule' }]
+          nullable: true
+        status: { $ref: '#/components/schemas/CalendarEventStatus' }
+        reminderMinutesBefore: { type: integer, nullable: true }
+        reminderChannel:
+          allOf: [{ $ref: '#/components/schemas/CalendarReminderChannel' }]
+          nullable: true
+        isPrivate: { type: boolean }
+    CalendarDispatch:
+      type: object
+      required: [id, eventId, scheduledFor, dispatchedAt, status, conversationId, messageId, error]
+      properties:
+        id: { type: string }
+        eventId: { type: string }
+        scheduledFor: { type: string, format: date-time }
+        dispatchedAt: { type: string, format: date-time }
+        status: { type: string }
+        conversationId: { type: string, nullable: true }
+        messageId: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+    Document:
+      type: object
+      required: [id, title, createdBy, conversationId, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        createdBy: { type: string }
+        conversationId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    WorkspaceSummary:
+      type: object
+      required: [id, name, isDefault, createdAt, explicitMemberCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        isDefault: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        explicitMemberCount: { type: integer }
+    WorkspaceMember:
+      type: object
+      required: [participantId, name, kind, addedAt, source]
+      properties:
+        participantId: { type: string }
+        name: { type: string }
+        kind: { type: string }
+        addedAt: { type: string, nullable: true, format: date-time }
+        source: { type: string, enum: [explicit, implicit] }
+    WorkspaceAssociation:
+      type: object
+      required: [kind, targetId, createdAt]
+      properties:
+        kind: { type: string, enum: [project, board_card, document] }
+        targetId: { type: string }
+        createdAt: { type: string, format: date-time }
+    WorkspaceDetail:
+      type: object
+      required: [id, name, isDefault, createdAt, unboundAt, unboundBy, members, associations]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        isDefault: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        unboundAt: { type: string, nullable: true, format: date-time }
+        unboundBy: { type: string, nullable: true }
+        folderPath: { type: string }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceMember' }
+        associations:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceAssociation' }
+    WorkspaceFileEntry:
+      type: object
+      required: [name, dir, size, modifiedAt]
+      properties:
+        name: { type: string }
+        dir: { type: boolean }
+        size: { type: integer, nullable: true }
+        modifiedAt: { type: string, nullable: true, format: date-time }
+    SearchResults:
+      type: object
+      required: [participants, rooms, groups, messages]
+      properties:
+        participants:
+          type: array
+          items:
+            type: object
+            required: [id, kind, name, role, initial, avatarBg, avatarUrl, status, bio]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [agent, human] }
+              name: { type: string }
+              role: { type: string, nullable: true }
+              initial: { type: string }
+              avatarBg: { type: string }
+              avatarUrl: { type: string, nullable: true }
+              status: { $ref: '#/components/schemas/Status' }
+              bio: { type: string, nullable: true }
+        rooms:
+          type: array
+          items:
+            type: object
+            required: [id, kind, title, members, projectName]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [direct, whisper] }
+              title: { type: string }
+              members: { type: array, items: { type: string } }
+              projectName: { type: string, nullable: true }
+        groups:
+          type: array
+          items:
+            type: object
+            required: [id, kind, title, members, projectName]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [group] }
+              title: { type: string }
+              members: { type: array, items: { type: string } }
+              projectName: { type: string, nullable: true }
+        messages:
+          type: array
+          items:
+            type: object
+            required: [id, conversationId, conversationTitle, conversationKind, authorId, authorName, snippet, createdAt]
+            properties:
+              id: { type: string }
+              conversationId: { type: string }
+              conversationTitle: { type: string }
+              conversationKind: { type: string, enum: [group, direct, whisper] }
+              authorId: { type: string }
+              authorName: { type: string, nullable: true }
+              snippet: { type: string }
+              createdAt: { type: string, format: date-time }
+    ShippingFeatureStatus:
+      type: string
+      enum: [draft, contract, building, verifying, ready, releasing, watching, learned, paused, archived]
+    ShippingPriority:
+      type: string
+      enum: [critical, high, medium, low]
+    ShippingFeatureSummary:
+      type: object
+      required: [id, title, status, priority, riskLevel, releaseTarget, builderIds, projectId, updatedAt, requiredSquares, passedSquares, failedSquares]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { $ref: '#/components/schemas/ShippingFeatureStatus' }
+        priority: { $ref: '#/components/schemas/ShippingPriority' }
+        riskLevel: { $ref: '#/components/schemas/ShippingPriority' }
+        releaseTarget: { type: string, nullable: true }
+        builderIds: { type: array, items: { type: string } }
+        projectId: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+        requiredSquares: { type: integer }
+        passedSquares: { type: integer }
+        failedSquares: { type: integer }
+    ShippingInvariant:
+      type: object
+      required: [id, title, description, kind, required, position, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        kind: { type: string, enum: [behavior, architecture, data, security, performance, ux, operability] }
+        required: { type: boolean }
+        position: { type: number }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ShippingVerification:
+      type: object
+      required: [id, title, description, method, required, status, position, notes, builderIds, evidence, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        invariantId: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string }
+        method: { type: string, enum: [user_path, property, trace, data_reconciliation, design_qa, security, performance, release_note] }
+        required: { type: boolean }
+        status: { type: string, enum: [pending, running, passed, failed, waived] }
+        ownerId: { type: string, nullable: true }
+        verifiedById: { type: string, nullable: true }
+        builderIds: { type: array, items: { type: string } }
+        evidence: { type: array, items: { type: object, additionalProperties: true } }
+        notes: { type: string }
+        position: { type: number }
+        dueAt: { type: string, nullable: true, format: date-time }
+        completedAt: { type: string, nullable: true, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ShippingRelease:
+      type: object
+      required: [id, environment, status, version, commitSha, startedBy, approvedBy, releaseNotes, rollbackPlan, knownGaps, baseline, smokeEvidence, readbackDueAt, readbackStatus, readbackEvidence, startedAt, completedAt, rolledBackAt, rollbackReason, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        environment: { type: string, enum: [development, staging, canary, production] }
+        status: { type: string, enum: [planned, approved, running, succeeded, failed, rolled_back] }
+        version: { type: string, nullable: true }
+        commitSha: { type: string, nullable: true }
+        startedBy: { type: string, nullable: true }
+        approvedBy: { type: string, nullable: true }
+        releaseNotes: { type: string }
+        rollbackPlan: { type: string }
+        knownGaps: { type: array, items: { type: object, additionalProperties: true } }
+        baseline: { type: array, items: { type: object, additionalProperties: true } }
+        smokeEvidence: { type: array, items: { type: object, additionalProperties: true } }
+        readbackDueAt: { type: string, nullable: true, format: date-time }
+        readbackStatus: { type: string, enum: [pending, passed, failed, overdue] }
+        readbackEvidence: { type: array, items: { type: object, additionalProperties: true } }
+        startedAt: { type: string, nullable: true, format: date-time }
+        completedAt: { type: string, nullable: true, format: date-time }
+        rolledBackAt: { type: string, nullable: true, format: date-time }
+        rollbackReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ShippingFriction:
+      type: object
+      required: [id, title, description, source, severity, frequency, status, occurrenceCount, lastSeenAt]
+      properties:
+        id: { type: string }
+        featureId: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string }
+        source: { type: string }
+        severity: { $ref: '#/components/schemas/ShippingPriority' }
+        frequency: { type: string, enum: [once, occasional, frequent, constant] }
+        status: { type: string, enum: [open, triaged, planned, resolved, dismissed] }
+        occurrenceCount: { type: integer }
+        lastSeenAt: { type: string, format: date-time }
+        evidence: { type: array, items: { type: object, additionalProperties: true } }
+    ShippingRegression:
+      type: object
+      required: [id, title, kind, expected, status, lastResult, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        invariantId: { type: string, nullable: true }
+        sourceVerificationId: { type: string, nullable: true }
+        title: { type: string }
+        kind: { type: string, enum: [automated, benchmark, manual_replay, monitor] }
+        command: { type: string, nullable: true }
+        expected: { type: string }
+        status: { type: string, enum: [active, passing, failing, disabled] }
+        lastResult: { type: string }
+        lastEvidence: { type: array, items: { type: object, additionalProperties: true } }
+        lastRunAt: { type: string, nullable: true, format: date-time }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ShippingFeatureDetail:
+      allOf:
+        - $ref: '#/components/schemas/ShippingFeatureSummary'
+        - type: object
+          required: [problem, desiredOutcome, contractSummary, createdBy, createdAt, invariants, verifications, releases, frictions, regressions, events]
+          properties:
+            requiredSquares: {}
+            passedSquares: {}
+            failedSquares: {}
+            problem: { type: string }
+            desiredOutcome: { type: string }
+            contractSummary: { type: string }
+            conversationId: { type: string, nullable: true }
+            documentId: { type: string, nullable: true }
+            boardCardId: { type: string, nullable: true }
+            createdBy: { type: string }
+            updatedBy: { type: string }
+            createdAt: { type: string, format: date-time }
+            archivedAt: { type: string, nullable: true, format: date-time }
+            invariants:
+              type: array
+              items: { $ref: '#/components/schemas/ShippingInvariant' }
+            verifications:
+              type: array
+              items: { $ref: '#/components/schemas/ShippingVerification' }
+            releases:
+              type: array
+              items: { $ref: '#/components/schemas/ShippingRelease' }
+            frictions:
+              type: array
+              items: { $ref: '#/components/schemas/ShippingFriction' }
+            regressions:
+              type: array
+              items: { $ref: '#/components/schemas/ShippingRegression' }
+            events:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  actorId: { type: string, nullable: true }
+                  kind: { type: string }
+                  data: { type: object, additionalProperties: true }
+                  createdAt: { type: string, format: date-time }
+    ShippingOverview:
+      type: object
+      required: [features, friction, dueReadbacks]
+      properties:
+        features:
+          type: array
+          items: { $ref: '#/components/schemas/ShippingFeatureSummary' }
+        friction:
+          type: array
+          items: { $ref: '#/components/schemas/ShippingFriction' }
+        dueReadbacks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              featureId: { type: string }
+              featureTitle: { type: string }
+              readbackDueAt: { type: string, format: date-time }
+              readbackStatus: { type: string, enum: [pending, overdue] }
+    AdminUser:
+      type: object
+      required: [id, email, name, avatarUrl, tier, isAdmin, sub2apiUserId, createdAt, companyCount, suspended]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        avatarUrl: { type: string }
+        tier: { type: string, enum: [free, pro, max] }
+        isAdmin: { type: boolean }
+        sub2apiUserId: { type: integer, nullable: true }
+        createdAt: { type: string, format: date-time }
+        lastLoginAt: { type: string, nullable: true, format: date-time }
+        companyCount: { type: integer }
+        suspended: { type: boolean }
+        suspendedAt: { type: string, nullable: true, format: date-time }
+        suspensionReason: { type: string, nullable: true }
+        suspendedBy: { type: string, nullable: true }
+    AdminUserDetail:
+      allOf:
+        - $ref: '#/components/schemas/AdminUser'
+        - type: object
+          required: [companies]
+          properties:
+            companies:
+              type: array
+              items:
+                type: object
+                required: [id, name, slug, role, createdAt, agentCount]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  slug: { type: string }
+                  role: { type: string }
+                  createdAt: { type: string, format: date-time }
+                  agentCount: { type: integer }
+    AdminWaitlistEntry:
+      type: object
+      required: [id, provider, providerId, email, displayName, avatarUrl, status, note, requestedAt]
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        providerId: { type: string }
+        email: { type: string }
+        displayName: { type: string }
+        avatarUrl: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        note: { type: string, nullable: true }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, nullable: true, format: date-time }
+        decidedBy: { type: string, nullable: true }
+    AdminSettings:
+      type: object
+      required: [waitlist_enabled, signups_paused, cerebellum_route, cerebellum_local_engine, cerebellum_provider, cerebellum_base_url, cerebellum_model, cerebellum_api_key_configured, cerebellum_api_key_suffix]
+      properties:
+        waitlist_enabled: { type: boolean }
+        signups_paused: { type: boolean }
+        cerebellum_route: { type: string, enum: [remote, byoa] }
+        cerebellum_local_engine: { type: string }
+        cerebellum_provider: { type: string }
+        cerebellum_base_url: { type: string }
+        cerebellum_model: { type: string }
+        cerebellum_api_key_configured: { type: boolean }
+        cerebellum_api_key_suffix: { type: string, nullable: true }
+    AdminStats:
+      type: object
+      required: [users, waitlist, companies, agents]
+      properties:
+        users:
+          type: object
+          required: [total, admins, tiers]
+          properties:
+            total: { type: integer }
+            admins: { type: integer }
+            tiers:
+              type: object
+              required: [free, pro, max]
+              properties:
+                free: { type: integer }
+                pro: { type: integer }
+                max: { type: integer }
+        waitlist:
+          type: object
+          required: [pending, approved, rejected]
+          properties:
+            pending: { type: integer }
+            approved: { type: integer }
+            rejected: { type: integer }
+        companies: { type: integer }
+        agents: { type: integer }

@@ -56,6 +56,8 @@ jobs:
       - name: LLM-tracked guard (P1)
         run: node scripts/guard-llm-tracked.mjs
       - run: npm ci
+      - name: Contract drift guard (routes ↔ openapi ↔ generated TS)
+        run: npm run contract:check
       - name: Lint (Biome)
         run: npm run lint
       # `npm run typecheck` delegates to the apps/web workspace (root has

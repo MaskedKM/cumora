@@ -50,7 +50,9 @@
     "mobile:ios": "npm run mobile:sync && npx cap open ios",
     "mobile:ios:run": "npm run mobile:sync && npx cap run ios",
     "mobile:android": "npm run mobile:sync && npx cap open android",
-    "mobile:android:run": "npm run mobile:sync && npx cap run android"
+    "mobile:android:run": "npm run mobile:sync && npx cap run android",
+    "contract:gen": "node scripts/contract-coverage.mjs && openapi-typescript packages/contract/openapi.yaml -o packages/contract/src/schema.d.ts && bash scripts/contract-gen-go.sh",
+    "contract:check": "bash scripts/contract-check.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
@@ -126,7 +128,8 @@
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
-    "wait-on": "^8.0.5"
+    "wait-on": "^8.0.5",
+    "openapi-typescript": "^7.9.1"
   },
   "build": {
     "appId": "io.cumora.app",

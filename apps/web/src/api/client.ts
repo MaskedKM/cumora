@@ -1,8 +1,62 @@
-import type {
-  Message, Status,
+import type { components } from '@cumora/contract'
+
+type Schemas = components['schemas']
+
+export type ApiMessage = Schemas['Message']
+export type ApiConversation = Schemas['Conversation']
+export type ApiQuotaWindow = Schemas['QuotaWindow']
+export type ApiQuotaSnapshot = Schemas['QuotaSnapshot']
+export type ApiQuotaResponse = Schemas['QuotaResponse']
+export type ApiProject = Schemas['Project']
+export type ApiParticipant = Schemas['Participant']
+export type ApiComputer = Schemas['Computer']
+export type ApiSearchResults = Schemas['SearchResults']
+export type AgentInput = Schemas['AgentInput']
+/** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
+export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
+export type UploadCapabilities = Schemas['UploadCapabilities']
+export type ApiWhisper = Schemas['Whisper']
+export type ApiWhisperMessage = Schemas['WhisperMessage']
+export type ApiAutonomy = Schemas['Autonomy']
+export type ApiAgentRun = Schemas['AgentRun']
+export type ApiTriageAgentRow = Schemas['TriageAgentRow']
+export type ApiTriageLedgerRow = Schemas['TriageLedgerRow']
+export type ApiTriageUnitPrice = Schemas['TriageUnitPrice']
+export type ApiTriagePriceRow = Schemas['TriagePriceRow']
+export type ApiTriageEconomics = Schemas['TriageEconomics']
+export type ApiAgentEvent = Schemas['AgentEvent']
+export type ApiConveneSession = Schemas['ConveneSession']
+export type ApiConveneTranscript = Schemas['ConveneTranscript']
+export type ApiDevtoolsCapabilities = Schemas['DevtoolsCapabilities']
+export type ApiAgentWorkspaceFile = Schemas['AgentWorkspaceFile']
+export type ApiAgentWorkspaceFileContent = Schemas['AgentWorkspaceFileContent']
+export type ServerCapabilities = Schemas['ServerCapabilities']
+export type ApiInvitation = Schemas['Invitation']
+export type ApiInvitationWithToken = Schemas['InvitationWithToken']
+export type ApiInvitationEmailDelivery = Schemas['InvitationEmailDelivery']
+export type ApiInvitationPreview = Schemas['InvitationPreview']
+export type ApiInvitationAccept = Schemas['InvitationAccept']
+export type ShippingFeatureSummary = Schemas['ShippingFeatureSummary']
+export type ShippingInvariant = Schemas['ShippingInvariant']
+export type ShippingVerification = Schemas['ShippingVerification']
+export type ShippingRelease = Schemas['ShippingRelease']
+export type ShippingFriction = Schemas['ShippingFriction']
+export type ShippingRegression = Schemas['ShippingRegression']
+export type ShippingFeatureDetail = Schemas['ShippingFeatureDetail']
+export type ShippingOverview = Schemas['ShippingOverview']
+export type ApiWorkspaceSummary = Schemas['WorkspaceSummary']
+export type ApiWorkspaceMember = Schemas['WorkspaceMember']
+export type ApiWorkspaceAssociation = Schemas['WorkspaceAssociation']
+export type ApiWorkspaceDetail = Schemas['WorkspaceDetail']
+export type ApiWorkspaceFileEntry = Schemas['WorkspaceFileEntry']
+export type ApiDocument = Schemas['Document']
+export type CalendarEventInput = Schemas['CalendarEventInput']
+export type PresignResponse = Schemas['PresignResponse']
+export type MeResponse = Schemas['MeResponse']
+
+import type {Status,
   BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
-  CalendarEvent, CalendarEventKind, CalendarEventStatus, CalendarDispatch, RecurrenceRule,
-  CalendarReminderChannel,ComputerStatus, ComputerKind, EngineId,
+  CalendarEvent, CalendarEventKind, CalendarEventStatus, CalendarDispatch, ComputerStatus, ComputerKind, EngineId,
 } from '@/types'
 import { getAuthToken, getActiveCompanyId, useAuth } from '@/stores/auth'
 
@@ -134,626 +188,43 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export interface ApiMessage extends Message {
-  sequence: number
-  createdAt?: string
-  reactions?: Array<{ emoji: string; count: number; mine?: boolean; users?: string[] }>
-}
-
-export interface ApiConversation {
-  id: string
-  kind: 'group' | 'direct' | 'whisper' | 'email'
-  title: string
-  subtitle: string | null
-  topic: string | null
-  members: string[]
-  pinned: boolean
-  muted: boolean
-  /** ISO timestamp when the mute auto-expires; null if muted forever or not muted. */
-  mutedUntil: string | null
-  tag: string | null
-  pulledBy: { agentId: string; at: string; reason: string } | null
-  projectId: string | null
-  projectName: string | null
-  projectColor: string | null
-  createdAt: string
-  updatedAt: string
-  unreadCount: number
-  lastMessage: {
-    id: string
-    authorId: string
-    kind: string
-    body: string
-    tool?: unknown
-    attachment?: { name?: string; kind?: 'img' | 'pdf' | 'file' | 'fig' } | null
-    createdAt: string
-    /** Set when last message is an email — used to render "Re: subject"
-     *  previews in the sidebar instead of the raw body excerpt. */
-    email?: { subject: string; direction: 'in' | 'out'; from: string } | null
-  } | null
-}
-
-export interface ApiQuotaWindow {
-  usedUsd: number
-  limitUsd: number | null
-  windowStart: string | null
-}
-
-export interface ApiQuotaSnapshot {
-  groupId: number
-  groupName: string | null
-  status: string
-  expiresAt: string | null
-  daily: ApiQuotaWindow
-  weekly: ApiQuotaWindow
-  monthly: ApiQuotaWindow
-}
-
-export interface ApiQuotaResponse {
-  configured: boolean
-  snapshot: ApiQuotaSnapshot | null
-  error?: string
-}
-
-export interface ApiProject {
-  id: string
-  name: string
-  description: string
-  color: string | null
-  status: 'active' | 'archived'
-  createdAt: string
-  archivedAt: string | null
-  conversationCount: number
-}
-
-export interface ApiParticipant {
-  id: string
-  kind: 'agent' | 'human'
-  name: string
-  role: string | null
-  initial: string
-  avatarBg: string
-  avatarUrl?: string | null
-  status: Status
-  statusUpdatedAt?: string
-  bio: string | null
-  tools: string[] | null
-  systemPrompt?: string | null
-  model?: string | null
-  email?: string | null
-  departedAt?: string | null
-  computerId?: string | null
-  engine?: string | null
-  fastModel?: string | null
-}
 
 /** A Computer (agent host) as returned by GET /api/computers. */
-export interface ApiComputer {
-  id: string
-  company_id: string
-  owner_user_id: string | null
-  name: string
-  kind: ComputerKind
-  available_engines: EngineId[]
-  status: ComputerStatus
-  last_seen_at: string | null
-  paired_at: string | null
-  /** Daemon version this computer is running (null for cloud / a pre-version daemon). */
-  daemon_version?: string | null
-  /** True = daemon runs under the --install-service supervisor; false = a
-   *  manually-run foreground command; null = cloud / an old daemon that
-   *  doesn't report it. Drives run-mode-specific update instructions. */
-  daemon_supervised?: boolean | null
-  /** Newest published cumora daemon version, for the upgrade banner. */
-  latest_daemon_version?: string | null
-  /** True when this BYOA daemon is behind the latest version → show upgrade banner. */
-  daemon_outdated?: boolean
-}
 
 /** Universal-search response. The backend ranks results inside each bucket;
  *  the frontend renders them in this declared order (participants → rooms →
  *  groups → messages), matching the product priority. */
-export interface ApiSearchResults {
-  participants: Array<{
-    id: string
-    kind: 'agent' | 'human'
-    name: string
-    role: string | null
-    initial: string
-    avatarBg: string
-    avatarUrl: string | null
-    status: Status
-    bio: string | null
-  }>
-  rooms: Array<{
-    id: string
-    kind: 'direct' | 'whisper'
-    title: string
-    members: string[]
-    projectName: string | null
-  }>
-  groups: Array<{
-    id: string
-    kind: 'group'
-    title: string
-    members: string[]
-    projectName: string | null
-  }>
-  messages: Array<{
-    id: string
-    conversationId: string
-    conversationTitle: string
-    conversationKind: 'group' | 'direct' | 'whisper'
-    authorId: string
-    authorName: string | null
-    snippet: string
-    createdAt: string
-  }>
-}
 
-export interface AgentInput {
-  id?: string
-  name?: string
-  role?: string
-  systemPrompt?: string
-  bio?: string
-  initial?: string
-  avatarBg?: string
-  /** pass null to clear the AI portrait and fall back to the color block */
-  avatarUrl?: string | null
-  /** per-agent big-brain model override; null clears it (use system default) */
-  model?: string | null
-  /** per-agent small-brain (fast) model override; null clears it */
-  fastModel?: string | null
-  tools?: string[]
-}
-
-export interface ApiAttachment {
-  url: string
-  name: string
-  kind: 'img' | 'pdf' | 'file' | 'fig'
-  mime?: string
-  size?: number
-  /** Object-storage key, present when the file lives in R2. */
-  key?: string
-}
-
-export interface UploadCapabilities {
-  mode: 'local' | 'r2'
-  presignSupported: boolean
-  maxBytes: number
-  allowedMimes: string[]
-}
-
-interface PresignResponse {
-  uploadUrl: string
-  publicUrl: string
-  key: string
-  name: string
-  mime: string
-  size: number
-  kind: 'img' | 'file'
-}
 
 /** A peek-view entry — either a 1-on-1 direct chat or a multi-agent
  *  group, where every member is an agent. "Whisper" is the frontend tab
  *  name; on the server these are just regular conversations the user
  *  isn't a member of (so they don't show up in /conversations, but the
  *  peek tab lets the user eavesdrop). */
-export interface ApiWhisper {
-  id: string
-  kind: 'direct' | 'group'
-  title: string
-  members: string[]
-  /** Convenience accessors for the 1-on-1 case — null for groups. */
-  agentA: string | null
-  agentB: string | null
-  about: string | null
-  createdAt: string
-  updatedAt: string
-  msgCount: number
-}
 
-export interface ApiWhisperMessage {
-  id: string
-  conversationId: string
-  authorId: string
-  kind: string
-  body: string
-  sequence: number
-  tool?: { name: string; arg: string; status: string; detail: string; icon?: string } | null
-  createdAt: string
-}
 
-export interface ApiAutonomy {
-  userId: string
-  agentId: string
-  threshold: number
-  pulled: number
-  led: number
-  dissolved: number
-}
+export type ApiAgentRunStatus = Schemas['AgentRunStatus']
+export type ApiAgentEventLevel = NonNullable<Schemas['AgentEvent']['level']>[number] | never
 
-export type ApiAgentRunStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'stalled'
-export type ApiAgentEventLevel = 'debug' | 'info' | 'warn' | 'error'
-
-export interface ApiAgentRun {
-  id: string
-  agentId: string
-  agentName: string
-  agentRole: string | null
-  agentAvatarUrl: string | null
-  companyId: string
-  status: ApiAgentRunStatus
-  stage: string | null
-  summary: string | null
-  error: string | null
-  trigger: Record<string, unknown>
-  inputMessageIds: string[]
-  inboxCount: number
-  toolCallCount: number
-  tokenCount: number
-  fingerprint: string | null
-  startedAt: string
-  updatedAt: string
-  finishedAt: string | null
-  durationMs: number
-}
 
 // ── Triage cost-effectiveness ledger ──
-export type ApiTriageSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor'
+export type ApiTriageSource = Schemas['TriageSource']
 
-export interface ApiTriageAgentRow {
-  agentId: string
-  agentName: string
-  triageCount: number
-  skipCount: number
-  wakeCount: number
-  triageCostUsd: number
-  triageOverheadUsd: number
-  turnCount: number
-  avgTurnCostUsd: number
-  turnCacheHitRate: number
-  estimatedNetSavingsUsd: number
-}
 
-export interface ApiTriageLedgerRow {
-  id: string
-  agentId: string
-  agentName: string
-  source: ApiTriageSource
-  model: string | null
-  actionable: boolean
-  reason: string | null
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-  costUsd: number
-  costEstimated: boolean
-  measured: boolean
-  estSavingUsd: number | null
-  createdAt: string
-}
+export type ApiInvitationStatus = Schemas['Invitation']['status']
 
-export interface ApiTriageUnitPrice {
-  role: 'triage' | 'turn'
-  model: string
-  inPer1M: number
-  cachedInPer1M: number
-  outPer1M: number
-  estimated: boolean
-}
-
-export interface ApiTriagePriceRow {
-  model: string
-  inPer1M: number
-  cachedInPer1M: number
-  cacheWritePer1M: number
-  outPer1M: number
-  estimated: boolean
-}
-
-export interface ApiTriageEconomics {
-  sinceHours: number
-  triageCount: number
-  triageSkipCount: number
-  triageWakeCount: number
-  triageMeasuredCount: number
-  triageCostUsd: number
-  triageOverheadUsd: number
-  triageInputTokens: number
-  triageCachedInputTokens: number
-  triageOutputTokens: number
-  turnCount: number
-  turnCostUsd: number
-  avgTurnCostUsd: number
-  turnCacheHitRate: number
-  estimatedAvoidedUsd: number
-  estimatedNetSavingsUsd: number
-  costEstimated: boolean
-  byoaShare: number
-  unitPrices: ApiTriageUnitPrice[]
-  priceTable: ApiTriagePriceRow[]
-  perAgent: ApiTriageAgentRow[]
-  recent: ApiTriageLedgerRow[]
-}
-
-export interface ApiAgentEvent {
-  id: string
-  runId: string
-  agentId: string
-  kind: string
-  level: ApiAgentEventLevel
-  title: string
-  data: Record<string, unknown>
-  createdAt: string
-}
-
-export interface ApiConveneSession {
-  id: string
-  conversation_id: string
-  title: string
-  flair: string | null
-  started_by: string
-  started_at: string
-  ended_at: string | null
-  state: 'live' | 'ended'
-}
-
-export interface ApiConveneTranscript {
-  id: string
-  sessionId: string
-  authorId: string
-  kind: 'text' | 'thought' | 'tool' | 'decision'
-  body: string
-  sequence: number
-  decision: { headline: string; body: string } | null
-  createdAt: string
-}
-
-export interface ApiDevtoolsCapabilities {
-  enabled: boolean
-  canEnable: boolean
-  localDev: boolean
-  productionDevMode: boolean
-  role: string
-}
-
-export interface ApiAgentWorkspaceFile {
-  path: string
-  size: number
-  lineCount: number
-  updatedAt: string
-}
-
-export interface ApiAgentWorkspaceFileContent extends ApiAgentWorkspaceFile {
-  body: string
-}
-
-interface MeResponse {
-  user: { id: string; email: string; name: string; emailVerified: boolean; providers: string[] }
-  companies: Array<{ id: string; name: string; slug: string; role: string; tier?: string }>
-  activeCompanyId: string | null
-  serverCapabilities: ServerCapabilities
-}
-
-export interface ServerCapabilities {
-  /** Whether the server can send outbound invitation / welcome emails.
-   *  Driven by EMAIL_DOMAIN being set on the server. The invite modal
-   *  hides the "Email this invite" checkbox when false. */
-  invitationEmail: boolean
-}
-
-export type ApiInvitationStatus = 'active' | 'revoked' | 'expired' | 'consumed'
-
-export interface ApiInvitation {
-  /** Stable identifier (= server-side token_hash). Used by the revoke
-   *  endpoint. The raw token itself is ONLY returned on create — never
-   *  re-exposed. */
-  id: string
-  email: string | null
-  role: 'member' | 'admin'
-  note: string | null
-  maxUses: number
-  useCount: number
-  createdAt: string
-  expiresAt: string
-  revokedAt: string | null
-  lastAcceptedAt: string | null
-  lastAcceptedBy: string | null
-  invitedBy: string
-  inviterName: string | null
-  status: ApiInvitationStatus
-}
 
 /** Returned exactly ONCE from the create endpoint. Embeds the freshly-minted
  *  raw token + the public accept URL — the server keeps only the hash, so
  *  the UI must surface this immediately for the user to copy / send. */
-export interface ApiInvitationWithToken {
-  id: string
-  token: string
-  url: string
-  email: string | null
-  role: 'member' | 'admin'
-  note: string | null
-  maxUses: number
-  useCount: number
-  createdAt: string
-  expiresAt: string
-  status: 'active'
-  /** Present when the inviter asked the server to send the invite email
-   *  on their behalf (`sendEmail: true` in the create payload). Null when
-   *  they did not. The UI uses this to render "email sent" /
-   *  "email failed: <reason>" feedback alongside the copy-link card. */
-  emailDelivery: ApiInvitationEmailDelivery | null
-}
 
-export interface ApiInvitationEmailDelivery {
-  attempted: boolean
-  ok: boolean
-  error: string | null
-  /** Set when the server deliberately didn't try — today only
-   *  'no_email_config' (EMAIL_DOMAIN unset). Distinct from `error` so
-   *  the UI can show a different message. */
-  skipped: 'no_email_config' | null
-}
 
-export type ApiInvitationPreviewStatus =
-  | 'valid' | 'revoked' | 'expired' | 'consumed'
-  | 'wrong_email' | 'already_member' | 'not_found'
+export type ApiInvitationPreviewStatus = Schemas['InvitationPreview']['status']
 
-export interface ApiInvitationPreview {
-  status: ApiInvitationPreviewStatus
-  invitation?: {
-    role: string
-    email: string | null
-    note: string | null
-    expiresAt: string
-    createdAt: string
-    inviterName: string | null
-    company: { id: string; name: string; slug: string }
-    multiUse: boolean
-  }
-}
 
-export interface ApiInvitationAccept {
-  ok: true
-  alreadyMember: boolean
-  company: { id: string; name: string; slug: string; role: string }
-}
+export type ShippingFeatureStatus = Schemas['ShippingFeatureStatus']
+export type ShippingVerificationStatus = Schemas['ShippingVerification']['status']
 
-export type ShippingFeatureStatus =
-  | 'draft' | 'contract' | 'building' | 'verifying' | 'ready'
-  | 'releasing' | 'watching' | 'learned' | 'paused' | 'archived'
-export type ShippingVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'waived'
-
-export interface ShippingFeatureSummary {
-  id: string
-  title: string
-  status: ShippingFeatureStatus
-  priority: 'critical' | 'high' | 'medium' | 'low'
-  riskLevel: 'critical' | 'high' | 'medium' | 'low'
-  releaseTarget: string | null
-  builderIds: string[]
-  projectId: string | null
-  updatedAt: string
-  requiredSquares: number
-  passedSquares: number
-  failedSquares: number
-}
-
-export interface ShippingInvariant {
-  id: string
-  title: string
-  description: string
-  kind: 'behavior' | 'architecture' | 'data' | 'security' | 'performance' | 'ux' | 'operability'
-  required: boolean
-  position: number
-  createdBy: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface ShippingVerification {
-  id: string
-  invariantId: string | null
-  title: string
-  description: string
-  method: 'user_path' | 'property' | 'trace' | 'data_reconciliation' | 'design_qa' | 'security' | 'performance' | 'release_note'
-  required: boolean
-  status: ShippingVerificationStatus
-  ownerId: string | null
-  verifiedById: string | null
-  builderIds: string[]
-  evidence: Array<Record<string, unknown>>
-  notes: string
-  position: number
-  dueAt: string | null
-  completedAt: string | null
-  createdBy: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface ShippingRelease {
-  id: string
-  environment: 'development' | 'staging' | 'canary' | 'production'
-  status: 'planned' | 'approved' | 'running' | 'succeeded' | 'failed' | 'rolled_back'
-  version: string | null
-  commitSha: string | null
-  startedBy: string | null
-  approvedBy: string | null
-  releaseNotes: string
-  rollbackPlan: string
-  knownGaps: Array<Record<string, unknown>>
-  baseline: Array<Record<string, unknown>>
-  smokeEvidence: Array<Record<string, unknown>>
-  readbackDueAt: string | null
-  readbackStatus: 'pending' | 'passed' | 'failed' | 'overdue'
-  readbackEvidence: Array<Record<string, unknown>>
-  startedAt: string | null
-  completedAt: string | null
-  rolledBackAt: string | null
-  rollbackReason: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-export interface ShippingFriction {
-  id: string
-  featureId: string | null
-  title: string
-  description: string
-  source: string
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  frequency: 'once' | 'occasional' | 'frequent' | 'constant'
-  status: 'open' | 'triaged' | 'planned' | 'resolved' | 'dismissed'
-  occurrenceCount: number
-  lastSeenAt: string
-  evidence?: Array<Record<string, unknown>>
-}
-
-export interface ShippingRegression {
-  id: string
-  invariantId: string | null
-  sourceVerificationId: string | null
-  title: string
-  kind: 'automated' | 'benchmark' | 'manual_replay' | 'monitor'
-  command: string | null
-  expected: string
-  status: 'active' | 'passing' | 'failing' | 'disabled'
-  lastResult: string
-  lastEvidence: Array<Record<string, unknown>>
-  lastRunAt: string | null
-  createdBy: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface ShippingFeatureDetail extends Omit<ShippingFeatureSummary, 'requiredSquares' | 'passedSquares' | 'failedSquares'> {
-  problem: string
-  desiredOutcome: string
-  contractSummary: string
-  conversationId: string | null
-  documentId: string | null
-  boardCardId: string | null
-  createdBy: string
-  updatedBy: string
-  createdAt: string
-  archivedAt: string | null
-  invariants: ShippingInvariant[]
-  verifications: ShippingVerification[]
-  releases: ShippingRelease[]
-  frictions: ShippingFriction[]
-  regressions: ShippingRegression[]
-  events: Array<{ id: string; actorId: string | null; kind: string; data: Record<string, unknown>; createdAt: string }>
-}
-
-export interface ShippingOverview {
-  features: ShippingFeatureSummary[]
-  friction: ShippingFriction[]
-  dueReadbacks: Array<{ id: string; featureId: string; featureTitle: string; readbackDueAt: string; readbackStatus: 'pending' | 'overdue' }>
-}
 
 export const api = {
   health: () => http<{ ok: boolean; ts: number }>('/health'),
@@ -1400,77 +871,9 @@ export const api = {
     ),
 }
 
-export interface ApiWorkspaceSummary {
-  id: string
-  name: string
-  isDefault: boolean
-  createdAt: string
-  explicitMemberCount: number
-}
-
-export interface ApiWorkspaceMember {
-  participantId: string
-  name: string
-  kind: string
-  addedAt: string | null
-  source: 'explicit' | 'implicit'
-}
-
-export interface ApiWorkspaceAssociation {
-  kind: 'project' | 'board_card' | 'document'
-  targetId: string
-  createdAt: string
-}
-
-export interface ApiWorkspaceDetail {
-  id: string
-  name: string
-  isDefault: boolean
-  createdAt: string
-  unboundAt: string | null
-  unboundBy: string | null
-  folderPath?: string
-  members: ApiWorkspaceMember[]
-  associations: ApiWorkspaceAssociation[]
-}
-
-export interface ApiWorkspaceFileEntry {
-  name: string
-  dir: boolean
-  size: number | null
-  modifiedAt: string | null
-}
-
-export interface ApiDocument {
-  id: string
-  title: string
-  createdBy: string
-  conversationId: string | null
-  createdAt: string
-  updatedAt: string
-}
 
 /** Body shape for create/update calendar event. The server validates each
  *  field independently so partial updates work. */
-export interface CalendarEventInput {
-  title: string
-  kind?: CalendarEventKind
-  description?: string | null
-  assigneeId?: string | null
-  targetConversationId?: string | null
-  agentPrompt?: string | null
-  startAt: string
-  endAt?: string | null
-  allDay?: boolean
-  recurrence?: RecurrenceRule | null
-  status?: CalendarEventStatus
-  reminderMinutesBefore?: number | null
-  reminderChannel?: CalendarReminderChannel | null
-  /** Privacy flag. When true, only the creator + assignee see the row
-   *  (and the workspace owner, if the row involves an agent). Default
-   *  false = same shared-workspace behavior as before. */
-  isPrivate?: boolean
-}
 
 /* ============== WebSocket bridge ============== */
 
