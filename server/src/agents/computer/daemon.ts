@@ -790,6 +790,16 @@ export const CUMORA_SHIM = `#!/usr/bin/env node
  *  one file so both launchers exercise the exact same argument/HTTP path. */
 export const CUMORA_WINDOWS_SHIM = '@echo off\r\nnode "%~dp0cumora" %*\r\n'
 
+/** The two-domain privacy rule as stated on the standing-prompt channel
+ *  (system prompt — for Claude/Codex/Grok strictly higher authority than
+ *  the persona header). One exported place so the content test can pin
+ *  that BOTH prompt channels carry the same boundary; if they drift, the
+ *  effective prompt-enforced boundary becomes model-dependent. */
+export const TWO_DOMAIN_PRIVACY_RULE =
+  'Privacy: operate only inside your private home and the team workspaces you are a ' +
+  "member of (`cumora workspace ls`). Everything else on this machine is the operator's " +
+  'private files — never read or expose them.'
+
 export function prependAgentBinToPath(binDir: string, currentPath = process.env.PATH ?? ''): string {
   return currentPath ? `${binDir}${delimiter}${currentPath}` : binDir
 }
@@ -1727,8 +1737,7 @@ class AgentRunner {
       `"still need X?") and schedule your own check-back: ` +
       `\`cumora calendar create '<chase>' --at <iso> --assignee ${this.agent.id} --prompt '<what future-you does>'\`. ` +
       `Stop only when the work is truly done or it's someone else's move.\n\n` +
-      `Privacy: stay inside your home directory. Never read or expose files outside it — this machine ` +
-      `holds the operator's private files.`
+      `${TWO_DOMAIN_PRIVACY_RULE}`
     )
   }
 

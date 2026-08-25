@@ -9,18 +9,30 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { PERSONA_HEADER } from '../agents/computer/engine.js'
+import { TWO_DOMAIN_PRIVACY_RULE } from '../agents/computer/daemon.js'
 
 const header = PERSONA_HEADER({ id: 'nova', name: 'Nova', role: 'PM', systemPrompt: '' })
 
 test('boundary is two-domain: private home + member team workspaces', () => {
-  assert.match(header, /TWO domains/)
+  assert.match(header, /may operate in exactly\s+TWO domains/)
   assert.match(header, /Your private home/)
   assert.match(header, /Team workspaces you are a member of/)
 })
 
-test('team workspace grants full work rights, incl. execution', () => {
-  assert.match(header, /cumora workspace ls/)
+test('execution rights inside a workspace come with the ask-for-the-path clause', () => {
   assert.match(header, /full work\s+rights: read and write files, run builds, tests, and git/)
+  assert.match(header, /ask the operator for its folder path first/)
+})
+
+test('standing prompt (system channel) states the same two-domain rule', () => {
+  assert.match(TWO_DOMAIN_PRIVACY_RULE, /operate only inside your private home and the team workspaces you are a member of/)
+  assert.match(TWO_DOMAIN_PRIVACY_RULE, /cumora workspace ls/)
+  assert.match(TWO_DOMAIN_PRIVACY_RULE, /never read or expose them/)
+})
+
+test('the old one-domain wording is gone from both prompt channels', () => {
+  assert.doesNotMatch(header, /stay inside your home directory/i)
+  assert.doesNotMatch(TWO_DOMAIN_PRIVACY_RULE, /stay inside your home directory/i)
 })
 
 test('outside the two domains is still strictly off-limits', () => {
