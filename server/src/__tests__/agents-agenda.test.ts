@@ -17,7 +17,7 @@ import {
 import { __setLlmClientOverrideForTesting } from '../llm.js'
 import { pool } from '../db/pool.js'
 
-const { DONE_COLUMN_PATTERNS, renderAgendaForClassifier } = __test
+const { DONE_COLUMN_PATTERNS, renderAgendaForClassifier, buildAgendaClassifierRequest } = __test
 
 afterEach(() => {
   __setLlmClientOverrideForTesting(null)
@@ -250,6 +250,40 @@ test('renderAgendaForClassifier sorts cards and stalls by id, not recency', () =
   })
   assert.ok(out.indexOf('c-a') < out.indexOf('c-z'), 'cards sorted by id')
   assert.ok(out.indexOf('direct-a') < out.indexOf('direct-z'), 'stalls sorted by conversationId')
+})
+
+test('classifier request anchors "now" and renders card/event freshness relative to it', () => {
+  // Regression: without a now-anchor the classifier guessed card freshness
+  // from bare timestamps (a card touched seconds earlier was read as "~22h
+  // ago") and silently refused to pick it up.
+  const agenda: AgentAgenda = {
+    cards: [{
+      id: 'c-fresh', board_id: 'b1', board_title: 'Ops', column_id: 'col1',
+      column_title: 'To Do', title: 'Ship it', description: null,
+      assignee_id: 'agent-1', mentions: [], updated_at: '2026-05-20T11:58:00Z',
+    }],
+    events: [{
+      id: 'evt-1', title: 'Sync', description: null,
+      start_at: '2026-05-20T12:30:00Z', agent_prompt: null, target_conversation_id: null,
+    }],
+    stalls: [],
+  }
+  const now = Date.parse('2026-05-20T12:00:00Z')
+  const req = buildAgendaClassifierRequest({
+    persona: { name: 'Nova', role: 'PM', style: '', model: null },
+    agenda,
+    now,
+  })
+  assert.ok(!req.verdict, 'non-empty agenda must build a classifier request')
+  assert.match(req.input!, /Current time: 2026-05-20T12:00:00\.000Z/)
+  assert.match(req.input!, /\(id=c-fresh, updated 2026-05-20T11:58:00Z, 2m ago\)/)
+  assert.match(req.input!, /at 2026-05-20T12:30:00Z \(in 30m\)/)
+  // Persona stays ahead of the volatile time line so the provider-side
+  // prompt-cache prefix (instructions + persona) is unaffected.
+  assert.ok(
+    req.input!.indexOf('Agent: Nova') < req.input!.indexOf('Current time:'),
+    'persona precedes the now-anchor',
+  )
 })
 
 test('renderAgendaBrief opens with the action override + includes ids', () => {

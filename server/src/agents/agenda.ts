@@ -439,4 +439,5 @@ export function renderAgendaBrief(agenda: AgentAgenda, focus: string): string {
 export const __test = {
   DONE_COLUMN_PATTERNS,
   renderAgendaForClassifier,
+  buildAgendaClassifierRequest,
 }

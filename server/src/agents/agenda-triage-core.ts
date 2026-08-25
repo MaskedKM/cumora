@@ -102,10 +102,29 @@ function byId<T extends { id: string }>(a: T, b: T): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
+/** Compact relative age for the classifier ("5m ago" / "in 2h"). Small models
+ *  judge a precomputed delta far more reliably than subtracting two absolute
+ *  timestamps — and with only a bare `updated_at` and no now-anchor they guess
+ *  the freshness, sometimes wildly (a card touched 22 seconds before the call
+ *  was once read as "~22h ago", silently starving it of pickup). */
+function relativeAge(iso: string, now: number): string {
+  const ms = now - Date.parse(iso)
+  const abs = Math.abs(ms)
+  // Larger units floor so a 30m delta reads "30m", not a rounded-up "1h".
+  const d = Math.floor(abs / 86_400_000)
+  const h = Math.floor(abs / 3_600_000)
+  const m = Math.floor(abs / 60_000)
+  const s = Math.round(abs / 1_000)
+  const span = d > 0 ? `${d}d` : h > 0 ? `${h}h` : m > 0 ? `${m}m` : `${s}s`
+  return ms >= 0 ? `${span} ago` : `in ${span}`
+}
+
 /** Render the agenda as a compact text block for the classifier. See
  *  `agenda.ts`'s original doc comment for the prefix-cache-ordering
- *  rationale — unchanged by the split, just relocated. */
-export function renderAgendaForClassifier(agenda: AgentAgenda): string {
+ *  rationale — unchanged by the split, just relocated. `now` is injectable
+ *  for deterministic tests; card/event freshness is rendered RELATIVE to it
+ *  (see {@link relativeAge}). */
+export function renderAgendaForClassifier(agenda: AgentAgenda, now: number = Date.now()): string {
   const lines: string[] = []
   const cards = [...agenda.cards].sort(byId)
   const stalls = [...agenda.stalls].sort((a, b) => (
@@ -115,7 +134,7 @@ export function renderAgendaForClassifier(agenda: AgentAgenda): string {
     lines.push(`Kanban cards (${cards.length}):`)
     for (const c of cards) {
       const tag = c.assignee_id ? 'assigned' : 'mentioned'
-      lines.push(`- [${tag}] "${c.title}" in ${c.board_title} / ${c.column_title} (id=${c.id}, updated ${c.updated_at})`)
+      lines.push(`- [${tag}] "${c.title}" in ${c.board_title} / ${c.column_title} (id=${c.id}, updated ${c.updated_at}, ${relativeAge(c.updated_at, now)})`)
     }
   }
   if (stalls.length > 0) {
@@ -132,7 +151,7 @@ export function renderAgendaForClassifier(agenda: AgentAgenda): string {
     lines.push(`Calendar events in current slot (${agenda.events.length}):`)
     for (const e of agenda.events) {
       const prompt = e.agent_prompt ? ` — prompt: ${e.agent_prompt.slice(0, 140)}` : ''
-      lines.push(`- "${e.title}" at ${e.start_at}${prompt}`)
+      lines.push(`- "${e.title}" at ${e.start_at} (${relativeAge(e.start_at, now)})${prompt}`)
     }
   }
   if (stalls.length > 0) {
@@ -150,12 +169,14 @@ export function renderAgendaForClassifier(agenda: AgentAgenda): string {
 export function buildAgendaClassifierRequest(args: {
   persona: AgendaClassifierPersona
   agenda: AgentAgenda
+  now?: number
 }): AgendaClassifierRequest {
   const { persona, agenda } = args
   if (agenda.cards.length === 0 && agenda.events.length === 0 && agenda.stalls.length === 0) {
     return { verdict: { actionable: false, focus: '', reason: 'empty agenda' } }
   }
-  const rendered = renderAgendaForClassifier(agenda)
+  const now = args.now ?? Date.now()
+  const rendered = renderAgendaForClassifier(agenda, now)
   const styleHint = (persona.style ?? '').slice(0, 400)
   const instructions = `You are Cumora's heartbeat agenda triage. Given an agent's currently-assigned Kanban cards and their currently-due calendar events, decide whether the agent should wake up RIGHT NOW to act on something, or stay quiet.
 
@@ -174,6 +195,7 @@ Reply ONLY as strict JSON: {"actionable": boolean, "focus": "one-line focus for 
 Persona / style:
 ${styleHint || '(none)'}
 
+Current time: ${new Date(now).toISOString()}
 Current agenda for this agent:
 ${rendered}
 
