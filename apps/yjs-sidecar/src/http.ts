@@ -50,7 +50,7 @@ function forgetProxy(documentId: string, subscriberId: string): boolean {
   return true
 }
 
-export function startSidecarHttp(port: number, host = '127.0.0.1'): Promise<void> {
+export function startSidecarHttp(port: number, host = '127.0.0.1'): Promise<() => void> {
   return new Promise((resolve) => {
     const server = http.createServer(async (req, res) => {
       const send = (code: number, body: unknown): void => {
@@ -74,12 +74,17 @@ export function startSidecarHttp(port: number, host = '127.0.0.1'): Promise<void
         switch (req.url) {
           case '/internal/doc/subscribe': {
             const b = body as SubBody
-            const proxy = {
-              originId: b.subscriberId,
-              onUpdate: () => { /* fanout happens via Redis CH_DOC_UPDATE */ },
-              onAwareness: () => { /* via CH_DOC_AWARENESS */ },
+            // 幂等:同 (doc, subscriberId) 复用同一 proxy——rooms.subs 按
+            // 对象地址去重,重复 subscribe 不增计数;unsubscribe 才真归还。
+            let proxy = proxies.get(proxyKey(b.documentId, b.subscriberId))
+            if (!proxy) {
+              proxy = {
+                originId: b.subscriberId,
+                onUpdate: () => { /* fanout happens via Redis CH_DOC_UPDATE */ },
+                onAwareness: () => { /* via CH_DOC_AWARENESS */ },
+              }
+              proxies.set(proxyKey(b.documentId, b.subscriberId), proxy)
             }
-            proxies.set(proxyKey(b.documentId, b.subscriberId), proxy)
             const { initialState } = await subscribe(b.documentId, b.companyId, proxy)
             send(200, { stateB64: Buffer.from(initialState).toString('base64') })
             return
@@ -130,7 +135,7 @@ export function startSidecarHttp(port: number, host = '127.0.0.1'): Promise<void
     })
     server.listen(port, host, () => {
       console.log(`[yjs-sidecar] internal http on ${host}:${port} · rooms bus active`)
-      resolve()
+      resolve(() => new Promise<void>((res) => server.close(() => res())))
     })
   })
 }

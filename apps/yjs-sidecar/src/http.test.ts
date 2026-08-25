@@ -29,16 +29,19 @@ async function call(path: string, body: unknown): Promise<{ status: number; json
   return { status: res.status, json: await res.json().catch(() => null) }
 }
 
+let closeHttp: () => Promise<void>
+
 before(async () => {
+  closeHttp = await startSidecarHttp(5199)
   await pool.query(`DELETE FROM documents WHERE id = $1`, [DOC_ID])
   await pool.query(
     `INSERT INTO documents (id, company_id, title, created_by) VALUES ($1, $2, 'sidecar test', 'u-test')`,
     [DOC_ID, COMPANY],
   )
-  await startSidecarHttp(5199)
 })
 
 after(async () => {
+  await closeHttp()
   await pool.query(`DELETE FROM documents WHERE id = $1`, [DOC_ID])
   await pool.end()
   sub.disconnect()
@@ -78,7 +81,8 @@ local.getXmlFragment('default').insert(0, [p])
   const s2 = await call('/internal/doc/subscribe', { documentId: DOC_ID, companyId: COMPANY, subscriberId: 'instance:test-b' })
   const remote = new Y.Doc()
   Y.applyUpdate(remote, new Uint8Array(Buffer.from(s2.json.stateB64, 'base64')))
-  assert.ok(Y.encodeStateAsUpdate(remote).length > 0)
+  const remoteXml = remote.getXmlFragment('default').toJSON()
+  assert.ok(JSON.stringify(remoteXml).includes('hello sidecar'), `remote=${JSON.stringify(remoteXml)}`)
 
   // 4. read-text(经 markdown 序列化路径)
   const t = await call('/internal/doc/read-text', { documentId: DOC_ID, companyId: COMPANY })
@@ -95,7 +99,14 @@ local.getXmlFragment('default').insert(0, [p])
   const t2 = await call('/internal/doc/read-text', { documentId: DOC_ID, companyId: COMPANY })
   assert.ok(t2.json.text.includes('AGENT LINE'))
 
-  // 6. 注销幂等
+  // 6. awareness 端点(仅扇出不落库)
+  const aw = await call('/internal/doc/awareness', {
+    documentId: DOC_ID, companyId: COMPANY, originId: 'client-x',
+    updateB64: Buffer.from(new Uint8Array([1, 0, 1])).toString('base64'),
+  })
+  assert.equal(aw.status, 200)
+
+  // 7. 注销幂等
   const un = await call('/internal/doc/unsubscribe', { documentId: DOC_ID, subscriberId: 'instance:test-a' })
   assert.equal(un.status, 200)
   const un2 = await call('/internal/doc/unsubscribe', { documentId: DOC_ID, subscriberId: 'instance:test-a' })

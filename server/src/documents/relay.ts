@@ -37,6 +37,7 @@ async function sidecar<T>(path: string, body: unknown): Promise<T> {
       authorization: `Bearer ${env.YJS_SIDECAR_TOKEN}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(env.YJS_SIDECAR_TIMEOUT_MS),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -48,6 +49,9 @@ async function sidecar<T>(path: string, body: unknown): Promise<T> {
 export function bootDocRelay(): void {
   if (relayBootstrapped) return
   relayBootstrapped = true
+  if (!env.YJS_SIDECAR_TOKEN) {
+    console.warn('[docs] YJS_SIDECAR_TOKEN 未配置 —— 文档协同将在运行期 401(设 token 或停用文档功能)')
+  }
   void sub.subscribe(CH_DOC_UPDATE, CH_DOC_AWARENESS).then(() => {
     console.log(`[docs] relay subscribed(rooms live in yjs-sidecar @ ${env.YJS_SIDECAR_URL})`)
   }).catch((e) => console.warn('[docs] relay redis subscribe failed', e))
@@ -81,11 +85,8 @@ export async function subscribe(
   const ref = (docRefcounts.get(documentId) ?? 0) + 1
   docRefcounts.set(documentId, ref)
   try {
-    await sidecar('/internal/doc/subscribe', {
-      documentId, companyId, subscriberId: instanceOrigin(),
-    })
-    // 每 (doc, instance) 在 sidecar 只登记一次;新订阅者仍要全量初始
-    // 状态——sidecar 读路径幂等(房间已在内存),直接再取一次。
+    // 一次调用同时完成登记与取全量初始状态(sidecar 侧按
+    // (doc, subscriberId) 幂等——重复 subscribe 不增计数)。
     const r = await sidecar<{ stateB64: string }>('/internal/doc/subscribe', {
       documentId, companyId, subscriberId: instanceOrigin(),
     })
