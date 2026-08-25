@@ -3997,7 +3997,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT body, updated_at FROM agent_workspace WHERE agent_id = $1 AND path = $2`,
       [me, path],
     )
-    if (!rows[0]) return err(`no file at ${path} in ${me}'s workspace`)
+    if (!rows[0]) return err(`no file at ${path} in ${me}'s Private Area`)
     return ok(rows[0].body)
   }
   if (op === 'write') {
@@ -4084,7 +4084,7 @@ async function cmdWorkspace(parsed: ParsedArgs): Promise<CliResult> {
       })
     }
     if (parsed.flags.json) return ok(JSON.stringify(hits, null, 2))
-    if (hits.length === 0) return ok(`(no matches for /${pattern}/ in ${me}'s workspace)`)
+    if (hits.length === 0) return ok(`(no matches for /${pattern}/ in ${me}'s Private Area)`)
     return ok([`${hits.length} match(es):`, '', ...hits].join('\n'))
   }
   return err(`usage: ws <ls|read|write|edit|grep|delete> [...]`)

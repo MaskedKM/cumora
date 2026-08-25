@@ -68,6 +68,17 @@ test('member agent reads and writes team workspace files — verified on disk', 
   const w = await runCliRaw(['workspace', 'write', 'ws-t1', 'notes/a.txt', 'hello team', '--as', NOVA])
   assert.ok(w.ok, w.text)
   assert.match(w.text, /wrote notes\/a\.txt/)
+  assert.deepEqual(w.sideEffects, [
+    {
+      event: 'team_workspace.file_written',
+      command: 'workspace write',
+      agentId: NOVA,
+      companyId,
+      workspaceId: 'ws-t1',
+      path: 'notes/a.txt',
+      bodyLength: 'hello team'.length,
+    },
+  ])
 
   const onDisk = await readFile(join(boundDir, 'notes', 'a.txt'), 'utf8')
   assert.equal(onDisk, 'hello team')
