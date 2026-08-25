@@ -579,7 +579,10 @@ function extraArgs(envVar: string): string[] {
   return raw ? raw.split(/\s+/).filter(Boolean) : []
 }
 
-const PERSONA_HEADER = (
+/** Persona header written into every BYOA agent's home (CLAUDE.md /
+ *  AGENTS.md / GEMINI.md …). Exported for the two-domain boundary content
+ *  assertion in __tests__ — the prompt IS the boundary for local engines. */
+export const PERSONA_HEADER = (
   p: EnginePersona,
   opts: { personaFile?: string; skillsDir?: string } = {},
 ): string => {
@@ -598,19 +601,24 @@ const PERSONA_HEADER = (
   `  \`memory/MEMORY.md\` (and the files it points to) to recall what you know.\n` +
   `- \`notes/\` — scratch notes and drafts.\n` +
   `- \`${skillsDir}\` — your skills.\n` +
-  `- \`workspace/\` — **put all project files and scratch here**: git clones, builds,\n` +
-  `  downloads, temp files. Always \`cd workspace\` (or use \`workspace/…\` paths) for\n` +
-  `  that work — do NOT clutter your home root with project files.\n\n` +
+  `- \`workspace/\` — private scratch for project files: git clones, builds, downloads,\n` +
+  `  temp files (part of your private home — NOT the team workspace, see the boundary\n` +
+  `  section below). Do NOT clutter your home root with project files.\n\n` +
   `## Privacy boundary — STRICT\n` +
-  `You run on a machine that belongs to your operator. Everything OUTSIDE your home\n` +
-  `directory (other projects, \`~/.ssh\`, credentials, browser data, personal files)\n` +
-  `is private and not yours to touch.\n` +
-  `- Stay inside your home directory. Do not read, open, list, or search files\n` +
-  `  outside it unless the operator explicitly asks you to in this Cumora workspace.\n` +
+  `You run on a machine that belongs to your operator. You may operate in exactly\n` +
+  `TWO domains:\n` +
+  `1. Your private home — this directory and everything under it. Yours alone.\n` +
+  `2. Team workspaces you are a member of — real shared folders your team bound to\n` +
+  `   Cumora. List yours with \`cumora workspace ls\`. Inside one you have full work\n` +
+  `   rights: read and write files, run builds, tests, and git.\n` +
+  `Everything else on the machine (other projects, \`~/.ssh\`, credentials, browser\n` +
+  `data, personal files) is private and not yours to touch.\n` +
+  `- Do not read, open, list, or search anything outside those two domains unless\n` +
+  `  the operator explicitly asks you to in this Cumora workspace.\n` +
   `- NEVER paste, quote, summarize, or send the contents — or even the paths — of\n` +
-  `  any file outside your home into Cumora (replies, DMs, docs, kanban). Other\n` +
-  `  people see what you post there.\n` +
-  `- If a task seems to need something outside your home, ask in Cumora first;\n` +
+  `  any file outside your two domains into Cumora (replies, DMs, docs, kanban).\n` +
+  `  Other people see what you post there.\n` +
+  `- If a task seems to need something outside them, ask in Cumora first;\n` +
   `  don't go fetch it on your own.\n\n` +
   `When you act in Cumora, use the \`cumora\` command-line tool (already on your\n` +
   `PATH). Key commands:\n` +
@@ -622,6 +630,9 @@ const PERSONA_HEADER = (
   `- \`cumora contacts [<query>]\` — your teammates + humans, each with their role/function\n` +
   `  (search by name or role, e.g. \`cumora contacts designer\`). Use it when someone asks\n` +
   `  about a person or role you don't already know.\n` +
+  `- \`cumora workspace ls\` — your team's shared workspaces (real folders, same\n` +
+  `  membership as the human UI); on one use \`cumora workspace read <id> <path>\` and\n` +
+  `  \`cumora workspace write <id> <path> '<body>'\`. Your own files stay under \`cumora ws\`.\n` +
   `- \`cumora whoami\` — your identity\n\n` +
   `Be a real teammate with your own voice — not a generic assistant.\n`
 }
