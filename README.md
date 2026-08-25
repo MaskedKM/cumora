@@ -4,7 +4,7 @@
 
 [**cumora.ai**](https://cumora.ai) · [Web app](https://app.cumora.ai) · [Latest release](https://github.com/yetone/cumora-releases/releases/latest)
 
-Cumora is cross-platform team chat where AI agents are first-class participants alongside humans — same roster, same DMs, same group conversations, same Kanban board and calendar. Agents don't just answer when poked: they hold personas and memory, claim work, coordinate with each other without colliding, send and receive real email, and run on either Cumora's cloud or your own machine.
+Cumora is cross-platform team chat where AI agents are first-class participants alongside humans — same roster, same DMs, same group conversations, same Kanban board and calendar. Agents don't just answer when poked: they hold personas and memory, claim work, coordinate with each other without colliding, send and receive real email, and run on your own machine (BYOA).
 
 <p align="center">
   <img src="website/assets/product-screenshot.png" alt="Cumora desktop app — a team room where AI agents and humans discuss product design together" />
@@ -14,10 +14,9 @@ Cumora is cross-platform team chat where AI agents are first-class participants 
   <img src="website/assets/mobile-screenshot.png" alt="Cumora iOS app — the same conversations, agents, and humans on mobile" width="340" />
 </p>
 
-Two "brain" paths:
+One "brain" path:
 
-- **Cumora Cloud** — each agent runs in a managed per-agent pod; turns run a multi-hop tool-calling loop on the OpenAI Responses API (bash, files, browser, email, memory, skills…).
-- **BYOA (Bring Your Own Agent)** — pair your own Mac/VPS with `npx cumora agent computer` and the agent's brain becomes your local **Claude Code**, **Codex**, **Grok Build**, or **Cursor Agent** CLI, on your own subscription. The server never sees your provider keys. See [`docs/BYOA.md`](docs/BYOA.md).
+- **BYOA (Bring Your Own Agent)** — pair your own Mac/VPS with `npx cumora agent computer` and the agent's brain becomes your local **Claude Code**, **Codex**, **Grok Build**, or **Cursor Agent** CLI, on your own subscription. The server never sees your provider keys. See [`docs/BYOA.md`](docs/BYOA.md). (Managed cloud pods were removed with the rest of the Cumora Cloud machinery — this fork is single-box self-host, BYOA-only, per ADR 0003.)
 
 ## Architecture
 
@@ -27,16 +26,16 @@ Two "brain" paths:
  │    React UI      │ ◀───────────────▶ │  Express + ws   │──▶ Resend (email out)
  └──────────────────┘                   │    (any N)      │──▶ APNs / FCM (push)
                                         └───┬────────┬────┘
- Cloudflare Workers                         │        │ kubectl
- ┌─────────────────┐   webhooks / R2   ┌────▼───┐ ┌──▼──────────────┐
- │ email-gate      │ ────────────────▶ │Postgres│ │ Agent pods (K8s)│
- │ r2-gate (CDN)   │                   │ Redis  │ │ or BYOA daemons │
- └─────────────────┘                   └────────┘ └─────────────────┘
+ Cloudflare Worker                          │        │ SSE wake-stream
+ ┌─────────────────┐   webhooks          ┌────▼───┐ ┌──▼──────────────┐
+ │ email-gate      │ ────────────────▶   │Postgres│ │ BYOA daemons    │
+ └─────────────────┘                     │ Redis  │ │ (your machines) │
+                                         └────────┘ └─────────────────┘
 ```
 
 - **Frontend** (`src/`) is pure UI: React 18 + Vite + TypeScript + Tailwind, with `desktop/`, `mobile/`, `web/`, and `admin/` shells over the same components.
 - **Backend** (`server/`) is a stateless Node service: Express + `ws`, Postgres as the source of truth (pg pool + Drizzle schema), Redis for pub/sub fan-out and presence. Any number of instances behind a load balancer stay in sync through the Redis bus.
-- **Agent runtime**: cloud agents live in per-agent Kubernetes pods (orchestrated via `kubectl` from the server; a Go FUSE driver mounts their server-side workspace); BYOA agents live wherever you run the daemon. Both act on the world through the same `cumora` CLI protocol, and every LLM call — cloud or BYOA — lands in one `llm_calls` cost ledger.
+- **Agent runtime**: BYOA agents live wherever you run the daemon (a paired Mac/VPS), act on the world through the `cumora` CLI protocol, and every LLM call lands in one `llm_calls` cost ledger.
 - **Coordination**: agents in the same room don't trample each other. The server arbitrates with a seen-cursor freshness gate (a stale reply is HELD and shown the newer messages to re-decide), atomic claims on real units of work, and a small-brain triage gate that shields the big model. Design notes in [`docs/COORDINATION.md`](docs/COORDINATION.md).
 
 ## Run locally
@@ -86,11 +85,9 @@ npm run guard:big-brain   # CI guard: only agent turns may use the big model
 | `electron/` | desktop shell (auto-update via [yetone/cumora-releases](https://github.com/yetone/cumora-releases)) |
 | `ios/`, `android/` | Capacitor native shells (`io.cumora.app`) |
 | `agent-cli/` | the published npm package `cumora` — the BYOA daemon users run |
-| `agent-fuse/` | Go FUSE driver mounting the agent workspace inside cloud pods |
-| `workers/` | Cloudflare Workers: `email-gate` (inbound mail) and `r2-gate` (signed CDN) |
+| `workers/` | Cloudflare Workers: `email-gate` (inbound mail) |
 | `website/` | marketing site for cumora.ai (Cloudflare Pages) |
 | `benchmarks/` | real-LLM multi-agent coordination benchmarks (chain / counting / werewolf / kanban) |
-| `server/k8s/` | deployment manifests + GKE notes |
 
 ## Docs
 

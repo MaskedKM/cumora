@@ -73,7 +73,7 @@ If you self-host, at minimum:
   `R2_*` variables) rather than the local-disk fallback, so a hostile upload
   can never run on the app's origin.
 - Keep every other secret (OAuth client secrets, `RESEND_API_KEY`,
-  `EMAIL_INBOUND_HMAC_SECRET`, `R2_URL_SIGNING_SECRET`, APNs/FCM credentials)
+  `EMAIL_INBOUND_HMAC_SECRET`, APNs/FCM credentials)
   out of the repo and in your deployment's secret store.
 
 See [`.env.example`](.env.example) for the full annotated list.

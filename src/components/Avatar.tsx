@@ -26,13 +26,13 @@ export function Avatar({ p, size = 44, showStatus = true, statusOverride, ringCo
   // win that race — other people still see the real server-driven state.
   const selfId = useAuth((s) => s.user?.id)
   // A BYOA agent is only as "online" as the computer it runs on. If its paired
-  // (non-cloud) computer is offline, show the agent offline EVERYWHERE it renders
+  // computer is offline, show the agent offline EVERYWHERE it renders
   // (conversation list, chat header, group members, …) — not just in AgentsView.
-  // Cloud/managed agents and humans have no paired computer, so they're
-  // unaffected. Subscribing to the specific computer re-renders the dot the
-  // moment its status flips via the computers.status WS event.
+  // Humans have no paired computer, so they're unaffected. Subscribing to the
+  // specific computer re-renders the dot the moment its status flips via the
+  // computers.status WS event.
   const host = useComputers((s) => (p.computerId ? s.byId[p.computerId] : undefined))
-  const hostOffline = !!host && host.kind !== 'cloud' && host.status !== 'online'
+  const hostOffline = !!host && host.status !== 'online'
   const ownStatus = p.id === selfId && p.kind === 'human' ? 'avail' : (hostOffline ? 'resting' : p.status)
   const status = statusOverride ?? ownStatus
   // Route the image through the local cache so it survives re-mounts

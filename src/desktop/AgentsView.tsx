@@ -28,9 +28,9 @@ function AgentCard({ p, onEdit, onDelete }: {
   const select = useApp((s) => s.selectConversation)
   const conversations = useConversations((s) => s.list)
   const host = useComputers((s) => (p.computerId ? s.byId[p.computerId] : undefined))
-  const hostIcon = !host || host.kind === 'cloud' ? '☁' : host.kind === 'vps' ? '🖥' : '💻'
+  const hostIcon = !host ? '💻' : host.kind === 'vps' ? '🖥' : '💻'
   const hostLabel = host ? host.name : t('agents.hostCloud')
-  const hostOffline = !!host && host.kind !== 'cloud' && host.status !== 'online'
+  const hostOffline = !!host && host.status !== 'online'
   const displayStatus = hostOffline ? 'resting' : p.status
   const displayStatusLabel = hostOffline
     ? t('agents.statusOffline')

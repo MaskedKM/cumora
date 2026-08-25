@@ -24,12 +24,11 @@ import { ogPreview, OgError } from '../og.js'
 import { sendInvitationEmail, type InvitationEmailDelivery } from '../invitation-email.js'
 import { getUserQuota, sub2apiConfigured } from '../sub2api.js'
 import {
-  ensureCloudComputer, issuePairingCode, pairComputer, announceComputerOnline,
+  issuePairingCode, pairComputer, announceComputerOnline,
   resolveDevice, mintAgentRuntimeToken, listAgentsForComputer,
   listComputers, revokeComputer, assignAgentToComputer, heartbeatComputer,
-  cloudComputerId, issueRepairCode,
+  issueRepairCode,
 } from '../agents/computer/registry.js'
-import { companyTier } from '../tier.js'
 import { createShippingRouter } from './shipping-router.js'
 import { createWorkspacesRouter } from './workspaces-router.js'
 
@@ -994,18 +993,6 @@ api.post('/companies', async (req, res) => {
          ON CONFLICT (id, company_id) DO NOTHING`,
         [me, displayName, displayName.charAt(0).toUpperCase(), gravatarUrl, id],
       )
-      // Paid companies get a built-in managed "Cumora Cloud" computer their
-      // starters run on. Free tier is BYOA-only: NO managed cloud computer
-      // (the UI shows a locked "Cumora Cloud (Pro)" upsell instead) and its
-      // starters are deferred until the first computer is paired
-      // (POST /api/computers/pair). Best-effort.
-      try {
-        if ((await companyTier(id)) !== 'free') {
-          await ensureCloudComputer(id)
-          await onboardStarterAgents(id, { computerId: cloudComputerId(id), engine: 'managed' })
-        }
-      } catch (e) { console.warn('[companies] cloud/starter setup failed', e) }
-
       try { await joinAllHands({ companyId: id, participantId: me }) }
       catch (e) { console.warn('[companies] join all-hands failed', e) }
 
@@ -1057,16 +1044,12 @@ api.delete('/computers/:id', safe(async (req, res) => {
   res.json({ ok: true })
 }))
 
-// Assign an agent to a computer (move between Cumora Cloud and a paired
-// machine), choosing its engine (owner/admin).
+// Assign an agent to a computer (move between paired machines), choosing
+// its engine (owner/admin).
 api.post('/agents/:id/computer', safe(async (req, res) => {
   const { companyId } = await requireCompanyRole(req)
   const computerId = String(req.body?.computerId ?? '').trim()
   if (!computerId) throw new HttpError(400, 'computerId required')
-  // Free tier is BYOA-only — it can't put agents on the managed Cumora Cloud.
-  if (computerId === cloudComputerId(companyId) && (await companyTier(companyId)) === 'free') {
-    throw new HttpError(403, 'Free tier agents run on your own computer. Upgrade to Pro to use Cumora Cloud.')
-  }
   const engine = typeof req.body?.engine === 'string' ? req.body.engine : undefined
   const out = await assignAgentToComputer({ agentId: String(req.params.id), companyId, computerId, engine })
   if (!out) throw new HttpError(400, 'invalid computer, agent, or engine for this company')
@@ -1091,20 +1074,20 @@ api.post('/computers/pair', safe(async (req, res) => {
   // the user lands on an empty Conversations list that fills in a beat later.
   const paired = await pairComputer({ code, hostName, engines, version, supervised, deferBroadcast: true })
   if (!paired) throw new HttpError(400, 'invalid pairing token')
-  // Free-tier BYOA onboarding on pair. The daemon sends the engines list with
-  // the user's CHOSEN engine first (`cumora agent computer --pair … --engine X`),
-  // so engines[0] is this computer's default engine — it's what the starter team
-  // and any adopted agent are created with. Fall back to Claude if unreported.
+  // BYOA onboarding on pair (ADR 0003 — the only execution tier). The
+  // daemon sends the engines list with the user's CHOSEN engine first
+  // (`cumora agent computer --pair … --engine X`), so engines[0] is this
+  // computer's default engine — it's what the starter team and any adopted
+  // agent are created with. Fall back to Claude if unreported.
   try {
-    if ((await companyTier(paired.companyId)) === 'free') {
+    {
       const engine = (engines[0] === 'claude' || engines[0] === 'codex' || engines[0] === 'grok' || engines[0] === 'cursor') ? engines[0] : 'claude'
-      // Adopt only agents that are stranded on the managed Cumora Cloud (or
-      // unassigned) onto the just-paired machine — earlier builds' boot backfill
-      // wrongly seeded free starters on cloud, where free can't run them. Agents
-      // already living on a real (non-cloud) computer are left ALONE: re-running
-      // the pair command must NOT clobber a per-agent engine the user picked
-      // (e.g. a Claude→Codex switch). Preserve whatever engine the agent already
-      // has; the auto-pick only fills in the stranded ones (engine 'managed'/null).
+      // Adopt agents stranded on a legacy managed/cloud computer (or
+      // unassigned) onto the just-paired machine. Agents already living on
+      // a real (non-cloud) computer are left ALONE: re-running the pair
+      // command must NOT clobber a per-agent engine the user picked (e.g. a
+      // Claude→Codex switch). Preserve whatever engine the agent already
+      // has; the auto-pick only fills in the stranded ones.
       await pool.query(
         `UPDATE participants p
             SET computer_id = $1, engine = COALESCE(NULLIF(p.engine, 'managed'), $2)
@@ -2510,15 +2493,6 @@ api.delete('/agents/:id', async (req, res) => {
   )
   const { invalidatePersonaCache } = await import('../agents/personas.js')
   invalidatePersonaCache(id)
-  // Reclaim the agent's chrome-profile PVC. Off-board is the agent's
-  // terminal state — its pod is silenced for good and any future
-  // re-spawn (via /rehire) gets a fresh profile anyway, since 30+
-  // days of cookies / login state are usually stale by then. Fire-
-  // and-forget so a slow kubectl call doesn't stall the response;
-  // the helper is idempotent so a re-off-board (race) is harmless.
-  void import('../agents/runtime/orchestrator.js').then(({ deleteChromeProfilePvc }) =>
-    deleteChromeProfilePvc(id),
-  ).catch((e) => console.warn(`[off-board] chrome-PVC delete failed for ${id}:`, e instanceof Error ? e.message : String(e)))
   res.json({ ok: true, departedAt: new Date().toISOString() })
 })
 

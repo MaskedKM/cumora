@@ -21,21 +21,12 @@
  */
 import { writeFile, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join, resolve, dirname } from 'node:path'
-import { createHmac } from 'node:crypto'
 import {
   S3Client, PutObjectCommand, GetObjectCommand,
   DeleteObjectCommand, ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { env } from './env.js'
-
-/** Keys under these prefixes get HMAC-signed URLs when a signing secret is
- *  configured. Other prefixes (e.g. `avatars/`) are served unsigned — they
- *  carry no private user content and benefit from full CDN caching. */
-const SIGNED_PREFIXES = ['attachments/', 'email-attachments/']
-function needsSignature(key: string): boolean {
-  return SIGNED_PREFIXES.some((p) => key.startsWith(p))
-}
 
 const STORAGE_KEY_PREFIXES = ['attachments/', 'email-attachments/', 'avatars/']
 function isStorageKey(key: string): boolean {
@@ -182,20 +173,14 @@ class R2Storage implements Storage {
   private client: S3Client
   private bucket: string
   private publicBase: string
-  private signingSecret: string
-  private urlTtl: number
 
   constructor(opts: {
     endpoint: string; bucket: string;
     accessKeyId: string; secretAccessKey: string;
     publicBase: string;
-    signingSecret: string;
-    urlTtl: number;
   }) {
     this.bucket = opts.bucket
     this.publicBase = opts.publicBase
-    this.signingSecret = opts.signingSecret
-    this.urlTtl = opts.urlTtl
     this.client = new S3Client({
       // R2 lives in a single region; the SDK still requires *some* value.
       // "auto" is the documented choice for R2.
@@ -269,17 +254,11 @@ class R2Storage implements Storage {
 
   async publicUrl(key: string): Promise<string> {
     // Prefer the explicit public base (custom domain). Cache-friendly,
-    // no expiry on the URL structure itself. When a signing secret is
-    // configured AND the key falls under a signed prefix, append the
-    // HMAC query params — the Cloudflare Worker at the edge validates
-    // these before proxying R2 reads.
+    // no expiry on the URL structure itself. The bucket (or the CDN in
+    // front of it) must allow public reads — the old HMAC-signing gate
+    // (Cloudflare Worker) was removed with the rest of the cloud
+    // machinery (ADR 0003).
     if (this.publicBase) {
-      if (this.signingSecret && needsSignature(key)) {
-        const exp = Math.floor(Date.now() / 1000) + this.urlTtl
-        const sig = createHmac('sha256', this.signingSecret)
-          .update(`${key}:${exp}`).digest('hex')
-        return `${this.publicBase}/${key}?exp=${exp}&sig=${sig}`
-      }
       return `${this.publicBase}/${key}`
     }
     // No public base — fall back to a long-lived presigned GET (works
@@ -295,31 +274,16 @@ class R2Storage implements Storage {
 function buildStorage(): Storage {
   const have = env.R2_ENDPOINT && env.R2_BUCKET && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
   if (have) {
-    const signingActive = Boolean(env.R2_URL_SIGNING_SECRET)
     console.log(
       `[storage] R2 active · bucket=${env.R2_BUCKET} ` +
-      `publicBase=${env.R2_PUBLIC_BASE || '(presigned GET)'} ` +
-      `signing=${signingActive ? 'on' : 'OFF'}`,
+      `publicBase=${env.R2_PUBLIC_BASE || '(presigned GET)'}`,
     )
-    // Loud warning when the public base is set but signing isn't — every
-    // URL under `attachments/` will be unsigned, which the Cloudflare
-    // Worker gate then 403s. Almost always means the server was started
-    // before R2_URL_SIGNING_SECRET landed in .env. Restart fixes it.
-    if (env.R2_PUBLIC_BASE && !signingActive) {
-      console.warn(
-        '[storage] ⚠ R2_PUBLIC_BASE is set but R2_URL_SIGNING_SECRET is empty — ' +
-        'attachment URLs will be emitted UNSIGNED and the cdn gate will 403 them. ' +
-        'Check .env and restart the server.',
-      )
-    }
     return new R2Storage({
       endpoint: env.R2_ENDPOINT,
       bucket: env.R2_BUCKET,
       accessKeyId: env.R2_ACCESS_KEY_ID,
       secretAccessKey: env.R2_SECRET_ACCESS_KEY,
       publicBase: env.R2_PUBLIC_BASE,
-      signingSecret: env.R2_URL_SIGNING_SECRET,
-      urlTtl: env.R2_URL_TTL_SECONDS,
     })
   }
   console.log('[storage] local mode · server/uploads/ (set R2_* env to use R2)')
@@ -340,11 +304,11 @@ export interface StoredAttachment {
   [extra: string]: unknown
 }
 
-/** Re-sign an attachment's `url` from its stored `key` so each response
- *  carries a fresh signature. Without this, persisted message URLs would
- *  expire and break historical bubbles after the TTL window. Returns the
- *  input unchanged when no key is stored (legacy local-mode attachments)
- *  or storage doesn't need signing. */
+/** Refresh an attachment's `url` from its stored `key` so each response
+ *  carries a fresh presigned GET (the no-CDN R2 mode rotates these weekly).
+ *  Without this, persisted message URLs would expire and break historical
+ *  bubbles after the TTL window. Returns the input unchanged when no key
+ *  is stored (legacy local-mode attachments) or the URL is stable. */
 export async function freshenAttachmentUrl<T extends StoredAttachment | null | undefined>(
   att: T,
 ): Promise<T> {

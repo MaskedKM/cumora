@@ -2,12 +2,12 @@ export type AgentRole = 'researcher' | 'designer' | 'engineer' | 'pm' | 'brand' 
 export type ParticipantKind = 'agent' | 'human'
 export type Status = 'avail' | 'working' | 'thinking' | 'waiting' | 'resting'
 
-/** Where an agent runs. 'cloud' = the built-in Cumora Cloud (managed engine);
- *  'local'/'vps' = a computer the user paired, running the BYOA daemon. */
-export type ComputerKind = 'cloud' | 'local' | 'vps'
+/** Where an agent runs: a computer the user paired, running the BYOA
+ *  daemon (BYOA is the only execution tier — ADR 0003). */
+export type ComputerKind = 'local' | 'vps'
 export type ComputerStatus = 'online' | 'offline' | 'busy'
-/** Engine an agent's host runs it on. 'managed' = Cumora's server-side loop. */
-export type EngineId = 'managed' | 'claude' | 'codex' | 'grok' | 'cursor'
+/** Engine an agent's host runs it on. */
+export type EngineId = 'claude' | 'codex' | 'grok' | 'cursor'
 
 export interface Computer {
   id: string
@@ -17,10 +17,10 @@ export interface Computer {
   availableEngines: EngineId[]
   lastSeenAt?: string | null
   pairedAt?: string | null
-  /** The cumora daemon version this computer is running (null = cloud / unknown). */
+  /** The cumora daemon version this computer is running (null = unknown). */
   daemonVersion?: string | null
   /** How the daemon runs: true = installed service (launchd/systemd),
-   *  false = manually-run foreground command, null = cloud / unknown. */
+   *  false = manually-run foreground command, null = unknown. */
   daemonSupervised?: boolean | null
   /** Newest published daemon version (for the upgrade banner). */
   latestDaemonVersion?: string | null
@@ -48,9 +48,9 @@ export interface Participant {
   model?: string | null
   /** small-brain (fast/auxiliary) model override */
   fastModel?: string | null
-  /** id of the Computer this agent runs on (null/undefined = Cumora Cloud) */
+  /** id of the Computer this agent runs on (null/undefined = unassigned) */
   computerId?: string | null
-  /** engine the agent's host runs it on ('managed' for cloud agents) */
+  /** engine the agent's host runs it on */
   engine?: EngineId | null
   /** Real external email address. Agents get one of the form
    *  `<id>@<companySlug>.<EMAIL_DOMAIN>` (auto-minted on first use);

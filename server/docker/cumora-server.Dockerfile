@@ -2,19 +2,12 @@
 #
 # Serves THREE surfaces from the same Node process:
 #   /api/*        — JSON API (Express router)
-#   /runtime/*    — per-pod agent runtime API (JWT-authed)
+#   /runtime/*    — BYOA daemon runtime API (JWT-authed)
 #   everything else — the React SPA bundle (built into /app/dist below)
 #
 # Entry points:
 #   npm run server:start  →  tsx server/src/index.ts  (main runtime)
 #   npm run migrate       →  tsx server/src/migrate-bin.ts  (init container)
-#
-# Why it ships kubectl: the orchestrator
-# (server/src/agents/runtime/orchestrator.ts) shells out to kubectl
-# to create / delete agent-computer Pods. Inside the cluster it uses
-# the projected ServiceAccount token at
-# /var/run/secrets/kubernetes.io/serviceaccount/token — kubectl
-# auto-detects this and authenticates.
 #
 # Build (from repo root):
 #   docker build \
@@ -22,7 +15,6 @@
 #     -t quay.io/yetoneful/cumora-server:dev \
 #     .
 #
-# OrbStack auto-loads into its K8s.
 
 # ─── stage 1: install runtime node deps (prod only) ─────────────────
 FROM node:20-bookworm-slim AS deps
@@ -72,15 +64,7 @@ COPY postcss.config.js ./
 COPY tailwind.config.ts ./
 RUN npm run build
 
-# ─── stage 3: kubectl ──────────────────────────────────────────────
-FROM debian:bookworm-slim AS kubectl-build
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl \
-  && curl -fsSL -o /out-kubectl \
-       "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
-  && chmod +x /out-kubectl
-
-# ─── stage 4: runtime ───────────────────────────────────────────────
+# ─── stage 3: runtime ───────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
 RUN apt-get update \
@@ -88,8 +72,6 @@ RUN apt-get update \
        tini \
        ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-
-COPY --from=kubectl-build /out-kubectl /usr/local/bin/kubectl
 
 WORKDIR /app
 
@@ -108,7 +90,7 @@ COPY --from=spa-build /app/dist ./dist
 
 ENV NODE_ENV=production
 
-# tini for PID-1 reaping. Default command runs the server; the
-# init-container in our k8s manifests overrides to `npm run migrate`.
+# tini for PID-1 reaping. Default command runs the server; run
+# `npm run migrate` manually (or as a pre-start step) for migrations.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["npm", "run", "server:start"]

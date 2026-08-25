@@ -842,12 +842,8 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS sub2api_user_id BIGINT,
   ADD COLUMN IF NOT EXISTS sub2api_api_key TEXT;
 
--- Apple-signup Pro trial. New users who sign up with Sign in with Apple
--- (native iOS route — the only signup that grants a trial) get
--- tier='pro' with this expiry stamped; the trial-sweep worker downgrades
--- them back to 'free' (mirroring sub2api) once it passes. NULL = not on a
--- trial. Any manual tier change (admin changeUserTier) clears it so a
--- genuinely-upgraded user can never be auto-downgraded by the sweep.
+-- Apple-signup Pro trial (LEGACY — the trial grant + sweep worker were
+-- removed with the cloud machinery, ADR 0003; no new rows get a value).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pro_trial_expires_at TIMESTAMP WITH TIME ZONE;
 
 -- Self-service account deletion. Apple App Store Guideline 5.1.1(v)
@@ -1470,13 +1466,13 @@ CREATE INDEX IF NOT EXISTS idx_push_devices_user
 CREATE TABLE IF NOT EXISTS computers (
   id                TEXT PRIMARY KEY,
   company_id        TEXT NOT NULL,
-  owner_user_id     TEXT,                                  -- NULL for the managed Cumora Cloud row
-  name              TEXT NOT NULL,                         -- "Cumora Cloud", "MacBook Pro", "prod-vps-01"
-  kind              TEXT NOT NULL,                         -- 'cloud' | 'local' | 'vps'
-  available_engines JSONB NOT NULL DEFAULT '[]'::jsonb,    -- ['claude','codex','grok','cursor']; ['managed'] for cloud
+  owner_user_id     TEXT,                                  -- NULL for legacy cloud rows (pre-fork)
+  name              TEXT NOT NULL,                         -- "MacBook Pro", "prod-vps-01"
+  kind              TEXT NOT NULL,                         -- 'local' | 'vps' ('cloud' rows are legacy, unsupported since ADR 0003)
+  available_engines JSONB NOT NULL DEFAULT '[]'::jsonb,    -- ['claude','codex','grok','cursor']
   status            TEXT NOT NULL DEFAULT 'offline',       -- 'online' | 'offline' | 'busy'
   last_seen_at      TIMESTAMP WITH TIME ZONE,
-  credential_hash   TEXT,                                  -- SHA256 of the device token; NULL for cloud
+  credential_hash   TEXT,                                  -- SHA256 of the device token
   paired_at         TIMESTAMP WITH TIME ZONE,
   revoked_at        TIMESTAMP WITH TIME ZONE,
   created_at        TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -1709,37 +1705,6 @@ CREATE TABLE IF NOT EXISTS shipping_events (
 );
 CREATE INDEX IF NOT EXISTS idx_shipping_events_feature
   ON shipping_events(feature_id, created_at ASC);
-
--- Back-fill: one managed Cumora Cloud computer per existing PAID company. The
--- id is deterministic ('cloud-' || company_id) so this is idempotent and
--- so other code can resolve it without a lookup. New companies get theirs
--- created at company-creation time (see api/router.ts).
--- Free tier is BYOA-only: it must NOT get a managed cloud computer (the UI
--- shows a locked "Cumora Cloud (Pro)" upsell instead, with no real row).
--- Gated on owner tier so this doesn't re-create cloud rows for free companies
--- on every boot — that was leaking a cloud computer into every free workspace.
-INSERT INTO computers (id, company_id, name, kind, available_engines, status)
-SELECT 'cloud-' || c.id, c.id, 'Cumora Cloud', 'cloud', '["managed"]'::jsonb, 'online'
-  FROM companies c
-  JOIN users o ON o.id = c.owner_user_id
- WHERE COALESCE(o.tier, 'free') <> 'free'
-   AND NOT EXISTS (
-   SELECT 1 FROM computers x WHERE x.company_id = c.id AND x.kind = 'cloud'
- );
-
--- ...and point every existing PAID-company agent at its company's cloud
--- computer with the managed engine. Only touches un-migrated rows, so re-runs
--- are no-ops. Free agents are left alone (they run on a paired BYOA computer).
-UPDATE participants p
-   SET computer_id = 'cloud-' || p.company_id,
-       engine = 'managed'
-  FROM companies c
-  JOIN users o ON o.id = c.owner_user_id
- WHERE p.company_id = c.id
-   AND p.kind = 'agent'
-   AND p.computer_id IS NULL
-   AND p.company_id IS NOT NULL
-   AND COALESCE(o.tier, 'free') <> 'free';
 
 -- ============== Workspaces (shared real folder per member scope) ======
 -- A workspace binds exactly one real folder on the host. The 1:1 is

@@ -1,7 +1,7 @@
 /**
  * Unit tests for the bounded-concurrency Semaphore — the backpressure
  * primitive that caps the scheduler's wake fan-out and the
- * orchestrator's kubectl shell-outs.
+ * fan-out paths.
  *
  * Run: node --import tsx --test server/src/__tests__/concurrency.test.ts
  */

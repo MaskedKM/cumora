@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, getPairingServerOrigin, type AgentInput } from '@/api/client'
-import { isNativePlatform } from '@/lib/native'
 import { useParticipants } from '@/stores/participants'
 import { useComputers } from '@/stores/computers'
 import { useConversations } from '@/stores/conversations'
-import { useAuth } from '@/stores/auth'
 import { Input } from '@/components/Input'
 import { TextArea } from '@/components/TextArea'
 import { Select } from '@/components/Select'
@@ -42,22 +40,17 @@ export function AgentEditor({ agent, onClose }: Props) {
   const [repairErr, setRepairErr] = useState<string | null>(null)
   const [repairCopied, setRepairCopied] = useState(false)
 
-  // "Runs on" — which Computer hosts this agent. Cloud = managed engine.
-  // Free tier is BYOA-only: it has no real Cumora Cloud computer; we show a
-  // LOCKED "Cumora Cloud (Pro)" upsell instead and never default/select it.
-  const activeTier = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.tier)
-  const isFreeTier = activeTier === 'free'
+  // "Runs on" — which Computer hosts this agent. BYOA is the only
+  // execution tier (ADR 0003): every agent lives on a paired computer.
   const computersById = useComputers((s) => s.byId)
   const computers = Object.values(computersById)
-    .sort((a, b) => (a.kind === 'cloud' ? 0 : 1) - (b.kind === 'cloud' ? 0 : 1) || a.name.localeCompare(b.name))
-  const cloud = computers.find((c) => c.kind === 'cloud')
-  const firstByoa = computers.find((c) => c.kind !== 'cloud')
-  // Default for a NEW agent: paid → Cumora Cloud; free → first paired computer.
-  const [computerId, setComputerId] = useState(agent?.computerId ?? (isFreeTier ? firstByoa?.id : cloud?.id) ?? '')
-  const [engine, setEngine] = useState<EngineId>((agent?.engine as EngineId) ?? 'managed')
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const firstByoa = computers[0]
+  // Default for a NEW agent: the first paired computer.
+  const [computerId, setComputerId] = useState(agent?.computerId ?? firstByoa?.id ?? '')
+  const [engine, setEngine] = useState<EngineId>((agent?.engine as EngineId) ?? 'claude')
   const selectedComputer = computerId ? computersById[computerId] : undefined
-  const isByoa = !!selectedComputer && selectedComputer.kind !== 'cloud'
-  const selectedComputerOffline = isByoa && selectedComputer.status !== 'online'
+  const selectedComputerOffline = !!selectedComputer && selectedComputer.status !== 'online'
   const origin = getPairingServerOrigin()
   const repairCommand = repairCode
     ? `npx cumora@latest agent computer --pair ${repairCode}${origin ? ` --server ${origin}` : ''}`
@@ -83,19 +76,19 @@ export function AgentEditor({ agent, onClose }: Props) {
     const t = window.setTimeout(() => setRepairCopied(false), 1600)
     return () => window.clearTimeout(t)
   }, [repairCopied])
-  // Default selection once the list loads (new agents): paid → Cumora Cloud,
-  // free → the first paired computer (never cloud).
+  // Default selection once the list loads (new agents): the first paired
+  // computer.
   useEffect(() => {
-    if (computerId) return
-    if (isFreeTier && firstByoa) { setComputerId(firstByoa.id); setEngine((firstByoa.availableEngines[0] as EngineId) ?? 'claude') }
-    else if (!isFreeTier && cloud) { setComputerId(cloud.id); setEngine('managed') }
-  }, [cloud, firstByoa, computerId, isFreeTier])
+    if (computerId || !firstByoa) return
+    setComputerId(firstByoa.id)
+    setEngine((firstByoa.availableEngines[0] as EngineId) ?? 'claude')
+  }, [firstByoa, computerId])
 
   const changeComputer = (id: string): void => {
     setComputerId(id)
     const c = computersById[id]
-    if (!c || c.kind === 'cloud') setEngine('managed')
-    else setEngine((agent?.engine as EngineId) && c.availableEngines.includes(agent!.engine as EngineId)
+    if (!c) return
+    setEngine((agent?.engine as EngineId) && c.availableEngines.includes(agent!.engine as EngineId)
       ? (agent!.engine as EngineId)
       : (c.availableEngines[0] ?? 'claude'))
   }
@@ -127,13 +120,11 @@ export function AgentEditor({ agent, onClose }: Props) {
       // (Engine lives in the same assign call; gating only on the computer
       // would silently drop a Claude→Codex switch on the same machine.) Still
       // skipped on a plain style edit to avoid the owner/admin-gated call.
-      const target = computerId || cloud?.id
-      const current = agent?.computerId ?? cloud?.id
-      const targetComputer = target ? computersById[target] : undefined
-      const isByoaTarget = !!targetComputer && targetComputer.kind !== 'cloud'
-      const engineChanged = isByoaTarget && engine !== ((agent?.engine as EngineId) ?? null)
+      const target = computerId || undefined
+      const current = agent?.computerId ?? undefined
+      const engineChanged = engine !== ((agent?.engine as EngineId) ?? null)
       if (agentId && target && (target !== current || engineChanged)) {
-        await api.assignAgentComputer(agentId, target, isByoaTarget ? engine : undefined)
+        await api.assignAgentComputer(agentId, target, engine)
       }
       await useParticipants.getState().load()
       await useConversations.getState().reload()
@@ -239,10 +230,8 @@ export function AgentEditor({ agent, onClose }: Props) {
           </Field>
 
           <Field
-            label={isByoa ? t('agent.modelLabelByoa') : t('agent.modelLabel')}
-            hint={isByoa
-              ? `${t('agent.modelHintByoaPrefix')} ${engine === 'codex' ? t('agent.modelHintByoaCodex') : engine === 'grok' ? t('agent.modelHintByoaGrok') : engine === 'cursor' ? t('agent.modelHintByoaCursor') : t('agent.modelHintByoaClaude')} ${t('agent.modelHintByoaSuffix')}`
-              : t('agent.modelHintCloud')}
+            label={t('agent.modelLabelByoa')}
+            hint={`${t('agent.modelHintByoaPrefix')} ${engine === 'codex' ? t('agent.modelHintByoaCodex') : engine === 'grok' ? t('agent.modelHintByoaGrok') : engine === 'cursor' ? t('agent.modelHintByoaCursor') : t('agent.modelHintByoaClaude')} ${t('agent.modelHintByoaSuffix')}`}
           >
             <Input
               type="text"
@@ -254,27 +243,25 @@ export function AgentEditor({ agent, onClose }: Props) {
             />
           </Field>
 
-          {isByoa && (
-            <Field
-              label={t('agent.fastLabelByoa')}
-              hint={engine === 'codex'
-                ? t('agent.fastHintByoaCodex')
-                : engine === 'grok'
-                  ? t('agent.fastHintByoaGrok')
-                  : engine === 'cursor'
-                    ? t('agent.fastHintByoaCursor')
-                    : t('agent.fastHintByoaClaude')}
-            >
-              <Input
-                type="text"
-                value={fastModel}
-                onChange={(e) => setFastModel(e.target.value)}
-                placeholder={t('agent.defaultPh')}
-                className="font-mono"
-                spellCheck={false}
-              />
-            </Field>
-          )}
+          <Field
+            label={t('agent.fastLabelByoa')}
+            hint={engine === 'codex'
+              ? t('agent.fastHintByoaCodex')
+              : engine === 'grok'
+                ? t('agent.fastHintByoaGrok')
+                : engine === 'cursor'
+                  ? t('agent.fastHintByoaCursor')
+                  : t('agent.fastHintByoaClaude')}
+          >
+            <Input
+              type="text"
+              value={fastModel}
+              onChange={(e) => setFastModel(e.target.value)}
+              placeholder={t('agent.defaultPh')}
+              className="font-mono"
+              spellCheck={false}
+            />
+          </Field>
 
           <Field
             label={t('agent.runsOnLabel')}
@@ -284,25 +271,13 @@ export function AgentEditor({ agent, onClose }: Props) {
               ariaLabel={t('agent.runsOnLabel')}
               value={computerId}
               onValueChange={changeComputer}
-              options={[
-                // Free tier has no real Cumora Cloud computer — filter any out
-                // (defensive) and append a locked Pro upsell entry instead.
-                // NOT on native: App Store Guideline 3.1.1 forbids referencing
-                // a paid tier that isn't purchasable in-app via IAP, so the
-                // iOS/Android builds omit the upsell entirely.
-                ...computers
-                  .filter((c) => !(isFreeTier && c.kind === 'cloud'))
-                  .map((c) => ({
-                    value: c.id,
-                    label: `${c.kind === 'cloud' ? '☁' : c.kind === 'vps' ? '🖥' : '💻'} ${c.name}`
-                      + (c.kind !== 'cloud' && c.status !== 'online' ? ` ${t('agent.offlineSuffix')}` : ''),
-                  })),
-                ...(isFreeTier && !isNativePlatform()
-                  ? [{ value: '__cloud_pro__', label: t('agent.upgradeToPro'), disabled: true }]
-                  : []),
-              ]}
+              options={computers.map((c) => ({
+                value: c.id,
+                label: `${c.kind === 'vps' ? '🖥' : '💻'} ${c.name}`
+                  + (c.status !== 'online' ? ` ${t('agent.offlineSuffix')}` : ''),
+              }))}
             />
-            {selectedComputer && selectedComputer.kind !== 'cloud' && (
+            {selectedComputer && (
               <div className="mt-2">
                 <Select
                   ariaLabel={t('agent.engineLabel')}

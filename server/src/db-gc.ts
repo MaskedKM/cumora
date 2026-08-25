@@ -9,7 +9,7 @@
  * database and the Cloud SQL disk was auto-growing ~1.3 GB/day.
  *
  * Readers only ever look at recent rows (`cumora log` reads the last
- * ≤100 per agent; observability drill-down and shipping-maintenance look
+ * ≤100 per agent; observability drill-down and the shipping views look
  * at bounded windows; llm_calls_rollup preserves cost aggregates
  * forever), so old rows are pure dead weight.
  *

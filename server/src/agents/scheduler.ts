@@ -1,37 +1,23 @@
 /**
  * Wake scheduler — listens to CH_MESSAGE_NEW (Redis pubsub) and
- * routes wake events to the right agent's pod.
+ * routes wake events to the right agent's BYOA daemon.
  *
- * Model (pod-only):
- *   1. Try deliverWake() — push SSE event to the agent's on-bus Pod
- *   2. If 0 subscribers, the Pod is `resting`. ensurePod() spins one
- *      up; the Pod, after SSE attach, runs drain() unconditionally
- *      to catch up the inbox (so we don't need to queue the wake
- *      server-side — the missed event self-heals through the
- *      inbox-read).
+ * Model (BYOA-only, ADR 0003):
+ *   1. Try deliverWake() — push the SSE event to the agent's
+ *      connected daemon over its wake-stream.
+ *   2. If 0 subscribers, the daemon host is offline/asleep. There is
+ *      nothing to spin up — the wake is durable via the inbox, so the
+ *      daemon catches up on its next reconnect drain.
  *
  * Per-agent serialization is intrinsic — each agent has exactly one
- * Pod, which runs one turn at a time and collapses concurrent wakes
- * into pendingRerun internally (see runtime/pod-agent.ts).
- *
- * Idle teardown is handled by the Pod itself: after
- * CUMORA_AGENT_IDLE_MS without a wake, it sets the agent's status to
- * `resting` and exits, leaving the PVC bound for next time. The
- * server doesn't track Pod lifetimes — the next wake re-creates the
- * Pod via the orchestrator.
+ * daemon, which runs one turn at a time (see computer/daemon.ts).
  */
 import { pool } from '../db/pool.js'
 import { env } from '../env.js'
 import { CH_MESSAGE_NEW, CH_POLLS, CH_TYPING, publish, redis, sub, type MessageNewEvent, type PollUpdatedEvent } from '../redis.js'
-import { notifyAlert } from '../alerting.js'
 import { isAgent } from './personas.js'
-import { ensurePod } from './runtime/orchestrator.js'
-import { resolveAgentHost, isByoaKind } from './computer/registry.js'
-import { companyTier } from '../tier.js'
 import { deliver as deliverWake, deliverSteer, type PollWakeBrief } from './runtime/wake-bus.js'
-import { inprocClient, isAgentBusy } from './runtime/inproc-client.js'
-import { classifyInboxTriage, type InboxTriageVerdict } from './inbox-triage.js'
-import type { AgentTurnOptions } from './turn.js'
+import { isAgentBusy } from './runtime/inproc-client.js'
 import { Semaphore } from '../concurrency.js'
 
 /** Bounds how many recipients the wake fan-out triages + wakes at once
@@ -56,131 +42,22 @@ export interface SteerWakePayload {
 }
 
 type WakeReason = 'message.new' | 'idle' | 'manual' | 'background_scan' | 'poll.updated'
-type WakeOptions = Pick<AgentTurnOptions, 'idleReason' | 'backgroundBrief' | 'pollBrief' | 'triageNote'>
 
-interface WakeRetryJob {
-  id: string
-  agentId: string
-  reason: WakeReason
-  conversationId: string | null
-  steerPayload: SteerWakePayload | null
-  options: WakeOptions
-  attempt: number
-  lastFailure: string
-}
-
-const WAKE_RETRY_DUE_KEY = 'cumora:wake-retry:due'
-const WAKE_RETRY_JOB_KEY = 'cumora:wake-retry:jobs'
-const WAKE_RETRY_MAX_ATTEMPTS = 60
-const WAKE_RETRY_BATCH_SIZE = 25
-
-export function _wakeRetryDelayMs(attempt: number): number {
-  const n = Math.max(0, Math.min(4, attempt))
-  return Math.min(60_000, 5_000 * 2 ** n)
-}
-
-export function _shouldRetryEnsurePodFailure(reason: WakeReason, ensureReason: string): boolean {
-  // message.new wakes are DURABLE because the message itself is already
-  // committed to the messages table. Whenever the agent's pod next
-  // attaches its wake-stream it runs drain() unconditionally, which
-  // calls loadInbox — picking up everything since the agent's last
-  // read cursor including any wake we "missed". Queuing a separate
-  // retry on top means the pod can receive the same wake twice (once
-  // via the original SSE delivery once it's healthy, once via the
-  // retry), trigger an extra turn through pendingRerun, and post a
-  // duplicate reply — exactly the "Nova says 3 then 1" bug.
-  //
-  // Synthetic wakes (idle / background_scan) don't have a backing DB
-  // row, so they ARE handled here too — but via the inline poll loop
-  // at the end of wakeOne, not via this scheduled-retry queue. The
-  // queue is left to `manual` only (CLI/admin pokes that explicitly
-  // want delivery guarantees).
-  if (reason !== 'manual') return false
-  if (/no such agent/i.test(ensureReason)) return false
-  return true
-}
-
-function wakeRetryId(agentId: string, reason: WakeReason, conversationId: string | null): string {
-  return `${agentId}:${reason}:${conversationId ?? '-'}`
-}
-
-async function scheduleWakeRetry(
-  agentId: string,
-  reason: WakeReason,
-  conversationId: string | null,
-  steerPayload: SteerWakePayload | null,
-  options: WakeOptions,
-  attempt: number,
-  failureReason: string,
-): Promise<void> {
-  if (!_shouldRetryEnsurePodFailure(reason, failureReason)) return
-  const id = wakeRetryId(agentId, reason, conversationId)
-  if (attempt > WAKE_RETRY_MAX_ATTEMPTS) {
-    await redis.hdel(WAKE_RETRY_JOB_KEY, id).catch(() => { /* ignore */ })
-    void notifyAlert({
-      label: 'scheduler.wake_retry_exhausted',
-      error: new Error(`wake retry exhausted for ${agentId}: ${failureReason}`),
-      extras: { agentId, reason, conversationId, attempt, failureReason },
-    })
-    return
+/** Options attached to a wake. Carried on the wake payload; the daemon's
+ *  turn consumes them (it re-triages locally, so there is no server-side
+ *  triage note anymore). */
+export interface WakeOptions {
+  /** Short scheduler note rendered only for idle synthetic wakes. */
+  idleReason?: string
+  /** Internal background brief rendered as a normal model input. */
+  backgroundBrief?: {
+    title: string
+    body: string
+    source?: string
   }
-  const dueAt = Date.now() + _wakeRetryDelayMs(attempt)
-  const job: WakeRetryJob = {
-    id, agentId, reason, conversationId, steerPayload, options,
-    attempt,
-    lastFailure: failureReason,
-  }
-  await redis.hset(WAKE_RETRY_JOB_KEY, id, JSON.stringify(job))
-  await redis.zadd(WAKE_RETRY_DUE_KEY, dueAt, id)
-  console.warn(`[scheduler] ${agentId} ${reason} wake retry scheduled in ${Math.round((dueAt - Date.now()) / 1000)}s after ensurePod failure: ${failureReason}`)
-}
-
-async function pollWakeRetriesOnce(): Promise<void> {
-  const ids = await redis.zrangebyscore(WAKE_RETRY_DUE_KEY, 0, Date.now(), 'LIMIT', 0, WAKE_RETRY_BATCH_SIZE)
-  for (const id of ids) {
-    const claimed = await redis.zrem(WAKE_RETRY_DUE_KEY, id)
-    if (claimed !== 1) continue
-    const raw = await redis.hget(WAKE_RETRY_JOB_KEY, id)
-    if (!raw) continue
-    await redis.hdel(WAKE_RETRY_JOB_KEY, id).catch(() => { /* ignore */ })
-    let job: WakeRetryJob
-    try {
-      job = JSON.parse(raw) as WakeRetryJob
-    } catch {
-      continue
-    }
-    wakeOne(
-      job.agentId,
-      job.reason,
-      job.conversationId,
-      job.steerPayload,
-      job.options,
-      job.attempt,
-    ).catch((err) => {
-      console.error(`[scheduler] wake retry ${job.id} failed:`, err instanceof Error ? err.message : err)
-      scheduleWakeRetry(
-        job.agentId,
-        job.reason,
-        job.conversationId,
-        job.steerPayload,
-        job.options,
-        job.attempt + 1,
-        err instanceof Error ? err.message : String(err),
-      ).catch(() => { /* ignore */ })
-    })
-  }
-}
-
-function startWakeRetryWorker(intervalMs: number = 5_000): NodeJS.Timeout {
-  const tick = (): void => {
-    pollWakeRetriesOnce().catch((err) =>
-      console.error('[scheduler] wake retry worker failed:', err instanceof Error ? err.message : err),
-    )
-  }
-  setImmediate(tick)
-  const t = setInterval(tick, intervalMs)
-  t.unref?.()
-  return t
+  /** Snapshot of a poll the author should look at right now — set when
+   *  trigger === 'poll.updated'. Same shape as the wake-bus brief. */
+  pollBrief?: PollWakeBrief
 }
 
 /** Wake one agent. Exposed so non-message-new triggers (kanban card
@@ -202,8 +79,8 @@ export async function wakeAgent(
 // message. During a cumora-server crashloop, idle ticks accumulate in
 // the schedulers' clock backlog, and on recovery they fire all at
 // once: the idle scheduler can issue a wake per agent per tenant in
-// rapid succession, the scanner the same. Each wake → ensurePod →
-// new agent pod → reserves one /dev/fuse cluster slot.
+// rapid succession, the scanner the same. Each wake → Redis publish →
+// a daemon wake-stream event.
 //
 // The fix is a hard cap on synthetic wakes per cumora-server process
 // per minute. User-facing reasons (`message.new`, `manual`) are NEVER
@@ -278,7 +155,6 @@ async function wakeOne(
   conversationId: string | null,
   steerPayload: SteerWakePayload | null = null,
   options: WakeOptions = {},
-  retryAttempt: number = 0,
 ): Promise<void> {
   // Synthetic wakes can be dropped under load — the next idle tick
   // or next scanner pass will re-evaluate. Real wakes never are.
@@ -293,17 +169,15 @@ async function wakeOne(
     ...(options.idleReason ? { idleReason: options.idleReason } : {}),
     ...(options.backgroundBrief ? { backgroundBrief: options.backgroundBrief } : {}),
     ...(options.pollBrief ? { pollBrief: options.pollBrief } : {}),
-    ...(options.triageNote ? { triageNote: options.triageNote } : {}),
   }
   const delivered = await deliverWake(agentId, wakePayload)
 
-  // Steering: if the agent's pod is currently mid-turn (busy lease in
+  // Steering: if the agent's daemon is currently mid-turn (busy lease in
   // Redis), ALSO publish the message body as a steer event so the
-  // running turn can inject it at the next hop boundary. Steer is
-  // additive to wake — the wake gets the pod's drain loop spinning,
-  // and the steer carries the actual content. If the pod is idle the
-  // steer payload is harmless (queue gets discarded by the new turn's
-  // resetSteerForAgent at start).
+  // running engine session can inject it at the next hop boundary. Steer is
+  // additive to wake — the wake gets the daemon's drain loop spinning,
+  // and the steer carries the actual content. If the agent is idle the
+  // steer payload is harmless (queue gets discarded by the next turn).
   //
   // STEER_ENABLED kill-switch: if env says false, never publish a
   // steer. Wake still fires; the message is in the DB; the agent's
@@ -315,8 +189,8 @@ async function wakeOne(
       // Per-agent rate limit: at most STEER_RATE_PER_MINUTE steers
       // delivered in any rolling 60s window. Above that, fall through
       // to wake-only (message is still in DB → next wake picks it up).
-      // Without this, a spam loop could saturate MAX_BATCHES_PER_TURN
-      // within seconds and the agent's runtime budget burns down.
+      // Without this, a spam loop could saturate the daemon's steer
+      // batch caps within seconds and the agent's runtime budget burns down.
       const allowed = await consumeSteerRateToken(agentId)
       if (!allowed) {
         console.warn(`[scheduler] steer rate-limited for ${agentId}; falling back to wake-only`)
@@ -327,10 +201,10 @@ async function wakeOne(
         )
         // Visible acknowledgement: the steer payload won't actually be
         // injected into the LLM context until the next hop boundary
-        // (turn.ts drains between LLM iterations, not mid-tool). For a
-        // long-running tool call — yt-dlp / ffmpeg / opencli browser —
-        // that boundary could be minutes away, during which the user
-        // sees nothing at all and the agent reads as "silent."
+        // (the daemon's engine drains between LLM iterations, not
+        // mid-tool). For a long-running tool call that boundary could
+        // be minutes away, during which the user sees nothing at all
+        // and the agent reads as "silent."
         //
         // Fire a typing indicator on the source conversation so the
         // renderer immediately shows "<agent> is typing…" — proof to
@@ -356,75 +230,19 @@ async function wakeOne(
 
   if (delivered > 0) return
 
-  // BYOA agents run on a user-paired Computer (the `cumora agent computer`
-  // daemon), never a server-managed pod. If delivered === 0 the daemon
-  // simply isn't subscribed right now (host offline / asleep) — there's
-  // nothing to spin up. The wake is durable via the inbox, so the daemon
-  // catches up on its next reconnect drain, same as a cold pod would.
-  // Skip the pod path entirely; do NOT ensurePod / wake-retry kubectl.
-  const host = await resolveAgentHost(agentId).catch(() => ({ kind: null, companyId: null }))
-  if (isByoaKind(host.kind)) {
-    console.log(`[scheduler] ${agentId} is BYOA (${host.kind}); daemon offline — wake deferred to reconnect`)
-    return
-  }
-
-  // Free tier is BYOA-only: it must NEVER spin a managed Cumora Cloud pod. A free
-  // agent only runs when its own paired daemon is connected (delivered>0, handled
-  // above) or reconnects (isByoaKind, handled above). Reaching here for a free
-  // company means the agent is unassigned/managed with no live daemon — defer, do
-  // NOT ensurePod. Previously this was ungated ("grandfathered free on cloud"),
-  // which silently ran thousands of free agents on managed cloud — a real cost
-  // leak; the polluted legacy data (cloud computers + managed engines) was cleaned
-  // up separately. The wake stays durable in the inbox for whenever they pair.
-  if (host.companyId && (await companyTier(host.companyId)) === 'free') {
-    console.log(`[scheduler] ${agentId} is free-tier (BYOA-only); no managed pod — wake deferred until paired`)
-    return
-  }
-
-  // Paid (pro/max) managed agent — spin up a Pod. The Pod will catch up on first
-  // connect via its initial drain(); we don't need to deliver the
-  // event explicitly afterwards because the inbox IS the source of
-  // truth.
-  const r = await ensurePod(agentId)
-  if (r.created) {
-    console.log(`[scheduler] ${agentId} resting → spinning up pod (${reason})`)
-    // A successful kubectl apply does not guarantee the pod will ever
-    // reach the runtime wake stream: kubelet can reject allocation
-    // immediately after scheduling (for example a transient unhealthy
-    // devic.es/fuse device). Queue one delayed health retry for
-    // durable wakes; if the pod is healthy, the retry just delivers a
-    // wake and the inbox fingerprint makes the turn no-op.
-    await scheduleWakeRetry(agentId, reason, conversationId, steerPayload, options, Math.max(1, retryAttempt + 1), 'post-spawn health check')
-  } else if (!r.ok) {
-    console.error(`[scheduler] ${agentId} ensurePod failed: ${r.reason}`)
-    await scheduleWakeRetry(agentId, reason, conversationId, steerPayload, options, retryAttempt + 1, r.reason)
-    return
-  } else if (r.reason === 'already pending' || r.reason === 'already running') {
-    await scheduleWakeRetry(agentId, reason, conversationId, steerPayload, options, retryAttempt + 1, r.reason)
-  }
-
-  // Message wakes are durable because the message is already in the inbox,
-  // and the pod's cold-start drain reads that source of truth. Synthetic
-  // idle/background wakes have no inbox row, so replay the wake briefly after
-  // the pod is created until its SSE stream attaches.
-  if (reason !== 'message.new') {
-    const deadline = Date.now() + 20_000
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500))
-      const replayed = await deliverWake(agentId, wakePayload).catch(() => 0)
-      if (replayed > 0) return
-    }
-    console.warn(`[scheduler] ${agentId} synthetic wake (${reason}) was not delivered after pod start`)
-  }
+  // BYOA is the only execution tier (ADR 0003). If delivered === 0 the
+  // agent's daemon simply isn't subscribed right now (host offline /
+  // asleep) — there's nothing to spin up. The wake is durable via the
+  // inbox, so the daemon catches up on its next reconnect drain.
+  console.log(`[scheduler] ${agentId} daemon offline — wake deferred to reconnect`)
 }
 
 /** Multi-instance dedup: every cumora-server replica subscribes to
  *  CH_MESSAGE_NEW, so a single message.new fan-outs to N servers.
- *  Without this guard each replica would call wake() → ensurePod →
- *  deliverWake (Redis publish) independently — agent Pod ends up
- *  receiving N copies of the wake event (drain folds via
- *  pendingRerun, so it's correctness-safe but wasteful), and N
- *  parallel kubectl-applies fight at the K8s API server.
+ *  Without this guard each replica would call wake() →
+ *  deliverWake (Redis publish) independently — the agent's daemon
+ *  ends up receiving N copies of the wake event (drain folds via
+ *  pendingRerun, so it's correctness-safe but wasteful).
  *
  *  Fix: SETNX a key per message id; only the first replica that
  *  claims it proceeds. TTL=60s reaps the key automatically. */
@@ -495,7 +313,7 @@ export function _resetAuthorNameCacheForTests(): void {
 //
 // A spam loop (compromised account, runaway script, etc.) could fire
 // hundreds of messages/sec at one agent. Even with MAX_BATCHES_PER_TURN
-// and MAX_BYTES_PER_TURN limiting in-pod consumption, the network +
+// and steer batch caps limiting per-turn consumption, the network +
 // Redis pub/sub bandwidth + the agent's hop budget would still burn.
 // Rate limit at the publish edge: at most STEER_RATE_PER_MINUTE steers
 // dispatched per agent in any rolling 60s window. Beyond that, fall
@@ -607,7 +425,7 @@ async function wake(payload: MessageNewEvent): Promise<void> {
   // worked mechanically but felt like nothing a real team would do.
   // Real coordination happens at the AGENT level: see the room,
   // glance once more before committing, defer when a peer is on it.
-  // Those affordances live in pod-agent + the `cumora glance` tool +
+  // Those affordances live in the daemon + the `cumora glance` tool +
   // the broadcast etiquette section of the persona prompt — the
   // scheduler wakes every subscribed, non-muted agent at the same time,
   // like a Slack room. A muted agent only passes through for an exact
@@ -635,81 +453,24 @@ export function shouldDeliverToMutedAgent(args: {
   return mention.test(args.body)
 }
 
-/** Exported for tests — pulled out of `wake` so the wake-policy is
- *  easy to assert on. Fire-and-forget per recipient. */
-function renderTriageNote(verdict: InboxTriageVerdict): string {
-  const state = verdict.actionable ? 'relevant' : 'not relevant'
-  const reason = verdict.reason.trim() ? `\nReason: ${verdict.reason.trim().slice(0, 500)}` : ''
-  return `Small-brain inbox triage (${state}, ${verdict.source}): ${verdict.promptNote.trim()}${reason}`
-}
-
-async function triageWakeRecipient(agentId: string): Promise<WakeOptions | null> {
-  try {
-    const persona = await inprocClient.loadPersona(agentId)
-    if (!persona) return null
-    const inbox = await inprocClient.loadInbox(agentId)
-    if (inbox.length === 0) return null
-    const convoIds = [...new Set(inbox.map((m) => m.conversation_id))]
-    const context = await inprocClient.loadContext(agentId, convoIds)
-    const verdict = await classifyInboxTriage({
-      agentId,
-      companyId: persona.companyId,
-      persona,
-      inbox,
-      context,
-    })
-    if (!verdict.actionable) {
-      console.log(`[scheduler] ${agentId} message.new skipped by inbox triage: ${verdict.reason}`)
-      return null
-    }
-    return { triageNote: renderTriageNote(verdict) }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    console.warn(`[scheduler] ${agentId} inbox triage unavailable; waking fail-open: ${reason}`)
-    return {
-      triageNote:
-        `Small-brain inbox triage failed in the scheduler, so this wake is fail-open. ` +
-        `Read the inbox/context yourself and do not reply unless the new messages concern you. Reason: ${reason.slice(0, 500)}`,
-    }
-  }
-}
-
 export async function fanOutWake(
   recipients: string[],
   conversationId: string,
   steerPayload: SteerWakePayload | null,
 ): Promise<void> {
-  // Bounded fan-out (env.WAKE_FANOUT_CONCURRENCY). Each recipient's work
-  // — host resolve, the support-model triage (3 DB reads + a model call)
-  // and wakeOne (Redis publish + ensurePod/kubectl) — runs under one
-  // semaphore so a large group / agent reply-storm can't stampede the pg
-  // pool and trip the triage fail-open amplification loop (the
-  // 2026-05-27 connection-exhaustion outage). Excess recipients queue
-  // and drain at a sustainable rate; a delayed wake still self-heals —
-  // the message is durable in the inbox, the pod drains on attach, and
-  // the per-message wake-claim TTLs out in 60s.
+  // Bounded fan-out (env.WAKE_FANOUT_CONCURRENCY). Each recipient's
+  // wakeOne (Redis publish) runs under one semaphore so a large group /
+  // agent reply-storm can't stampede the pg pool. Excess recipients
+  // queue and drain at a sustainable rate; a delayed wake still
+  // self-heals — the message is durable in the inbox, the daemon
+  // drains on reconnect, and the per-message wake-claim TTLs out in
+  // 60s. Each daemon triages locally (via /inbox-triage) before
+  // spending its engine, so no server-side pre-wake triage is needed.
   await Promise.all(recipients.map((m) => wakeFanoutSem.run(async () => {
-    // One recipient failing (triage throw, kubectl flake) must not stop
-    // the others or escape into the Redis on-message handler.
+    // One recipient failing must not stop the others or escape into
+    // the Redis on-message handler.
     try {
-      // BYOA agents run an always-on daemon that triages locally (via
-      // /inbox-triage) before spending their engine, and are cheap to
-      // wake — there is no resting pod to gate, and the daemon ignores a
-      // server-side triageNote and re-triages anyway. So deliver the
-      // wake immediately and let the daemon decide. Only cloud/managed
-      // hosts pay the pre-wake triage, where it correctly avoids
-      // spinning up a pod for irrelevant chatter.
-      const host = await resolveAgentHost(m).catch(() => ({ kind: null, companyId: null }))
-      let triageOptions: WakeOptions | undefined
-      if (!isByoaKind(host.kind)) {
-        const verdict = await triageWakeRecipient(m)
-        if (!verdict) return       // cloud triage said "not relevant" → no wake
-        triageOptions = verdict
-      }
-      // Await INSIDE the slot so it's held across ensurePod (kubectl)
-      // too — that's what bounds the child-process + pod-admission
-      // pressure, not just the triage DB reads.
-      await wakeOne(m, 'message.new', conversationId, steerPayload, triageOptions)
+      await wakeOne(m, 'message.new', conversationId, steerPayload)
     } catch (err) {
       console.error(`[scheduler] wakeOne(${m}) failed:`, err instanceof Error ? err.message : err)
     }
@@ -736,8 +497,8 @@ export function startScheduler(): void {
       let payload: MessageNewEvent
       try { payload = JSON.parse(raw) as MessageNewEvent } catch { return }
       if (payload.type !== 'message.new') return
-      // fire-and-forget — pool.query inside wake() or ensurePod's kubectl
-      // shell-out can transiently reject. We don't want an unhandled
+      // fire-and-forget — pool.query inside wake() can transiently
+      // reject. We don't want an unhandled
       // rejection here; just log and let the next wake retry. The
       // wake-claim Redis key TTLs out in 60s so a missed wake recovers
       // naturally on the next message in the same convo.
@@ -758,8 +519,7 @@ export function startScheduler(): void {
       return
     }
   })
-  startWakeRetryWorker()
-  console.log(`[scheduler] mailbox scheduler listening on ${CH_MESSAGE_NEW}, ${CH_POLLS} · runtime=pod-only`)
+  console.log(`[scheduler] mailbox scheduler listening on ${CH_MESSAGE_NEW}, ${CH_POLLS} · runtime=byoa-only`)
 }
 
 // ─── poll author wake (real-time vote watching) ──────────────────────

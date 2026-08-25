@@ -11,8 +11,6 @@ import { pool } from '../db/pool.js'
 import {
   _consumeLowPriorityWakeBudget,
   _resetLowPriorityWakeBudgetForTests,
-  _shouldRetryEnsurePodFailure,
-  _wakeRetryDelayMs,
   shouldDeliverToMutedAgent,
 } from '../agents/scheduler.js'
 
@@ -66,31 +64,6 @@ test('many rejections in a window are absorbed, then the next window is fresh', 
   // After the window
   const t1 = t0 + 60_000
   assert.equal(_consumeLowPriorityWakeBudget(t1), true)
-})
-
-test('wake retry delay backs off and caps at 60s', () => {
-  assert.equal(_wakeRetryDelayMs(0), 5_000)
-  assert.equal(_wakeRetryDelayMs(1), 10_000)
-  assert.equal(_wakeRetryDelayMs(2), 20_000)
-  assert.equal(_wakeRetryDelayMs(3), 40_000)
-  assert.equal(_wakeRetryDelayMs(4), 60_000)
-  assert.equal(_wakeRetryDelayMs(50), 60_000)
-})
-
-test('ensurePod retry is only for manual wakes — message.new is durable via DB inbox', () => {
-  // message.new no longer gets queued retries: the message itself is
-  // in the DB, and the pod's cold-start drain() catches it on attach.
-  // Retrying caused duplicate turns (see "Nova says 3 then 1" bug).
-  assert.equal(_shouldRetryEnsurePodFailure('message.new', 'cluster fuse saturated'), false)
-  assert.equal(_shouldRetryEnsurePodFailure('message.new', 'already running'), false)
-  assert.equal(_shouldRetryEnsurePodFailure('message.new', 'no such agent'), false)
-  // manual wakes (CLI / admin) still retry — explicit delivery contract.
-  assert.equal(_shouldRetryEnsurePodFailure('manual', 'pod apply failed'), true)
-  assert.equal(_shouldRetryEnsurePodFailure('manual', 'no such agent'), false)
-  // Synthetic wakes are handled by the inline poll loop in wakeOne,
-  // not by the queue.
-  assert.equal(_shouldRetryEnsurePodFailure('idle', 'cluster fuse saturated'), false)
-  assert.equal(_shouldRetryEnsurePodFailure('background_scan', 'cluster fuse saturated'), false)
 })
 
 test('muted agent delivery only allows direct, exact mention, or quote reply', () => {

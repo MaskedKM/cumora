@@ -27,58 +27,16 @@ The auto-updater in the desktop app reads from `cumora-releases`, so
 once the release workflow finishes (~15–20 minutes), running clients
 will pick it up on their next periodic update check.
 
-## Backend release: build candidate, then ignite production
+## Backend release (self-hosted)
 
-Every push to `main` runs `.github/workflows/build.yml`. Before publishing an
-image it must pass both TypeScript projects, the big-brain and tracked-LLM
-guards, unit tests, and the Postgres/Redis integration suite. A successful run
-produces immutable SHA-tagged server (and, when affected, agent-computer)
-images. It does not deploy them.
-
-To deploy a candidate:
-
-1. Open **Actions → Deploy → Run workflow**.
-2. Enter the exact short SHA tag produced by Build. Avoid `latest` when a SHA
-   is available; Deploy resolves either tag to a digest before touching GKE.
-3. Set `include_agent=Y` when the build changed `server/src/agents/**`, the
-   bundled CLI/runtime, or the agent-computer image. Otherwise use `N`.
-4. Approve the protected `production` environment. The approver should not be
-   the person who built the feature for high-risk changes.
-5. Verify the workflow summary contains the selected digest, previous server
-   image, completed rollout, and passed authenticated smoke.
-
-Deploy first proves that the existing production API and smoke credential are
-healthy, records the current revision as the rollback baseline, updates the
-server/init-container (and optionally agent runtime) by digest, waits for GKE,
-then exercises real authenticated tenant paths: auth, conversations, and the
-Shipping overview/schema. A failed post-deploy smoke automatically runs
-`kubectl rollout undo`, waits for the old revision to become ready, and fails
-the workflow.
-
-Shipping features additionally track a production readback deadline, default
-24 hours after a successful release. The Ship workspace surfaces due items;
-the server turns missed deadlines into `overdue` release state plus high
-severity friction. `.github/workflows/production-readback.yml` independently
-checks authenticated production paths each day. A feature only reaches
-`Learned` after its production release has explicit readback evidence and no
-failing regression asset.
-
-### Required backend secrets and environment protection
-
-On `yetone/cumora`:
-
-| Name | Purpose |
-|------|---------|
-| `GCP_WIF_PROVIDER` | Workload Identity Federation provider used to resolve and deploy images. |
-| `GCP_DEPLOY_SA` | Least-privilege service account for Artifact Registry and the production GKE deployment. |
-| `CUMORA_SMOKE_TOKEN` | Dedicated, revocable session/service token used only for authenticated smoke/readback. |
-| `CUMORA_SMOKE_COMPANY_ID` | Non-sensitive tenant id that the smoke identity belongs to. |
-
-Protect the `production` GitHub environment with required reviewers. Put the
-smoke secrets in both `production` and `production-readback` (or configure the
-latter to inherit repository secrets). Rotate the smoke token like any other
-production credential and never print it in workflow output.
-
+Every push to `main` runs `.github/workflows/build.yml`: both TypeScript
+projects, the big-brain and tracked-LLM guards, unit tests, and the
+Postgres/Redis integration suite must pass. It does not build or push any
+images — the GKE deploy pipeline was removed with the rest of the Cumora
+Cloud machinery (ADR 0003). Deploy the server on your own box however you
+run it today (tsx from a checkout, or a locally built image from
+`server/docker/cumora-server.Dockerfile`); a Go single-binary release
+pipeline replaces this arrangement during the migration (ADR 0004).
 ## What the release workflow does
 
 1. Matrix-builds the Electron app on four runners (macOS arm64,

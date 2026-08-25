@@ -23,9 +23,7 @@ import { pool } from './db/pool.js'
 import { env } from './env.js'
 import type { AuthedRequest } from './auth.js'
 import { audit, gravatarUrlForEmail } from './auth.js'
-import { onboardStarterAgents, joinAllHands } from './onboardCompany.js'
-import { companyTier } from './tier.js'
-import { ensureCloudComputer, cloudComputerId } from './agents/computer/registry.js'
+import { joinAllHands } from './onboardCompany.js'
 import { mirrorAvatar } from './oauth.js'
 import { provisionUser as provisionSub2apiUser, sub2apiConfigured, setUserTier } from './sub2api.js'
 import { formatAddress, mintMessageId, sendViaProvider } from './email.js'
@@ -594,15 +592,9 @@ export async function approveWaitlist(waitlistId: string, decidedBy: string): Pr
 
     // Post-commit side effects — same best-effort pattern as oauth.ts.
     if (companyId) {
-      // Free tier is BYOA-only: defer its starter team until the user pairs a
-      // computer (onboarding). Paid tiers get the cloud starters now. (Same
+      // BYOA is the only execution tier (ADR 0003): the starter team is
+      // deferred until the user pairs a computer (onboarding). (Same
       // rule as oauth.ts / POST /api/companies.)
-      try {
-        if ((await companyTier(companyId)) !== 'free') {
-          await ensureCloudComputer(companyId)
-          await onboardStarterAgents(companyId, { computerId: cloudComputerId(companyId), engine: 'managed' })
-        }
-      } catch (e) { console.warn('[admin] starter onboarding failed', e) }
       try { await joinAllHands({ companyId, participantId: userId }) } catch (e) { console.warn('[admin] join all-hands failed', e) }
     }
     try { await sendWaitlistApprovedEmail({ email: row.email, displayName: row.display_name }) } catch (e) { console.warn('[admin] waitlist-approved email failed', e) }
