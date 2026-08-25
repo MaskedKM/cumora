@@ -52,7 +52,7 @@
     "mobile:android": "npm run mobile:sync && npx cap open android",
     "mobile:android:run": "npm run mobile:sync && npx cap run android",
     "contract:gen": "node scripts/contract-coverage.mjs && openapi-typescript packages/contract/openapi.yaml -o packages/contract/src/schema.d.ts && bash scripts/contract-gen-go.sh",
-    "contract:check": "npm run contract:gen && git add -A -- packages/contract && git diff --cached --exit-code HEAD -- packages/contract || (echo \"契约与生成物不同步 —— 跑 npm run contract:gen 并提交\"; exit 1)"
+    "contract:check": "bash scripts/contract-check.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
