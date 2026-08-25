@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -108,11 +109,12 @@ func authMe(db *sql.DB) http.HandlerFunc {
 
 func logout(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := httpx.UserID(r); ok {
-			token := authn.Bearer(r.Header.Get("Authorization"), r.Header.Get("x-session-token"))
-			if token != "" {
-				_, _ = db.ExecContext(r.Context(), `DELETE FROM sessions WHERE token_hash = $1`, authn.HashToken(token))
-			}
+		// baseline:仅认 Authorization 头,不校验会话有效性——挂起用户的
+		// 令牌也能注销自己的行。
+		auth := r.Header.Get("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			_, _ = db.ExecContext(r.Context(), `DELETE FROM sessions WHERE token_hash = $1`,
+				authn.HashToken(strings.TrimSpace(auth[7:])))
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
@@ -140,20 +142,13 @@ func me(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var id, displayName string
-		var kind string
-		err := db.QueryRowContext(r.Context(), `
-			SELECT p.id, p.name, p.kind FROM participants p
-			 WHERE p.id = (SELECT id FROM users WHERE id = $1) LIMIT 1`, uid).Scan(&id, &displayName, &kind)
+		err := db.QueryRowContext(r.Context(),
+			`SELECT id, display_name FROM users WHERE id = $1`, uid).Scan(&id, &displayName)
 		if err != nil {
-			// baseline:无 participants 行时回 users 表形态
-			if err2 := db.QueryRowContext(r.Context(),
-				`SELECT id, display_name, 'human' FROM users WHERE id = $1`, uid).
-				Scan(&id, &displayName, &kind); err2 != nil {
-				httpx.WriteError(w, http.StatusNotFound, "not found")
-				return
-			}
+			httpx.WriteError(w, http.StatusUnauthorized, "session points to missing user")
+			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": id, "name": displayName, "kind": kind})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": id, "name": displayName, "kind": "human"})
 	}
 }
 
@@ -252,9 +247,11 @@ func accountDelete(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		// 审计失败不阻断(fire-and-forget,与 baseline 一致)
+		auditIP2, auditUA2 := r.RemoteAddr, r.UserAgent()
+		auditEmail := email.String
 		go db.Exec(`INSERT INTO audit_events (user_id, kind, ip, user_agent, detail)
 			VALUES ($1, 'account_deleted', NULLIF($2,''), NULLIF($3,''), $4::jsonb)`,
-			uid, r.RemoteAddr, r.UserAgent(), `{"email":`+jsonString(email.String)+`}`)
+			uid, auditIP2, auditUA2, `{"email":`+jsonString(auditEmail)+`}`)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -310,8 +307,8 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		name := strings.TrimSpace(body.Name)
-		if len(name) > 80 {
-			name = name[:80]
+		if runes := []rune(name); len(runes) > 80 {
+			name = string(runes[:80])
 		}
 		if name == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "name required")
@@ -368,17 +365,19 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 			}
 			initial := "U"
 			if dn != "" {
-				initial = strings.ToUpper(dn[:1])
+				r, _ := utf8.DecodeRuneInString(dn)
+				initial = strings.ToUpper(string(r))
 			}
 			_, _ = db.ExecContext(r.Context(), `
 				INSERT INTO participants (id, kind, name, initial, avatar_bg, avatar_url, status, company_id)
 				VALUES ($1, 'human', $2, $3, '#FF8870', $4, 'avail', $5)
 				ON CONFLICT (id, company_id) DO NOTHING`, uid, dn, initial, avatar, id)
 			joinAllHands(r.Context(), db, id, uid)
+			auditIP, auditUA := r.RemoteAddr, r.UserAgent()
+			auditDetail := fmt.Sprintf(`{"name":%s,"slug":%s}`, jsonString(name), jsonString(slug))
 			go db.Exec(`INSERT INTO audit_events (user_id, company_id, kind, ip, user_agent, detail)
 				VALUES ($1, $2, 'company_create', NULLIF($3,''), NULLIF($4,''), $5::jsonb)`,
-				uid, id, r.RemoteAddr, r.UserAgent(),
-				fmt.Sprintf(`{"name":%s,"slug":%s}`, jsonString(name), jsonString(slug)))
+				uid, id, auditIP, auditUA, auditDetail)
 			httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id, "name": name, "slug": slug, "role": "owner"})
 			return
 		}
@@ -404,24 +403,20 @@ func gravatarURL(email string) string {
 	return fmt.Sprintf("https://www.gravatar.com/avatar/%x?d=identicon&s=256", sum)
 }
 
-// joinAllHands:#all-hands 会话加入/创建(对齐 onboardCompany.joinAllHands 最小面)。
+// joinAllHands 对齐 onboardCompany.joinAllHands:no-op 语义——组未建
+// (all_hands_conversation_id NULL)时什么都不做(组由 onboardStarterAgents
+// Phase 3 一次性创建并回填指针);已建则按指针追加成员(带 @> 守卫防重复)。
 func joinAllHands(ctx context.Context, db *sql.DB, companyID, participantID string) {
-	var convID string
-	err := db.QueryRowContext(ctx, `
-		SELECT id FROM conversations WHERE company_id = $1 AND tag = 'team' LIMIT 1`, companyID).Scan(&convID)
-	if err != nil {
-		convID = "c-allhands-" + authn.NewToken()[:10]
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO conversations (id, company_id, kind, title, members, tag)
-			VALUES ($1, $2, 'group', 'Everyone', $3::jsonb, 'team')`,
-			convID, companyID, fmt.Sprintf(`[%q]`, participantID)); err != nil {
-			return
-		}
-	} else {
-		_, _ = db.ExecContext(ctx, `
-			UPDATE conversations SET members = members || $2::jsonb WHERE id = $1`,
-			convID, fmt.Sprintf(`[%q]`, participantID))
+	var convID sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT all_hands_conversation_id FROM companies WHERE id = $1`, companyID).Scan(&convID); err != nil || !convID.Valid {
+		return // no group yet → nothing to join(baseline 语义)
 	}
+	_, _ = db.ExecContext(ctx, `
+		UPDATE conversations
+		   SET members = members || $2::jsonb
+		 WHERE id = $1 AND NOT members @> $2::jsonb`,
+		convID.String, fmt.Sprintf(`[%q]`, participantID))
 }
 
 // slugify 对齐 baseline:[^a-z0-9]+ 运行折叠为单个 -,去首尾 -,截 40,
