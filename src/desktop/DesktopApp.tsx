@@ -18,6 +18,7 @@ import { AgentsView } from './AgentsView'
 import { BoardsView } from './BoardsView'
 import { CalendarView } from './CalendarView'
 import { DocumentsView } from './DocumentsView'
+import { WorkspacesView } from './WorkspacesView'
 import { ObservabilityView } from './ObservabilityView'
 import { MeView } from './MeView'
 import { EmailComposer } from '@/components/EmailComposer'
@@ -107,6 +108,7 @@ export function DesktopApp() {
         {view === 'boards' && <BoardsView />}
         {view === 'calendar' && <CalendarView />}
         {view === 'documents' && <DocumentsView />}
+        {view === 'workspaces' && <WorkspacesView />}
         {view === 'shipping' && <Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('desktop.openingShip')}</div>}><ShippingView /></Suspense>}
         {view === 'observability' && devtoolsEnabled && <ObservabilityView />}
         {view === 'me' && <MeView />}
