@@ -4,12 +4,12 @@ import type { CapacitorConfig } from '@capacitor/cli'
  * Capacitor configuration for the Cumora mobile app.
  *
  * Bundle id `io.cumora.app` matches the Electron build's appId so the
- * Apple/Google portals stay aligned. `webDir` points at Vite's standard
- * build output (`dist/`) — run `npm run build` before `npx cap sync ios`.
+ * Apple/Google portals stay aligned. `webDir` points at the web workspace's
+ * build output (`apps/web/dist/`) — run `npm run build` before `npx cap sync ios`.
  *
  * `server.url` is intentionally NOT set in this checked-in config —
  * shipping with a hardcoded staging URL would lock TestFlight builds to
- * dev infra. The runtime resolveServerOrigin() in src/api/client.ts
+ * dev infra. The runtime resolveServerOrigin() in apps/web/src/api/client.ts
  * picks the API origin from VITE_CUMORA_API_BASE at build time, which
  * is the right knob for an App Store submission build.
  */

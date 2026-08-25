@@ -35,10 +35,6 @@ const SKIP = /(__tests__|__integration__|\.test\.ts$|\.d\.ts$|scripts\/)/
 //   - llm.ts           — the factory itself
 //   - llm-ledger.ts    — wraps the factory in getTrackedLlmClient (the ONE
 //                        place outside llm.ts that imports it)
-//   - turn.ts          — main agent turn is streaming; records per hop via
-//                        recordLlmCall (purpose='agent-turn'). The non-
-//                        streaming verify/compaction/steer-summary callsites
-//                        in this file also record manually.
 const ALLOW = new Set([
   'server/src/llm.ts',
   'server/src/agents/llm-ledger.ts',

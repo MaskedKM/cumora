@@ -1234,7 +1234,7 @@ function createWindow() {
     // Serve over the app:// scheme registered above. `/` paths
     // (whether emitted by Vite or hard-coded in JSX) all flow through
     // the protocol handler in app.whenReady() and resolve from
-    // <resources>/dist. No more file:// 404s.
+    // <resources>/apps/web/dist. No more file:// 404s.
     //
     // Host name matters: it becomes the renderer's `Origin` header on
     // any cross-origin fetch. The cumora API server's
