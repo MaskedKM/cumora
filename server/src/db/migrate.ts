@@ -1785,6 +1785,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_default_one_per_company
 -- associations stay visible as inert history) but all access is refused;
 -- the folder itself is never touched.
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS unbound_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS unbound_by TEXT;
 
 -- Association links one of the three work-item kinds to a workspace; the
 -- target's participants thereby hold implicit workspace membership.

@@ -662,8 +662,9 @@ test('safe unbind: files untouched, all access refused, associations visible as 
   assert.ok(!list.some((r) => r.id === id))
   const detail = (await (
     await fetch(`${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
-  ).json()) as { unboundAt: string }
+  ).json()) as { unboundAt: string; unboundBy: string }
   assert.ok(detail.unboundAt)
+  assert.equal(detail.unboundBy, OWNER)
 
   // Mutations refused; idempotency explicit
   assert.equal((await unbind(id)).status, 409)
@@ -680,6 +681,16 @@ test('implicit access via associations ends at unbind; association create is 410
   assert.equal(await writeAs(id, 'b.txt', memberBase), 410) // implicit membership inert
   assert.equal((await detailJson(id)).associations.length, 1) // still visible as history
   assert.equal((await associate(id, 'board_card', 'nope')).status, 410) // guard precedes target lookup
+  // the audit record cannot be silently rewritten post-unbind
+  assert.equal(
+    (
+      await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+        method: 'DELETE',
+        headers: jsonHeaders(COMPANY),
+      })
+    ).status,
+    410,
+  )
 
   const defId = await defaultWorkspaceId()
   assert.equal((await unbind(defId)).status, 403)

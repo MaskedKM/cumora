@@ -28,11 +28,12 @@ export type WorkspaceRow = {
   is_default: boolean
   created_at: Date
   unbound_at: Date | null
+  unbound_by: string | null
 }
 
 export async function loadWorkspace(pool: Pool, companyId: string, id: string): Promise<WorkspaceRow> {
   const { rows } = await pool.query<WorkspaceRow>(
-    `SELECT id, company_id, name, folder_path, is_default, created_at, unbound_at
+    `SELECT id, company_id, name, folder_path, is_default, created_at, unbound_at, unbound_by
        FROM workspaces WHERE id = $1 AND company_id = $2`,
     [id, companyId],
   )

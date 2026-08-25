@@ -212,6 +212,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
       isDefault: workspace.is_default,
       createdAt: workspace.created_at,
       unboundAt: workspace.unbound_at,
+      unboundBy: workspace.unbound_by,
       ...(privileged ? { folderPath: workspace.folder_path } : {}),
       members: [
         ...explicit.rows.map((r) => ({ ...r, source: 'explicit' })),
@@ -244,9 +245,13 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
 
   // Only explicit rows are deletable here; implicit membership ends by
   // ending the association or leaving the associated item.
+  // Member/association DELETES also refuse post-unbind: the unbound
+  // detail is the audit record of who had what, and deletes (any company
+  // member can drop a document association) would silently rewrite it.
   router.delete('/:id/members/:participantId', async (req, res) => {
     const { companyId } = await deps.requireCompanyRole(req)
     const workspace = await loadWorkspace(pool, companyId, req.params.id)
+    if (workspace.unbound_at) throw new WorkspaceError(410, 'workspace is unbound')
     const { rowCount } = await pool.query(
       `DELETE FROM workspace_members
         WHERE workspace_id = $1 AND participant_id = $2`,
@@ -290,6 +295,7 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
     }
     const authed = kind === 'document' ? await deps.requireCompany(req) : await deps.requireCompanyRole(req)
     const workspace = await loadWorkspace(pool, authed.companyId, req.params.id)
+    if (workspace.unbound_at) throw new WorkspaceError(410, 'workspace is unbound')
     const { rowCount } = await pool.query(
       `DELETE FROM workspace_associations
         WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
@@ -323,14 +329,14 @@ export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
   // the core's unbound check. The default workspace is the team's
   // permanent surface and never unbinds.
   router.post('/:id/unbind', async (req, res) => {
-    const { companyId } = await deps.requireCompanyRole(req)
+    const { userId, companyId } = await deps.requireCompanyRole(req)
     const workspace = await loadWorkspace(pool, companyId, req.params.id)
     if (workspace.is_default) throw new WorkspaceError(403, 'the default workspace cannot be unbound')
     const { rows } = await pool.query<{ unbound_at: Date }>(
-      `UPDATE workspaces SET unbound_at = NOW()
+      `UPDATE workspaces SET unbound_at = NOW(), unbound_by = $2
         WHERE id = $1 AND unbound_at IS NULL
         RETURNING unbound_at`,
-      [workspace.id],
+      [workspace.id, userId],
     )
     if (!rows[0]) throw new WorkspaceError(409, 'workspace is already unbound')
     res.json({ ok: true, unboundAt: rows[0].unbound_at })
