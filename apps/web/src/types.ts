@@ -105,6 +105,12 @@ export interface Conversation {
 export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
   sequence?: number
   createdAt?: string
+  /** 客户端遗留渲染形状(mock/历史数据);服务端现无生产者 —— wire 规范不收录。 */
+  whisperLink?: {
+    pair: [string, string]
+    snippet: string
+    count: number
+  }
   /** Optimistic-render flags. Only set on locally-inserted messages awaiting
    *  the server round-trip; never returned from the API. */
   pending?: boolean

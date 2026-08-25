@@ -12,14 +12,13 @@ info:
 
     本规范只描述 HTTP 面。两条长连接通道不建模为 paths:
 
-    - **WebSocket `/ws`** — 实时事件广播(conversations/messages/status/computers/
-      documents 等)。载荷形状以 `components.schemas.Ws*` 系列定义(见 schema 注释),
-      连接鉴权走 `/auth/ws-ticket` 票据;Go 重写以 #49 验收镜像为行为基准。
-    - **SSE `/runtime/wake-stream`** — daemon 唤醒流(对应 runtime 域),事件载荷
-      见 `components.schemas.WakeEvent`;steer 事件见 `SteerEvent`。
+    - **WebSocket `/ws`** — 实时事件广播(message.new/delta、typing、participants/
+      computers 状态、board/doc/calendar 变更等,载荷见 web 端 WsEvent 联合类型)。
+      连接鉴权走 `/auth/ws-ticket` 票据。
+    - **SSE `/runtime/wake-stream`** — daemon 唤醒流(wake/steer 两类事件)。
 
-    两者的逐事件契约由 #49 的 wire 级验收镜像测试承载(同一套测试跑 TS 与 Go,
-    差异即回归),规范只固化形状定义。
+    两条通道的载荷形状刻意不入 components(逐事件契约由 #49 的 wire 级验收镜像
+    测试承载——同一套测试跑 TS 与 Go,差异即回归);规范只负责 HTTP 面。
 
     ## 鉴权
 
@@ -52,6 +51,19 @@ tags:
 security:
   - sessionBearer: []
 paths:
+  /webhooks/email/inbound:
+    post:
+      tags: [core]
+      operationId: emailInboundWebhook
+      security: []
+      summary: Cloudflare email-gate 入站邮件回调(HMAC 签名验证,自有 JSON 解析器)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: ok }
+        '401': { description: 签名不符 }
   /api/health:
     get:
       tags: [core]
@@ -270,7 +282,7 @@ paths:
               properties:
                 name: { type: string }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -316,7 +328,7 @@ paths:
                 maxUses: { type: integer }
                 sendEmail: { type: boolean }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationWithToken' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationWithToken' } } } }
   /api/companies/{id}/invitations/{inviteId}:
     delete:
       tags: [core]
@@ -383,7 +395,7 @@ paths:
                 description: { type: string }
                 color: { type: string }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -473,7 +485,7 @@ paths:
           application/json:
             schema: { type: object }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -596,7 +608,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AgentInput' }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
   /api/agents/{id}:
     put:
       tags: [agents]
@@ -757,7 +769,7 @@ paths:
                 subtitle: { type: string }
                 projectId: { type: string, nullable: true }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -782,7 +794,7 @@ paths:
               properties:
                 otherId: { type: string }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -792,9 +804,6 @@ paths:
                 properties:
                   id: { type: string }
                   created: { type: boolean }
-  /api/conversations/{id}:
-    parameters:
-      - { name: id, in: path, required: true, schema: { type: string } }
   /api/conversations/{id}/topic:
     post:
       tags: [conversations]
@@ -1025,6 +1034,9 @@ paths:
       responses:
         '200':
           description: ok
+
+        '202':
+          description: ok
           content:
             application/json:
               schema:
@@ -1094,7 +1106,7 @@ paths:
                 options: { type: array, items: { type: string } }
                 expiresInMinutes: { type: integer, nullable: true }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -1747,7 +1759,7 @@ paths:
             schema:
               $ref: '#/components/schemas/CalendarEventInput'
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
@@ -1866,7 +1878,7 @@ paths:
                 title: { type: string }
                 conversationId: { type: string, nullable: true }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
   /api/documents/{id}:
     get:
       tags: [documents]
@@ -1981,7 +1993,7 @@ paths:
                 name: { type: string }
                 folderPath: { type: string }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
   /api/workspaces/{id}:
     get:
       tags: [workspaces]
@@ -2005,7 +2017,7 @@ paths:
               properties:
                 participantId: { type: string }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/workspaces/{id}/members/{participantId}:
     delete:
       tags: [workspaces]
@@ -2032,7 +2044,17 @@ paths:
                 kind: { type: string, enum: [project, board_card, document] }
                 targetId: { type: string }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, kind, targetId]
+                properties:
+                  ok: { type: boolean }
+                  kind: { type: string, enum: [project, board_card, document] }
+                  targetId: { type: string }
   /api/workspaces/{id}/associations/{kind}/{targetId}:
     delete:
       tags: [workspaces]
@@ -2305,7 +2327,7 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: true }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Id' } } } }
   /api/shipping/friction/{id}:
     patch:
       tags: [shipping]
@@ -2343,7 +2365,7 @@ paths:
                 documentId: { type: string, nullable: true }
                 boardCardId: { type: string, nullable: true }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
   /api/shipping/features/{id}:
     get:
       tags: [shipping]
@@ -2397,7 +2419,7 @@ paths:
                 kind: { type: string }
                 required: { type: boolean }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
   /api/shipping/features/{id}/invariants/{invariantId}:
     patch:
       tags: [shipping]
@@ -2434,7 +2456,7 @@ paths:
                 builderIds: { type: array, items: { type: string } }
                 dueAt: { type: string, nullable: true, format: date-time }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
   /api/shipping/features/{id}/verifications/{verificationId}:
     patch:
       tags: [shipping]
@@ -2471,7 +2493,7 @@ paths:
                 baseline: { type: array, items: { type: object, additionalProperties: true } }
                 readbackDueAt: { type: string, nullable: true, format: date-time }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
   /api/shipping/features/{id}/releases/{releaseId}/action:
     post:
       tags: [shipping]
@@ -2503,7 +2525,7 @@ paths:
           application/json:
             schema: { type: object, additionalProperties: true }
       responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
+        '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ShippingFeatureDetail' } } } }
   /api/shipping/features/{id}/regressions/{regressionId}:
     patch:
       tags: [shipping]
@@ -2535,7 +2557,11 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: { type: object, additionalProperties: true }
+            schema:
+              type: object
+              required: [argv]
+              properties:
+                argv: { type: array, items: {} }
       responses:
         '200':
           description: ok
@@ -2560,6 +2586,14 @@ paths:
       operationId: resolveConversationCompany
       security: [{ agentRuntimeJWT: [] }]
       summary: 会话→公司
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              properties:
+                conversationId: { type: string }
       responses:
         '200':
           description: ok
@@ -2608,6 +2642,15 @@ paths:
       operationId: agendaVerdict
       security: [{ agentRuntimeJWT: [] }]
       summary: 上报领卡裁决
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actionable: { type: boolean }
+                focus: { type: string }
+                reason: { type: string }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/memory/query:
@@ -2616,6 +2659,11 @@ paths:
       operationId: memoryQuery
       security: [{ agentRuntimeJWT: [] }]
       summary: 记忆检索
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
       responses:
         '200':
           description: ok
@@ -2628,6 +2676,14 @@ paths:
       operationId: loadContext
       security: [{ agentRuntimeJWT: [] }]
       summary: 会话上下文
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationIds]
+              properties:
+                conversationIds: { type: array, items: { type: string } }
       responses:
         '200':
           description: ok
@@ -2664,6 +2720,14 @@ paths:
       operationId: loadFaces
       security: [{ agentRuntimeJWT: [] }]
       summary: 名册头像
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [participantIds]
+              properties:
+                participantIds: { type: array, items: { type: string } }
       responses:
         '200':
           description: ok
@@ -2700,6 +2764,14 @@ paths:
       operationId: reportStatus
       security: [{ agentRuntimeJWT: [] }]
       summary: 上报状态
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/Status' }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/status/heartbeat:
@@ -2708,6 +2780,14 @@ paths:
       operationId: statusHeartbeat
       security: [{ agentRuntimeJWT: [] }]
       summary: 状态心跳
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [working, thinking, waiting] }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/typing:
@@ -2716,6 +2796,15 @@ paths:
       operationId: runtimeTyping
       security: [{ agentRuntimeJWT: [] }]
       summary: agent 输入态
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              properties:
+                conversationId: { type: string }
+                done: { type: boolean }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/runs:
@@ -2724,6 +2813,16 @@ paths:
       operationId: startRun
       security: [{ agentRuntimeJWT: [] }]
       summary: 开 run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                trigger: { type: object, additionalProperties: true }
+                inputMessageIds: { type: array, items: { type: string } }
+                inboxCount: { type: integer }
+                fingerprint: { type: string }
       responses:
         '200':
           description: ok
@@ -2736,6 +2835,19 @@ paths:
       operationId: recordEvent
       security: [{ agentRuntimeJWT: [] }]
       summary: 记事件
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runId, kind, title]
+              properties:
+                runId: { type: string }
+                kind: { type: string }
+                level: { type: string, enum: [debug, info, warn, error] }
+                title: { type: string }
+                data: { type: object, additionalProperties: true }
+                stage: { type: string }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/triage:
@@ -2744,6 +2856,12 @@ paths:
       operationId: recordTriage
       security: [{ agentRuntimeJWT: [] }]
       summary: 记 triage 台账
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/llm-calls:
@@ -2752,6 +2870,12 @@ paths:
       operationId: recordLlmCall
       security: [{ agentRuntimeJWT: [] }]
       summary: 记 LLM 调用台账
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/runs/{runId}/heartbeat:
@@ -2761,6 +2885,12 @@ paths:
       security: [{ agentRuntimeJWT: [] }]
       parameters: [{ name: runId, in: path, required: true, schema: { type: string } }]
       summary: run 心跳
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/runs/{runId}/finish:
@@ -2770,6 +2900,12 @@ paths:
       security: [{ agentRuntimeJWT: [] }]
       parameters: [{ name: runId, in: path, required: true, schema: { type: string } }]
       summary: 结 run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/busy/heartbeat:
@@ -2778,6 +2914,13 @@ paths:
       operationId: busyHeartbeat
       security: [{ agentRuntimeJWT: [] }]
       summary: 忙租约心跳(steer 判定)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttlSec: { type: integer }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/busy/clear:
@@ -2786,6 +2929,14 @@ paths:
       operationId: busyClear
       security: [{ agentRuntimeJWT: [] }]
       summary: 清忙租约
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversationIds: { type: array, items: { type: string } }
+                ttlSec: { type: integer }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/thinking/mark:
@@ -2794,6 +2945,14 @@ paths:
       operationId: thinkingMark
       security: [{ agentRuntimeJWT: [] }]
       summary: 标记思考中
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationIds]
+              properties:
+                conversationIds: { type: array, items: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/thinking/unmark:
@@ -2802,6 +2961,13 @@ paths:
       operationId: thinkingUnmark
       security: [{ agentRuntimeJWT: [] }]
       summary: 解除思考
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversationIds: { type: array, items: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/thinking/peek:
@@ -2822,6 +2988,12 @@ paths:
       operationId: worklogClaim
       security: [{ agentRuntimeJWT: [] }]
       summary: 原子领工
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200':
           description: ok
@@ -2834,6 +3006,12 @@ paths:
       operationId: worklogRelease
       security: [{ agentRuntimeJWT: [] }]
       summary: 释放工
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/worklog/peek:
@@ -2854,6 +3032,15 @@ paths:
       operationId: runtimeMarkRead
       security: [{ agentRuntimeJWT: [] }]
       summary: agent 已读
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              properties:
+                conversationId: { type: string }
+                upToMessageId: { type: string }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/notices:
@@ -2862,6 +3049,12 @@ paths:
       operationId: postNotice
       security: [{ agentRuntimeJWT: [] }]
       summary: 系统通知
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
 components:
@@ -3091,14 +3284,14 @@ components:
         meta: { type: string }
     Message:
       type: object
-      required: [id, conversationId, authorId, kind, body, at, sequence]
+      required: [id, conversationId, authorId, kind, body, sequence]
       properties:
         id: { type: string }
         conversationId: { type: string }
         authorId: { type: string }
         kind: { $ref: '#/components/schemas/MessageKind' }
         body: { type: string }
-        at: { type: string, format: date-time }
+        at: { type: string, format: date-time, description: 仅 WS message.new 事件携带;REST 列表用 createdAt,store 层缺失时回填 } 
         sequence: { type: integer }
         createdAt: { type: string, format: date-time }
         reactions:
@@ -3106,13 +3299,6 @@ components:
           items: { $ref: '#/components/schemas/ReactionEntry' }
         tool: { $ref: '#/components/schemas/MessageTool' }
         attachment: { $ref: '#/components/schemas/MessageAttachment' }
-        whisperLink:
-          type: object
-          required: [pair, snippet, count]
-          properties:
-            pair: { type: array, items: { type: string }, minItems: 2, maxItems: 2 }
-            snippet: { type: string }
-            count: { type: integer }
         email: { $ref: '#/components/schemas/EmailFields' }
         poll: { $ref: '#/components/schemas/PollPayload' }
         pollTallies:
@@ -3432,6 +3618,7 @@ components:
             email: { type: string }
             name: { type: string }
             emailVerified: { type: boolean }
+            isAdmin: { type: boolean }
             providers: { type: array, items: { type: string } }
         companies:
           type: array
@@ -3992,6 +4179,7 @@ components:
               type: array
               items:
                 type: object
+                required: [id, name, slug, role, createdAt, agentCount]
                 properties:
                   id: { type: string }
                   name: { type: string }
@@ -4016,6 +4204,7 @@ components:
         decidedBy: { type: string, nullable: true }
     AdminSettings:
       type: object
+      required: [waitlist_enabled, signups_paused, cerebellum_route, cerebellum_local_engine, cerebellum_provider, cerebellum_base_url, cerebellum_model, cerebellum_api_key_configured, cerebellum_api_key_suffix]
       properties:
         waitlist_enabled: { type: boolean }
         signups_paused: { type: boolean }
@@ -4028,20 +4217,24 @@ components:
         cerebellum_api_key_suffix: { type: string, nullable: true }
     AdminStats:
       type: object
+      required: [users, waitlist, companies, agents]
       properties:
         users:
           type: object
+          required: [total, admins, tiers]
           properties:
             total: { type: integer }
             admins: { type: integer }
             tiers:
               type: object
+              required: [free, pro, max]
               properties:
                 free: { type: integer }
                 pro: { type: integer }
                 max: { type: integer }
         waitlist:
           type: object
+          required: [pending, approved, rejected]
           properties:
             pending: { type: integer }
             approved: { type: integer }

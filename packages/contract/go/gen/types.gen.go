@@ -42,10 +42,10 @@ const (
 
 // Defines values for AgentEventLevel.
 const (
-	Debug AgentEventLevel = "debug"
-	Error AgentEventLevel = "error"
-	Info  AgentEventLevel = "info"
-	Warn  AgentEventLevel = "warn"
+	AgentEventLevelDebug AgentEventLevel = "debug"
+	AgentEventLevelError AgentEventLevel = "error"
+	AgentEventLevelInfo  AgentEventLevel = "info"
+	AgentEventLevelWarn  AgentEventLevel = "warn"
 )
 
 // Defines values for AgentRunStatus.
@@ -398,11 +398,11 @@ const (
 
 // Defines values for Status.
 const (
-	Avail    Status = "avail"
-	Resting  Status = "resting"
-	Thinking Status = "thinking"
-	Waiting  Status = "waiting"
-	Working  Status = "working"
+	StatusAvail    Status = "avail"
+	StatusResting  Status = "resting"
+	StatusThinking Status = "thinking"
+	StatusWaiting  Status = "waiting"
+	StatusWorking  Status = "working"
 )
 
 // Defines values for TriageSource.
@@ -505,17 +505,32 @@ const (
 	RemoveWorkspaceAssociationParamsKindProject   RemoveWorkspaceAssociationParamsKind = "project"
 )
 
+// Defines values for RecordEventJSONBodyLevel.
+const (
+	RecordEventJSONBodyLevelDebug RecordEventJSONBodyLevel = "debug"
+	RecordEventJSONBodyLevelError RecordEventJSONBodyLevel = "error"
+	RecordEventJSONBodyLevelInfo  RecordEventJSONBodyLevel = "info"
+	RecordEventJSONBodyLevelWarn  RecordEventJSONBodyLevel = "warn"
+)
+
+// Defines values for StatusHeartbeatJSONBodyStatus.
+const (
+	StatusHeartbeatJSONBodyStatusThinking StatusHeartbeatJSONBodyStatus = "thinking"
+	StatusHeartbeatJSONBodyStatusWaiting  StatusHeartbeatJSONBodyStatus = "waiting"
+	StatusHeartbeatJSONBodyStatusWorking  StatusHeartbeatJSONBodyStatus = "working"
+)
+
 // AdminSettings defines model for AdminSettings.
 type AdminSettings struct {
-	CerebellumApiKeyConfigured *bool                         `json:"cerebellum_api_key_configured,omitempty"`
-	CerebellumApiKeySuffix     *string                       `json:"cerebellum_api_key_suffix"`
-	CerebellumBaseUrl          *string                       `json:"cerebellum_base_url,omitempty"`
-	CerebellumLocalEngine      *string                       `json:"cerebellum_local_engine,omitempty"`
-	CerebellumModel            *string                       `json:"cerebellum_model,omitempty"`
-	CerebellumProvider         *string                       `json:"cerebellum_provider,omitempty"`
-	CerebellumRoute            *AdminSettingsCerebellumRoute `json:"cerebellum_route,omitempty"`
-	SignupsPaused              *bool                         `json:"signups_paused,omitempty"`
-	WaitlistEnabled            *bool                         `json:"waitlist_enabled,omitempty"`
+	CerebellumApiKeyConfigured bool                         `json:"cerebellum_api_key_configured"`
+	CerebellumApiKeySuffix     *string                      `json:"cerebellum_api_key_suffix"`
+	CerebellumBaseUrl          string                       `json:"cerebellum_base_url"`
+	CerebellumLocalEngine      string                       `json:"cerebellum_local_engine"`
+	CerebellumModel            string                       `json:"cerebellum_model"`
+	CerebellumProvider         string                       `json:"cerebellum_provider"`
+	CerebellumRoute            AdminSettingsCerebellumRoute `json:"cerebellum_route"`
+	SignupsPaused              bool                         `json:"signups_paused"`
+	WaitlistEnabled            bool                         `json:"waitlist_enabled"`
 }
 
 // AdminSettingsCerebellumRoute defines model for AdminSettings.CerebellumRoute.
@@ -523,22 +538,22 @@ type AdminSettingsCerebellumRoute string
 
 // AdminStats defines model for AdminStats.
 type AdminStats struct {
-	Agents    *int `json:"agents,omitempty"`
-	Companies *int `json:"companies,omitempty"`
-	Users     *struct {
-		Admins *int `json:"admins,omitempty"`
-		Tiers  *struct {
-			Free *int `json:"free,omitempty"`
-			Max  *int `json:"max,omitempty"`
-			Pro  *int `json:"pro,omitempty"`
-		} `json:"tiers,omitempty"`
-		Total *int `json:"total,omitempty"`
-	} `json:"users,omitempty"`
-	Waitlist *struct {
-		Approved *int `json:"approved,omitempty"`
-		Pending  *int `json:"pending,omitempty"`
-		Rejected *int `json:"rejected,omitempty"`
-	} `json:"waitlist,omitempty"`
+	Agents    int `json:"agents"`
+	Companies int `json:"companies"`
+	Users     struct {
+		Admins int `json:"admins"`
+		Tiers  struct {
+			Free int `json:"free"`
+			Max  int `json:"max"`
+			Pro  int `json:"pro"`
+		} `json:"tiers"`
+		Total int `json:"total"`
+	} `json:"users"`
+	Waitlist struct {
+		Approved int `json:"approved"`
+		Pending  int `json:"pending"`
+		Rejected int `json:"rejected"`
+	} `json:"waitlist"`
 }
 
 // AdminUser defines model for AdminUser.
@@ -566,12 +581,12 @@ type AdminUserTier string
 type AdminUserDetail struct {
 	AvatarUrl string `json:"avatarUrl"`
 	Companies []struct {
-		AgentCount *int       `json:"agentCount,omitempty"`
-		CreatedAt  *time.Time `json:"createdAt,omitempty"`
-		Id         *string    `json:"id,omitempty"`
-		Name       *string    `json:"name,omitempty"`
-		Role       *string    `json:"role,omitempty"`
-		Slug       *string    `json:"slug,omitempty"`
+		AgentCount int       `json:"agentCount"`
+		CreatedAt  time.Time `json:"createdAt"`
+		Id         string    `json:"id"`
+		Name       string    `json:"name"`
+		Role       string    `json:"role"`
+		Slug       string    `json:"slug"`
 	} `json:"companies"`
 	CompanyCount     int                 `json:"companyCount"`
 	CreatedAt        time.Time           `json:"createdAt"`
@@ -1099,6 +1114,7 @@ type MeResponse struct {
 		Email         string   `json:"email"`
 		EmailVerified bool     `json:"emailVerified"`
 		Id            string   `json:"id"`
+		IsAdmin       *bool    `json:"isAdmin,omitempty"`
 		Name          string   `json:"name"`
 		Providers     []string `json:"providers"`
 	} `json:"user"`
@@ -1106,7 +1122,8 @@ type MeResponse struct {
 
 // Message defines model for Message.
 type Message struct {
-	At              time.Time          `json:"at"`
+	// At 仅 WS message.new 事件携带;REST 列表用 createdAt
+	At              *time.Time         `json:"at,omitempty"`
 	Attachment      *MessageAttachment `json:"attachment,omitempty"`
 	AuthorId        string             `json:"authorId"`
 	Body            string             `json:"body"`
@@ -1124,11 +1141,6 @@ type Message struct {
 	ReplyCount      *int               `json:"replyCount,omitempty"`
 	Sequence        int                `json:"sequence"`
 	Tool            *MessageTool       `json:"tool,omitempty"`
-	WhisperLink     *struct {
-		Count   int      `json:"count"`
-		Pair    []string `json:"pair"`
-		Snippet string   `json:"snippet"`
-	} `json:"whisperLink,omitempty"`
 }
 
 // MessageAttachment defines model for MessageAttachment.
@@ -1752,16 +1764,16 @@ type AdminLlmSummaryParams struct {
 
 // AdminPutSettingsJSONBody defines parameters for AdminPutSettings.
 type AdminPutSettingsJSONBody struct {
-	CerebellumApiKey           *string                                  `json:"cerebellum_api_key,omitempty"`
-	CerebellumApiKeyConfigured *bool                                    `json:"cerebellum_api_key_configured,omitempty"`
-	CerebellumApiKeySuffix     *string                                  `json:"cerebellum_api_key_suffix"`
-	CerebellumBaseUrl          *string                                  `json:"cerebellum_base_url,omitempty"`
-	CerebellumLocalEngine      *string                                  `json:"cerebellum_local_engine,omitempty"`
-	CerebellumModel            *string                                  `json:"cerebellum_model,omitempty"`
-	CerebellumProvider         *string                                  `json:"cerebellum_provider,omitempty"`
-	CerebellumRoute            *AdminPutSettingsJSONBodyCerebellumRoute `json:"cerebellum_route,omitempty"`
-	SignupsPaused              *bool                                    `json:"signups_paused,omitempty"`
-	WaitlistEnabled            *bool                                    `json:"waitlist_enabled,omitempty"`
+	CerebellumApiKey           *string                                 `json:"cerebellum_api_key,omitempty"`
+	CerebellumApiKeyConfigured bool                                    `json:"cerebellum_api_key_configured"`
+	CerebellumApiKeySuffix     *string                                 `json:"cerebellum_api_key_suffix"`
+	CerebellumBaseUrl          string                                  `json:"cerebellum_base_url"`
+	CerebellumLocalEngine      string                                  `json:"cerebellum_local_engine"`
+	CerebellumModel            string                                  `json:"cerebellum_model"`
+	CerebellumProvider         string                                  `json:"cerebellum_provider"`
+	CerebellumRoute            AdminPutSettingsJSONBodyCerebellumRoute `json:"cerebellum_route"`
+	SignupsPaused              bool                                    `json:"signups_paused"`
+	WaitlistEnabled            bool                                    `json:"waitlist_enabled"`
 }
 
 // AdminPutSettingsJSONBodyCerebellumRoute defines parameters for AdminPutSettings.
@@ -2237,8 +2249,126 @@ type AddWorkspaceMemberJSONBody struct {
 	ParticipantId string `json:"participantId"`
 }
 
+// AgendaVerdictJSONBody defines parameters for AgendaVerdict.
+type AgendaVerdictJSONBody struct {
+	Actionable *bool   `json:"actionable,omitempty"`
+	Focus      *string `json:"focus,omitempty"`
+	Reason     *string `json:"reason,omitempty"`
+}
+
+// BusyClearJSONBody defines parameters for BusyClear.
+type BusyClearJSONBody struct {
+	ConversationIds *[]string `json:"conversationIds,omitempty"`
+	TtlSec          *int      `json:"ttlSec,omitempty"`
+}
+
+// BusyHeartbeatJSONBody defines parameters for BusyHeartbeat.
+type BusyHeartbeatJSONBody struct {
+	TtlSec *int `json:"ttlSec,omitempty"`
+}
+
 // RuntimeCliJSONBody defines parameters for RuntimeCli.
-type RuntimeCliJSONBody map[string]interface{}
+type RuntimeCliJSONBody struct {
+	Argv []interface{} `json:"argv"`
+}
+
+// LoadContextJSONBody defines parameters for LoadContext.
+type LoadContextJSONBody struct {
+	ConversationIds []string `json:"conversationIds"`
+}
+
+// ResolveConversationCompanyJSONBody defines parameters for ResolveConversationCompany.
+type ResolveConversationCompanyJSONBody struct {
+	ConversationId string `json:"conversationId"`
+}
+
+// RuntimeMarkReadJSONBody defines parameters for RuntimeMarkRead.
+type RuntimeMarkReadJSONBody struct {
+	ConversationId string  `json:"conversationId"`
+	UpToMessageId  *string `json:"upToMessageId,omitempty"`
+}
+
+// RecordEventJSONBody defines parameters for RecordEvent.
+type RecordEventJSONBody struct {
+	Data  *map[string]interface{}   `json:"data,omitempty"`
+	Kind  string                    `json:"kind"`
+	Level *RecordEventJSONBodyLevel `json:"level,omitempty"`
+	RunId string                    `json:"runId"`
+	Stage *string                   `json:"stage,omitempty"`
+	Title string                    `json:"title"`
+}
+
+// RecordEventJSONBodyLevel defines parameters for RecordEvent.
+type RecordEventJSONBodyLevel string
+
+// LoadFacesJSONBody defines parameters for LoadFaces.
+type LoadFacesJSONBody struct {
+	ParticipantIds []string `json:"participantIds"`
+}
+
+// RecordLlmCallJSONBody defines parameters for RecordLlmCall.
+type RecordLlmCallJSONBody map[string]interface{}
+
+// MemoryQueryJSONBody defines parameters for MemoryQuery.
+type MemoryQueryJSONBody = map[string]interface{}
+
+// PostNoticeJSONBody defines parameters for PostNotice.
+type PostNoticeJSONBody map[string]interface{}
+
+// StartRunJSONBody defines parameters for StartRun.
+type StartRunJSONBody struct {
+	Fingerprint     *string                 `json:"fingerprint,omitempty"`
+	InboxCount      *int                    `json:"inboxCount,omitempty"`
+	InputMessageIds *[]string               `json:"inputMessageIds,omitempty"`
+	Trigger         *map[string]interface{} `json:"trigger,omitempty"`
+}
+
+// FinishRunJSONBody defines parameters for FinishRun.
+type FinishRunJSONBody map[string]interface{}
+
+// RunHeartbeatJSONBody defines parameters for RunHeartbeat.
+type RunHeartbeatJSONBody map[string]interface{}
+
+// ReportStatusJSONBody defines parameters for ReportStatus.
+type ReportStatusJSONBody struct {
+	Status Status `json:"status"`
+}
+
+// StatusHeartbeatJSONBody defines parameters for StatusHeartbeat.
+type StatusHeartbeatJSONBody struct {
+	Status StatusHeartbeatJSONBodyStatus `json:"status"`
+}
+
+// StatusHeartbeatJSONBodyStatus defines parameters for StatusHeartbeat.
+type StatusHeartbeatJSONBodyStatus string
+
+// ThinkingMarkJSONBody defines parameters for ThinkingMark.
+type ThinkingMarkJSONBody struct {
+	ConversationIds []string `json:"conversationIds"`
+}
+
+// ThinkingUnmarkJSONBody defines parameters for ThinkingUnmark.
+type ThinkingUnmarkJSONBody struct {
+	ConversationIds *[]string `json:"conversationIds,omitempty"`
+}
+
+// RecordTriageJSONBody defines parameters for RecordTriage.
+type RecordTriageJSONBody map[string]interface{}
+
+// RuntimeTypingJSONBody defines parameters for RuntimeTyping.
+type RuntimeTypingJSONBody struct {
+	ConversationId string `json:"conversationId"`
+	Done           *bool  `json:"done,omitempty"`
+}
+
+// WorklogClaimJSONBody defines parameters for WorklogClaim.
+type WorklogClaimJSONBody map[string]interface{}
+
+// WorklogReleaseJSONBody defines parameters for WorklogRelease.
+type WorklogReleaseJSONBody map[string]interface{}
+
+// EmailInboundWebhookJSONBody defines parameters for EmailInboundWebhook.
+type EmailInboundWebhookJSONBody map[string]interface{}
 
 // AdminPutSettingsJSONRequestBody defines body for AdminPutSettings for application/json ContentType.
 type AdminPutSettingsJSONRequestBody AdminPutSettingsJSONBody
@@ -2441,5 +2571,74 @@ type WriteWorkspaceFileJSONRequestBody WriteWorkspaceFileJSONBody
 // AddWorkspaceMemberJSONRequestBody defines body for AddWorkspaceMember for application/json ContentType.
 type AddWorkspaceMemberJSONRequestBody AddWorkspaceMemberJSONBody
 
+// AgendaVerdictJSONRequestBody defines body for AgendaVerdict for application/json ContentType.
+type AgendaVerdictJSONRequestBody AgendaVerdictJSONBody
+
+// BusyClearJSONRequestBody defines body for BusyClear for application/json ContentType.
+type BusyClearJSONRequestBody BusyClearJSONBody
+
+// BusyHeartbeatJSONRequestBody defines body for BusyHeartbeat for application/json ContentType.
+type BusyHeartbeatJSONRequestBody BusyHeartbeatJSONBody
+
 // RuntimeCliJSONRequestBody defines body for RuntimeCli for application/json ContentType.
 type RuntimeCliJSONRequestBody RuntimeCliJSONBody
+
+// LoadContextJSONRequestBody defines body for LoadContext for application/json ContentType.
+type LoadContextJSONRequestBody LoadContextJSONBody
+
+// ResolveConversationCompanyJSONRequestBody defines body for ResolveConversationCompany for application/json ContentType.
+type ResolveConversationCompanyJSONRequestBody ResolveConversationCompanyJSONBody
+
+// RuntimeMarkReadJSONRequestBody defines body for RuntimeMarkRead for application/json ContentType.
+type RuntimeMarkReadJSONRequestBody RuntimeMarkReadJSONBody
+
+// RecordEventJSONRequestBody defines body for RecordEvent for application/json ContentType.
+type RecordEventJSONRequestBody RecordEventJSONBody
+
+// LoadFacesJSONRequestBody defines body for LoadFaces for application/json ContentType.
+type LoadFacesJSONRequestBody LoadFacesJSONBody
+
+// RecordLlmCallJSONRequestBody defines body for RecordLlmCall for application/json ContentType.
+type RecordLlmCallJSONRequestBody RecordLlmCallJSONBody
+
+// MemoryQueryJSONRequestBody defines body for MemoryQuery for application/json ContentType.
+type MemoryQueryJSONRequestBody = MemoryQueryJSONBody
+
+// PostNoticeJSONRequestBody defines body for PostNotice for application/json ContentType.
+type PostNoticeJSONRequestBody PostNoticeJSONBody
+
+// StartRunJSONRequestBody defines body for StartRun for application/json ContentType.
+type StartRunJSONRequestBody StartRunJSONBody
+
+// FinishRunJSONRequestBody defines body for FinishRun for application/json ContentType.
+type FinishRunJSONRequestBody FinishRunJSONBody
+
+// RunHeartbeatJSONRequestBody defines body for RunHeartbeat for application/json ContentType.
+type RunHeartbeatJSONRequestBody RunHeartbeatJSONBody
+
+// ReportStatusJSONRequestBody defines body for ReportStatus for application/json ContentType.
+type ReportStatusJSONRequestBody ReportStatusJSONBody
+
+// StatusHeartbeatJSONRequestBody defines body for StatusHeartbeat for application/json ContentType.
+type StatusHeartbeatJSONRequestBody StatusHeartbeatJSONBody
+
+// ThinkingMarkJSONRequestBody defines body for ThinkingMark for application/json ContentType.
+type ThinkingMarkJSONRequestBody ThinkingMarkJSONBody
+
+// ThinkingUnmarkJSONRequestBody defines body for ThinkingUnmark for application/json ContentType.
+type ThinkingUnmarkJSONRequestBody ThinkingUnmarkJSONBody
+
+// RecordTriageJSONRequestBody defines body for RecordTriage for application/json ContentType.
+type RecordTriageJSONRequestBody RecordTriageJSONBody
+
+// RuntimeTypingJSONRequestBody defines body for RuntimeTyping for application/json ContentType.
+type RuntimeTypingJSONRequestBody RuntimeTypingJSONBody
+
+// WorklogClaimJSONRequestBody defines body for WorklogClaim for application/json ContentType.
+type WorklogClaimJSONRequestBody WorklogClaimJSONBody
+
+// WorklogReleaseJSONRequestBody defines body for WorklogRelease for application/json ContentType.
+type WorklogReleaseJSONRequestBody WorklogReleaseJSONBody
+
+// EmailInboundWebhookJSONRequestBody defines body for EmailInboundWebhook for application/json ContentType.
+type EmailInboundWebhookJSONRequestBody EmailInboundWebhookJSONBody

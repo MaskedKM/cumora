@@ -189,20 +189,11 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 
-
-
-
-
-
-
 /** A Computer (agent host) as returned by GET /api/computers. */
 
 /** Universal-search response. The backend ranks results inside each bucket;
  *  the frontend renders them in this declared order (participants → rooms →
  *  groups → messages), matching the product priority. */
-
-
-
 
 
 /** A peek-view entry — either a 1-on-1 direct chat or a multi-agent
@@ -212,28 +203,15 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
  *  peek tab lets the user eavesdrop). */
 
 
-
-export type ApiAgentRunStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'stalled'
-export type ApiAgentEventLevel = 'debug' | 'info' | 'warn' | 'error'
+export type ApiAgentRunStatus = Schemas['AgentRunStatus']
+export type ApiAgentEventLevel = NonNullable<Schemas['AgentEvent']['level']>[number] | never
 
 
 // ── Triage cost-effectiveness ledger ──
-export type ApiTriageSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor'
+export type ApiTriageSource = Schemas['TriageSource']
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-export type ApiInvitationStatus = 'active' | 'revoked' | 'expired' | 'consumed'
+export type ApiInvitationStatus = Schemas['Invitation']['status']
 
 
 /** Returned exactly ONCE from the create endpoint. Embeds the freshly-minted
@@ -241,23 +219,11 @@ export type ApiInvitationStatus = 'active' | 'revoked' | 'expired' | 'consumed'
  *  the UI must surface this immediately for the user to copy / send. */
 
 
-export type ApiInvitationPreviewStatus =
-  | 'valid' | 'revoked' | 'expired' | 'consumed'
-  | 'wrong_email' | 'already_member' | 'not_found'
+export type ApiInvitationPreviewStatus = Schemas['InvitationPreview']['status']
 
 
-
-export type ShippingFeatureStatus =
-  | 'draft' | 'contract' | 'building' | 'verifying' | 'ready'
-  | 'releasing' | 'watching' | 'learned' | 'paused' | 'archived'
-export type ShippingVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'waived'
-
-
-
-
-
-
-
+export type ShippingFeatureStatus = Schemas['ShippingFeatureStatus']
+export type ShippingVerificationStatus = Schemas['ShippingVerification']['status']
 
 
 export const api = {
@@ -904,11 +870,6 @@ export const api = {
       { method: 'PUT', body: JSON.stringify({ body }) },
     ),
 }
-
-
-
-
-
 
 
 /** Body shape for create/update calendar event. The server validates each

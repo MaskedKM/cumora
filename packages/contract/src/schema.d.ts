@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/webhooks/email/inbound": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cloudflare email-gate 入站邮件回调(HMAC 签名验证,自有 JSON 解析器) */
+        post: operations["emailInboundWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -686,24 +703,6 @@ export interface paths {
         put?: never;
         /** 开/复用 DM */
         post: operations["openDirect"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/conversations/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2966,19 +2965,17 @@ export interface components {
             authorId: string;
             kind: components["schemas"]["MessageKind"];
             body: string;
-            /** Format: date-time */
-            at: string;
+            /**
+             * Format: date-time
+             * @description 仅 WS message.new 事件携带;REST 列表用 createdAt
+             */
+            at?: string;
             sequence: number;
             /** Format: date-time */
             createdAt?: string;
             reactions?: components["schemas"]["ReactionEntry"][];
             tool?: components["schemas"]["MessageTool"];
             attachment?: components["schemas"]["MessageAttachment"];
-            whisperLink?: {
-                pair: string[];
-                snippet: string;
-                count: number;
-            };
             email?: components["schemas"]["EmailFields"];
             poll?: components["schemas"]["PollPayload"];
             pollTallies?: components["schemas"]["PollTally"][];
@@ -3262,6 +3259,7 @@ export interface components {
                 email: string;
                 name: string;
                 emailVerified: boolean;
+                isAdmin?: boolean;
                 providers: string[];
             };
             companies: {
@@ -3787,13 +3785,13 @@ export interface components {
         };
         AdminUserDetail: components["schemas"]["AdminUser"] & {
             companies: {
-                id?: string;
-                name?: string;
-                slug?: string;
-                role?: string;
+                id: string;
+                name: string;
+                slug: string;
+                role: string;
                 /** Format: date-time */
-                createdAt?: string;
-                agentCount?: number;
+                createdAt: string;
+                agentCount: number;
             }[];
         };
         AdminWaitlistEntry: {
@@ -3813,34 +3811,34 @@ export interface components {
             decidedBy?: string | null;
         };
         AdminSettings: {
-            waitlist_enabled?: boolean;
-            signups_paused?: boolean;
+            waitlist_enabled: boolean;
+            signups_paused: boolean;
             /** @enum {string} */
-            cerebellum_route?: "remote" | "byoa";
-            cerebellum_local_engine?: string;
-            cerebellum_provider?: string;
-            cerebellum_base_url?: string;
-            cerebellum_model?: string;
-            cerebellum_api_key_configured?: boolean;
-            cerebellum_api_key_suffix?: string | null;
+            cerebellum_route: "remote" | "byoa";
+            cerebellum_local_engine: string;
+            cerebellum_provider: string;
+            cerebellum_base_url: string;
+            cerebellum_model: string;
+            cerebellum_api_key_configured: boolean;
+            cerebellum_api_key_suffix: string | null;
         };
         AdminStats: {
-            users?: {
-                total?: number;
-                admins?: number;
-                tiers?: {
-                    free?: number;
-                    pro?: number;
-                    max?: number;
+            users: {
+                total: number;
+                admins: number;
+                tiers: {
+                    free: number;
+                    pro: number;
+                    max: number;
                 };
             };
-            waitlist?: {
-                pending?: number;
-                approved?: number;
-                rejected?: number;
+            waitlist: {
+                pending: number;
+                approved: number;
+                rejected: number;
             };
-            companies?: number;
-            agents?: number;
+            companies: number;
+            agents: number;
         };
     };
     responses: never;
@@ -3851,6 +3849,37 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    emailInboundWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 签名不符 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;
@@ -4248,7 +4277,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4309,7 +4338,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4427,7 +4456,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4558,7 +4587,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4743,7 +4772,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4996,7 +5025,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5026,7 +5055,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5355,6 +5384,13 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
+                content?: never;
+            };
+            /** @description ok */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
                 content: {
                     "application/json": {
                         id: string;
@@ -5438,7 +5474,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6453,7 +6489,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6629,7 +6665,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6835,7 +6871,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6885,12 +6921,12 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
+                    "application/json": components["schemas"]["Ok"];
                 };
             };
         };
@@ -6938,12 +6974,17 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
+                    "application/json": {
+                        ok: boolean;
+                        /** @enum {string} */
+                        kind: "project" | "board_card" | "document";
+                        targetId: string;
+                    };
                 };
             };
         };
@@ -7438,7 +7479,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7503,7 +7544,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7612,7 +7653,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7677,7 +7718,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7747,7 +7788,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7808,7 +7849,7 @@ export interface operations {
         };
         responses: {
             /** @description ok */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7875,7 +7916,7 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    argv: unknown[];
                 };
             };
         };
@@ -7922,7 +7963,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationId: string;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8010,7 +8057,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    actionable?: boolean;
+                    focus?: string;
+                    reason?: string;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8030,7 +8085,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8052,7 +8111,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationIds: string[];
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8118,7 +8183,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    participantIds: string[];
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8184,7 +8255,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    status: components["schemas"]["Status"];
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8204,7 +8281,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    status: "working" | "thinking" | "waiting";
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8224,7 +8308,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationId: string;
+                    done?: boolean;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8244,7 +8335,18 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    trigger?: {
+                        [key: string]: unknown;
+                    };
+                    inputMessageIds?: string[];
+                    inboxCount?: number;
+                    fingerprint?: string;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8266,7 +8368,21 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    runId: string;
+                    kind: string;
+                    /** @enum {string} */
+                    level?: "debug" | "info" | "warn" | "error";
+                    title: string;
+                    data?: {
+                        [key: string]: unknown;
+                    };
+                    stage?: string;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8286,7 +8402,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8306,7 +8428,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8328,7 +8456,13 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8350,7 +8484,13 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8370,7 +8510,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    ttlSec?: number;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8390,7 +8536,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationIds?: string[];
+                    ttlSec?: number;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8410,7 +8563,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationIds: string[];
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8430,7 +8589,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationIds?: string[];
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8472,7 +8637,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8494,7 +8665,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8536,7 +8713,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationId: string;
+                    upToMessageId?: string;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {
@@ -8556,7 +8740,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description ok */
             200: {

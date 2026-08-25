@@ -1,3 +1,154 @@
+// Admin 域线上形状由契约生成(#48);LlmObservability 系为开放对象端点(规范未收
+// 具名 schema),暂保留手写,待收紧时并入。
+import type { components } from '@cumora/contract'
+
+type Schemas = components['schemas']
+
+export type Tier = Schemas['AdminUser']['tier']
+export type CerebellumRoute = Schemas['AdminSettings']['cerebellum_route']
+export type AdminUser = Schemas['AdminUser']
+export type AdminUserDetail = Schemas['AdminUserDetail']
+export type AdminWaitlistEntry = Schemas['AdminWaitlistEntry']
+export type AdminSettings = Schemas['AdminSettings']
+export type AdminSettingsPatch = Partial<AdminSettings> & { cerebellum_api_key?: string }
+export type AdminStats = Schemas['AdminStats']
+
+/** LLM 观测域(开放对象端点,规范未收具名 schema)的枚举镜像 —— 与 server llm-ledger 锁步。 */
+export type LlmCallPurpose =
+  | 'agent-turn' | 'convene-speech'
+  | 'inbox-triage' | 'synthetic-wake-gate' | 'agenda'
+  | 'compaction' | 'completion-verify' | 'steer-summary' | 'convene-decision'
+  | 'palette' | 'gender' | 'avatar-image' | 'agent-image'
+export type LlmCallStatus = 'ok' | 'rate_limited' | 'timeout' | 'failed'
+export type LlmCallSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor'
+
+export interface LlmSummary {
+  sinceDays: number
+  totalCalls: number
+  totalCostUsd: number
+  totalInputTokens: number
+  totalCachedInputTokens: number
+  totalOutputTokens: number
+  failureRate: number
+  rateLimitedCalls: number
+  topPurpose: { purpose: LlmCallPurpose; costUsd: number } | null
+  activeTenants: number
+  /** Overall cache hit rate over the window. Null when there's no input
+   *  traffic at all. The single best optimization knob — every cached input
+   *  token costs ~10× less. */
+  cacheHitRate: number | null
+  /** Upper-bound $ savings if EVERY input token were cached at the model's
+   *  own cached rate. Aspirational (cold one-shots can't cache). */
+  savableUsd: number
+}
+
+export interface LlmRollupRow {
+  purpose: LlmCallPurpose
+  model: string
+  source: LlmCallSource
+  calls: number
+  okCalls: number
+  failedCalls: number
+  rateLimitedCalls: number
+  inputTokens: number
+  cachedInputTokens: number
+  cacheCreationTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  costUsd: number
+  costEstimated: boolean
+  /** Upper-bound $ saved if this row's input were 100% cached (at the row
+   *  model's own cached rate). 'Money on the table'. */
+  savableUsd: number
+}
+
+export interface LlmTrendBucket {
+  day: string
+  purpose: LlmCallPurpose
+  costUsd: number
+  calls: number
+  /** Uncached input tokens for this (day, purpose) bucket. */
+  inputTokens: number
+  /** Cache-read input tokens for this bucket. */
+  cachedInputTokens: number
+}
+
+export interface LlmTopAgentRow {
+  agentId: string | null
+  companyId: string | null
+  agentName: string | null
+  agentAvatarUrl: string | null
+  agentAvatarBg: string | null
+  agentInitial: string | null
+  companyName: string | null
+  costUsd: number
+  calls: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+}
+
+export interface LlmTenantRow {
+  companyId: string
+  name: string | null
+  slug: string | null
+  costUsd: number
+  calls: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+}
+
+export interface LlmDaemonVersionRow {
+  daemonVersion: string
+  source: LlmCallSource
+  calls: number
+  costUsd: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  failureRate: number
+  firstSeen: string
+  lastSeen: string
+}
+
+export interface LlmObservabilityPayload {
+  summary: LlmSummary
+  rollup: LlmRollupRow[]
+  trend: LlmTrendBucket[]
+  topAgents: LlmTopAgentRow[]
+  tenants: LlmTenantRow[]
+  daemonVersions: LlmDaemonVersionRow[]
+}
+
+/** One raw call row returned by the drill-down endpoint. Same shape as the
+ *  server's LlmCallRow — kept here to avoid a server-only import. */
+export interface LlmCallRow {
+  id: string
+  createdAt: string
+  companyId: string | null
+  agentId: string | null
+  agentName: string | null
+  runId: string | null
+  conversationId: string | null
+  purpose: LlmCallPurpose
+  source: LlmCallSource
+  model: string
+  inputTokens: number
+  cachedInputTokens: number
+  cacheCreationTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  costUsd: number
+  costEstimated: boolean
+  measured: boolean
+  latencyMs: number | null
+  status: LlmCallStatus
+  error: string | null
+  extras: Record<string, unknown> | null
+  daemonVersion: string | null
+}
+
 /**
  * Admin API client — talks to /api/admin/*. Mirrors the shape of
  * src/api/client.ts but stays in this folder so the admin bundle can
@@ -48,115 +199,6 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export type Tier = 'free' | 'pro' | 'max'
-
-export interface AdminUser {
-  id: string
-  email: string
-  name: string
-  /** Always non-null: server falls back to a gravatar identicon when
-   *  users.avatar_url is NULL (legacy users / dev seed). */
-  avatarUrl: string
-  tier: Tier
-  isAdmin: boolean
-  sub2apiUserId: number | null
-  createdAt: string
-  lastLoginAt: string | null
-  companyCount: number
-  /** Suspension snapshot. `suspended` is the derived boolean the row
-   *  badges off; the timestamp + reason + actor are surfaced in the
-   *  detail drawer. All three nested fields are null when the account
-   *  is active. */
-  suspended: boolean
-  suspendedAt: string | null
-  suspensionReason: string | null
-  suspendedBy: string | null
-}
-
-export interface AdminUserDetail extends AdminUser {
-  companies: Array<{
-    id: string
-    name: string
-    slug: string
-    role: string
-    createdAt: string
-    agentCount: number
-  }>
-}
-
-export interface AdminWaitlistEntry {
-  id: string
-  provider: string
-  providerId: string
-  email: string
-  displayName: string
-  avatarUrl: string
-  status: 'pending' | 'approved' | 'rejected'
-  note: string | null
-  requestedAt: string
-  decidedAt: string | null
-  decidedBy: string | null
-}
-
-export type CerebellumRoute = 'remote' | 'byoa'
-
-export interface AdminSettings {
-  waitlist_enabled: boolean
-  signups_paused: boolean
-  cerebellum_route: CerebellumRoute
-  cerebellum_local_engine: string
-  cerebellum_provider: string
-  cerebellum_base_url: string
-  cerebellum_model: string
-  /** API key is write-only (see `AdminSettingsPatch`) — GET only ever
-   *  reflects configured-ness + a masked suffix, never the plaintext. */
-  cerebellum_api_key_configured: boolean
-  cerebellum_api_key_suffix: string | null
-}
-
-/** PUT body: everything in `AdminSettings` is settable as-is, plus the
- *  write-only `cerebellum_api_key` (a new plaintext value to encrypt, or
- *  omitted to leave the stored key untouched). */
-export type AdminSettingsPatch = Partial<AdminSettings> & { cerebellum_api_key?: string }
-
-export interface AdminStats {
-  users: { total: number; admins: number; tiers: { free: number; pro: number; max: number } }
-  waitlist: { pending: number; approved: number; rejected: number }
-  companies: number
-  agents: number
-}
-
-/** The exhaustive purpose set the server's LlmCallPurpose enum exports. The
- *  client mirrors it so the page can render purpose-specific labels / colors
- *  without paying a runtime fetch. Keep in lockstep with llm-ledger.ts. */
-export type LlmCallPurpose =
-  | 'agent-turn' | 'convene-speech'
-  | 'inbox-triage' | 'synthetic-wake-gate' | 'agenda'
-  | 'compaction' | 'completion-verify' | 'steer-summary' | 'convene-decision'
-  | 'palette' | 'gender' | 'avatar-image' | 'agent-image'
-
-export type LlmCallStatus = 'ok' | 'rate_limited' | 'timeout' | 'failed'
-export type LlmCallSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor'
-
-export interface LlmSummary {
-  sinceDays: number
-  totalCalls: number
-  totalCostUsd: number
-  totalInputTokens: number
-  totalCachedInputTokens: number
-  totalOutputTokens: number
-  failureRate: number
-  rateLimitedCalls: number
-  topPurpose: { purpose: LlmCallPurpose; costUsd: number } | null
-  activeTenants: number
-  /** Overall cache hit rate over the window. Null when there's no input
-   *  traffic at all. The single best optimization knob — every cached input
-   *  token costs ~10× less. */
-  cacheHitRate: number | null
-  /** Upper-bound $ savings if EVERY input token were cached at the model's
-   *  own cached rate. Aspirational (cold one-shots can't cache). */
-  savableUsd: number
-}
 
 export interface LlmRollupRow {
   purpose: LlmCallPurpose

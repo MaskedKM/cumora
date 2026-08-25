@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 
 const ROUTERS = [
   ['/api', 'server/src/api/router.ts', /\bapi\./],
+  ['/webhooks/email', 'server/src/api/inbound-email.ts', /\binboundEmailRouter\./],
   ['/api/admin', 'server/src/api/admin-router.ts', /\badminRouter\./],
   ['/api/shipping', 'server/src/api/shipping-router.ts', /\brouter\./],
   ['/api/workspaces', 'server/src/api/workspaces-router.ts', /\brouter\./],
@@ -11,6 +12,28 @@ const ROUTERS = [
 ]
 const METHOD = /\.(get|post|put|patch|delete)\(\s*'([^']+)'/
 const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
+
+// 挂载哨兵:扫 index.ts 与主 router 的 app.use/api.use 挂载点,任何挂在
+// 未登记前缀上的子路由都会让守卫失败(防"路由在但守卫看不见")。
+const MOUNT = /(?:app|api)\.use\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)/g
+const MOUNTED_PREFIXES = new Set()
+for (const f of ['server/src/index.ts', 'server/src/api/router.ts']) {
+  const text = readFileSync(f, 'utf8')
+  for (const m of text.matchAll(MOUNT)) {
+    if (!/router|Router/.test(m[2])) continue
+    MOUNTED_PREFIXES.add(m[1])
+  }
+}
+// 相对挂载点:api 内挂 /admin|/shipping|/workspaces(= /api/*),index 挂 /runtime
+const KNOWN = new Set([
+  '/api', '/webhooks/email', '/uploads', '/uploads/capabilities',
+  '/admin', '/shipping', '/workspaces', '/runtime',
+])
+const rogue = [...MOUNTED_PREFIXES].filter((x) => !KNOWN.has(x))
+if (rogue.length) {
+  console.error('[contract] 发现未登记的挂载点(进 ROUTERS 或登记豁免):\n' + rogue.map((x) => '  ' + x).join('\n'))
+  process.exit(1)
+}
 
 const src = new Set()
 for (const [prefix, file, owner] of ROUTERS) {
