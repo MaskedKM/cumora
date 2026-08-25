@@ -1,55 +1,39 @@
 /**
- * 验收镜像 · computers/agents/boards/calendar/documents 域(#49)。
+ * 验收镜像 · computers/agents/boards/calendar/documents/observability 域(#49)—— 公共脚手架见 _helpers.startMirror。
  */
-import { test, before, beforeEach, after } from 'node:test'
+import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { pool } from '../db/pool.js'
 import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
 } from './_helpers.js'
 
 const USER = 'u-mirror-ag'
 const COMPANY = 'c-mirror-ag'
-let server: Server
-let baseUrl: string
 
-before(async () => {
-  await ensureSchemaOnce()
-  const app = await buildApiTestApp(USER)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const a = server.address()
-      if (a && typeof a === 'object') baseUrl = `http://127.0.0.1:${a.port}`
-      resolve()
-    })
-  })
-  if (MIRROR_BASE) baseUrl = MIRROR_BASE
-})
-
-beforeEach(async () => {
-  await resetAllTables()
+async function seedCompanyAndUser(): Promise<void> {
   await pool.query(
     `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, 'Mirror Co', $2, $3)`,
     [COMPANY, COMPANY.replace(/[^a-z0-9]/g, '-'), USER],
   )
   await seedUserMembership(USER, COMPANY)
+}
+
+await ensureSchemaOnce()
+const mirror = startMirror(USER, COMPANY)
+const call = mirror.call
+
+beforeEach(async () => {
+  await resetAllTables()
+  await seedCompanyAndUser()
 })
 
-after(async () => { await teardownAll(server) })
-
-async function call(path: string, init?: RequestInit): Promise<{ status: number; json: any }> {
-  const res = await fetch(`${baseUrl}/api${path}`, {
-    ...init,
-    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...(init?.headers ?? {}) },
-  })
-  return { status: res.status, json: await res.json().catch(() => null) }
-}
+after(async () => { await mirror.close(); await teardownAll() })
 
 async function seedAgent(id: string): Promise<void> {
   await pool.query(
-    `INSERT INTO participants (id, company_id, kind, name, initial, avatar_bg, status, engine, computer_id)
-     VALUES ($1, $2, 'agent', $3, 'A', '#111111', 'resting', NULL, NULL)
+    `INSERT INTO participants (id, company_id, kind, name, initial, avatar_bg, status)
+     VALUES ($1, $2, 'agent', $3, 'A', '#111111', 'resting')
      ON CONFLICT (id, company_id) DO NOTHING`,
     [id, COMPANY, id],
   )
@@ -84,7 +68,7 @@ test('[mirror] agents: create → update → list → autonomy → offboard → 
   assert.equal(typeof auto.json.threshold, 'number')
   const allAuto = await call('/agents/autonomy')
   assert.equal(allAuto.status, 200)
-  assert.ok(allAuto.json.length >= 1)
+  assert.ok(allAuto.json.some((a: any) => a.agentId === id))
 
   const off = await call(`/agents/${id}`, { method: 'DELETE' })
   assert.equal(off.status, 200)
@@ -154,6 +138,7 @@ test('[mirror] documents: create/get/rename/collaborators/delete', async () => {
   assert.equal(renamed.json.title, 'Renamed Doc')
   const collab = await call(`/documents/${id}/collaborators`, { method: 'PUT', body: JSON.stringify({ participantIds: [] }) })
   assert.equal(collab.status, 200)
+  assert.deepEqual(collab.json.collaborators, [])
   const list = await call('/documents')
   assert.equal(list.status, 200)
   assert.ok(list.json.documents.some((d: any) => d.id === id))
@@ -171,6 +156,7 @@ test('[mirror] observability surfaces respond with arrays/objects', async () => 
   assert.equal(typeof triage.json.sinceHours, 'number')
   const spend = await call('/agents/observability/llm-spend')
   assert.equal(spend.status, 200)
+  assert.ok(Array.isArray(spend.json))
 })
 
 test('[mirror] devtools capabilities + peek agent-chats', async () => {

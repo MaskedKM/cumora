@@ -31,6 +31,8 @@ export function ensureSchemaOnce(): Promise<void> {
  *  constraints; CASCADE on the parents handles it but listing explicitly
  *  keeps the intent visible + lets us spot-check leakage. */
 const TABLES_TO_WIPE: readonly string[] = [
+  'user_preferences',
+  'agent_autonomy',
   'shipping_events',
   'shipping_regressions',
   'shipping_friction_reports',
@@ -137,11 +139,17 @@ export async function buildTestApp(): Promise<import('express').Express> {
   return app
 }
 
-/** 验收镜像的统一请求面(#49):同一 helper 既能打 in-process app(默认,
- * 也是既有全部测试的形态),也能打任意 base URL——设 CUMORA_MIRROR_BASE
- * 即可把整套镜像指向 Go 候选实现,差异即回归。 */
+/** 验收镜像的统一请求面(#49)。
+ *
+ * 双跑前提:设 CUMORA_MIRROR_BASE 即把整套镜像指向 Go 候选——但目标必须
+ * 共享同一测试 Postgres 与 Redis(beforeEach 仍经 TS pool 种行/TRUNCATE);
+ * 请求只带 content-type+x-company-id,无 Authorization——伪造 auth 在本
+ * 进程 app 内盖章,候选实现需在 dev 模式复刻同一约定或配令牌注入;
+ * 401 路径在此形态下不可测(盖章中间件从不拒绝)。 */
 export const MIRROR_BASE = process.env.CUMORA_MIRROR_BASE ?? ''
 
+/** Full /api router + 伪造 auth 中间件:把每个请求盖章为给定 userId。
+ * requireAuth() 只读该字段,handler 无从分辨——代价是 401 路径不可测。 */
 export async function buildApiTestApp(userId: string): Promise<import('express').Express> {
   const expressMod = await import('express')
   const express = expressMod.default
@@ -210,4 +218,46 @@ export async function teardownAll(server?: import('node:http').Server): Promise<
     redis.disconnect()
     sub.disconnect()
   } catch { /* ignore */ }
+}
+
+/** 镜像测试的公共脚手架:起 in-process app(或让位于 MIRROR_BASE)、
+ * 提供带 x-company-id 的 call()、beforeEach 种公司行。 */
+export function startMirror(user: string, company: string): {
+  call: (path: string, init?: RequestInit) => Promise<{ status: number; json: any }>
+  baseUrl: () => string
+  /** after() 里必调:关掉 in-process server(MIRROR_BASE 形态下为 no-op)。 */
+  close: () => Promise<void>
+} {
+  let base = ''
+  let server: import('node:http').Server | null = null
+  const ready = (async () => {
+    const app = await buildApiTestApp(user)
+    if (MIRROR_BASE) { base = MIRROR_BASE; return }
+    const { createServer } = await import('node:http')
+    server = createServer(app)
+    await new Promise<void>((resolve) => {
+      server!.listen(0, () => {
+        const a = server!.address()
+        if (a && typeof a === 'object') base = `http://127.0.0.1:${a.port}`
+        resolve()
+      })
+    })
+  })()
+  return {
+    baseUrl: () => base,
+    call: (path: string, init?: RequestInit) => (async () => {
+      await ready
+      const res = await fetch(`${base}/api${path}`, {
+        ...init,
+        headers: { 'content-type': 'application/json', 'x-company-id': company, ...(init?.headers ?? {}) },
+      })
+      return { status: res.status, json: await res.json().catch(() => null) }
+    })(),
+    close: async () => {
+      await ready
+      if (server?.listening) {
+        await new Promise<void>((resolve) => server!.close(() => resolve()))
+      }
+    },
+  }
 }

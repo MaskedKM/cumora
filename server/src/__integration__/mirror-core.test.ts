@@ -1,51 +1,34 @@
 /**
- * 验收镜像 · core 域(#49):auth/me/quota/companies/invitations/preferences/
- * uploads/push/search/projects —— 全外部行为(HTTP 往返),不触内部。
+ * 验收镜像 · core 域(#49)—— 公共脚手架见 _helpers.startMirror。
  */
-import { test, before, beforeEach, after } from 'node:test'
+import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { pool } from '../db/pool.js'
 import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
 } from './_helpers.js'
 
 const USER = 'u-mirror-core'
 const COMPANY = 'c-mirror-core'
-let server: Server
-let baseUrl: string
 
-before(async () => {
-  await ensureSchemaOnce()
-  const app = await buildApiTestApp(USER)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const a = server.address()
-      if (a && typeof a === 'object') baseUrl = `http://127.0.0.1:${a.port}`
-      resolve()
-    })
-  })
-  if (MIRROR_BASE) baseUrl = MIRROR_BASE
-})
-
-beforeEach(async () => {
-  await resetAllTables()
+async function seedCompanyAndUser(): Promise<void> {
   await pool.query(
     `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, 'Mirror Co', $2, $3)`,
     [COMPANY, COMPANY.replace(/[^a-z0-9]/g, '-'), USER],
   )
   await seedUserMembership(USER, COMPANY)
+}
+
+await ensureSchemaOnce()
+const mirror = startMirror(USER, COMPANY)
+const call = mirror.call
+
+beforeEach(async () => {
+  await resetAllTables()
+  await seedCompanyAndUser()
 })
 
-after(async () => { await teardownAll(server) })
-
-async function call(path: string, init?: RequestInit): Promise<{ status: number; json: any }> {
-  const res = await fetch(`${baseUrl}/api${path}`, {
-    ...init,
-    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...(init?.headers ?? {}) },
-  })
-  return { status: res.status, json: await res.json().catch(() => null) }
-}
+after(async () => { await mirror.close(); await teardownAll() })
 
 test('[mirror] GET /health and /livez are anonymous and ok', async () => {
   const h = await call('/health')
@@ -59,7 +42,8 @@ test('[mirror] GET /auth/me returns user+companies+capabilities', async () => {
   const r = await call('/auth/me')
   assert.equal(r.status, 200)
   assert.equal(r.json.user.id, USER)
-  assert.ok(Array.isArray(r.json.companies) && r.json.companies.length >= 1)
+  assert.ok(Array.isArray(r.json.companies))
+  assert.ok(r.json.companies.some((c: any) => c.id === COMPANY))
   assert.equal(typeof r.json.serverCapabilities.invitationEmail, 'boolean')
 })
 
@@ -179,7 +163,7 @@ test('[mirror] projects list/create/update/archive', async () => {
   assert.equal(arch.json.status, 'archived')
 })
 
-test('[mirror] unknown route → 404 JSON error', async () => {
+test('[mirror] unknown route → 404(baseline 为 Express 默认 HTML 体,不承诺 JSON)', async () => {
   const r = await call('/definitely-not-a-route')
   assert.equal(r.status, 404)
 })
