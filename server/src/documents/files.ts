@@ -34,13 +34,71 @@
  * garbage collected. This is what makes "read stays consistent across a
  * concurrent sync" possible without locking readers.
  */
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, realpathSync } from 'node:fs'
 import {
   open as fsOpen, mkdir, rename, rm, readdir, stat, link, readFile, writeFile,
 } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { pool } from '../db/pool.js'
+import type { PoolClient } from 'pg'
+import { env } from '../env.js'
+
+/* ============== bind-time allowlist (Wren MUST FIX 1) ============== *
+ *
+ * A binding's local_root must resolve, via a REAL filesystem realpath (not
+ * a string-prefix check on the raw input), inside one of
+ * env.FILE_BINDING_ALLOWLIST_ROOTS. Fail closed: an empty allowlist means
+ * every bind is rejected, not "fall back to some default root" — a
+ * misconfigured deployment should refuse the feature outright, not open a
+ * different unintended door.
+ *
+ * This check runs at bind time AND is re-verified on every sync/write —
+ * an allowlist entry (or the binding's local_root itself) could change
+ * between when a binding was created and when it's used, and re-checking
+ * costs one realpath call, cheap insurance against that drift.
+ */
+
+export class BindingNotAllowedError extends Error {
+  constructor(localRoot: string) {
+    super(`"${localRoot}" is not inside any allowlisted root — binding refused. Configure FILE_BINDING_ALLOWLIST_ROOTS to permit it.`)
+    this.name = 'BindingNotAllowedError'
+  }
+}
+
+/** Resolve `candidateRoot` to its real, symlink-free path and verify it
+ *  falls under one of the configured allowlist roots (also realpath'd, so
+ *  a symlinked allowlist entry can't be used to widen the effective
+ *  boundary). Returns the canonical path to store/use — callers must use
+ *  THIS value, not the caller-supplied string, so later checks compare
+ *  apples to apples. */
+export function assertAllowlistedBindingRoot(candidateRoot: string): string {
+  if (env.FILE_BINDING_ALLOWLIST_ROOTS.length === 0) {
+    throw new BindingNotAllowedError(candidateRoot)
+  }
+  let canonical: string
+  try {
+    canonical = realpathSync(candidateRoot)
+  } catch {
+    // Nonexistent path, permission denied, etc. — fail closed, same as
+    // "not in the allowlist". Never treat an unresolvable path as
+    // implicitly safe.
+    throw new BindingNotAllowedError(candidateRoot)
+  }
+  const isAllowed = env.FILE_BINDING_ALLOWLIST_ROOTS.some((root) => {
+    let canonicalRoot: string
+    try {
+      canonicalRoot = realpathSync(root)
+    } catch {
+      return false // a misconfigured allowlist entry never grants access
+    }
+    // Path-segment prefix, not string prefix — "/x/bound-evil" must not
+    // match root "/x/bound" (Nova's D1 finding, applied here too).
+    return canonical === canonicalRoot || canonical.startsWith(canonicalRoot + sep)
+  })
+  if (!isAllowed) throw new BindingNotAllowedError(candidateRoot)
+  return canonical
+}
 
 /* ============== fd-relative sandbox (Wren MUST FIX 1) ============== *
  *
@@ -260,7 +318,17 @@ async function buildSnapshot(
  *  final path, then CAS-advance the file's version pointer in the same
  *  DB transaction. Returns the new version, or null if a concurrent
  *  writer already published first (caller's snapshot becomes orphaned —
- *  left in place for the retention window, not deleted here). */
+ *  left in place for the retention window, not deleted here).
+ *
+ *  `externalClient`: when provided, this call joins the CALLER's existing
+ *  transaction (BEGIN/COMMIT/ROLLBACK are the caller's responsibility) —
+ *  required by writeFileAtVersion so its advisory lock (held on that same
+ *  client) actually covers this UPDATE. Without this, a lock taken on one
+ *  pool connection would not serialize an UPDATE issued on a different
+ *  pooled connection, defeating the lock entirely (Wren's MUST FIX 2
+ *  follow-up). When omitted, this function manages its own connection and
+ *  transaction — the shape syncBinding uses, which has no concurrent
+ *  writer to race against within a single sync pass. */
 async function publishSnapshot(
   bindingId: string,
   fileId: string,
@@ -269,6 +337,7 @@ async function publishSnapshot(
   snapshotHash: string,
   fileContentHash: string,
   authorId: string,
+  externalClient?: PoolClient,
 ): Promise<bigint | null> {
   const snapshotId = randomUUID()
   const finalDir = snapshotDir(bindingId, snapshotId)
@@ -280,9 +349,10 @@ async function publishSnapshot(
   // the same "unreferenced" basis as an abandoned publish race).
   await rename(builtDir, finalDir)
 
-  const client = await pool.connect()
+  const ownsConnection = !externalClient
+  const client = externalClient ?? await pool.connect()
   try {
-    await client.query('BEGIN')
+    if (ownsConnection) await client.query('BEGIN')
     const newVersion = expectedVersion + 1n
     const updateResult = await client.query(
       `UPDATE files SET current_version = $1, updated_at = NOW()
@@ -295,7 +365,7 @@ async function publishSnapshot(
       // rather than deleting it here (a concurrent reader may have
       // already resolved a pin against this exact directory in the tiny
       // gap between CAS failing and this function returning).
-      await client.query('ROLLBACK')
+      if (ownsConnection) await client.query('ROLLBACK')
       return null
     }
     await client.query(
@@ -303,13 +373,13 @@ async function publishSnapshot(
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [fileId, newVersion.toString(), finalDir, snapshotHash, fileContentHash, authorId],
     )
-    await client.query('COMMIT')
+    if (ownsConnection) await client.query('COMMIT')
     return newVersion
   } catch (e) {
-    await client.query('ROLLBACK')
+    if (ownsConnection) await client.query('ROLLBACK')
     throw e
   } finally {
-    client.release()
+    if (ownsConnection) client.release()
   }
 }
 
@@ -336,6 +406,10 @@ export interface FileRow {
  *  own per-file CAS — so a conflicting concurrent write to file A never
  *  blocks the sync of unrelated file B. */
 export async function syncBinding(binding: FileBindingRow, actorId: string): Promise<{ synced: number; conflicted: string[]; deleted: string[] }> {
+  // Re-verify on every sync, not just at bind time — the allowlist config
+  // or the binding's local_root could have drifted since binding creation.
+  assertAllowlistedBindingRoot(binding.localRoot)
+
   const { rows: fileRows } = await pool.query<{ id: string; rel_path: string; current_version: string; deleted_at: Date | null }>(
     `SELECT id, rel_path, current_version, deleted_at FROM files WHERE binding_id = $1`,
     [binding.id],
@@ -508,44 +582,101 @@ export async function writeFileAtVersion(
   expectedVersion: bigint,
   content: Buffer,
   authorId: string,
+  /** Test-only hook, fired immediately before the advisory-lock query is
+   *  issued (i.e. this call is genuinely about to contend for the lock,
+   *  not merely "the promise exists"). Production callers never pass
+   *  this — it exists so a concurrency test can synchronize on the exact
+   *  instant a second writer starts waiting, instead of inferring it from
+   *  timing, which Wren's review correctly flagged as non-deterministic. */
+  onBeforeLock?: () => void,
+  /** Test-only hook, awaited immediately AFTER the advisory lock is
+   *  granted and before any disk/DB work in the critical section runs.
+   *  Lets a concurrency test hold a winning writer inside the critical
+   *  section while a second writer reaches (and is provably blocked at)
+   *  the same lock, before releasing the first. Production callers never
+   *  pass this. */
+  onAfterLock?: () => Promise<void>,
 ): Promise<bigint> {
-  // Deletion check MUST happen before any disk write below — writing
-  // first and checking after would recreate the file on disk before the
-  // rejection even fires, which is exactly the bug being fixed here.
-  const { rows: deletionCheck } = await pool.query<{ deleted_at: Date | null }>(
-    `SELECT deleted_at FROM files WHERE id = $1`,
-    [fileId],
-  )
-  if (deletionCheck[0]?.deleted_at) throw new FileDeletedError(relPath)
+  // Re-verify the allowlist on every write, not just at bind time — see
+  // syncBinding's identical check for why this can't be a bind-time-only
+  // gate.
+  assertAllowlistedBindingRoot(binding.localRoot)
 
-  // ① sandbox: write goes through the local_root via the fd-relative
-  // walk, never a bare join+write — this is the write path Wren's MUST
-  // FIX 1 was about, applied to writes not just reads.
-  const handle = await openBeneath(
-    binding.localRoot,
-    relPath,
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC,
-  )
+  // Wren's MUST FIX 2: the previous version checked the CAS token, then
+  // wrote to disk, then separately re-checked CAS when publishing — but
+  // between the first check and the disk write, nothing stopped a second
+  // concurrent writer from ALSO passing its own first check (current_version
+  // hadn't moved yet) and racing to overwrite the same file on disk. The
+  // loser's content could land on disk even though its call correctly
+  // reported a conflict. A Postgres session-scoped advisory transaction
+  // lock closes this: only one writer at a time can hold the lock for this
+  // fileId, and precheck -> disk write -> snapshot publish all run on the
+  // SAME client inside the SAME transaction, so nothing else can interleave.
+  // (Locking on `hashtext(fileId)` — a UUID string, not a bigint — Postgres
+  // advisory locks take a bigint key; hashtext gives a stable one without
+  // a separate lock-id column.)
+  const client = await pool.connect()
   try {
-    await handle.writeFile(content)
-  } finally {
-    await handle.close()
-  }
+    await client.query('BEGIN')
+    onBeforeLock?.()
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [fileId])
+    if (onAfterLock) await onAfterLock()
 
-  const { rows: latestSnapRows } = await pool.query<{ storage_key: string }>(
-    `SELECT storage_key FROM file_snapshots WHERE file_id = $1 ORDER BY version DESC LIMIT 1`,
-    [fileId],
-  )
-  const built = await buildSnapshot(binding.id, binding.localRoot, latestSnapRows[0]?.storage_key ?? null)
-  const fileContentHash = built.fileHashes.get(relPath) ?? built.hash
-  const published = await publishSnapshot(
-    binding.id, fileId, expectedVersion, built.dir, built.hash, fileContentHash, authorId,
-  )
-  if (published === null) {
-    await rm(built.dir, { recursive: true, force: true })
-    throw new FileConflictError(relPath, expectedVersion)
+    // Deletion check MUST happen before any disk write below — writing
+    // first and checking after would recreate the file on disk before the
+    // rejection even fires, which is exactly the bug being fixed here.
+    const { rows: fileRows } = await client.query<{ deleted_at: Date | null; current_version: string }>(
+      `SELECT deleted_at, current_version FROM files WHERE id = $1`,
+      [fileId],
+    )
+    if (fileRows[0]?.deleted_at) throw new FileDeletedError(relPath)
+    if (!fileRows[0] || BigInt(fileRows[0].current_version) !== expectedVersion) {
+      throw new FileConflictError(relPath, expectedVersion)
+    }
+
+    // ① sandbox: write goes through the local_root via the fd-relative
+    // walk, never a bare join+write — this is the write path Wren's MUST
+    // FIX 1 was about, applied to writes not just reads. This fs call and
+    // everything below it run while still holding the advisory lock, so no
+    // other writer for this fileId can be mid-flight concurrently.
+    const handle = await openBeneath(
+      binding.localRoot,
+      relPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC,
+    )
+    try {
+      await handle.writeFile(content)
+    } finally {
+      await handle.close()
+    }
+
+    const { rows: latestSnapRows } = await client.query<{ storage_key: string }>(
+      `SELECT storage_key FROM file_snapshots WHERE file_id = $1 ORDER BY version DESC LIMIT 1`,
+      [fileId],
+    )
+    const built = await buildSnapshot(binding.id, binding.localRoot, latestSnapRows[0]?.storage_key ?? null)
+    const fileContentHash = built.fileHashes.get(relPath) ?? built.hash
+    // externalClient=client: publishSnapshot's UPDATE runs on this same
+    // client/transaction, inside the advisory lock — not a second pooled
+    // connection racing against it. Its CAS still can't fail here (we
+    // already verified current_version === expectedVersion above, under
+    // the lock, and nothing else can move it while we hold the lock) —
+    // kept for defense in depth, not because it's expected to fire.
+    const published = await publishSnapshot(
+      binding.id, fileId, expectedVersion, built.dir, built.hash, fileContentHash, authorId, client,
+    )
+    if (published === null) {
+      await rm(built.dir, { recursive: true, force: true })
+      throw new FileConflictError(relPath, expectedVersion)
+    }
+    await client.query('COMMIT')
+    return published
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
   }
-  return published
 }
 
 /** Retention sweep: delete snapshot directories for versions that are

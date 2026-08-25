@@ -17,3 +17,6 @@ Single-context repo. Glossary only — no implementation detail, no specs.
 **Engine** — the specific local CLI adapter a BYOA Computer runs (`claude` | `codex` | `grok` | `cursor`), implementing the `EngineAdapter` interface (`classify`, `run`/`startSession`, `probe`).
 
 **Cerebellum Route** — the deployment-wide setting deciding whether Cerebellum-tier calls go to a `remote` provider or the operator's `byoa` local engine, with automatic fallback to `remote` when the configured local engine isn't available on the calling agent's Computer.
+
+**Human-audience conversation** — a conversation in which every member except the speaking agent is a human: only humans will read what the agent says. Distinct from a direct conversation, which may also be agent-to-agent. Register rule: in human-audience conversations agents speak plain conversational human language; conversations whose audience includes other agents are exempt.
+_Avoid_: "DM", "private chat" (both conflate agent-to-agent directs with human-audience ones)

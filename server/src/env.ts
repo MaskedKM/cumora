@@ -502,6 +502,19 @@ export const env = {
    * of falling back to plaintext.
    */
   CUMORA_SECRETS_KEY: process.env.CUMORA_SECRETS_KEY ?? '',
+  /**
+   * Comma-separated absolute paths a shared-files binding (`POST
+   * /files/bind`) is allowed to point at. Wren's MUST FIX 1: without this,
+   * any company member could bind (and then sync+read) an arbitrary
+   * server-readable path — /etc, ~/.ssh, /var/log — and exfiltrate it
+   * through the files dimension. Deliberately NOT a fallback to the OS
+   * user's home directory or any other default: an empty/unset allowlist
+   * means bind requests are rejected outright (fail closed), not "allow
+   * everything under some guessed root." Configure explicitly per
+   * deployment — never hardcode a specific operator's absolute path here.
+   */
+  FILE_BINDING_ALLOWLIST_ROOTS: (process.env.FILE_BINDING_ALLOWLIST_ROOTS ?? '')
+    .split(',').map((s) => s.trim()).filter(Boolean),
 }
 
 // Production-secret gate: refuse to boot in production while any security

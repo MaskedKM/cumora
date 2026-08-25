@@ -167,24 +167,42 @@ test('writeFileAtVersion rejects a stale expectedVersion — CAS, not last-write
   assert.equal(read!.content.toString('utf8'), 'agent A wrote this')
 })
 
+// These three tests seed a REAL tracked file (via syncBinding) rather than
+// passing a fake fileId — MUST FIX 2's fix added a version/deletion check
+// against the real files row before any sandbox work runs, so a
+// nonexistent fileId now fails that check first (FileConflictError) and
+// never reaches the sandbox logic these tests exist to exercise. The
+// malicious PATH argument, not the fileId, is what's under test — a real,
+// valid fileId+version lets the call proceed far enough to reach the
+// sandbox check on the attacker-controlled relPath.
 test('sandbox rejects a relative path escaping the binding root via ../', async () => {
-  const { binding } = await seedBinding()
+  const { binding, localRoot } = await seedBinding()
+  await fsWriteFile(join(localRoot, 'legit.txt'), 'v1')
+  await syncBinding(binding, 'test-actor')
+  const row = await fileRowFor(binding.id, 'legit.txt')
   await assert.rejects(
-    () => writeFileAtVersion(binding, 'fake-id', '../../etc/passwd', 0n, Buffer.from('pwned'), 'attacker'),
+    () => writeFileAtVersion(binding, row.id, '../../etc/passwd', BigInt(row.current_version), Buffer.from('pwned'), 'attacker'),
     SandboxViolation,
   )
 })
 
 test('sandbox rejects an absolute path', async () => {
-  const { binding } = await seedBinding()
+  const { binding, localRoot } = await seedBinding()
+  await fsWriteFile(join(localRoot, 'legit.txt'), 'v1')
+  await syncBinding(binding, 'test-actor')
+  const row = await fileRowFor(binding.id, 'legit.txt')
   await assert.rejects(
-    () => writeFileAtVersion(binding, 'fake-id', '/etc/passwd', 0n, Buffer.from('pwned'), 'attacker'),
+    () => writeFileAtVersion(binding, row.id, '/etc/passwd', BigInt(row.current_version), Buffer.from('pwned'), 'attacker'),
     SandboxViolation,
   )
 })
 
 test('sandbox rejects a symlink planted inside the binding root pointing outside it', async () => {
   const { binding, localRoot } = await seedBinding()
+  await fsWriteFile(join(localRoot, 'legit.txt'), 'v1')
+  await syncBinding(binding, 'test-actor')
+  const row = await fileRowFor(binding.id, 'legit.txt')
+
   const outsideDir = await mkdtemp(join(tmpdir(), 'cumora-outside-'))
   const outsideSecret = join(outsideDir, 'secret.txt')
   await fsWriteFile(outsideSecret, 'should never be reachable')
@@ -195,7 +213,7 @@ test('sandbox rejects a symlink planted inside the binding root pointing outside
   await symlink(outsideDir, join(localRoot, 'escape-link'))
 
   await assert.rejects(
-    () => writeFileAtVersion(binding, 'fake-id', 'escape-link/secret.txt', 0n, Buffer.from('pwned'), 'attacker'),
+    () => writeFileAtVersion(binding, row.id, 'escape-link/secret.txt', BigInt(row.current_version), Buffer.from('pwned'), 'attacker'),
     SandboxViolation,
   )
 
@@ -340,4 +358,72 @@ test('deletion propagation: recreating a deleted file on disk and re-syncing un-
   // "deleted" state should block legitimate future writes.
   const newVersion = await writeFileAtVersion(binding, row.id, 'phoenix.txt', read!.version, Buffer.from('v3'), 'agent-Y')
   assert.equal(newVersion, read!.version + 1n)
+})
+
+test('MUST FIX 2 regression: two concurrent writers racing on the same file — loser must NOT land on disk', async () => {
+  const { binding, localRoot } = await seedBinding()
+  await fsWriteFile(join(localRoot, 'root.txt'), 'ORIGINAL')
+  await syncBinding(binding, 'test-actor')
+  const row = await fileRowFor(binding.id, 'root.txt')
+  const startVersion = BigInt(row.current_version)
+
+  // Deterministic barrier, narrowed per Wren's review: this proves "two
+  // writers reach the lock boundary at the same time; the loser's content
+  // never lands on disk" — NOT "B is provably parked in a DB-level wait
+  // state" (that would need polling pg_locks/pg_stat_activity, which Wren
+  // and I agreed adds complexity without strengthening the property this
+  // test actually needs). Sequence:
+  //   1. Writer A acquires the advisory lock, then pauses (onAfterLock)
+  //      before touching disk/DB, holding the lock the whole time.
+  //   2. Writer B is only started once A confirms it holds the lock —
+  //      B's onBeforeLock firing proves it has reached the lock boundary
+  //      while A still holds it, i.e. genuine overlap, not two calls
+  //      running sequentially by luck.
+  //   3. Release A → A completes its full critical section (disk write +
+  //      publish) and releases the lock.
+  //   4. B, now unblocked, runs its own critical section against a
+  //      current_version that A already advanced — B must see a conflict.
+  let releaseA: () => void
+  const aCanProceed = new Promise<void>((resolve) => { releaseA = resolve })
+  let aHoldsLock: () => void
+  const aHasLock = new Promise<void>((resolve) => { aHoldsLock = resolve })
+  let bReachedLock = false
+
+  const writerA = writeFileAtVersion(
+    binding, row.id, 'root.txt', startVersion, Buffer.from('WINNER-A'), 'agent-A',
+    undefined,
+    async () => { aHoldsLock(); await aCanProceed },
+  )
+  await aHasLock
+
+  const writerB = writeFileAtVersion(
+    binding, row.id, 'root.txt', startVersion, Buffer.from('LOSER-B'), 'agent-B',
+    () => { bReachedLock = true },
+  )
+  // Give B's promise a real tick to reach its onBeforeLock hook (it will
+  // then block on the advisory lock itself, since A holds it) before
+  // releasing A — otherwise "start B" and "release A" could reorder.
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(bReachedLock, true, 'writer B must have reached the lock boundary before A is released')
+
+  releaseA!()
+  const versionA = await writerA
+
+  const outcome = await Promise.allSettled([writerB])
+  const bResult = outcome[0]
+
+  assert.equal(bResult.status, 'rejected', 'writer B must see a conflict — its expectedVersion is stale once A published')
+  if (bResult.status === 'rejected') {
+    assert.ok(bResult.reason instanceof FileConflictError, `expected FileConflictError, got ${bResult.reason}`)
+  }
+
+  // The actual regression assertion: disk must hold A's content, not B's —
+  // this is what MUST FIX 2 was about. A rejected writer B is necessary
+  // but not sufficient; the original bug rejected B at the DB layer while
+  // B's content had ALREADY landed on disk.
+  const diskContent = await import('node:fs/promises').then((fs) => fs.readFile(join(localRoot, 'root.txt'), 'utf8'))
+  assert.equal(diskContent, 'WINNER-A', 'the loser\'s content must never have touched disk')
+
+  const finalRow = await fileRowFor(binding.id, 'root.txt')
+  assert.equal(BigInt(finalRow.current_version), versionA)
 })

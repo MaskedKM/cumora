@@ -20,14 +20,20 @@ import type { AuthedRequest } from '../auth.js'
 import {
   syncBinding, readFileAtVersion, pinCurrentVersion, writeFileAtVersion,
   SandboxViolation, FileConflictError, FileDeletedError,
+  assertAllowlistedBindingRoot, BindingNotAllowedError,
   type FileBindingRow,
 } from '../documents/files.js'
 
 type CompanyContext = { userId: string; companyId: string }
+type CompanyRoleContext = CompanyContext & { role: string }
 
 export interface FilesRouterDeps {
   pool: Pool
   requireCompany(req: Request & AuthedRequest): Promise<CompanyContext>
+  /** Wren's MUST FIX 1: binding a server-readable path is sensitive enough
+   *  that it must require an owner/admin role, not any company member —
+   *  mirrors how shipping-router.ts gates its admin-only mutations. */
+  requireCompanyRole(req: Request & AuthedRequest): Promise<CompanyRoleContext>
 }
 
 class FilesHttpError extends Error {
@@ -43,6 +49,7 @@ function safe(handler: (req: Request, res: Response) => Promise<void>) {
       if (e instanceof SandboxViolation) { res.status(400).json({ error: e.message }); return }
       if (e instanceof FileConflictError) { res.status(409).json({ error: e.message }); return }
       if (e instanceof FileDeletedError) { res.status(410).json({ error: e.message }); return }
+      if (e instanceof BindingNotAllowedError) { res.status(403).json({ error: e.message }); return }
       console.error('[files-router] unhandled error', e)
       res.status(500).json({ error: 'internal error' })
     }
@@ -80,13 +87,16 @@ function requireIfMatch(req: Request): bigint {
 }
 
 export function createFilesRouter(deps: FilesRouterDeps): Router {
-  const { pool, requireCompany } = deps
+  const { pool, requireCompany, requireCompanyRole } = deps
   const router = Router()
 
   // GET /files — list every known file under this workspace's binding.
   // Returns 404 shaped as an empty-ish response only via loadBindingForCompany's
   // explicit "no folder bound" error — this is verification standard #0
   // (isolation baseline): unbound reads report "unbound", not a crash.
+  // Deliberately does NOT return binding.localRoot (Wren's MUST FIX 1,
+  // item 3) — the absolute server-side path is not something every
+  // company member needs to see just to list tracked files.
   router.get('/', safe(async (req, res) => {
     const { companyId } = await requireCompany(req as Request & AuthedRequest)
     const binding = await loadBindingForCompany(pool, companyId)
@@ -95,7 +105,7 @@ export function createFilesRouter(deps: FilesRouterDeps): Router {
       [binding.id],
     )
     res.json({
-      binding: { id: binding.id, localRoot: binding.localRoot },
+      binding: { id: binding.id },
       files: rows.map((r) => ({ id: r.id, path: r.rel_path, version: r.current_version })),
     })
   }))
@@ -103,19 +113,32 @@ export function createFilesRouter(deps: FilesRouterDeps): Router {
   // POST /files/bind — create this workspace's one binding. One binding
   // per company today (see file_bindings' unique index on company_id) —
   // matches the requirement's "single, not multi-folder" scope.
+  //
+  // Wren's MUST FIX 1: this is the sensitive entry point. Gated to
+  // owner/admin (requireCompanyRole, not requireCompany — matches
+  // shipping-router.ts's admin-only mutations), and the path must resolve
+  // inside FILE_BINDING_ALLOWLIST_ROOTS. The stored local_root is the
+  // REALPATH'd canonical form assertAllowlistedBindingRoot returns, not
+  // the caller-supplied string — every later check compares against this
+  // canonical value, not a possibly-symlinked/relative original.
   router.post('/bind', safe(async (req, res) => {
-    const { userId, companyId } = await requireCompany(req as Request & AuthedRequest)
-    const localRoot = typeof req.body?.localRoot === 'string' ? req.body.localRoot.trim() : ''
-    if (!localRoot) throw new FilesHttpError(400, 'localRoot is required')
+    const { userId, companyId } = await requireCompanyRole(req as Request & AuthedRequest)
+    const requestedRoot = typeof req.body?.localRoot === 'string' ? req.body.localRoot.trim() : ''
+    if (!requestedRoot) throw new FilesHttpError(400, 'localRoot is required')
+    const canonicalRoot = assertAllowlistedBindingRoot(requestedRoot)
     const bindingId = randomUUID()
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO file_bindings (id, company_id, local_root, created_by)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (company_id) DO UPDATE SET local_root = EXCLUDED.local_root, updated_at = NOW()
        RETURNING id`,
-      [bindingId, companyId, localRoot, userId],
+      [bindingId, companyId, canonicalRoot, userId],
     )
-    res.status(201).json({ bindingId: rows[0].id, localRoot })
+    // Response omits localRoot too (MUST FIX 1 item 3) — the caller
+    // already knows what they asked to bind; echoing the canonical
+    // server path back doesn't serve a UI need that couldn't be met by
+    // just confirming success.
+    res.status(201).json({ bindingId: rows[0].id })
   }))
 
   // POST /files/sync — rebuild snapshots for every changed file. Each

@@ -1436,6 +1436,15 @@ CREATE TABLE IF NOT EXISTS file_bindings (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_bindings_company
   ON file_bindings(company_id);
+-- sync_generation: a per-binding counter advanced once at the START of
+-- each syncBinding call (see files.ts). Each file's published snapshot
+-- row records the generation it was published under. This is the
+-- "publish identity" Wren's review distinguished from content hashing:
+-- snapshot_hash proves two files' BYTES match, generation proves two
+-- files were part of the SAME sync pass — the property MUST FIX 4's
+-- acceptance test actually needs and a content hash cannot provide
+-- (identical bytes across two unrelated sync passes would hash the same).
+ALTER TABLE file_bindings ADD COLUMN IF NOT EXISTS sync_generation BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS files (
   id               TEXT PRIMARY KEY,
@@ -1487,6 +1496,15 @@ CREATE TABLE IF NOT EXISTS file_snapshots (
 -- with the composite instead — this feature has shipped zero real rows so
 -- far (still on its dev branch), so no backfill is needed, just the column.
 ALTER TABLE file_snapshots ADD COLUMN IF NOT EXISTS snapshot_hash TEXT NOT NULL DEFAULT '';
+-- sync_generation of the binding at the moment this snapshot was published
+-- (see file_bindings.sync_generation). This is the publish-identity field
+-- Wren's MUST FIX 4 follow-up asked for: "did these files come from the
+-- same sync pass", independent of whether their content bytes happen to
+-- match. Two files with different content can share a generation (same
+-- pass, different files); two files with identical content from two
+-- different sync passes will NOT share a generation, which snapshot_hash
+-- alone cannot distinguish.
+ALTER TABLE file_snapshots ADD COLUMN IF NOT EXISTS sync_generation BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_file_snapshots_file
   ON file_snapshots(file_id, version DESC);
 
