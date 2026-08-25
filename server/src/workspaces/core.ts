@@ -27,11 +27,12 @@ export type WorkspaceRow = {
   folder_path: string
   is_default: boolean
   created_at: Date
+  unbound_at: Date | null
 }
 
 export async function loadWorkspace(pool: Pool, companyId: string, id: string): Promise<WorkspaceRow> {
   const { rows } = await pool.query<WorkspaceRow>(
-    `SELECT id, company_id, name, folder_path, is_default, created_at
+    `SELECT id, company_id, name, folder_path, is_default, created_at, unbound_at
        FROM workspaces WHERE id = $1 AND company_id = $2`,
     [id, companyId],
   )
@@ -80,6 +81,7 @@ export async function resolveWorkspaceAccess(
   args: { companyId: string; participantId: string; workspaceId: string },
 ): Promise<WorkspaceRow> {
   const workspace = await loadWorkspace(pool, args.companyId, args.workspaceId)
+  if (workspace.unbound_at) throw new WorkspaceError(410, 'workspace is unbound')
   if (workspace.is_default) return workspace
   const { rows } = await pool.query(
     `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
