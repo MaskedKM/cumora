@@ -20,7 +20,7 @@ const DEV_URL = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5180'
 // Registering `app://cumora/` as a privileged scheme + serving every
 // request out of the packaged `dist/` directory normalises both classes
 // of paths: absolute `/foo` and relative `./foo` both end up as
-// `app://cumora/<path>` and resolve to `<resources>/dist/<path>`. The
+// `app://cumora/<path>` and resolve to `<resources>/apps/web/dist/<path>`. The
 // renderer otherwise can't tell it isn't running over plain http(s).
 //
 // Why `cumora` as the hostname (not `localhost`): the renderer's Origin
@@ -47,7 +47,7 @@ protocol.registerSchemesAsPrivileged([
  *  history still resolve. */
 function appProtocolFile(reqUrl) {
   const u = new URL(reqUrl)
-  const distRoot = path.join(__dirname, '..', 'dist')
+  const distRoot = path.join(__dirname, '..', 'apps', 'web', 'dist')
   let rel = decodeURIComponent(u.pathname).replace(/^\/+/, '')
   if (!rel || rel === 'index.html') rel = 'index.html'
   const resolved = path.normalize(path.join(distRoot, rel))
@@ -1234,7 +1234,7 @@ function createWindow() {
     // Serve over the app:// scheme registered above. `/` paths
     // (whether emitted by Vite or hard-coded in JSX) all flow through
     // the protocol handler in app.whenReady() and resolve from
-    // <resources>/dist. No more file:// 404s.
+    // <resources>/apps/web/dist. No more file:// 404s.
     //
     // Host name matters: it becomes the renderer's `Origin` header on
     // any cross-origin fetch. The cumora API server's

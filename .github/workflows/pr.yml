@@ -78,7 +78,7 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - name: tsc (client)
-        run: npx tsc --noEmit
+        run: npm run typecheck
       # `tsc (server)` was previously misconfigured to point at
       # tsconfig.node.json, whose `include` is just ["vite.config.ts"] —
       # so it typechecked exactly ONE file and missed every server bug
