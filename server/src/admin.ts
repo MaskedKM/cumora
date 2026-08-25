@@ -385,7 +385,7 @@ function buildWelcomeEmailHtml(args: {
                 </tr>
                 <tr>
                   <td style="font-family:${fontStack}; font-size:15px; font-weight:400; line-height:1.65; color:#233A53; padding:0 0 28px;">
-                    Your workspace is set up and your starter team &mdash; Atlas, Iris, Bram, and Nova &mdash; is already gathered there, ready to meet you. Sign in with the same Google or GitHub account you used to join the waitlist, and you&rsquo;ll land right in.
+                    Your team is set up and your starter team &mdash; Atlas, Iris, Bram, and Nova &mdash; is already gathered there, ready to meet you. Sign in with the same Google or GitHub account you used to join the waitlist, and you&rsquo;ll land right in.
                   </td>
                 </tr>${ctaBlock}
                 <tr>
@@ -452,7 +452,7 @@ async function sendWaitlistApprovedEmail(args: {
     ``,
     `You're in — welcome to Cumora.`,
     ``,
-    `Your workspace is set up and your starter team (Atlas, Iris, Bram, Nova) is already gathered there, ready to meet you.`,
+    `Your team is set up and your starter team (Atlas, Iris, Bram, Nova) is already gathered there, ready to meet you.`,
     ``,
     ctaLine,
     `Use the same Google or GitHub account you used to join the waitlist.`,
@@ -553,7 +553,7 @@ export async function approveWaitlist(waitlistId: string, decidedBy: string): Pr
         try {
           await client.query(
             `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
-            [companyId, `${row.display_name}'s workspace`, finalSlug, userId],
+            [companyId, `${row.display_name}'s team`, finalSlug, userId],
           )
           await client.query('RELEASE SAVEPOINT company_ins')
           break

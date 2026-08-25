@@ -311,7 +311,7 @@ export async function completeFlow(
   /** When this OAuth flow started from an invite link, the token is threaded
    *  through state. We use it ONLY to decide whether to auto-create a
    *  personal workspace for net-new users — invited users shouldn't end up
-   *  with a stray "Their Name's workspace" they'll never use. The accept
+   *  with a stray "Their Name's team" they'll never use. The accept
    *  endpoint redeems the actual invite separately. */
   inviteToken: string | null = null,
 ): Promise<CompletionResult> {
@@ -440,7 +440,7 @@ export async function findOrCreateUserByProfile(
         try {
           await client.query(
             `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
-            [companyId, `${profile.displayName}'s workspace`, finalSlug, userId],
+            [companyId, `${profile.displayName}'s team`, finalSlug, userId],
           )
           break
         } catch (e) {
