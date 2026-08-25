@@ -400,8 +400,8 @@ GLOBAL FLAGS:
 EXAMPLES:
   cumora groups --as iris
   cumora memory note "Yetone prefers warm palettes" --about yetone --as iris
-  cumora workspace write drafts/v3.md "# Hero v3..." --as iris
-  cumora workspace edit drafts/v3.md "warmth" "Sunday-morning warmth"
+  cumora ws write drafts/v3.md "# Hero v3..." --as iris
+  cumora ws edit drafts/v3.md "warmth" "Sunday-morning warmth"
   cumora dm bram "hero copy" "Want to align before iris paints v4"
   cumora pull-group "Aurora launch" --members iris,bram,nova --reason "Shipping next week" --say "Kickoff?"
   cumora react msg-abc123 🌤️
@@ -2400,7 +2400,7 @@ async function cmdSkills(parsed: ParsedArgs): Promise<CliResult> {
       `SELECT path FROM agent_workspace WHERE agent_id = $1 AND path = $2 LIMIT 1`,
       [me, path],
     )
-    if (existing[0]) return err(`skill "${name}" already exists — use \`cumora workspace edit ${path}\` to modify it, or \`cumora skills delete ${name}\` first`)
+    if (existing[0]) return err(`skill "${name}" already exists — use \`cumora ws edit ${path}\` to modify it, or \`cumora skills delete ${name}\` first`)
 
     const body = `---
 name: ${name}
@@ -2421,8 +2421,8 @@ on demand via \`cumora skills read ${name} references/<file>\`._
     )
     return ok(
       `created skill "${name}" at ${path}\n\n` +
-      `flesh it out: cumora workspace edit ${path} "<old>" "<new>"\n` +
-      `add scripts:  cumora workspace write skills/${name}/scripts/<file>.py "<body>"\n` +
+      `flesh it out: cumora ws edit ${path} "<old>" "<new>"\n` +
+      `add scripts:  cumora ws write skills/${name}/scripts/<file>.py "<body>"\n` +
       `read it back: cumora skills read ${name}`,
       [{
         event: 'skill.created',
