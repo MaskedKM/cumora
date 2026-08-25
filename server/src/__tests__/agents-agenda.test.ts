@@ -270,7 +270,7 @@ test('classifier request anchors "now" and renders card/event freshness relative
   }
   const now = Date.parse('2026-05-20T12:00:00Z')
   const req = buildAgendaClassifierRequest({
-    persona: { name: 'Nova', role: 'PM', style: '', model: null },
+    persona: { name: 'Nova', role: 'PM', style: '' },
     agenda,
     now,
   })

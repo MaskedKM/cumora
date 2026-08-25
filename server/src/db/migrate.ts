@@ -1740,6 +1740,42 @@ UPDATE participants p
    AND p.computer_id IS NULL
    AND p.company_id IS NOT NULL
    AND COALESCE(o.tier, 'free') <> 'free';
+
+-- ============== Workspaces (shared real folder per member scope) ======
+-- A workspace binds exactly one real folder on the host. The 1:1 is
+-- bidirectional and GLOBAL (not per-company): the same physical folder
+-- cannot host two workspaces, because then "the workspace's folder" and
+-- "the folder's workspace" would both be ambiguous. Paths are stored
+-- already realpath()-resolved by the API so alternate spellings of the
+-- same directory cannot slip past the unique constraint.
+CREATE TABLE IF NOT EXISTS workspaces (
+  id           TEXT PRIMARY KEY,
+  company_id   TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  folder_path  TEXT NOT NULL,
+  is_default   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  CONSTRAINT workspaces_folder_unique UNIQUE (folder_path)
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_company
+  ON workspaces(company_id, created_at ASC);
+
+-- Member scope of a workspace. 'explicit' rows are manually managed
+-- (added/removed through the API); 'implicit' rows will be derived from
+-- associations (projects / board cards / documents) by the Association
+-- ticket — derived rows are written here too so membership checks stay a
+-- single lookup.
+CREATE TABLE IF NOT EXISTS workspace_members (
+  workspace_id   TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  participant_id TEXT NOT NULL,
+  source         TEXT NOT NULL DEFAULT 'explicit',
+  added_by       TEXT,
+  created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (workspace_id, participant_id),
+  CONSTRAINT workspace_members_source_check CHECK (source IN ('explicit','implicit'))
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_participant
+  ON workspace_members(participant_id);
 `
 
 /** Postgres advisory-lock key for serializing concurrent

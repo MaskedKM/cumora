@@ -1,0 +1,309 @@
+import { Router, type Request, type Response, type NextFunction } from 'express'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { dirname, basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import type { Pool } from 'pg'
+import type { AuthedRequest } from '../auth.js'
+
+type CompanyContext = { userId: string; companyId: string }
+type CompanyRoleContext = CompanyContext & { role: string }
+
+export interface WorkspacesRouterDeps {
+  pool: Pool
+  requireCompany(req: Request & AuthedRequest): Promise<CompanyContext>
+  requireCompanyRole(req: Request & AuthedRequest): Promise<CompanyRoleContext>
+}
+
+class WorkspaceError extends Error {
+  constructor(public status: number, message: string) { super(message) }
+}
+
+/** Cap on file bodies moving through the workspace API in either
+ *  direction — a bound folder may contain arbitrarily large files, and
+ *  without this a read would buffer one whole in memory. */
+const MAX_FILE_BYTES = 2 * 1024 * 1024
+
+type WorkspaceRow = {
+  id: string
+  company_id: string
+  name: string
+  folder_path: string
+  is_default: boolean
+  created_at: Date
+}
+
+function text(value: unknown, max = 2_000): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : ''
+}
+
+async function isDirectory(p: string): Promise<boolean> {
+  try {
+    return (await stat(p)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function loadWorkspace(pool: Pool, companyId: string, id: string): Promise<WorkspaceRow> {
+  const { rows } = await pool.query<WorkspaceRow>(
+    `SELECT id, company_id, name, folder_path, is_default, created_at
+       FROM workspaces WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  )
+  if (!rows[0]) throw new WorkspaceError(404, 'workspace not found')
+  return rows[0]
+}
+
+function assertInside(root: string, abs: string): void {
+  const fromRoot = relative(root, abs)
+  if (fromRoot !== '' && (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))) {
+    throw new WorkspaceError(400, 'path escapes the workspace folder')
+  }
+}
+
+/** Resolve a caller-supplied path against the workspace folder and refuse
+ *  anything that escapes it. Two layers: `resolve()` normalizes `..`
+ *  segments (string level), then `realpath()` re-checks the resolved
+ *  target so a host-created symlink inside the folder cannot point an
+ *  operation outside it (the root itself is realpath-resolved at bind
+ *  time). A not-yet-existing target (PUT creating a file) falls back to
+ *  realpath-ing its parent directory. Containment, not a sandbox: members
+ *  hold full read/write inside the folder; the only boundary defended is
+ *  inside vs outside. */
+async function resolveInside(root: string, raw: unknown): Promise<{ abs: string; rel: string }> {
+  const rel = typeof raw === 'string' ? raw.trim() : ''
+  if (rel.includes('\0')) throw new WorkspaceError(400, 'invalid path')
+  const abs = resolve(root, rel)
+  assertInside(root, abs)
+  let real = abs
+  try {
+    real = await realpath(abs)
+  } catch {
+    try {
+      real = join(await realpath(dirname(abs)), basename(abs))
+    } catch {
+      real = abs
+    }
+  }
+  assertInside(root, real)
+  return { abs: real, rel: relative(root, real) }
+}
+
+async function requireWorkspaceMember(
+  deps: WorkspacesRouterDeps,
+  req: Request & AuthedRequest,
+  workspaceId: string,
+): Promise<{ userId: string; companyId: string; workspace: WorkspaceRow }> {
+  const { userId, companyId } = await deps.requireCompany(req)
+  const workspace = await loadWorkspace(deps.pool, companyId, workspaceId)
+  const { rows } = await deps.pool.query(
+    `SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2 LIMIT 1`,
+    [workspace.id, userId],
+  )
+  if (!rows[0]) throw new WorkspaceError(403, 'not a member of this workspace')
+  return { userId, companyId, workspace }
+}
+
+export function createWorkspacesRouter(deps: WorkspacesRouterDeps): Router {
+  const { pool } = deps
+  const router = Router()
+
+  // Create a workspace bound to a real folder. Privileged-only: binding
+  // exposes a host path to the product, so it stays an owner/admin action.
+  router.post('/', async (req, res) => {
+    const { userId, companyId } = await deps.requireCompanyRole(req)
+    const body = req.body ?? {}
+    const name = text(body.name, 80)
+    if (!name) throw new WorkspaceError(400, 'name required')
+    const rawPath = text(body.folderPath, 4_096)
+    if (!rawPath || !isAbsolute(rawPath)) throw new WorkspaceError(400, 'folderPath must be an absolute path')
+    let folder: string
+    try {
+      folder = await realpath(rawPath)
+    } catch {
+      throw new WorkspaceError(404, 'folder not found')
+    }
+    if (!(await isDirectory(folder))) throw new WorkspaceError(400, 'folderPath must be a directory')
+
+    const { rows: bound } = await pool.query<{ id: string }>(
+      `SELECT id FROM workspaces WHERE folder_path = $1 LIMIT 1`,
+      [folder],
+    )
+    if (bound[0]) throw new WorkspaceError(409, 'folder already bound to a workspace')
+
+    const id = `ws-${randomUUID().slice(0, 10)}`
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const inserted = await client.query<{ created_at: Date }>(
+        `INSERT INTO workspaces (id, company_id, name, folder_path)
+         VALUES ($1, $2, $3, $4) RETURNING created_at`,
+        [id, companyId, name, folder],
+      )
+      // The creator is the first explicit member — a freshly bound
+      // workspace with an empty member scope would be unusable (and
+      // unmanageable for anyone but other admins).
+      await client.query(
+        `INSERT INTO workspace_members (workspace_id, participant_id, source, added_by)
+         VALUES ($1, $2, 'explicit', $2)`,
+        [id, userId],
+      )
+      await client.query('COMMIT')
+      res.status(201).json({
+        id,
+        name,
+        folderPath: folder,
+        isDefault: false,
+        createdAt: inserted.rows[0].created_at,
+      })
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {})
+      if ((e as { code?: string }).code === '23505') {
+        throw new WorkspaceError(409, 'folder already bound to a workspace')
+      }
+      throw e
+    } finally {
+      client.release()
+    }
+  })
+
+  router.get('/', async (req, res) => {
+    const { companyId } = await deps.requireCompany(req)
+    const { rows } = await pool.query(
+      `SELECT w.id, w.name, w.is_default AS "isDefault", w.created_at AS "createdAt",
+              count(m.participant_id)::int AS "memberCount"
+         FROM workspaces w
+         LEFT JOIN workspace_members m ON m.workspace_id = w.id
+        WHERE w.company_id = $1
+        GROUP BY w.id
+        ORDER BY w.created_at ASC`,
+      [companyId],
+    )
+    res.json(rows)
+  })
+
+  // Visible to every company member (member scope is public inside the
+  // team); the bound folder path is privileged-only.
+  router.get('/:id', async (req, res) => {
+    const { userId, companyId } = await deps.requireCompany(req)
+    const workspace = await loadWorkspace(pool, companyId, req.params.id)
+    const members = await pool.query(
+      `SELECT m.participant_id AS "participantId", p.name, p.kind, m.source,
+              m.created_at AS "addedAt"
+         FROM workspace_members m
+         JOIN participants p ON p.id = m.participant_id AND p.company_id = $2
+        WHERE m.workspace_id = $1
+        ORDER BY m.created_at ASC`,
+      [workspace.id, companyId],
+    )
+    const role = await pool.query<{ role: string }>(
+      `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
+      [companyId, userId],
+    )
+    const privileged = role.rows[0]?.role === 'owner' || role.rows[0]?.role === 'admin'
+    res.json({
+      id: workspace.id,
+      name: workspace.name,
+      isDefault: workspace.is_default,
+      createdAt: workspace.created_at,
+      ...(privileged ? { folderPath: workspace.folder_path } : {}),
+      members: members.rows,
+    })
+  })
+
+  router.post('/:id/members', async (req, res) => {
+    const { userId, companyId } = await deps.requireCompanyRole(req)
+    const workspace = await loadWorkspace(pool, companyId, req.params.id)
+    const participantId = text((req.body ?? {}).participantId, 100)
+    if (!participantId) throw new WorkspaceError(400, 'participantId required')
+    const { rows: participant } = await pool.query(
+      `SELECT id FROM participants WHERE id = $1 AND company_id = $2 AND departed_at IS NULL LIMIT 1`,
+      [participantId, companyId],
+    )
+    if (!participant[0]) throw new WorkspaceError(404, 'participant not found in this company')
+    const { rowCount } = await pool.query(
+      `INSERT INTO workspace_members (workspace_id, participant_id, source, added_by)
+       VALUES ($1, $2, 'explicit', $3)
+       ON CONFLICT DO NOTHING`,
+      [workspace.id, participantId, userId],
+    )
+    if (rowCount === 0) throw new WorkspaceError(409, 'already a member of this workspace')
+    res.status(201).json({ ok: true })
+  })
+
+  // Only explicit rows are deletable here; implicit membership is owned by
+  // the association derivation (removal happens by ending the association
+  // or leaving the associated item).
+  router.delete('/:id/members/:participantId', async (req, res) => {
+    const { companyId } = await deps.requireCompanyRole(req)
+    const workspace = await loadWorkspace(pool, companyId, req.params.id)
+    const { rowCount } = await pool.query(
+      `DELETE FROM workspace_members
+        WHERE workspace_id = $1 AND participant_id = $2 AND source = 'explicit'`,
+      [workspace.id, req.params.participantId],
+    )
+    if (!rowCount) throw new WorkspaceError(404, 'not an explicit member of this workspace')
+    res.json({ ok: true })
+  })
+
+  router.get('/:id/files', async (req, res) => {
+    const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
+    const dir = await resolveInside(workspace.folder_path, req.query.path)
+    if (!(await isDirectory(dir.abs))) {
+      throw new WorkspaceError(400, 'path is not a directory inside the workspace folder')
+    }
+    const entries = await readdir(dir.abs, { withFileTypes: true })
+    const out = []
+    for (const entry of entries.slice(0, 500)) {
+      const s = await stat(join(dir.abs, entry.name)).catch(() => null)
+      out.push({
+        name: entry.name,
+        dir: entry.isDirectory(),
+        size: s?.size ?? null,
+        modifiedAt: s?.mtime.toISOString() ?? null,
+      })
+    }
+    res.json({ path: dir.rel, entries: out })
+  })
+
+  router.get('/:id/file', async (req, res) => {
+    const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
+    const target = await resolveInside(workspace.folder_path, req.query.path)
+    if (target.rel === '') throw new WorkspaceError(400, 'path required')
+    let s: Awaited<ReturnType<typeof stat>>
+    try {
+      s = await stat(target.abs)
+    } catch {
+      throw new WorkspaceError(404, 'file not found')
+    }
+    if (s.isDirectory()) throw new WorkspaceError(400, 'path is a directory')
+    if (s.size > MAX_FILE_BYTES) throw new WorkspaceError(413, 'file too large')
+    const body = await readFile(target.abs, 'utf8')
+    res.json({ path: target.rel, body, size: s.size, modifiedAt: s.mtime.toISOString() })
+  })
+
+  router.put('/:id/file', async (req, res) => {
+    const { workspace } = await requireWorkspaceMember(deps, req, req.params.id)
+    const target = await resolveInside(workspace.folder_path, req.query.path)
+    if (target.rel === '') throw new WorkspaceError(400, 'path required')
+    const content = (req.body ?? {}).body
+    if (typeof content !== 'string') throw new WorkspaceError(400, 'body required (string)')
+    if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new WorkspaceError(413, 'file too large')
+    if (await isDirectory(target.abs)) throw new WorkspaceError(400, 'path is a directory')
+    await mkdir(dirname(target.abs), { recursive: true })
+    await writeFile(target.abs, content, 'utf8')
+    res.json({ ok: true, path: target.rel })
+  })
+
+  // Mirror shipping-router: local error middleware maps WorkspaceError to
+  // its status; anything else bubbles to the parent router's handler.
+  router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof WorkspaceError) {
+      res.status(err.status).json({ error: err.message })
+      return
+    }
+    next(err)
+  })
+
+  return router
+}
