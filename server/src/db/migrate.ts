@@ -1778,6 +1778,9 @@ CREATE INDEX IF NOT EXISTS idx_workspace_members_participant
 -- instead. Databases that already ran the #27 DDL keep the column unless
 -- we drop it here.
 ALTER TABLE workspace_members DROP COLUMN IF EXISTS source;
+-- Exactly one default workspace per team (member scope = entire team).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_default_one_per_company
+  ON workspaces(company_id) WHERE is_default;
 
 -- Association links one of the three work-item kinds to a workspace; the
 -- target's participants thereby hold implicit workspace membership.
