@@ -1781,6 +1781,11 @@ ALTER TABLE workspace_members DROP COLUMN IF EXISTS source;
 -- Exactly one default workspace per team (member scope = entire team).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_default_one_per_company
   ON workspaces(company_id) WHERE is_default;
+-- Safe unbind (#34): an unbound workspace keeps its row (members and
+-- associations stay visible as inert history) but all access is refused;
+-- the folder itself is never touched.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS unbound_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS unbound_by TEXT;
 
 -- Association links one of the three work-item kinds to a workspace; the
 -- target's participants thereby hold implicit workspace membership.

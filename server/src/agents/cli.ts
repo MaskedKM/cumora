@@ -3921,7 +3921,8 @@ async function cmdTeamWorkspace(parsed: ParsedArgs): Promise<CliResult> {
   if (op === 'ls') {
     await ensureDefaultWorkspace(pool, tenant)
     const { rows } = await pool.query(
-      `SELECT id, name, is_default, created_at FROM workspaces WHERE company_id = $1 ORDER BY created_at ASC`,
+      `SELECT id, name, is_default, created_at FROM workspaces
+        WHERE company_id = $1 AND unbound_at IS NULL ORDER BY created_at ASC`,
       [tenant],
     )
     if (parsed.flags.json) return ok(JSON.stringify(rows, null, 2))

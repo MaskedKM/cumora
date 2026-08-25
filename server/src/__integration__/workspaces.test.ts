@@ -628,3 +628,75 @@ test('cross-company: another company cannot reach a team default workspace by it
     404,
   )
 })
+
+// ---------- Safe unbind (#34) ----------
+
+async function unbind(workspaceId: string, base: string = ownerBase): Promise<Response> {
+  return fetch(`${base}/api/workspaces/${workspaceId}/unbind`, { method: 'POST', headers: jsonHeaders(COMPANY) })
+}
+
+test('safe unbind: files untouched, all access refused, associations visible as inert history', async () => {
+  await writeFile(join(boundDir, 'keep.txt'), 'precious', 'utf8')
+  const { id } = await createWorkspaceJson()
+  await addMember(id, MEMBER)
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+
+  assert.equal((await unbind(id)).status, 200)
+
+  // Not a single file touched
+  assert.equal(await readFile(join(boundDir, 'keep.txt'), 'utf8'), 'precious')
+  assert.equal(await readFile(join(boundDir, 'a.txt'), 'utf8'), 'x')
+
+  // All access refused (410) for every file surface
+  assert.equal(await writeAs(id, 'b.txt', memberBase), 410)
+  assert.equal(
+    (await fetch(`${memberBase}/api/workspaces/${id}/file${q('keep.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
+    410,
+  )
+  assert.equal((await fetch(`${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status, 410)
+
+  // Hidden from the list; the detail shows the unbound state
+  const list = (await (await fetch(`${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })).json()) as Array<{
+    id: string
+  }>
+  assert.ok(!list.some((r) => r.id === id))
+  const detail = (await (
+    await fetch(`${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+  ).json()) as { unboundAt: string; unboundBy: string }
+  assert.ok(detail.unboundAt)
+  assert.equal(detail.unboundBy, OWNER)
+
+  // Mutations refused; idempotency explicit
+  assert.equal((await unbind(id)).status, 409)
+  assert.equal((await addMember(id, AGENT)).status, 410)
+})
+
+test('implicit access via associations ends at unbind; association create is 410; default never unbinds', async () => {
+  await seedProjectWithConversation([MEMBER])
+  const { id } = await createWorkspaceJson()
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
+  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+
+  assert.equal((await unbind(id)).status, 200)
+  assert.equal(await writeAs(id, 'b.txt', memberBase), 410) // implicit membership inert
+  assert.equal((await detailJson(id)).associations.length, 1) // still visible as history
+  assert.equal((await associate(id, 'board_card', 'nope')).status, 410) // guard precedes target lookup
+  // the audit record cannot be silently rewritten post-unbind
+  assert.equal(
+    (
+      await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+        method: 'DELETE',
+        headers: jsonHeaders(COMPANY),
+      })
+    ).status,
+    410,
+  )
+
+  const defId = await defaultWorkspaceId()
+  assert.equal((await unbind(defId)).status, 403)
+})
+
+test('only owner/admin can unbind', async () => {
+  const { id } = await createWorkspaceJson()
+  assert.equal((await unbind(id, memberBase)).status, 403)
+})

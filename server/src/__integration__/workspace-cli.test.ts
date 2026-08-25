@@ -124,3 +124,20 @@ test('ws still addresses the Private Area — vocabulary split (ADR 0002)', asyn
   assert.ok(!teamRead.ok)
   assert.match(teamRead.text, /file not found/)
 })
+
+test('unbound workspaces: hidden from CLI ls and refused on read/write', async () => {
+  const r = await runCliRaw(['workspace', 'ls', '--as', NOVA])
+  assert.ok(r.ok, r.text)
+  assert.match(r.text, /ws-t1/)
+  await pool.query(`UPDATE workspaces SET unbound_at = NOW(), unbound_by = $1 WHERE id = 'ws-t1'`, [NOVA])
+  const after = await runCliRaw(['workspace', 'ls', '--as', NOVA])
+  assert.ok(after.ok, after.text)
+  assert.ok(!after.text.includes('ws-t1'))
+
+  const read = await runCliRaw(['workspace', 'read', 'ws-t1', 'a.txt', '--as', NOVA])
+  assert.ok(!read.ok)
+  assert.equal(read.text, 'workspace is unbound')
+  const write = await runCliRaw(['workspace', 'write', 'ws-t1', 'a.txt', 'x', '--as', NOVA])
+  assert.ok(!write.ok)
+  assert.equal(write.text, 'workspace is unbound')
+})
