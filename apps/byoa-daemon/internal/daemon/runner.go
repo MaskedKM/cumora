@@ -284,9 +284,12 @@ func (r *AgentRunner) ensureEngineSession() EngineSession {
 	if sess != nil {
 		sess.Stop() // 已死——清干净再孵化
 	}
-	token := ""
-	if t, err := r.ensureToken(); err == nil {
-		token = t
+	// token 铸造失败时不孵化(空 token 的会话环境是半接线态;一次性路径
+	// 随后也会在 token 上失败并进入正常错误处理)。
+	token, err := r.ensureToken()
+	if err != nil {
+		slog.Warn("[computer] engine session spawn skipped (token mint failed)", "agent", r.agent.ID, "err", err)
+		return nil
 	}
 	newSess := r.adapter.StartSession(SessionArgs{
 		Home:            r.home,
@@ -310,6 +313,24 @@ func (r *AgentRunner) ensureEngineSession() EngineSession {
 		}
 	}
 	return newSess
+}
+
+// visibleEngineError:引擎错误的服务端可见形态。原始 failurePreview 常含
+// 绝对路径(agent home/tmp)——两域隐私纪律下这是刻意脱敏:home →
+// <agent home>,操作者 HOME → ~;再包上引擎与退出码上下文。
+func (r *AgentRunner) visibleEngineError(exitCode int, detail string) string {
+	raw := detail
+	if raw == "" {
+		raw = fmt.Sprintf("process exited with code %d", exitCode)
+	}
+	clean := truncateRunes(strings.TrimSpace(strings.ReplaceAll(
+		ansiRe.ReplaceAllString(raw, ""), "\r", "")), 900)
+	home := homeDir()
+	if home != "" && home != "." {
+		clean = strings.ReplaceAll(clean, home, "~")
+	}
+	clean = strings.ReplaceAll(clean, r.home, "<agent home>")
+	return fmt.Sprintf("local %s failed (exit %d): %s", r.adapter.ID(), exitCode, clean)
 }
 
 func short8(s string) string {
@@ -416,6 +437,13 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 			}
 			_ = json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &payload)
 			slog.Info("[computer] SSE received", "agent", r.agent.ID, "event", event, "convo", payload.ConversationID)
+			// 每个 SSE 唤醒都记 convo(TS 语义:turn 中的 hop 归因用它;
+			// runTurn 开头清空防陈旧)。scheduleWake 的 busy 分支不带 convo。
+			r.mu.Lock()
+			if payload.ConversationID != "" {
+				r.lastWakeConvo = payload.ConversationID
+			}
+			r.mu.Unlock()
 			r.scheduleWake("sse-"+event, payload.ConversationID)
 		}
 		event, dataLines = "", nil
@@ -649,6 +677,9 @@ func (r *AgentRunner) runTurn(reason string) error {
 		return nil
 	}
 	r.busy = true
+	// 消费本唤醒的 convo(TS:clear 防"轮与轮之间漏下的旧值"在后续
+	// poll 轮的 hop 归因上闪烁)。
+	r.lastWakeConvo = ""
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -693,7 +724,25 @@ func (r *AgentRunner) runTurn(reason string) error {
 	sess := r.ensureEngineSession()
 	var res RunResult
 	if sess != nil {
+		// 轮中每 2s 捕获会话 id(TS:第一轮被硬杀后盘上仍留可 resume 的
+		// id——Send 返回后再持久化的窗口不够)。
+		captureStop := make(chan struct{})
+		go func() {
+			tick := time.NewTicker(2 * time.Second)
+			defer tick.Stop()
+			for {
+				select {
+				case <-captureStop:
+					return
+				case <-tick.C:
+					if sid := sess.SessionID(); sid != "" {
+						r.setSessionID(sid)
+					}
+				}
+			}
+		}()
 		res = sess.Send(r.turnPrompt(sess, r.turnDelta(reason, inbox.Rows)))
+		close(captureStop)
 		if sid := sess.SessionID(); sid != "" {
 			r.setSessionID(sid)
 		}
@@ -722,9 +771,11 @@ func (r *AgentRunner) runTurn(reason string) error {
 
 	status := "completed"
 	summary := fmt.Sprintf("byoa %s run (exit %d)", r.adapter.ID(), res.ExitCode)
+	visibleErr := ""
 	if res.Err != "" {
 		status = "failed"
-		summary = truncate(res.Err, 2000)
+		visibleErr = r.visibleEngineError(res.ExitCode, res.Err)
+		summary = truncate(visibleErr, 2000)
 	}
 	if run.RunID != "" {
 		runtimeBest(r.ctx, r.cfg.ServerURL, "/runs/"+run.RunID+"/finish", token,
@@ -734,8 +785,8 @@ func (r *AgentRunner) runTurn(reason string) error {
 	if r.reporter != nil {
 		r.reporter.flush()
 	}
-	if res.Err != "" {
-		return fmt.Errorf("%s", res.Err)
+	if visibleErr != "" {
+		return fmt.Errorf("%s", visibleErr)
 	}
 	return nil
 }

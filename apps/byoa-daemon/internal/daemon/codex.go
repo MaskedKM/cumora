@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // codexLogRaw:CUMORA_CODEX_VERBOSE=1 时原样倾倒 app-server 原始事件流
@@ -394,18 +396,38 @@ func (s *codexSession) onLine(line string) {
 
 func anyString(v any) (string, bool) {
 	s, ok := v.(string)
-	return s, ok && s != ""
+	return s, ok // TS typeof === 'string':空串也算(逐语义对齐)
 }
 
+// handle:持锁跑状态机,解锁后执行收集到的副作用(日志/逐跳)——锁内
+// 回调是潜在死锁陷阱(claudeSession 同纪律:快照后锁外调用)。
 func (s *codexSession) handle(msg *codexRpcMsg) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	effects := s.handleLocked(msg)
+	s.mu.Unlock()
+	for _, fn := range effects {
+		fn()
+	}
+}
+
+func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
+	var effects []func()
+	logf := func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		effects = append(effects, func() {
+			if s.onLog != nil {
+				s.onLog(line)
+			}
+		})
+	}
 	// initialize 应答 → initialized 通知 + 开线程(start 或 resume)。
 	if msg.ID != nil && s.initializeID != nil && *msg.ID == *s.initializeID {
 		s.initializeID = nil
 		if msg.Error != nil {
-			s.failPendingLocked(codexErrMsg(msg.errMessage(), "codex initialize failed"))
-			return
+			if s.failPendingLocked(codexErrMsg(msg.errMessage(), "codex initialize failed")) {
+				logf("[codex] " + codexErrMsg(msg.errMessage(), "codex initialize failed"))
+			}
+			return effects
 		}
 		s.notifyLocked("initialized", map[string]any{})
 		if s.threadReq != nil {
@@ -413,22 +435,22 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 			s.threadReqID = &id
 			s.threadReq = nil
 		}
-		return
+		return effects
 	}
 	// resume 失败(陈旧 id/换引擎后的残留)→ 换全新线程,不楔死 agent。
 	if msg.Error != nil && msg.ID != nil && s.threadReqID != nil && *msg.ID == *s.threadReqID {
 		if s.threadWasResume {
-			if s.onLog != nil {
-				s.onLog(fmt.Sprintf("[codex] thread/resume failed (%s) — starting a fresh thread", msg.errMessage()))
-			}
+			logf("[codex] thread/resume failed (%s) — starting a fresh thread", msg.errMessage())
 			s.threadWasResume = false
 			s.threadID = ""
 			id := s.writeReqLocked("thread/start", s.baseThreadParams)
 			s.threadReqID = &id
-			return
+			return effects
 		}
-		s.failPendingLocked(codexErrMsg(msg.errMessage(), "codex thread start failed"))
-		return
+		if s.failPendingLocked(codexErrMsg(msg.errMessage(), "codex thread start failed")) {
+			logf("[codex] " + codexErrMsg(msg.errMessage(), "codex thread start failed"))
+		}
+		return effects
 	}
 	// 线程就绪:thread/start|resume 应答,或 thread/started 通知。
 	threadID := ""
@@ -446,7 +468,7 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 	}
 	if threadID != "" {
 		s.onThreadReadyLocked(threadID)
-		return
+		return effects
 	}
 	// turn id(steering 用)——turn/start 应答或 turn/started 通知。
 	turnID := ""
@@ -478,18 +500,18 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 		if tu, ok := msg.Params["tokenUsage"].(map[string]any); ok {
 			s.updateUsageLocked(tu["total"])
 		}
-		return
+		return effects
 	}
 	// 账户限流只在吃紧时浮出(>=90%),平时静默。
 	if msg.Method == "account/rateLimits/updated" {
 		if rl, ok := msg.Params["rateLimits"].(map[string]any); ok {
 			if prim, ok := rl["primary"].(map[string]any); ok {
-				if pct, ok := prim["usedPercent"].(float64); ok && pct >= 90 && s.onLog != nil {
-					s.onLog(fmt.Sprintf("[codex] ⚠️ account rate limit at %d%% — turns will start failing when it reaches 100%%", int(pct+0.5)))
+				if pct, ok := prim["usedPercent"].(float64); ok && pct >= 90 {
+					logf("[codex] ⚠️ account rate limit at %d%% — turns will start failing when it reaches 100%%", int(pct+0.5))
 				}
 			}
 		}
-		return
+		return effects
 	}
 	// items:原生压缩观测;命令与最终答复的简明信号;完成项短暂 gate steer。
 	if msg.Method == "item/started" || msg.Method == "item/completed" {
@@ -497,36 +519,37 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 			ty, _ := item["type"].(string)
 			switch {
 			case ty == "contextCompaction":
-				if s.onLog != nil {
-					stage := "started"
-					if msg.Method == "item/completed" {
-						stage = "finished"
-					}
-					s.onLog("[codex] native context compaction " + stage)
+				stage := "started"
+				if msg.Method == "item/completed" {
+					stage = "finished"
 				}
+				logf("[codex] native context compaction " + stage)
 			case ty == "commandExecution" && msg.Method == "item/started":
-				if cmd, ok := item["command"].(string); ok && s.onLog != nil {
-					s.onLog("[codex] $ " + collapseWS(cmd, 200))
+				if cmd, ok := item["command"].(string); ok {
+					logf("[codex] $ " + collapseWS(cmd, 200))
 				}
 			case ty == "agentMessage" && msg.Method == "item/completed":
-				if text, ok := item["text"].(string); ok && strings.TrimSpace(text) != "" && s.onLog != nil {
-					s.onLog("[codex] » " + collapseWS(text, 200))
+				if text, ok := item["text"].(string); ok && strings.TrimSpace(text) != "" {
+					logf("[codex] » " + collapseWS(text, 200))
 				}
 			}
 		}
 		if msg.Method == "item/completed" {
 			s.steerGate = true
 		}
-		return
+		return effects
 	}
 	if msg.Method == "item/agentMessage/delta" || msg.Method == "item/reasoning/textDelta" || msg.Method == "item/reasoning/summaryTextDelta" {
 		s.steerGate = false
-		return
+		return effects
 	}
 	// 请求级错误(如 thread/start 失败)→ fail 在飞 turn。
 	if msg.Error != nil && msg.ID != nil {
-		s.failPendingLocked(codexErrMsg(msg.errMessage(), "codex app-server request failed"))
-		return
+		msg2 := codexErrMsg(msg.errMessage(), "codex app-server request failed")
+		if s.failPendingLocked(msg2) {
+			logf("[codex] " + msg2)
+		}
+		return effects
 	}
 	// turn 结束 → 结算 pending。
 	if msg.Method == "turn/completed" {
@@ -550,13 +573,14 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 				v := nowMS() - s.turnStartedAt
 				hop.LatencyMS = &v
 			}
-			s.onHop(hop)
+			hopFn, onHop := s.onHop, hop
+			effects = append(effects, func() { hopFn(onHop) })
 		}
 		s.turnStartedAt = 0
 		s.activeTurnID = ""
 		s.steerGate = false
 		s.settleLocked(failed)
-		return
+		return effects
 	}
 	if msg.Method == "error" {
 		detail := "codex app-server error"
@@ -567,8 +591,11 @@ func (s *codexSession) handle(msg *codexRpcMsg) {
 				detail = m
 			}
 		}
-		s.failPendingLocked(detail)
+		if s.failPendingLocked(detail) {
+			logf("[codex] " + detail)
+		}
 	}
+	return effects
 }
 
 func codexErrMsg(msg, fallback string) string {
@@ -579,11 +606,7 @@ func codexErrMsg(msg, fallback string) string {
 }
 
 func collapseWS(s string, n int) string {
-	flat := strings.Join(strings.Fields(s), " ")
-	if len(flat) > n {
-		flat = flat[:n]
-	}
-	return flat
+	return truncateRunes(strings.Join(strings.Fields(s), " "), n)
 }
 
 func (s *codexSession) onThreadReadyLocked(threadID string) {
@@ -650,16 +673,19 @@ func usagePtr(u EngineUsage) *EngineUsage { return &u }
 // 永久死亡、大脑槽位永不归还)。app-server 拒绝握手后进程还活着(畸形
 // ~/.codex/config.toml、账户不可用模型、协议漂移),Alive 会继续谎报可用。
 // 拆掉它:!alive 的会话被丢弃,下一唤醒起干净的。
-func (s *codexSession) failPendingLocked(errMsg string) {
+// failPendingLocked:请求级失败。返回 true = 无在飞 turn(空闲失败),
+// 调用方在锁外记日志。
+func (s *codexSession) failPendingLocked(errMsg string) (idle bool) {
 	if s.pending != nil {
 		s.settleLocked(errMsg)
-	} else if s.onLog != nil {
-		s.onLog("[codex] " + errMsg)
+	} else {
+		idle = true
 	}
 	if !s.ready {
 		s.handshakeErr = errMsg
 		go s.Stop()
 	}
+	return idle
 }
 
 func (s *codexSession) die(code int, why string) {
@@ -767,9 +793,27 @@ func (codexAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProbe
 	}
 	out := make(chan probeResult, 1)
 	var stderrMu sync.Mutex
+	var exitInfo atomic.Value // string;收割协程尽快填(死因的 exit/signal 段)
 	finish := func(r probeResult) {
 		_ = stdin.Close()
 		_ = killProcess(cmd)
+		// M1:必须收割——不 Wait 每次探测漏一个僵尸(TS/Node 自动收)。
+		go func() {
+			werr := cmd.Wait()
+			seg := ""
+			if werr == nil {
+				seg = "exit 0"
+			} else if ee, ok := werr.(*exec.ExitError); ok {
+				if ee.ExitCode() < 0 {
+					seg = "terminated by " + signalNameOf(ee)
+				} else {
+					seg = fmt.Sprintf("exit %d", ee.ExitCode())
+				}
+			} else {
+				seg = werr.Error()
+			}
+			exitInfo.Store(seg)
+		}()
 		select {
 		case out <- r:
 		default:
@@ -850,7 +894,21 @@ func (codexAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProbe
 				if salient == "" {
 					salient = "no stderr"
 				}
-				finish(probeResult{detail: "app-server died " + stage + ": " + salient})
+				// EOF 时进程已退——等收割协程至多 200ms,拿到 exit/signal 段
+				// 再拼死因(best-effort,超时则省段)。
+				var seg string
+				for i := 0; i < 20; i++ {
+					if v, ok := exitInfo.Load().(string); ok && v != "" {
+						seg = v
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				detail := "app-server died " + stage
+				if seg != "" {
+					detail += " (" + seg + ")"
+				}
+				finish(probeResult{detail: detail + ": " + salient})
 				return
 			}
 		}

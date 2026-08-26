@@ -224,7 +224,19 @@ const (
 var ansiRe = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]")
 
 func cleanLine(line string) string {
-	return strings.TrimSpace(ansiRe.ReplaceAllString(line, ""))
+	return strings.TrimSpace(strings.ReplaceAll(ansiRe.ReplaceAllString(line, ""), "\r", ""))
+}
+
+// truncateRunes:rune 安全截断(字节截会把多字节字符劈成 U+FFFD)。
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // pushTail:有界尾巴(失败预览只看最后 maxFailureLines 行)。
@@ -255,11 +267,7 @@ func failurePreview(exitCode int, signalName string, stderr, stdout []string) st
 	if detail == "" {
 		return prefix
 	}
-	out := prefix + "\n" + detail
-	if len(out) > maxFailureChars {
-		out = out[:maxFailureChars]
-	}
-	return out
+	return truncateRunes(prefix+"\n"+detail, maxFailureChars)
 }
 
 // stripLoneSurrogates:边界净化(对齐 text-safety.ts 的意图)。TS 字符串是
@@ -578,6 +586,11 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 	}()
 	werr := <-waitErr
 	stopWatcher()
+	// B1:两路都 join 读者——正常路径经由通道关闭天然同步;abort 路径
+	// Wait 已关读端,阻塞中的 Read 立刻 ErrFileClosed 返回(孙进程挂住
+	// 的是写端,不影响)。不 join 则主流程读尾巴与读者的最后冲刷构成
+	// 数据竞争(race 实抓)。
+	<-readersDone
 	exitCode, signalName := 1, ""
 	if werr == nil {
 		exitCode = 0
@@ -697,11 +710,20 @@ func salientError(raw string) string {
 	if m != "" {
 		clean = m
 	}
-	flat := strings.Join(strings.Fields(clean), " ")
-	if len(flat) > 280 {
-		flat = flat[:280]
+	return truncateRunes(strings.Join(strings.Fields(clean), " "), 280)
+}
+
+// withEnvDefault:替换式 env 注入(TS 的 {...env, K:V} 语义)。重复键下
+// getenv 取首值——纯追加会让操作者自设的旧值继续生效。
+func withEnvDefault(env []string, kv string) []string {
+	key := kv[:strings.IndexByte(kv, '=')]
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, key+"=") {
+			out = append(out, e)
+		}
 	}
-	return flat
+	return append(out, kv)
 }
 
 // triageModel:CUMORA_TRIAGE_MODEL 覆盖,否则适配器各自的缺省小模型。

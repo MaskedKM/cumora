@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,18 +21,18 @@ import (
 // turnTimeoutMS:CUMORA_TURN_TIMEOUT_MS 的选配失控保险(默认关——墙钟
 // 超时分不清真挂死与合法长任务,同轮 STEERING 才是响应性正解)。
 func turnTimeoutMS() int64 {
-	v := os.Getenv("CUMORA_TURN_TIMEOUT_MS")
+	v := strings.TrimSpace(os.Getenv("CUMORA_TURN_TIMEOUT_MS"))
 	if v == "" {
 		return 0
 	}
-	n := 0
-	for _, c := range v {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
+	if n, err := strconv.Atoi(v); err == nil {
+		return int64(n)
 	}
-	return int64(n)
+	// TS Number() 也吃 "1e4"——ParseFloat 兜底,非数值/负数归 0。
+	if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+		return int64(f)
+	}
+	return 0
 }
 
 // doctorPrompt:探针的一次真实微任务(一个 token 的输出)。
@@ -529,7 +530,7 @@ func (claudeAdapter) Classify(ctx context.Context, args ClassifyArgs) ClassifyRe
 			argv = append([]string{"-p", args.Prompt}, base[1:]...)
 		}
 	}
-	env := append(append([]string{}, args.Env...), "MAX_THINKING_TOKENS=0")
+	env := withEnvDefault(args.Env, "MAX_THINKING_TOKENS=0")
 	stdinText := ""
 	if plan.wantsStdinPrompt {
 		stdinText = args.Prompt
@@ -539,14 +540,14 @@ func (claudeAdapter) Classify(ctx context.Context, args ClassifyArgs) ClassifyRe
 		return res
 	}
 	var obj struct {
-		Result string       `json:"result"`
+		Result *string      `json:"result"`
 		Usage  *EngineUsage `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &obj); err != nil {
 		return res // 不是预期信封——原文返回
 	}
-	if obj.Result != "" {
-		res.Text = obj.Result
+	if obj.Result != nil {
+		res.Text = *obj.Result // 含空串(TS obj.result 语义)
 	}
 	res.Usage = obj.Usage
 	return res
@@ -568,7 +569,7 @@ func (claudeAdapter) Probe(ctx context.Context, args ProbeArgs) ClassifyResult {
 	} else {
 		argv = append([]string{"-p", doctorPrompt}, base[1:]...)
 	}
-	env := append(append([]string{}, args.Env...), "MAX_THINK_TOKENS=0")
+	env := withEnvDefault(args.Env, "MAX_THINKING_TOKENS=0")
 	return spawnCapture(ctx, plan, argv, args.Cwd, env, nil, stdinText)
 }
 
@@ -594,7 +595,7 @@ func (claudeAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProb
 	} else {
 		argv = append([]string{"-p", doctorPrompt}, base[1:]...)
 	}
-	env := append(append([]string{}, args.Env...), "MAX_THINKING_TOKENS=0")
+	env := withEnvDefault(args.Env, "MAX_THINKING_TOKENS=0")
 	r := spawnCapture(ctx, plan, argv, args.Cwd, env, nil, stdinText)
 	if r.Err != "" || strings.TrimSpace(r.Text) == "" {
 		detail := strings.TrimSpace(r.Err + "\n" + r.Text)

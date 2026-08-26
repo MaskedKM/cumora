@@ -91,7 +91,10 @@ func writeShim(binDir string) error {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		if err := os.WriteFile(filepath.Join(binDir, "cumora.cmd"), []byte(strings.ReplaceAll(cumoraWindowsShimRaw, "§", "`")), 0o755); err != nil {
+		// Go 原始字符串会丢弃 \r(语言规范),而 TS 的 .cmd 启动器是
+		// CRLF 行尾——写盘时补回。
+		cmdText := strings.ReplaceAll(strings.ReplaceAll(cumoraWindowsShimRaw, "§", "`"), "\n", "\r\n")
+		if err := os.WriteFile(filepath.Join(binDir, "cumora.cmd"), []byte(cmdText), 0o755); err != nil {
 			return err
 		}
 	}

@@ -227,6 +227,7 @@ func TestClaudeSessionBusyGate(t *testing.T) {
 	bin, _ := fakeEngineDir(t)
 	writeScript(t, filepath.Join(bin, "claude"), `#!/bin/sh
 IFS= read -r line
+printf '%s\n' "$line" > "$FAKE_T/busy-stdin.txt"
 sleep 1
 printf '%s\n' '{"type":"result","is_error":false,"session_id":"s","usage":{"input_tokens":1,"output_tokens":1}}'
 `)
@@ -234,9 +235,8 @@ printf '%s\n' '{"type":"result","is_error":false,"session_id":"s","usage":{"inpu
 	defer sess.Stop()
 	resCh := make(chan RunResult, 1)
 	go func() { resCh <- sess.Send("first") }()
-	waitUntil(t, 2*time.Second, "first turn in flight", func() bool { return true })
-	// 稍等确保 first 已真正发出(脚本已读到行)。
-	time.Sleep(150 * time.Millisecond)
+	// 等"first 已真正发出"的可观测标记(脚本已读到该行),不再靠睡。
+	waitFileContains(t, "busy-stdin.txt", "first", 5*time.Second)
 	second := sess.Send("second")
 	if second.ExitCode == 0 || !strings.Contains(second.Err, "busy") {
 		t.Fatalf("second concurrent send must be rejected as busy: %+v", second)
@@ -659,5 +659,136 @@ func TestSeedHomeIdempotentAndNonDestructive(t *testing.T) {
 	}
 	if _, err := os.Stat(claudeMD); err != nil {
 		t.Fatal("codex seedHome must not remove the claude layout")
+	}
+}
+
+/* ───────── 评审 B1/M3 回归:abort 路竞争与两个 steer 门 ───────── */
+
+// B1 回归:abort 时主流程读尾巴必须先 join 读者(-race 下该测试在旧实现
+// 上报 DATA RACE)。假 CLI 慢速持续输出,ctx 中途取消。
+func TestSpawnEngineAbortJoinsReaders(t *testing.T) {
+	bin, _ := fakeEngineDir(t)
+	writeScript(t, filepath.Join(bin, "claude"), `#!/bin/sh
+i=0
+while [ $i -lt 100 ]; do
+  printf '%s\n' '{"type":"assistant","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"x"}]}}'
+  i=$((i+1))
+  sleep 0.05
+done
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	done := make(chan RunResult, 1)
+	go func() {
+		done <- spawnEngine(ctx, resolveSpawn("claude"), []string{"-p"}, RunArgs{
+			Home: t.TempDir(), Env: os.Environ(), OnLog: func(string) {},
+		}, "prompt")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("abort path must settle promptly (readers stuck = hang)")
+	}
+	cancel()
+}
+
+// M3(a):claude 的 steer 队列在 result(轮界)清空——未 flush 的 steer
+// 不得泄漏进下一轮(假 CLI 第二轮发 user 边界,若队列残留则会被冲入)。
+const fakeClaudeSteerBoundary = `#!/bin/sh
+n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  printf '%s\n' "$line" >> "$FAKE_T/stdin.log"
+  if [ "$n" -eq 1 ]; then
+    sleep 0.3
+    printf '%s\n' '{"type":"assistant","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"x"}]}}'
+    printf '%s\n' '{"type":"result","is_error":false,"session_id":"s1","usage":{"input_tokens":1,"output_tokens":1}}'
+  else
+    printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result"}]}}'
+    printf '%s\n' '{"type":"result","is_error":false,"session_id":"s1","usage":{"input_tokens":1,"output_tokens":1}}'
+  fi
+done
+`
+
+func TestClaudeSteerQueueClearedAtTurnBoundary(t *testing.T) {
+	bin, _ := fakeEngineDir(t)
+	writeScript(t, filepath.Join(bin, "claude"), fakeClaudeSteerBoundary)
+	sess := claudeAdapter{}.StartSession(SessionArgs{Home: t.TempDir(), Env: os.Environ(), OnLog: func(string) {}})
+	if sess == nil {
+		t.Fatal("nil session")
+	}
+	defer sess.Stop()
+	resCh := make(chan RunResult, 1)
+	go func() { resCh <- sess.Send("turn one") }()
+	waitFileContains(t, "stdin.log", "turn one", 5*time.Second)
+	sess.Steer("stale steer") // 入队;本轮无 user 边界 → 不 flush
+	select {
+	case r := <-resCh:
+		if r.ExitCode != 0 {
+			t.Fatalf("turn one: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn one never settled")
+	}
+	res2 := sess.Send("turn two") // 轮界已清队列;本轮的 user 边界无货可冲
+	if res2.ExitCode != 0 {
+		t.Fatalf("turn two: %+v", res2)
+	}
+	got := readObs(t, "stdin.log")
+	if strings.Contains(got, "stale steer") {
+		t.Fatalf("stale steer leaked across the turn boundary; stdin:\n%s", got)
+	}
+}
+
+// M3(b):codex 的 steerGate——item/completed 后短暂闭闸,文本 delta 重开;
+// 闭闸期的 Steer 不得发出,重开后必须能发。
+func TestCodexSteerGateItemBoundary(t *testing.T) {
+	bin, _ := fakeEngineDir(t)
+	writeScript(t, filepath.Join(bin, "codex"), `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([a-zA-Z/]*\)".*/\1/p')
+  case "$method" in
+    initialize) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    thread/start) printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"th-g"}}}\n' "$id" ;;
+    turn/start)
+      printf '%s\n' "$line" > "$FAKE_T/turnstart.json"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"t-g"}}}\n' "$id"
+      printf '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage"}}}\n'
+      sleep 0.4
+      printf '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"x"}}\n'
+      sleep 0.4
+      printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}\n'
+      ;;
+    turn/steer) printf '%s\n' "$line" > "$FAKE_T/steer.json" ;;
+  esac
+done
+`)
+	sess := codexAdapter{}.StartSession(SessionArgs{Home: fakeCodexHome(t), Env: os.Environ(), Model: "m"})
+	if sess == nil {
+		t.Fatal("nil session")
+	}
+	defer sess.Stop()
+	waitUntil(t, 5*time.Second, "thread ready", func() bool { return sess.SessionID() == "th-g" })
+	resCh := make(chan RunResult, 1)
+	go func() { resCh <- sess.Send("gated turn") }()
+	waitFileContains(t, "turnstart.json", "gated turn", 5*time.Second)
+	// turn id 已知 + item/completed 已到(闸关)→ 本 Steer 必须被吞。
+	time.Sleep(150 * time.Millisecond)
+	sess.Steer("blocked steer")
+	time.Sleep(300 * time.Millisecond)
+	if pathExists(filepath.Join(os.Getenv("FAKE_T"), "steer.json")) {
+		t.Fatal("steer must be gated while an item just completed (no delta yet)")
+	}
+	// delta 到达(闸开)→ 本 Steer 必须真发。
+	sess.Steer("open steer")
+	waitFileContains(t, "steer.json", "open steer", 5*time.Second)
+	select {
+	case r := <-resCh:
+		if r.ExitCode != 0 {
+			t.Fatalf("gated turn: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn never settled")
 	}
 }
