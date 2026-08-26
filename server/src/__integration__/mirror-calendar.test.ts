@@ -109,6 +109,40 @@ test('[mirror] create defaults + full validation matrix', async () => {
     freq: 'weekly', interval: 2, byweekday: [1, 3], until: null, count: null,
   })
   assert.equal(rec.json.event.reminderChannel, 'both')
+
+  // 空白保留:description/agentPrompt 不 trim(String.slice 语义)
+  const spaced = await call('/calendar/events', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'sp', startAt: '2026-09-01T01:00:00Z', description: ' hello ', agentPrompt: ' pm ' }),
+  })
+  assert.equal(spaced.status, 201)
+  assert.equal(spaced.json.event.description, ' hello ')
+  assert.equal(spaced.json.event.agentPrompt, ' pm ')
+
+  // TS 强转语义:数值 floor、字符串数字、标量标题、date-only
+  const coerced = await call('/calendar/events', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: 42, startAt: '2026-09-01',
+      recurrence: { freq: 'weekly', byweekday: ['1', '3'], count: 2.7 },
+      reminderMinutesBefore: 10.5, reminderChannel: 'toast',
+    }),
+  })
+  assert.equal(coerced.status, 201)
+  assert.equal(coerced.json.event.title, '42')
+  assert.equal(coerced.json.event.startAt, '2026-09-01T00:00:00.000Z')
+  assert.deepEqual(coerced.json.event.recurrence.byweekday, [1, 3])
+  assert.equal(coerced.json.event.recurrence.count, 2)
+  assert.equal(coerced.json.event.reminderMinutesBefore, 10)
+  // 列表窗口:date-only 亦生效;无循环的过去事件被排除,循环+active 穿窗
+  const plain = await call('/calendar/events', {
+    method: 'POST', body: JSON.stringify({ title: 'plain', startAt: '2026-09-01T01:00:00Z' }),
+  })
+  assert.equal(plain.status, 201)
+  const windowed = await call(`/calendar/events?from=${encodeURIComponent('2026-09-02')}`)
+  assert.equal(windowed.status, 200)
+  assert.ok(!windowed.json.events.some((e: any) => e.id === plain.json.event.id))
+  assert.ok(windowed.json.events.some((e: any) => e.id === coerced.json.event.id))
 })
 
 test('[mirror] privacy: private rows hidden from others, visible to creator/assignee; owner sees agent-private', async () => {

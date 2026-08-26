@@ -38,3 +38,10 @@ func MountHealth(mux *http.ServeMux, pool interface {
 		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
 	})
 }
+
+// ISOms 对齐 JS Date.toISOString():恒为 UTC + 毫秒三位小数
+// (RFC3339Nano 会按需省略尾零,pg 的 µs 精度也会透出)。日历域(#57)
+// 起统一采用;其余域在被触及时迁移。
+func ISOms(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}

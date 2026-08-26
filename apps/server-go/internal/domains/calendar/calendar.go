@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +102,14 @@ func nt(t sql.NullTime) any {
 	return nil
 }
 
+// ntms:nullable 时间戳,ISOms 格式(toISOString 平价)。
+func ntms(t sql.NullTime) any {
+	if t.Valid {
+		return httpx.ISOms(t.Time)
+	}
+	return nil
+}
+
 // toPayload 对齐 rowToCalendarEvent:全字段 camelCase,recurrence 原样
 // 透传(客户端解析;NULL → null)。
 func (e eventRow) toPayload() map[string]any {
@@ -125,11 +134,11 @@ func (e eventRow) toPayload() map[string]any {
 		"id": e.ID, "companyId": e.CompanyID, "createdBy": e.CreatedBy,
 		"kind": e.Kind, "title": e.Title, "description": ns(e.Description),
 		"assigneeId": ns(e.AssigneeID), "targetConversationId": ns(e.TargetConversation),
-		"agentPrompt": ns(e.AgentPrompt), "startAt": e.StartAt.UTC(), "endAt": nt(e.EndAt),
+		"agentPrompt": ns(e.AgentPrompt), "startAt": httpx.ISOms(e.StartAt), "endAt": ntms(e.EndAt),
 		"allDay": e.AllDay, "recurrence": rec, "status": e.Status,
-		"lastFiredAt": nt(e.LastFiredAt), "reminderMinutesBefore": remMin,
+		"lastFiredAt": ntms(e.LastFiredAt), "reminderMinutesBefore": remMin,
 		"reminderChannel": ns(e.ReminderChannel), "isPrivate": e.IsPrivate,
-		"createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(),
+		"createdAt": httpx.ISOms(e.CreatedAt), "updatedAt": httpx.ISOms(e.UpdatedAt),
 	}
 }
 
@@ -156,8 +165,8 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 	}
 	interval := 1
 	if v, ok := r["interval"]; ok && v != nil {
-		if f, ok := v.(float64); ok {
-			interval = int(f)
+		if f, ok2 := v.(float64); ok2 {
+			interval = int(f) // TS Math.floor(Number(r.interval ?? 1))
 		}
 	}
 	if interval < 1 {
@@ -169,7 +178,21 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 	if arr, ok := r["byweekday"].([]any); ok {
 		days := []any{}
 		for _, d := range arr {
-			if f, ok := d.(float64); ok && f == float64(int(f)) && f >= 0 && f <= 6 {
+			// TS:map(Number) 后过滤 Number.isInteger —— 字符串数字可被 Number 强转
+			var f float64
+			switch t := d.(type) {
+			case float64:
+				f = t
+			case string:
+				if pf, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+					f = pf
+				} else {
+					continue
+				}
+			default:
+				continue
+			}
+			if f == float64(int(f)) && f >= 0 && f <= 6 {
 				days = append(days, int(f))
 			}
 		}
@@ -182,14 +205,14 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 		if err != nil {
 			return nil, http.StatusBadRequest, "recurrence.until must be a valid ISO timestamp"
 		}
-		out["until"] = d.UTC().Format(time.RFC3339Nano)
+		out["until"] = httpx.ISOms(d)
 	}
 	if c, ok := r["count"]; ok && c != nil {
 		f, ok2 := c.(float64)
-		if !ok2 || f != float64(int(f)) || f < 1 {
+		if !ok2 || f < 1 {
 			return nil, http.StatusBadRequest, "recurrence.count must be a positive integer"
 		}
-		out["count"] = int(f)
+		out["count"] = int(f) // TS Math.floor
 	}
 	return out, 0, ""
 }
@@ -200,6 +223,95 @@ func text(v string, max int) string {
 		t = string(runes[:max])
 	}
 	return t
+}
+
+// capOnly:TS 的 String(x).slice(0,N) 语义 —— 不 trim(description/
+// agentPrompt 在 baseline 不 trim,trim 会改存库数据),仅 rune 截断。
+func capOnly(v string, max int) string {
+	if runes := []rune(v); len(runes) > max {
+		return string(runes[:max])
+	}
+	return v
+}
+
+// tsString:TS String(x) 强转(JSON 标量 → 字符串;null 字面量除外,
+// 由调用方先行判空)。数字/布尔用其 JSON 字面量(String(42)="42")。
+func tsString(raw json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case nil:
+		return "null"
+	default:
+		return string(raw)
+	}
+}
+
+// tsNumber:TS Number(x)(数值标量;非数值 → NaN,由 min/max 校验拒绝)。
+func tsNumber(raw json.RawMessage) (float64, bool) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case bool:
+		return 0, false
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// tsBool:TS Boolean(x)(字符串非空即真;0/null/” 假)。
+func tsBool(raw json.RawMessage) bool {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return t != ""
+	case float64:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+// tsDate:TS new Date(x) 的宽限度 —— RFC3339、date-only(JS 规范:
+// 纯日期按 UTC)、无时区 date-time(按本地,与 JS 一致);失败 ok=false。
+func tsDate(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.UTC(), true
+	}
+	if t, err := time.ParseInLocation("2006-01-02T15:04:05", s, time.Local); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 func newID(prefix string) string {
@@ -248,14 +360,16 @@ func list(db *sql.DB) http.HandlerFunc {
 		args := []any{companyID, me}
 		sqlStr := `SELECT ` + eventScan + ` FROM calendar_events
 		 WHERE company_id = $1 AND ` + vis(2, 1)
-		if from := strings.TrimSpace(r.URL.Query().Get("from")); from != "" {
-			if d, err := time.Parse(time.RFC3339, from); err == nil {
+		// TS:同名多值 → express 给数组 → new Date(数组)=NaN → 忽略过滤
+		qvals := r.URL.Query()
+		if len(qvals["from"]) == 1 {
+			if d, ok := tsDate(qvals["from"][0]); ok {
 				args = append(args, d)
 				sqlStr += fmt.Sprintf(` AND (start_at >= $%d OR (recurrence IS NOT NULL AND status = 'active'))`, len(args))
 			}
 		}
-		if to := strings.TrimSpace(r.URL.Query().Get("to")); to != "" {
-			if d, err := time.Parse(time.RFC3339, to); err == nil {
+		if len(qvals["to"]) == 1 {
+			if d, ok := tsDate(qvals["to"][0]); ok {
 				args = append(args, d)
 				sqlStr += fmt.Sprintf(` AND start_at <= $%d`, len(args))
 			}
@@ -288,48 +402,29 @@ func create(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
 			return
 		}
-		get := func(k string) (any, bool) {
-			raw, ok := body[k]
-			if !ok || string(raw) == "null" {
-				return nil, false
-			}
-			var v any
-			if json.Unmarshal(raw, &v) != nil {
-				return nil, false
-			}
-			return v, true
-		}
-		strVal := func(k string) (string, bool) {
-			v, ok := get(k)
-			if !ok {
-				return "", false
-			}
-			s, _ := v.(string)
-			return s, true
-		}
-
 		title := ""
-		if s, ok := strVal("title"); ok {
-			title = text(s, 200)
+		if raw, ok := body["title"]; ok {
+			title = text(tsString(raw), 200)
 		}
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
 		kind := "personal"
-		if s, ok := strVal("kind"); ok && isKind(s) {
-			kind = s
-		}
-		var description sql.NullString
-		if v, ok := get("description"); ok {
-			if s, ok2 := v.(string); ok2 {
-				description = sql.NullString{String: text(s, 4000), Valid: true}
+		if raw, ok := body["kind"]; ok {
+			if s := tsString(raw); isKind(s) {
+				kind = s
 			}
 		}
+		// baseline:String(x).slice —— 不 trim(改 trim 即改存库数据)
+		var description sql.NullString
+		if raw, ok := body["description"]; ok {
+			description = sql.NullString{String: capOnly(tsString(raw), 4000), Valid: true}
+		}
 		trimOrNull := func(k string) sql.NullString {
-			if v, ok := get(k); ok {
-				if s, ok2 := v.(string); ok2 && strings.TrimSpace(s) != "" {
-					return sql.NullString{String: strings.TrimSpace(s), Valid: true}
+			if raw, ok := body[k]; ok && string(raw) != "null" {
+				if t := strings.TrimSpace(tsString(raw)); t != "" {
+					return sql.NullString{String: t, Valid: true}
 				}
 			}
 			return sql.NullString{}
@@ -337,33 +432,28 @@ func create(db *sql.DB) http.HandlerFunc {
 		assigneeID := trimOrNull("assigneeId")
 		targetConv := trimOrNull("targetConversationId")
 		var agentPrompt sql.NullString
-		if v, ok := get("agentPrompt"); ok {
-			if s, ok2 := v.(string); ok2 {
-				agentPrompt = sql.NullString{String: text(s, 8000), Valid: true}
+		if raw, ok := body["agentPrompt"]; ok {
+			agentPrompt = sql.NullString{String: capOnly(tsString(raw), 8000), Valid: true}
+		}
+		startAt, startOK := func() (time.Time, bool) {
+			if raw, ok := body["startAt"]; ok {
+				return tsDate(tsString(raw))
 			}
-		}
-		startAtStr := ""
-		if s, ok := strVal("startAt"); ok {
-			startAtStr = strings.TrimSpace(s)
-		}
-		if startAtStr == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "startAt must be a valid ISO timestamp")
-			return
-		}
-		startAt, err := time.Parse(time.RFC3339, startAtStr)
-		if err != nil {
+			return time.Time{}, false
+		}()
+		if !startOK {
 			httpx.WriteError(w, http.StatusBadRequest, "startAt must be a valid ISO timestamp")
 			return
 		}
 		var endAt sql.NullTime
-		if s, ok := strVal("endAt"); ok {
-			if d, err := time.Parse(time.RFC3339, s); err == nil {
+		if raw, ok := body["endAt"]; ok {
+			if d, ok2 := tsDate(tsString(raw)); ok2 {
 				endAt = sql.NullTime{Time: d, Valid: true}
 			}
 		}
 		var allDay bool
-		if v, ok := get("allDay"); ok {
-			allDay, _ = v.(bool)
+		if raw, ok := body["allDay"]; ok {
+			allDay = tsBool(raw)
 		}
 		var recurrence []byte
 		if raw, ok := body["recurrence"]; ok {
@@ -377,23 +467,25 @@ func create(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		status := "active"
-		if s, ok := strVal("status"); ok && isStatus(s) {
-			status = s
+		if raw, ok := body["status"]; ok {
+			if s := tsString(raw); isStatus(s) {
+				status = s
+			}
 		}
 		// reminder 双置校验:非空 channel 须配正提前量,反之亦然。
 		var reminderMinutes sql.NullInt64
 		var reminderChannel sql.NullString
-		if v, ok := get("reminderMinutesBefore"); ok {
-			f, _ := v.(float64)
-			n := int64(f)
-			if f != float64(int64(f)) || n < 0 || n > 14*24*60 {
+		if raw, ok := body["reminderMinutesBefore"]; ok {
+			f, ok2 := tsNumber(raw)
+			n := int64(f) // TS Math.floor(先取整再校验;负数在本域必被拒)
+			if !ok2 || n < 0 || n > 14*24*60 {
 				httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
 				return
 			}
 			reminderMinutes = sql.NullInt64{Int64: n, Valid: true}
 		}
-		if v, ok := get("reminderChannel"); ok {
-			s, _ := v.(string)
+		if raw, ok := body["reminderChannel"]; ok {
+			s := tsString(raw)
 			if !isReminderChannel(s) {
 				httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")
 				return
@@ -405,8 +497,8 @@ func create(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var isPrivate bool
-		if v, ok := get("isPrivate"); ok {
-			isPrivate, _ = v.(bool)
+		if raw, ok := body["isPrivate"]; ok {
+			isPrivate = tsBool(raw)
 		}
 		if kind == "agent_task" && !assigneeID.Valid {
 			httpx.WriteError(w, http.StatusBadRequest, "agent_task events require an assigneeId")
@@ -433,7 +525,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		}
 		id := newID("ce-")
 		var e eventRow
-		err = db.QueryRowContext(r.Context(), `
+		insertErr := db.QueryRowContext(r.Context(), `
 			INSERT INTO calendar_events
 			  (id, company_id, created_by, kind, title, description, assignee_id,
 			   target_conversation_id, agent_prompt, start_at, end_at, all_day,
@@ -446,7 +538,7 @@ func create(db *sql.DB) http.HandlerFunc {
 				&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
 				&recurrence, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
 				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
+		if insertErr != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 			return
 		}
@@ -480,7 +572,11 @@ func get(db *sql.DB) http.HandlerFunc {
 				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
 				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
 		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "event not found")
+			if err == sql.ErrNoRows {
+				httpx.WriteError(w, http.StatusNotFound, "event not found")
+			} else {
+				httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			}
 			return
 		}
 		e.Recurrence = rec
@@ -520,11 +616,7 @@ func patch(db *sql.DB) http.HandlerFunc {
 		}
 		rawOf := func(k string) json.RawMessage { return body[k] }
 		isNull := func(k string) bool { return string(rawOf(k)) == "null" }
-		strOf := func(k string) string {
-			var s string
-			_ = json.Unmarshal(rawOf(k), &s)
-			return s
-		}
+		strOf := func(k string) string { return tsString(rawOf(k)) }
 		if has("title") {
 			t := text(strOf("title"), 200)
 			if t == "" {
@@ -570,8 +662,8 @@ func patch(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		if has("startAt") {
-			d, err := time.Parse(time.RFC3339, strOf("startAt"))
-			if err != nil {
+			d, ok2 := tsDate(strOf("startAt"))
+			if !ok2 {
 				httpx.WriteError(w, http.StatusBadRequest, "invalid startAt")
 				return
 			}
@@ -581,8 +673,8 @@ func patch(db *sql.DB) http.HandlerFunc {
 			if isNull("endAt") {
 				push("end_at", nil)
 			} else {
-				d, err := time.Parse(time.RFC3339, strOf("endAt"))
-				if err != nil {
+				d, ok2 := tsDate(strOf("endAt"))
+				if !ok2 {
 					httpx.WriteError(w, http.StatusBadRequest, "invalid endAt")
 					return
 				}
@@ -590,9 +682,7 @@ func patch(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		if has("allDay") {
-			var b bool
-			_ = json.Unmarshal(rawOf("allDay"), &b)
-			push("all_day", b)
+			push("all_day", tsBool(rawOf("allDay")))
 		}
 		if has("recurrence") {
 			parsed, code, msg := parseRecurrence(rawOf("recurrence"))
@@ -621,13 +711,13 @@ func patch(db *sql.DB) http.HandlerFunc {
 			if isNull("reminderMinutesBefore") {
 				push("reminder_minutes_before", nil)
 			} else {
-				var f float64
-				_ = json.Unmarshal(rawOf("reminderMinutesBefore"), &f)
-				if f != float64(int64(f)) || f < 0 || f > 14*24*60 {
+				f, ok2 := tsNumber(rawOf("reminderMinutesBefore"))
+				n := int64(f) // TS Math.floor
+				if !ok2 || n < 0 || n > 14*24*60 {
 					httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
 					return
 				}
-				push("reminder_minutes_before", int64(f))
+				push("reminder_minutes_before", n)
 			}
 		}
 		if has("reminderChannel") {
@@ -643,9 +733,7 @@ func patch(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		if has("isPrivate") {
-			var b bool
-			_ = json.Unmarshal(rawOf("isPrivate"), &b)
-			push("is_private", b)
+			push("is_private", tsBool(rawOf("isPrivate")))
 		}
 		if len(sets) == 0 {
 			httpx.WriteError(w, http.StatusBadRequest, "no updatable fields")
@@ -664,7 +752,11 @@ func patch(db *sql.DB) http.HandlerFunc {
 				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
 				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
 		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "event not found")
+			if err == sql.ErrNoRows {
+				httpx.WriteError(w, http.StatusNotFound, "event not found")
+			} else {
+				httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			}
 			return
 		}
 		e.Recurrence = rec
@@ -712,7 +804,11 @@ func runNow(db *sql.DB) http.HandlerFunc {
 				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
 				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
 		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "event not found")
+			if err == sql.ErrNoRows {
+				httpx.WriteError(w, http.StatusNotFound, "event not found")
+			} else {
+				httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			}
 			return
 		}
 		e.Recurrence = rec
@@ -764,8 +860,8 @@ func dispatches(db *sql.DB) http.HandlerFunc {
 			var schedFor, dispatched time.Time
 			var convo, msg, errTxt sql.NullString
 			if rows.Scan(&d.ID, &d.EventID, &schedFor, &dispatched, &d.Status, &convo, &msg, &errTxt) == nil {
-				d.ScheduledFor = schedFor.UTC().Format(time.RFC3339Nano)
-				d.DispatchedAt = dispatched.UTC().Format(time.RFC3339Nano)
+				d.ScheduledFor = httpx.ISOms(schedFor)
+				d.DispatchedAt = httpx.ISOms(dispatched)
 				d.ConversationID = ns(convo)
 				d.MessageID = ns(msg)
 				d.Error = ns(errTxt)
@@ -920,7 +1016,7 @@ func postDispatchMessage(ctx context.Context, db *sql.DB, e eventRow, convoID st
 	}
 	var endAt *string
 	if e.EndAt.Valid {
-		s := e.EndAt.Time.UTC().Format(time.RFC3339Nano)
+		s := httpx.ISOms(e.EndAt.Time)
 		endAt = &s
 	}
 	var rec json.RawMessage
@@ -932,8 +1028,8 @@ func postDispatchMessage(ctx context.Context, db *sql.DB, e eventRow, convoID st
 		Description: desc, AgentPrompt: prompt,
 		AssigneeID:         nsp(e.AssigneeID),
 		TargetConversation: nsp(e.TargetConversation),
-		ScheduledFor:       scheduledFor.UTC().Format(time.RFC3339Nano),
-		StartAt:            e.StartAt.UTC().Format(time.RFC3339Nano),
+		ScheduledFor:       httpx.ISOms(scheduledFor),
+		StartAt:            httpx.ISOms(e.StartAt),
 		EndAt:              endAt, AllDay: e.AllDay,
 		Recurrence: rec, CreatedBy: e.CreatedBy,
 	})
@@ -950,7 +1046,7 @@ func postDispatchMessage(ctx context.Context, db *sql.DB, e eventRow, convoID st
 	events.MessageNew(ctx, e.CompanyID, convoID, map[string]any{
 		"id": messageID, "conversationId": convoID, "authorId": "calendar",
 		"kind": "system", "body": string(body), "sequence": sequence,
-		"at": time.Now().UTC().Format(time.RFC3339Nano),
+		"at": httpx.ISOms(time.Now()),
 	})
 	return messageID, nil
 }

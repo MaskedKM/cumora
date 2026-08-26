@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"os"
 	"strings"
+	"unicode/utf16"
 )
 
 // Contact 对齐 EmailContact 形状。
@@ -20,47 +21,45 @@ type Contact struct {
 	Role          any    `json:"role"`
 }
 
-// rootDomain 对齐 env.ts:EMAIL_DOMAIN 小写化、去首尾点;空 = 未配置。
+// rootDomain 对齐 env.ts:EMAIL_DOMAIN 小写化、去首尾点(不 trim 空白);空 = 未配置。
 func rootDomain() string {
-	return strings.ToLower(strings.Trim(strings.TrimSpace(os.Getenv("EMAIL_DOMAIN")), "."))
+	return strings.Trim(strings.ToLower(os.Getenv("EMAIL_DOMAIN")), ".")
+}
+
+// sanitize:TS 的 regex replace 按 UTF-16 码元逐个替换 —— 非 ASCII 的
+// 一个 rune(如 emoji,占 2 个码元)会产出 2 个 '-',按字节则产出 4 个。
+// 此处按 rune 遍历并用 utf16.RuneLen 补足等效数量的 '-'。
+func sanitize(s string, allowed func(r rune) bool, trimSet string, max int) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if allowed(r) {
+			b.WriteRune(r)
+		} else if n := utf16.RuneLen(r); n > 1 {
+			b.WriteString(strings.Repeat("-", n))
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), trimSet)
+	if runes := []rune(out); len(runes) > max {
+		out = string(runes[:max])
+	}
+	return out
 }
 
 // safeLocalPart:id 小写,非 [a-z0-9_-] 转 '-',去首尾 -_,截 64。
 func safeLocalPart(id string) string {
-	s := strings.ToLower(id)
-	var b []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
-			b = append(b, c)
-		} else {
-			b = append(b, '-')
-		}
-	}
-	out := strings.Trim(string(b), "-_")
-	if len(out) > 64 {
-		out = out[:64]
-	}
-	return out
+	return sanitize(id, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+	}, "-_", 64)
 }
 
 // safeSlugPart:slug 小写,非 [a-z0-9-] 转 '-',去首尾 -,截 63。
 func safeSlugPart(slug string) string {
-	s := strings.ToLower(slug)
-	var b []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
-			b = append(b, c)
-		} else {
-			b = append(b, '-')
-		}
-	}
-	out := strings.Trim(string(b), "-")
-	if len(out) > 63 {
-		out = out[:63]
-	}
-	return out
+	return sanitize(slug, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+	}, "-", 63)
 }
 
 // computeAgentAddress 对齐 email.ts 的确定性 agent 地址
