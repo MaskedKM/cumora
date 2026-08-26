@@ -77,18 +77,33 @@ jobs:
   go:
     name: Go (gofmt + vet + build)
     runs-on: [self-hosted, linux, ser8]
+    # Pure-Go module (pgx only, no cgo) — alpine is half the on-disk size of
+    # bookworm on the runner, and vet/build don't need a C toolchain.
     container:
-      image: golang:1.24-bookworm
+      image: golang:1.24-alpine
     timeout-minutes: 10
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
       GOCACHE: /tmp/gocache
+      CGO_ENABLED: '0'
+      # `go build` embeds VCS info by default; container-root git refuses the
+      # runner-owned checkout ("dubious ownership", exit 128) whenever this
+      # job runs after another job chowned the workspace back. The check
+      # binary is never shipped — no VCS stamping needed.
+      GOFLAGS: -buildvcs=false
     steps:
       - uses: actions/checkout@v4
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go)" || (gofmt -l apps/server-go; exit 1)
       - name: vet + build
         run: cd apps/server-go && go vet ./... && go build ./...
+      # Same ownership give-back as the other jobs — this job's checkout also
+      # writes container-root-owned files into the shared workspace.
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
 
   tests:
     name: Unit + integration
