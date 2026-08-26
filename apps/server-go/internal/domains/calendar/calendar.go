@@ -165,8 +165,10 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 	}
 	interval := 1
 	if v, ok := r["interval"]; ok && v != nil {
-		if f, ok2 := v.(float64); ok2 {
-			interval = int(f) // TS Math.floor(Number(r.interval ?? 1))
+		if raw, ok2 := json.Marshal(v); ok2 == nil {
+			if f, ok3 := tsNumber(raw); ok3 {
+				interval = int(f) // TS Math.floor(Number(r.interval ?? 1));Number('2')=2
+			}
 		}
 	}
 	if interval < 1 {
@@ -201,18 +203,19 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 		}
 	}
 	if u, ok := r["until"].(string); ok && strings.TrimSpace(u) != "" {
-		d, err := time.Parse(time.RFC3339, strings.TrimSpace(u))
-		if err != nil {
+		d, ok2 := tsDate(u)
+		if !ok2 {
 			return nil, http.StatusBadRequest, "recurrence.until must be a valid ISO timestamp"
 		}
 		out["until"] = httpx.ISOms(d)
 	}
 	if c, ok := r["count"]; ok && c != nil {
-		f, ok2 := c.(float64)
+		raw, _ := json.Marshal(c)
+		f, ok2 := tsNumber(raw)
 		if !ok2 || f < 1 {
 			return nil, http.StatusBadRequest, "recurrence.count must be a positive integer"
 		}
-		out["count"] = int(f) // TS Math.floor
+		out["count"] = int(f) // TS Math.floor(Number('3'))=3
 	}
 	return out, 0, ""
 }
@@ -403,7 +406,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		title := ""
-		if raw, ok := body["title"]; ok {
+		if raw, ok := body["title"]; ok && string(raw) != "null" {
 			title = text(tsString(raw), 200)
 		}
 		if title == "" {
@@ -416,9 +419,9 @@ func create(db *sql.DB) http.HandlerFunc {
 				kind = s
 			}
 		}
-		// baseline:String(x).slice —— 不 trim(改 trim 即改存库数据)
+		// baseline:String(x).slice —— 不 trim(改 trim 即改存库数据);null → NULL
 		var description sql.NullString
-		if raw, ok := body["description"]; ok {
+		if raw, ok := body["description"]; ok && string(raw) != "null" {
 			description = sql.NullString{String: capOnly(tsString(raw), 4000), Valid: true}
 		}
 		trimOrNull := func(k string) sql.NullString {
@@ -432,7 +435,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		assigneeID := trimOrNull("assigneeId")
 		targetConv := trimOrNull("targetConversationId")
 		var agentPrompt sql.NullString
-		if raw, ok := body["agentPrompt"]; ok {
+		if raw, ok := body["agentPrompt"]; ok && string(raw) != "null" {
 			agentPrompt = sql.NullString{String: capOnly(tsString(raw), 8000), Valid: true}
 		}
 		startAt, startOK := func() (time.Time, bool) {
@@ -475,7 +478,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		// reminder 双置校验:非空 channel 须配正提前量,反之亦然。
 		var reminderMinutes sql.NullInt64
 		var reminderChannel sql.NullString
-		if raw, ok := body["reminderMinutesBefore"]; ok {
+		if raw, ok := body["reminderMinutesBefore"]; ok && string(raw) != "null" {
 			f, ok2 := tsNumber(raw)
 			n := int64(f) // TS Math.floor(先取整再校验;负数在本域必被拒)
 			if !ok2 || n < 0 || n > 14*24*60 {
@@ -484,7 +487,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			}
 			reminderMinutes = sql.NullInt64{Int64: n, Valid: true}
 		}
-		if raw, ok := body["reminderChannel"]; ok {
+		if raw, ok := body["reminderChannel"]; ok && string(raw) != "null" {
 			s := tsString(raw)
 			if !isReminderChannel(s) {
 				httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")

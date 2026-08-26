@@ -110,6 +110,34 @@ test('[mirror] create defaults + full validation matrix', async () => {
   })
   assert.equal(rec.json.event.reminderChannel, 'both')
 
+  // 显式 null 语义:title:null → 400;description/agentPrompt:null → NULL;reminder 单字段 null → 跳过
+  assert.equal((await call('/calendar/events', {
+    method: 'POST', body: JSON.stringify({ title: null, startAt: '2026-09-01T01:00:00Z' }),
+  })).status, 400)
+  const nulled = await call('/calendar/events', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'n', startAt: '2026-09-01T01:00:00Z', description: null, agentPrompt: null, reminderChannel: null, reminderMinutesBefore: null }),
+  })
+  assert.equal(nulled.status, 201)
+  assert.equal(nulled.json.event.description, null)
+  assert.equal(nulled.json.event.agentPrompt, null)
+  assert.equal(nulled.json.event.reminderChannel, null)
+  // until 宽限:date-only
+  const untilDate = await call('/calendar/events', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'u', startAt: '2026-09-01T01:00:00Z', recurrence: { freq: 'daily', until: '2026-12-31' } }),
+  })
+  assert.equal(untilDate.status, 201)
+  assert.equal(untilDate.json.event.recurrence.until, '2026-12-31T00:00:00.000Z')
+  // 字符串数字:interval/count
+  const strNums = await call('/calendar/events', {
+    method: 'POST',
+    body: JSON.stringify({ title: 's', startAt: '2026-09-01T01:00:00Z', recurrence: { freq: 'daily', interval: '2', count: '3' } }),
+  })
+  assert.equal(strNums.status, 201)
+  assert.equal(strNums.json.event.recurrence.interval, 2)
+  assert.equal(strNums.json.event.recurrence.count, 3)
+
   // 空白保留:description/agentPrompt 不 trim(String.slice 语义)
   const spaced = await call('/calendar/events', {
     method: 'POST',
