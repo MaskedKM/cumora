@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -873,6 +874,12 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		events.MessageNew(r.Context(), companyID, convID, broadcastMsg)
 		// 推送扇出(#59):不阻塞响应;凭据未配置时软关停为 no-op。
 		go func(convID, uid, msgID, body, companyID string) {
+			// TS 用 try/catch 包住整个扇出;Go 侧 panic 会杀进程,必须 recover。
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Warn("push fanout panicked", "err", rec)
+				}
+			}()
 			ctx := context.Background()
 			recipients := push.ComputeMessageRecipients(ctx, db, convID, uid)
 			if len(recipients) == 0 {
@@ -882,8 +889,8 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			_ = db.QueryRowContext(ctx, `SELECT title FROM conversations WHERE id = $1`, convID).Scan(&title)
 			authorName := uid
 			var dn string
-			if db.QueryRowContext(ctx, `SELECT display_name FROM users WHERE id = $1`, uid).Scan(&dn) == nil && dn != "" {
-				authorName = dn
+			if db.QueryRowContext(ctx, `SELECT display_name FROM users WHERE id = $1`, uid).Scan(&dn) == nil {
+				authorName = dn // TS:display_name ?? me —— 空串也保留
 			}
 			push.NotifyMessage(ctx, db, struct {
 				ConversationID    string

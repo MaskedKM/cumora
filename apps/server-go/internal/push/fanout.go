@@ -99,11 +99,10 @@ func SendToUsers(ctx context.Context, db *sql.DB, userIDs []string, payload Payl
 // trimBody:空白折叠后 240 字符封顶(超出加省略号,237+…)。
 func trimBody(body string) string {
 	trimmed := strings.Join(strings.Fields(body), " ")
-	if runes := []rune(trimmed); len(runes) <= 240 {
+	if utf16Len(trimmed) <= 240 {
 		return trimmed
-	} else {
-		return string(runes[:237]) + "…"
 	}
+	return utf16Slice(trimmed, 237) + "…"
 }
 
 // NotifyMessage:新消息推送(标题 = 作者 · 会话名;threadId 折叠栈)。
@@ -177,7 +176,8 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 func newID(prefix string) string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return prefix + hex.EncodeToString(b)
+	h := hex.EncodeToString(b)
+	return prefix + h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 func decodeBodyJSON(r *http.Request, v any) error {
@@ -185,8 +185,35 @@ func decodeBodyJSON(r *http.Request, v any) error {
 }
 
 func capRunes(s string, max int) string {
-	if runes := []rune(s); len(runes) > max {
-		return string(runes[:max])
+	return utf16Slice(s, max)
+}
+
+// utf16Len:UTF-16 码元数(JS string.length 语义)。
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r > 0xFFFF {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+// utf16Slice:按 UTF-16 码元截断;边界落在代理对内部时保整字(与
+// TS slice 的裂代理边缘差一个字符,可接受)。
+func utf16Slice(s string, max int) string {
+	n := 0
+	for i, r := range s {
+		units := 1
+		if r > 0xFFFF {
+			units = 2
+		}
+		if n+units > max {
+			return s[:i]
+		}
+		n += units
 	}
 	return s
 }
@@ -198,10 +225,10 @@ func register(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Platform    string `json:"platform"`
-			Token       string `json:"token"`
-			AppVersion  string `json:"appVersion"`
-			DeviceModel string `json:"deviceModel"`
+			Platform    string  `json:"platform"`
+			Token       string  `json:"token"`
+			AppVersion  *string `json:"appVersion"`
+			DeviceModel *string `json:"deviceModel"`
 		}
 		_ = decodeBodyJSON(r, &body)
 		platform := body.Platform
@@ -214,18 +241,17 @@ func register(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "token required")
 			return
 		}
-		if len(token) > 1024 {
+		if utf16Len(token) > 1024 {
 			httpx.WriteError(w, http.StatusBadRequest, "token too long")
 			return
 		}
-		appVersion := capRunes(body.AppVersion, 64)
-		deviceModel := capRunes(body.DeviceModel, 128)
+		// 缺省(nil)→ NULL(COALESCE 保旧);空串 → ''(TS 存空串覆盖)
 		var appV, modelV any
-		if appVersion != "" {
-			appV = appVersion
+		if body.AppVersion != nil {
+			appV = capRunes(*body.AppVersion, 64)
 		}
-		if deviceModel != "" {
-			modelV = deviceModel
+		if body.DeviceModel != nil {
+			modelV = capRunes(*body.DeviceModel, 128)
 		}
 		if _, err := db.ExecContext(r.Context(), `
 			INSERT INTO push_devices (id, user_id, platform, token, app_version, device_model)

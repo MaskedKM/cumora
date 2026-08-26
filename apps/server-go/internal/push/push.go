@@ -6,6 +6,7 @@ package push
 import (
 	"crypto"
 	"crypto/ecdsa"
+	crand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -80,6 +81,20 @@ func b64url(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// lenientBase64:Node Buffer.from(…,'base64') 的宽容语义 —— 依次尝试
+// 标准/去垫/URL 变体。
+func lenientBase64(s string) ([]byte, bool) {
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding, base64.RawStdEncoding,
+		base64.URLEncoding, base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, true
+		}
+	}
+	return nil, false
+}
+
 // parseECKey 从 PEM 解析 ES256 私钥。
 func parseECKey(pemStr string) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
@@ -133,7 +148,7 @@ func mintApnsJWT() (string, error) {
 	})
 	signingInput := b64url(header) + "." + b64url(claims)
 	digest := sha256.Sum256([]byte(signingInput))
-	r, s, err := ecdsa.Sign(nil, key, digest[:])
+	r, s, err := ecdsa.Sign(crand.Reader, key, digest[:])
 	if err != nil {
 		return "", err
 	}
@@ -242,11 +257,8 @@ func fcmOn() bool {
 		if v := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_JSON")); v != "" {
 			if strings.HasPrefix(v, "{") {
 				raw = v
-			} else {
-				dec, err := base64.StdEncoding.DecodeString(v)
-				if err == nil {
-					raw = string(dec)
-				}
+			} else if dec, ok := lenientBase64(v); ok {
+				raw = string(dec)
 			}
 		} else if p := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_PATH")); p != "" {
 			b, err := os.ReadFile(p)
@@ -291,15 +303,7 @@ func getFcmAccessToken(acct *serviceAccount) (string, bool) {
 	if fcmTokenVal != "" && now.Sub(fcmTokenTime) < fcmTokenTTL {
 		return fcmTokenVal, true
 	}
-	block, _ := pem.Decode([]byte(acct.PrivateKey))
-	if block == nil {
-		return "", false
-	}
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return "", false
-	}
-	rsaKey, ok := key.(*rsa.PrivateKey)
+	key, ok := parseRsaKey(acct.PrivateKey)
 	if !ok {
 		return "", false
 	}
@@ -312,7 +316,7 @@ func getFcmAccessToken(acct *serviceAccount) (string, bool) {
 	signingInput := b64url(header) + "." + b64url(claims)
 	// RS256 = RSASSA-PKCS1-v1_5 over SHA-256
 	digest := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(nil, rsaKey, crypto.SHA256, digest[:])
+	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, digest[:])
 	if err != nil {
 		return "", false
 	}
@@ -336,7 +340,25 @@ func getFcmAccessToken(acct *serviceAccount) (string, bool) {
 	}
 	fcmTokenVal = parsed.AccessToken
 	fcmTokenTime = now
-	return fcmTokenVal, true
+	return parsed.AccessToken, true
+}
+
+// parseRsaKey:PKCS#8 优先,PKCS#1(BEGIN RSA PRIVATE KEY)回退。
+func parseRsaKey(pemStr string) (*rsa.PrivateKey, bool) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, false
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if rk, ok := key.(*rsa.PrivateKey); ok {
+			return rk, true
+		}
+		return nil, false
+	}
+	if rk, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return rk, true
+	}
+	return nil, false
 }
 
 type fcmResult struct {
