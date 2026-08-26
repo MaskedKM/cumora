@@ -94,9 +94,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: gofmt check
-        run: test -z "$(gofmt -l apps/server-go)" || (gofmt -l apps/server-go; exit 1)
-      - name: vet + build
+        run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
+      - name: vet + build (server)
         run: cd apps/server-go && go vet ./... && go build ./...
+      # #63:BYOA daemon 是独立 Go 模块(单二进制,无 DB/Redis 依赖)——
+      # vet + build + 协议级 stub-server 测试(stub 全进程内,无外部服务)。
+      - name: vet + test (byoa-daemon)
+        run: cd apps/byoa-daemon && go vet ./... && go test ./... -count=1
       # Same ownership give-back as the other jobs — this job's checkout also
       # writes container-root-owned files into the shared workspace.
       - name: Restore workspace ownership for the host runner
