@@ -1,0 +1,91 @@
+name: Go Release
+
+# 自托管的 server/daemon 二进制发布流(#67,ADR 0004):
+#   - 触发:my-custom / main 上的 v* tag(或手动 workflow_dispatch)。
+#     **制品只从这两个受保护谱系的 CI 出**——"错谱系手工构建丢引擎"
+#     的事故类别由此根除;fork PR 永不触发。
+#   - 矩阵:linux / darwin × amd64 / arm64,单 job 交叉编译(纯 Go,
+#     CGO_ENABLED=0,免 per-target runner)。
+#   - 制品:每平台一个 tar.gz(cumora-server + cumora-daemon)+
+#     SHA256SUMS;daemon 的自更新只认自家 releases 的这套资产(下载、
+#     校验、原子自替换)。
+#   - 有意不在 ser8 自托管机跑:发布属重工件工作(pr.yml 的既定边界);
+#     公开仓的 GitHub-hosted runner 免费且无 fleet 压力。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.3.0 — no v prefix; used for draft naming)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # tag 推送才真正发布;分支/手动触发的 paths 变更只做构建冒烟(不发布)。
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build matrix (server + daemon, 6 targets)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          for t in $targets; do
+            os="${t%/*}"; arch="${t#*/}"
+            dir="dist/cumora-${os}-${arch}"
+            mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X github.com/MaskedKM/cumora/apps/byoa-daemon/internal/daemon.Version=${GITHUB_REF_NAME#v}" \
+              -o "$dir/cumora-daemon" ./apps/byoa-daemon/cmd/cumora
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "$dir/cumora-server" ./apps/server-go/cmd/server
+            (cd dist && tar czf "cumora-${os}-${arch}.tar.gz" "cumora-${os}-${arch}")
+            rm -rf "$dir"
+          done
+          (cd dist && sha256sum cumora-*.tar.gz > SHA256SUMS)
+          ls -la dist/
+
+      - name: Compose release notes
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.md <<'NOTES'
+          自托管二进制发布(linux/darwin × amd64/arm64)。
+
+          - `cumora-<os>-<arch>.tar.gz` 内含 `cumora-server` 与 `cumora-daemon`
+          - `SHA256SUMS` 全量校验(daemon 自更新强制核对)
+          - daemon 安装:`cumora-daemon agent computer --pair <code> --server <url> && cumora-daemon agent computer --install-service`
+          - 自更新:仅查本 releases;supervised 形态空闲时自动下载→校验→自替换→重启
+          - npm 包 `cumora` 已停版,见其 README
+          NOTES
+          sed -i 's/^          //' /tmp/notes.md
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" == v* ]]; then
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --title "cumora $TAG" --generate-notes --notes-file /tmp/notes.md
+          else
+            VERSION="${DISPATCH_VERSION:-0.0.0-manual}"
+            gh release create "v${VERSION}" dist/*.tar.gz dist/SHA256SUMS \
+              --title "cumora v${VERSION}" --generate-notes --prerelease --notes-file /tmp/notes.md || \
+              gh release upload "v${VERSION}" dist/*.tar.gz dist/SHA256SUMS --clobber
+          fi
