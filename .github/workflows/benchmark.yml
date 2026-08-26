@@ -32,10 +32,13 @@
 name: Coordination Benchmark
 
 on:
-  schedule:
-    # Sundays 02:00 UTC — off-peak, low contention with prod traffic.
-    # Change to a faster cadence at your own cost.
-    - cron: '0 2 * * 0'
+  # Schedule REMOVED (2026-08-26): the default branch moved from main to
+  # my-custom (the fork's real trunk), which would have activated this
+  # weekly cron — but this fleet has no `cumora-bench` runner, so every
+  # run would queue forever. The benchmark also burns real API quota
+  # ($50-100/mo at weekly cadence, see below) against a daemon setup this
+  # fork doesn't run. Manual dispatch stays for whenever a bench runner
+  # is provisioned again.
   workflow_dispatch:
     inputs:
       scenarios:
