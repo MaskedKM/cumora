@@ -77,13 +77,13 @@ func DocChanged(ctx context.Context, companyID, documentID, kind, actorID string
 // DocMention 广播文档 @mention 事件(载荷对齐 DocMentionEvent)。
 func DocMention(ctx context.Context, companyID, documentID, documentTitle, mentionerID, mentionerName string, mentionedIDs []string) {
 	payload := map[string]any{
-		"type":           "doc.mention",
-		"companyId":      companyID,
-		"documentId":     documentID,
-		"documentTitle":  documentTitle,
-		"mentionerId":    mentionerID,
-		"mentionerName":  mentionerName,
-		"mentionedIds":   mentionedIDs,
+		"type":          "doc.mention",
+		"companyId":     companyID,
+		"documentId":    documentID,
+		"documentTitle": documentTitle,
+		"mentionerId":   mentionerID,
+		"mentionerName": mentionerName,
+		"mentionedIds":  mentionedIDs,
 	}
 	_ = publishJSON(ctx, ChDocMention, payload)
 }

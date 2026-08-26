@@ -17,10 +17,10 @@ type Config struct {
 	RedisURL      string
 	// Yjs sidecar 内表面(127.0.0.1+token,ADR 0004)与 relay 实例标识。
 	// 变量名对齐 server/src/env.ts。
-	YjsSidecarURL      string
-	YjsSidecarToken    string
-	YjsSidecarTimeout  int // ms
-	InstanceID         string
+	YjsSidecarURL     string
+	YjsSidecarToken   string
+	YjsSidecarTimeout int // ms
+	InstanceID        string
 }
 
 func Load() Config {
@@ -32,14 +32,14 @@ func Load() Config {
 		instanceID = "app-go-" + hex.EncodeToString(b)
 	}
 	return Config{
-		ListenAddr:    envOr("CUMORA_GO_LISTEN", ":5190"),
-		DatabaseURL:   withSSLModeDisabled(envOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
-		MigrationsDir: envOr("CUMORA_GO_MIGRATIONS", "migrations"),
-		RedisURL:      envOr("REDIS_URL", "redis://localhost:6379"),
-		YjsSidecarURL: envOr("YJS_SIDECAR_URL", "http://127.0.0.1:5182"),
-		YjsSidecarToken: os.Getenv("YJS_SIDECAR_TOKEN"),
-		YjsSidecarTimeout:  envInt("YJS_SIDECAR_TIMEOUT_MS", 5000),
-		InstanceID:         instanceID,
+		ListenAddr:        envOr("CUMORA_GO_LISTEN", ":5190"),
+		DatabaseURL:       withSSLModeDisabled(envOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
+		MigrationsDir:     envOr("CUMORA_GO_MIGRATIONS", "migrations"),
+		RedisURL:          envOr("REDIS_URL", "redis://localhost:6379"),
+		YjsSidecarURL:     envOr("YJS_SIDECAR_URL", "http://127.0.0.1:5182"),
+		YjsSidecarToken:   os.Getenv("YJS_SIDECAR_TOKEN"),
+		YjsSidecarTimeout: envInt("YJS_SIDECAR_TIMEOUT_MS", 5000),
+		InstanceID:        instanceID,
 	}
 }
 

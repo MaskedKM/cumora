@@ -16,7 +16,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
-// shortHex:n 字节随机数的 hex(id 段对齐 TS randomUUID().replace(/-/g,'').slice(0,2n))。
+// shortHex:n 字节随机数的 hex(id 段对齐 TS randomUUID().replace(/-/g,”).slice(0,2n))。
 func shortHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -126,7 +126,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Title         string `json:"title"`
+			Title          string `json:"title"`
 			ConversationID string `json:"conversationId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)

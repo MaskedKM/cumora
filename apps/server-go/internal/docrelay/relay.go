@@ -25,9 +25,9 @@ import (
 // Subscriber 对齐 DocSubscriber:originId 用于回声抑制,回调把
 // 二进制 update 交回 WS 网关封帧。
 type Subscriber struct {
-	OriginID     string
-	OnUpdate     func(update []byte, originID string)
-	OnAwareness  func(update []byte, originID string)
+	OriginID    string
+	OnUpdate    func(update []byte, originID string)
+	OnAwareness func(update []byte, originID string)
 }
 
 type Relay struct {
