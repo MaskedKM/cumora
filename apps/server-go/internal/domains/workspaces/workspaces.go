@@ -6,20 +6,41 @@ package workspaces
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const maxFileBytes = 2 * 1024 * 1024
+
+// 对齐 express.json({limit:'34mb'}):超过读入上限直接 413,小于上限的
+// 超限内容由 handler 的 maxFileBytes 检查接手。
+const maxBodyBytes = 34 * 1024 * 1024
+
+// shortID:ws-/wa- 前缀后的 10 位标识,对齐 TS randomUUID().slice(0,10)
+// 的十六进制字母表(基线生成的 id 只含 [0-9a-f])。
+func shortID() string {
+	b := make([]byte, 5)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/workspaces", create(db))
@@ -58,14 +79,20 @@ func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow
 	return w, true
 }
 
-// ensureDefault 惰性建默认区(自愈;产品管理目录 UPLOAD_DIR/workspaces/<companyId>)。
+// ensureDefault 惰性建默认区(自愈;产品管理目录 server/uploads/workspaces/
+// <companyId>,对齐 TS storage.ts 的 UPLOAD_DIR=resolve(cwd,'server/uploads'))。
+// 必须 Abs 化再落库:folder_path 的唯一约束与双重绑定防御都以绝对路径为
+// 不变量,CWD 变了也不能搬家。
 func ensureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 	var exists bool
 	if err := db.QueryRowContext(ctx,
 		`SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`, companyID).Scan(&exists); err == nil && exists {
 		return nil
 	}
-	folder := filepath.Join("server/uploads/workspaces", companyID)
+	folder := filepath.Join("server", "uploads", "workspaces", companyID)
+	if abs, err := filepath.Abs(folder); err == nil {
+		folder = abs
+	}
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		return fmt.Errorf("default workspace folder: %w", err)
 	}
@@ -77,7 +104,7 @@ func ensureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 		INSERT INTO workspaces (id, company_id, name, folder_path, is_default)
 		VALUES ($1, $2, 'Team files', $3, TRUE) ON CONFLICT DO NOTHING`,
 		"ws-default-"+companyID, companyID, real)
-	if err != nil && !strings.Contains(err.Error(), "duplicate key") {
+	if err != nil && !isUniqueViolation(err) {
 		return err
 	}
 	return nil
@@ -120,6 +147,9 @@ func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string)
 		           AND (d.created_by = $2 OR d.collaborators @> to_jsonb($2::text))))
 		   )
 		 LIMIT 1`, wsID, uid, companyID).Scan(&allowed)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return w, http.StatusInternalServerError, "membership query failed"
+	}
 	if err != nil || !allowed {
 		return w, http.StatusForbidden, "not a member of this workspace"
 	}
@@ -132,6 +162,11 @@ func resolveInside(root, raw string) (abs, rel string, code int, msg string) {
 	rel = strings.TrimSpace(raw)
 	if strings.ContainsRune(rel, 0) {
 		return "", "", http.StatusBadRequest, "invalid path"
+	}
+	// 绝对路径必须当逃逸拒绝:node 的 resolve(root, rel) 会以绝对 rel 为准
+	// 再被 assertInside 打回,而 filepath.Join 会把绝对 rel 拼到 root 下。
+	if filepath.IsAbs(rel) {
+		return "", "", http.StatusBadRequest, "path escapes the workspace folder"
 	}
 	abs = filepath.Join(root, rel)
 	if !insideRoot(root, abs) {
@@ -149,6 +184,10 @@ func resolveInside(root, raw string) (abs, rel string, code int, msg string) {
 	r, err := filepath.Rel(root, real)
 	if err != nil {
 		return "", "", http.StatusBadRequest, "invalid path"
+	}
+	// 根目录的相对路径是 ".";TS 的 relative(root, real) 给 ""(root 就是 root)
+	if r == "." {
+		r = ""
 	}
 	return real, r, 0, ""
 }
@@ -224,7 +263,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 			return
 		}
-		id := "ws-" + authn.NewToken()[:10]
+		id := "ws-" + shortID()
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "tx failed")
@@ -235,7 +274,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		if err := tx.QueryRowContext(r.Context(), `
 			INSERT INTO workspaces (id, company_id, name, folder_path)
 			VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
-			if strings.Contains(err.Error(), "duplicate key") {
+			if isUniqueViolation(err) {
 				httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 				return
 			}
@@ -306,12 +345,8 @@ func detail(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
 			return
 		}
-		// 显式成员
-		explicitRows, _ := db.QueryContext(r.Context(), `
-			SELECT m.participant_id, p.name, p.kind, m.created_at
-			  FROM workspace_members m JOIN participants p
-			    ON p.id = m.participant_id AND p.company_id = $2
-			 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
+		// 显式成员。slice 必须 make:删光成员后 nil 会序列化成 null,
+		// 而 TS 的 spread 永远给数组(契约 members: type array required)。
 		type member struct {
 			ParticipantID string `json:"participantId"`
 			Name          string `json:"name"`
@@ -319,37 +354,46 @@ func detail(db *sql.DB) http.HandlerFunc {
 			AddedAt       any    `json:"addedAt"`
 			Source        string `json:"source"`
 		}
-		var explicit []member
+		explicit := make([]member, 0)
 		explicitSet := map[string]bool{}
-		if explicitRows != nil {
-			defer explicitRows.Close()
-			for explicitRows.Next() {
-				var m member
-				var added sql.NullTime
-				if explicitRows.Scan(&m.ParticipantID, &m.Name, &m.Kind, &added) == nil {
-					m.Source = "explicit"
-					if added.Valid {
-						m.AddedAt = added.Time.UTC()
-					} else {
-						m.AddedAt = nil
-					}
-					explicit = append(explicit, m)
-					explicitSet[m.ParticipantID] = true
+		explicitRows, err := db.QueryContext(r.Context(), `
+			SELECT m.participant_id, p.name, p.kind, m.created_at
+			  FROM workspace_members m JOIN participants p
+			    ON p.id = m.participant_id AND p.company_id = $2
+			 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "members query failed")
+			return
+		}
+		defer explicitRows.Close()
+		for explicitRows.Next() {
+			var m member
+			var added sql.NullTime
+			if explicitRows.Scan(&m.ParticipantID, &m.Name, &m.Kind, &added) == nil {
+				m.Source = "explicit"
+				if added.Valid {
+					m.AddedAt = added.Time.UTC()
+				} else {
+					m.AddedAt = nil
 				}
+				explicit = append(explicit, m)
+				explicitSet[m.ParticipantID] = true
 			}
 		}
 		// 隐式成员(关联推导;默认区并全员)
 		implicitSet := implicitMembers(r.Context(), db, ws.id, companyID)
 		if ws.isDefault {
-			allRows, _ := db.QueryContext(r.Context(),
+			allRows, err := db.QueryContext(r.Context(),
 				`SELECT id FROM participants WHERE company_id = $1 AND departed_at IS NULL`, companyID)
-			if allRows != nil {
-				defer allRows.Close()
-				for allRows.Next() {
-					var pid string
-					if allRows.Scan(&pid) == nil {
-						implicitSet[pid] = true
-					}
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "participants query failed")
+				return
+			}
+			defer allRows.Close()
+			for allRows.Next() {
+				var pid string
+				if allRows.Scan(&pid) == nil {
+					implicitSet[pid] = true
 				}
 			}
 		}
@@ -359,7 +403,7 @@ func detail(db *sql.DB) http.HandlerFunc {
 				derivedOnly = append(derivedOnly, pid)
 			}
 		}
-		var implicit []member
+		implicit := make([]member, 0)
 		if len(derivedOnly) > 0 {
 			// 单条查询(参数数组)
 			args := make([]string, len(derivedOnly))
@@ -373,39 +417,43 @@ func detail(db *sql.DB) http.HandlerFunc {
 				 WHERE p.company_id = $1 AND p.id = ANY(%s) AND p.departed_at IS NULL`,
 				"ARRAY["+strings.Join(placeholders, ",")+"]::text[]"),
 				append([]any{companyID}, toAny(derivedOnly)...)...)
-			if err == nil {
-				defer rows.Close()
-				for rows.Next() {
-					var m member
-					if rows.Scan(&m.ParticipantID, &m.Name, &m.Kind) == nil {
-						m.Source = "implicit"
-						m.AddedAt = nil
-						implicit = append(implicit, m)
-					}
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "implicit members query failed")
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var m member
+				if rows.Scan(&m.ParticipantID, &m.Name, &m.Kind) == nil {
+					m.Source = "implicit"
+					m.AddedAt = nil
+					implicit = append(implicit, m)
 				}
 			}
 		}
 		// 关联
-		assocRows, _ := db.QueryContext(r.Context(), `
-			SELECT target_kind, target_id, created_at FROM workspace_associations
-			 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
 		type assoc struct {
 			Kind      string `json:"kind"`
 			TargetID  string `json:"targetId"`
 			CreatedAt any    `json:"createdAt"`
 		}
 		associations := []assoc{}
-		if assocRows != nil {
-			defer assocRows.Close()
-			for assocRows.Next() {
-				var a assoc
-				var ca sql.NullTime
-				if assocRows.Scan(&a.Kind, &a.TargetID, &ca) == nil {
-					if ca.Valid {
-						a.CreatedAt = ca.Time.UTC()
-					}
-					associations = append(associations, a)
+		assocRows, err := db.QueryContext(r.Context(), `
+			SELECT target_kind, target_id, created_at FROM workspace_associations
+			 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "associations query failed")
+			return
+		}
+		defer assocRows.Close()
+		for assocRows.Next() {
+			var a assoc
+			var ca sql.NullTime
+			if assocRows.Scan(&a.Kind, &a.TargetID, &ca) == nil {
+				if ca.Valid {
+					a.CreatedAt = ca.Time.UTC()
 				}
+				associations = append(associations, a)
 			}
 		}
 		// folderPath 仅特权成员
@@ -613,7 +661,7 @@ func addAssociation(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusNotFound, "associated "+kind+" not found in this company")
 			return
 		}
-		id := "wa-" + authn.NewToken()[:10]
+		id := "wa-" + shortID()
 		res, err := db.ExecContext(r.Context(), `
 			INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
 			VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
@@ -760,7 +808,7 @@ func readFile(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, code, msg)
 			return
 		}
-		if rel == "" || rel == "." {
+		if rel == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "path required")
 			return
 		}
@@ -794,24 +842,45 @@ func writeFile(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body struct {
-			Body string `json:"body"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if r.ContentLength == 0 || (body.Body == "" && !jsonBodyHasBody(r)) {
-			httpx.WriteError(w, http.StatusBadRequest, "body required (string)")
-			return
-		}
 		abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
 		if code != 0 {
 			httpx.WriteError(w, code, msg)
 			return
 		}
-		if rel == "" || rel == "." {
+		if rel == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "path required")
 			return
 		}
-		if len(body.Body) > maxFileBytes {
+		// 严格解码:baseline 只接受字符串 body(express.json 解析失败即 400,
+		// typeof body !== 'string' 即 400)。用 RawMessage 逐键判型,杜绝
+		// 「非字符串 body → 空文件 200」静默截断既有文件。
+		raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if len(raw) > maxBodyBytes {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+			return
+		}
+		var payload map[string]json.RawMessage
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+		}
+		token, hasKey := payload["body"]
+		if !hasKey || len(token) == 0 || token[0] != '"' {
+			httpx.WriteError(w, http.StatusBadRequest, "body required (string)")
+			return
+		}
+		var content string
+		if err := json.Unmarshal(token, &content); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		if len(content) > maxFileBytes {
 			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
 			return
 		}
@@ -823,17 +892,12 @@ func writeFile(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "mkdir failed")
 			return
 		}
-		if err := os.WriteFile(abs, []byte(body.Body), 0o644); err != nil {
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "write failed")
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
 	}
-}
-
-func jsonBodyHasBody(r *http.Request) bool {
-	// 空串也是合法内容(baseline: typeof content !== 'string' 才拒)
-	return true
 }
 
 func unbind(db *sql.DB) http.HandlerFunc {
@@ -860,7 +924,11 @@ func unbind(db *sql.DB) http.HandlerFunc {
 			UPDATE workspaces SET unbound_at = NOW(), unbound_by = $2
 			 WHERE id = $1 AND unbound_at IS NULL RETURNING unbound_at`, ws.id, uid).Scan(&unboundAt)
 		if err != nil {
-			httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
+			if errors.Is(err, sql.ErrNoRows) {
+				httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "unbind failed")
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
