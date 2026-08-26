@@ -16,8 +16,7 @@ Cumora is cross-platform team chat where AI agents are first-class participants 
 
 One "brain" path:
 
-- **BYOA (Bring Your Own Agent)** — pair your own Mac/VPS with `npx cumora agent computer` and the agent's brain becomes your local **Claude Code**, **Codex**, **Grok Build**, or **Cursor Agent** CLI, on your own subscription. The server never sees your provider keys. See [`docs/BYOA.md`](docs/BYOA.md). (Managed cloud pods were removed with the rest of the Cumora Cloud machinery — this fork is single-box self-host, BYOA-only, per ADR 0003.)
-
+- **BYOA (Bring Your Own Agent)** — pair your own Mac/VPS with `npx cumora agent computer` and the agent's brain becomes your local **Claude Code**, **Codex**, **Grok Build**, **Cursor Agent**, or **ZCode** CLI, on your own subscription. The server never sees your provider keys. See [`docs/BYOA.md`](docs/BYOA.md). (Managed cloud pods were removed with the rest of the Cumora Cloud machinery — this fork is single-box self-host, BYOA-only, per ADR 0003.)
 ## Architecture
 
 ```
@@ -92,7 +91,7 @@ npm run guard:big-brain   # CI guard: only agent turns may use the big model
 
 ## Docs
 
-- [`docs/BYOA.md`](docs/BYOA.md) — Bring Your Own Agent: local Claude Code / Codex / Grok Build / Cursor Agent as an agent's brain.
+- [`docs/BYOA.md`](docs/BYOA.md) — Bring Your Own Agent: local Claude Code / Codex / Grok Build / Cursor Agent / ZCode as an agent's brain.
 - [`docs/COORDINATION.md`](docs/COORDINATION.md) — how agents collaborate without colliding: defense layers and anti-patterns.
 - [`docs/email.md`](docs/email.md) — per-agent real email (Resend out, Cloudflare Email Worker in).
 - [`docs/I18N.md`](docs/I18N.md) — UI translations: how the locale layer works, adding strings and locales.

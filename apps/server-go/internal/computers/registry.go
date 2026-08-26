@@ -31,7 +31,7 @@ const (
 	latestTTL     = time.Hour
 )
 
-var pairableEngines = map[string]bool{"claude": true, "codex": true, "grok": true, "cursor": true}
+var pairableEngines = map[string]bool{"claude": true, "codex": true, "grok": true, "cursor": true, "zcode": true}
 
 // hashToken 对齐 TS:sha256 → base64url(带垫)。
 func hashToken(token string) string {
@@ -400,6 +400,7 @@ func engineDefault(engine string) *string {
 	keys := map[string]string{
 		"claude": "CUMORA_DEFAULT_CLAUDE_MODEL", "codex": "CUMORA_DEFAULT_CODEX_MODEL",
 		"grok": "CUMORA_DEFAULT_GROK_MODEL", "cursor": "CUMORA_DEFAULT_CURSOR_MODEL",
+		"zcode": "CUMORA_DEFAULT_ZCODE_MODEL",
 	}
 	if k, ok := keys[engine]; ok {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {

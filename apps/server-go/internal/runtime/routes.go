@@ -711,7 +711,7 @@ func (s *Service) handleLlmCalls(w http.ResponseWriter, r *http.Request, agentID
 	body := readJSON(w, r)
 	source := bodyStr(body, "source")
 	switch source {
-	case "byoa-claude", "byoa-codex", "byoa-grok", "byoa-cursor":
+	case "byoa-claude", "byoa-codex", "byoa-grok", "byoa-cursor", "byoa-zcode":
 	default:
 		source = "byoa-claude"
 	}

@@ -3136,7 +3136,7 @@ components:
         id: { type: string }
     ComputerKind: { type: string, enum: [local, vps] }
     ComputerStatus: { type: string, enum: [online, offline, busy] }
-    EngineId: { type: string, enum: [claude, codex, grok, cursor] }
+    EngineId: { type: string, enum: [claude, codex, grok, cursor, zcode] }
     ParticipantKind: { type: string, enum: [agent, human] }
     Status: { type: string, enum: [avail, working, thinking, waiting, resting] }
     ConversationKind: { type: string, enum: [group, direct, whisper, email] }
@@ -3493,7 +3493,7 @@ components:
         updatedAt: { type: string, format: date-time }
         finishedAt: { type: string, nullable: true, format: date-time }
         durationMs: { type: integer }
-    TriageSource: { type: string, enum: [cloud, byoa-claude, byoa-codex, byoa-grok, byoa-cursor] }
+    TriageSource: { type: string, enum: [cloud, byoa-claude, byoa-codex, byoa-grok, byoa-cursor, byoa-zcode] }
     TriageAgentRow:
       type: object
       required: [agentId, agentName, triageCount, skipCount, wakeCount, triageCostUsd, triageOverheadUsd, turnCount, avgTurnCostUsd, turnCacheHitRate, estimatedNetSavingsUsd]

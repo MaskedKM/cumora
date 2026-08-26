@@ -2788,7 +2788,7 @@ export interface components {
         /** @enum {string} */
         ComputerStatus: "online" | "offline" | "busy";
         /** @enum {string} */
-        EngineId: "claude" | "codex" | "grok" | "cursor";
+        EngineId: "claude" | "codex" | "grok" | "cursor" | "zcode";
         /** @enum {string} */
         ParticipantKind: "agent" | "human";
         /** @enum {string} */
@@ -3118,7 +3118,7 @@ export interface components {
             durationMs: number;
         };
         /** @enum {string} */
-        TriageSource: "cloud" | "byoa-claude" | "byoa-codex" | "byoa-grok" | "byoa-cursor";
+        TriageSource: "cloud" | "byoa-claude" | "byoa-codex" | "byoa-grok" | "byoa-cursor" | "byoa-zcode";
         TriageAgentRow: {
             agentId: string;
             agentName: string;

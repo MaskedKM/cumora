@@ -139,6 +139,7 @@ const (
 	Codex  EngineId = "codex"
 	Cursor EngineId = "cursor"
 	Grok   EngineId = "grok"
+	Zcode  EngineId = "zcode"
 )
 
 // Defines values for InvitationRole.
@@ -411,6 +412,7 @@ const (
 	ByoaCodex  TriageSource = "byoa-codex"
 	ByoaCursor TriageSource = "byoa-cursor"
 	ByoaGrok   TriageSource = "byoa-grok"
+	ByoaZcode  TriageSource = "byoa-zcode"
 	Cloud      TriageSource = "cloud"
 )
 

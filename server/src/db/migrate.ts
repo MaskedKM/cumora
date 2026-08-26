@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS agent_triages (
   id                    TEXT PRIMARY KEY,
   agent_id              TEXT NOT NULL,
   company_id            TEXT,
-  source                TEXT NOT NULL,                 -- cloud | byoa-claude | byoa-codex | byoa-grok | byoa-cursor
+  source                TEXT NOT NULL,                 -- cloud | byoa-claude | byoa-codex | byoa-grok | byoa-cursor | byoa-zcode
   model                 TEXT,
   actionable            BOOLEAN NOT NULL DEFAULT FALSE, -- verdict: woke the big brain?
   reason                TEXT,
@@ -241,7 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_triages_agent_created ON agent_triages(agen
 --   - WHO: company_id (tenant), agent_id (when applicable), run_id (when part
 --          of a turn), conversation_id (when applicable, e.g. convene).
 --   - WHAT: purpose (the business reason), model, source (cloud|byoa-claude|
---           byoa-codex|byoa-grok|byoa-cursor — almost always 'cloud' here; BYOA local triages still
+--           byoa-codex|byoa-grok|byoa-cursor|byoa-zcode — almost always 'cloud' here; BYOA local triages still
 --           write to agent_triages with their own source).
 --   - HOW MUCH: cache-aware token breakdown + cost_usd (computed at insert
 --               via cost.ts → priceFor; cost_estimated flags seeded vs operator-
@@ -1469,7 +1469,7 @@ CREATE TABLE IF NOT EXISTS computers (
   owner_user_id     TEXT,                                  -- NULL for legacy cloud rows (pre-fork)
   name              TEXT NOT NULL,                         -- "MacBook Pro", "prod-vps-01"
   kind              TEXT NOT NULL,                         -- 'local' | 'vps' ('cloud' rows are legacy, unsupported since ADR 0003)
-  available_engines JSONB NOT NULL DEFAULT '[]'::jsonb,    -- ['claude','codex','grok','cursor']
+  available_engines JSONB NOT NULL DEFAULT '[]'::jsonb,    -- ['claude','codex','grok','cursor','zcode']
   status            TEXT NOT NULL DEFAULT 'offline',       -- 'online' | 'offline' | 'busy'
   last_seen_at      TIMESTAMP WITH TIME ZONE,
   credential_hash   TEXT,                                  -- SHA256 of the device token
@@ -1491,7 +1491,7 @@ ALTER TABLE computers ADD COLUMN IF NOT EXISTS daemon_supervised BOOLEAN;
 -- a 'cloud' computer, means managed (current pod behavior). A 'local' /
 -- 'vps' computer means BYOA: wakes go to the paired daemon, no pod.
 ALTER TABLE participants ADD COLUMN IF NOT EXISTS computer_id TEXT;
-ALTER TABLE participants ADD COLUMN IF NOT EXISTS engine      TEXT;  -- 'managed' | 'claude' | 'codex' | 'grok' | 'cursor'
+ALTER TABLE participants ADD COLUMN IF NOT EXISTS engine      TEXT;  -- 'managed' | 'claude' | 'codex' | 'grok' | 'cursor' | 'zcode'
 -- Per-agent model overrides. "model" (added earlier) is the big-brain / main
 -- reasoning model; "fast_model" is the small-brain model for cheap auxiliary
 -- work. For BYOA agents these pass through to the engine as --model (big) and,

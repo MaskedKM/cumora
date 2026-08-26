@@ -174,7 +174,7 @@ func pair(db *sql.DB) http.HandlerFunc {
 		engine := "claude"
 		if len(body.Engines) > 0 {
 			switch body.Engines[0] {
-			case "claude", "codex", "grok", "cursor":
+			case "claude", "codex", "grok", "cursor", "zcode":
 				engine = body.Engines[0]
 			}
 		}

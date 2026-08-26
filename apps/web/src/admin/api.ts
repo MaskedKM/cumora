@@ -20,7 +20,7 @@ export type LlmCallPurpose =
   | 'compaction' | 'completion-verify' | 'steer-summary' | 'convene-decision'
   | 'palette' | 'gender' | 'avatar-image' | 'agent-image'
 export type LlmCallStatus = 'ok' | 'rate_limited' | 'timeout' | 'failed'
-export type LlmCallSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor'
+export type LlmCallSource = 'cloud' | 'byoa-claude' | 'byoa-codex' | 'byoa-grok' | 'byoa-cursor' | 'byoa-zcode'
 
 export interface LlmSummary {
   sinceDays: number

@@ -27,7 +27,7 @@ import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
 import { parseSseStream, wakeStreamWasStable } from '../runtime/sse-parse.js'
-import { detectEngines, getAdapter, ENGINE_IDS, runEngineDoctor, type EngineId, type EngineSession, type EngineRunResult, type EngineUsage, type EngineHopReport } from './engine.js'
+import { detectEngines, getAdapter, ENGINE_IDS, runEngineDoctor, resolveZcodeLauncher, zcodeEngineVersion, type EngineId, type EngineSession, type EngineRunResult, type EngineUsage, type EngineHopReport } from './engine.js'
 import { usageFromClaude, type TokenUsage } from '../cost.js'
 import { parseTriage, finalizeTriage, isRateLimited } from '../triage-core.js'
 import {
@@ -643,6 +643,9 @@ function authFailureHint(engine: EngineId, detail: string): string {
   if (engine === 'cursor') {
     return 'Open a terminal on that computer and run `cursor-agent login` (or fix its quota / API key), then wake the agent again.'
   }
+  if (engine === 'zcode') {
+    return 'On that computer, finish the zcode CLI login (`node <zcode.cjs> login`, which writes ~/.zcode/cli/config.json) or fix its plan quota, then wake the agent again. See docs/byoa-zcode-notes.md.'
+  }
   return 'Open Codex on that computer and refresh its login or quota, then wake the agent again.'
 }
 
@@ -655,6 +658,7 @@ function missingEngineMessage(): string {
     '  - Codex: install the `codex` CLI, then run `codex` once to sign in',
     '  - Grok Build: install the `grok` CLI, then run `grok login` once',
     '  - Cursor Agent: install Cursor (the `cursor-agent` CLI ships with it), then run `cursor-agent login`',
+    '  - ZCode: install the ZCode desktop app, then run `node <app>/resources/glm/zcode.cjs login` once (or set CUMORA_ZCODE_BIN)',
     '',
     'After that, rerun:',
     '  npx cumora@latest agent computer --pair <code>',
@@ -698,6 +702,17 @@ function helpText(): string {
 async function requireLocalEngine(): Promise<EngineId[]> {
   const engines = await detectEngines()
   if (engines.length === 0) throw new Error(missingEngineMessage())
+  // zcode's CLI surface is young — its help text has drifted ahead of the
+  // arg parser before. Echo the runtime version at pairing AND every daemon
+  // start (this runs from both) so a later drift report has the number that
+  // behaved this way — the line changes visibly across a desktop-app upgrade
+  // (the AppImage cache also re-extracts via its size+mtime key, see engine.ts).
+  if (engines.includes('zcode')) {
+    const version = zcodeEngineVersion()
+    const source = resolveZcodeLauncher()?.source
+    if (version) console.log(`[computer] zcode engine version ${version}${source ? ` (${source})` : ''}`)
+    else console.log('[computer] zcode engine present, but `zcode version` did not answer — flag drift risk unknown')
+  }
   return engines
 }
 
@@ -1201,7 +1216,14 @@ class AgentRunner {
   }
 
   async start(): Promise<void> {
-    await this.adapter.seedHome(this.home, { id: this.agent.id, name: this.agent.name, role: this.agent.role, systemPrompt: this.agent.systemPrompt })
+    // model/fastModel ride the persona: engines with a --model flag consume
+    // them per-turn instead, but seedHome is the one hook every engine gets,
+    // and zcode pins them into a project-level config here.
+    await this.adapter.seedHome(
+      this.home,
+      { id: this.agent.id, name: this.agent.name, role: this.agent.role, systemPrompt: this.agent.systemPrompt, model: this.engineModel(), fastModel: this.engineFastModel() },
+      this.engineEnv(),
+    )
     await writeShim(this.binDir)
     await this.loadSessionId()
     void this.streamLoop()
