@@ -95,13 +95,14 @@ func parseMentions(ctx context.Context, db *sql.DB, companyID, text string) []st
 	sort.SliceStable(cands, func(i, j int) bool { return len(cands[i].token) > len(cands[j].token) })
 	lower := strings.ToLower(text)
 	seen := map[string]bool{}
-	var out []string
+	out := []string{}
 	fallback := regexp.MustCompile(`(?i)^@([a-z0-9][a-z0-9_-]{0,63})`)
 	for i := 0; i < len(text); i++ {
 		if text[i] != '@' {
 			continue
 		}
-		if i > 0 && isWordByte(text[i-1]) {
+		// start boundary:前字符为词字符**或 @** 均不算提及开头(@@id 非提及)
+		if i > 0 && (isWordByte(text[i-1]) || text[i-1] == '@') {
 			continue
 		}
 		rest := lower[i+1:]
@@ -117,6 +118,9 @@ func parseMentions(ctx context.Context, db *sql.DB, companyID, text string) []st
 			if m := fallback.FindStringSubmatch(text[i:]); m != nil {
 				id = strings.ToLower(m[1])
 			}
+		}
+		if id == "all" {
+			continue
 		}
 		if id != "" && !seen[id] {
 			seen[id] = true
@@ -240,7 +244,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
 			return
 		}
-		boardEvent(r.Context(), companyID, "board.created", boardID, nil)
+		boardEvent(r.Context(), companyID, "board.created", boardID, map[string]any{"actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": boardID})
 	}
 }
@@ -327,7 +331,7 @@ func snapshot(db *sql.DB) http.HandlerFunc {
 
 func update(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
 		if !ok {
 			return
 		}
@@ -352,7 +356,11 @@ func update(db *sql.DB) http.HandlerFunc {
 			if runes := []rune(d); len(runes) > 4000 {
 				d = string(runes[:4000])
 			}
-			args = append(args, d)
+			var dv any
+			if d != "" {
+				dv = d
+			}
+			args = append(args, dv)
 			sets = append(sets, fmt.Sprintf("description = $%d", len(args)))
 		}
 		if len(sets) == 0 {
@@ -365,14 +373,14 @@ func update(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
 			return
 		}
-		boardEvent(r.Context(), companyID, "board.updated", boardID, nil)
+		boardEvent(r.Context(), companyID, "board.updated", boardID, map[string]any{"actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
 func remove(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
 		if !ok {
 			return
 		}
@@ -381,7 +389,7 @@ func remove(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
 			return
 		}
-		boardEvent(r.Context(), companyID, "board.deleted", boardID, nil)
+		boardEvent(r.Context(), companyID, "board.deleted", boardID, map[string]any{"actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -460,7 +468,7 @@ func cardLookup(db *sql.DB) http.HandlerFunc {
 
 func addColumn(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
 		if !ok {
 			return
 		}
@@ -470,6 +478,9 @@ func addColumn(db *sql.DB) http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		title := strings.TrimSpace(body.Title)
+		if runes := []rune(title); len(runes) > 100 {
+			title = string(runes[:100])
+		}
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
@@ -488,15 +499,14 @@ func addColumn(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
-		boardEvent(r.Context(), companyID, "column.created", boardID, map[string]any{"columnId": colID})
+		boardEvent(r.Context(), companyID, "column.created", boardID, map[string]any{"columnId": colID, "actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": colID, "position": pos})
 	}
 }
 
 func updateColumn(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
 			return
 		}
@@ -509,7 +519,11 @@ func updateColumn(db *sql.DB) http.HandlerFunc {
 		sets := []string{}
 		args := []any{}
 		if body.Title != nil {
-			args = append(args, strings.TrimSpace(*body.Title))
+			t := strings.TrimSpace(*body.Title)
+			if runes := []rune(t); len(runes) > 100 {
+				t = string(runes[:100])
+			}
+			args = append(args, t)
 			sets = append(sets, fmt.Sprintf("title = $%d", len(args)))
 		}
 		if body.Position != nil {
@@ -532,15 +546,14 @@ func updateColumn(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
-		boardEvent(r.Context(), companyID, "column.updated", boardID, map[string]any{"columnId": colID})
+		boardEvent(r.Context(), companyID, "column.updated", boardID, map[string]any{"columnId": colID, "actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
 func deleteColumn(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
 			return
 		}
@@ -555,8 +568,7 @@ func deleteColumn(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
-		boardEvent(r.Context(), companyID, "column.deleted", boardID, map[string]any{"columnId": colID})
+		boardEvent(r.Context(), companyID, "column.deleted", boardID, map[string]any{"columnId": colID, "actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -655,7 +667,7 @@ func updateCard(db *sql.DB) http.HandlerFunc {
 		args := []any{}
 		nextTitle, nextDesc := curTitle, curDesc.String
 		columnChanged := false
-		if v, has := raw["title"]; has {
+		if v, has := raw["title"]; has && string(v) != "null" {
 			var t string
 			_ = json.Unmarshal(v, &t)
 			nextTitle = strings.TrimSpace(t)
@@ -665,7 +677,7 @@ func updateCard(db *sql.DB) http.HandlerFunc {
 			args = append(args, nextTitle)
 			sets = append(sets, fmt.Sprintf("title = $%d", len(args)))
 		}
-		if v, has := raw["description"]; has {
+		if v, has := raw["description"]; has && string(v) != "null" {
 			var d string
 			_ = json.Unmarshal(v, &d)
 			nextDesc = strings.TrimSpace(d)
@@ -681,13 +693,15 @@ func updateCard(db *sql.DB) http.HandlerFunc {
 			args = append(args, p)
 			sets = append(sets, fmt.Sprintf("position = $%d", len(args)))
 		}
-		if v, has := raw["assigneeId"]; has && string(v) != "null" {
-			var a string
-			_ = json.Unmarshal(v, &a)
-			a = strings.TrimSpace(a)
+		if v, has := raw["assigneeId"]; has {
 			var av any
-			if a != "" {
-				av = a
+			if string(v) != "null" {
+				var a string
+				_ = json.Unmarshal(v, &a)
+				a = strings.TrimSpace(a)
+				if a != "" {
+					av = a
+				}
 			}
 			args = append(args, av)
 			sets = append(sets, fmt.Sprintf("assignee_id = $%d", len(args)))
@@ -740,13 +754,17 @@ func updateCard(db *sql.DB) http.HandlerFunc {
 		boardEvent(r.Context(), companyID, kind, boardID, map[string]any{
 			"cardId": cardID, "mentions": mentionsOut, "actorId": uid,
 		})
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mentions": mentionsOut})
+		resp := map[string]any{"ok": true}
+		if mentionsOut != nil {
+			resp["mentions"] = mentionsOut
+		}
+		httpx.WriteJSON(w, http.StatusOK, resp)
 	}
 }
 
 func deleteCard(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
 			return
 		}
@@ -761,8 +779,7 @@ func deleteCard(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
-		boardEvent(r.Context(), companyID, "card.deleted", boardID, map[string]any{"cardId": cardID})
+		boardEvent(r.Context(), companyID, "card.deleted", boardID, map[string]any{"cardId": cardID, "actorId": uid})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -822,8 +839,8 @@ func addComment(db *sql.DB) http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		text := strings.TrimSpace(body.Body)
-		if runes := []rune(text); len(runes) > 4000 {
-			text = string(runes[:4000])
+		if runes := []rune(text); len(runes) > 8000 {
+			text = string(runes[:8000])
 		}
 		if text == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
@@ -845,7 +862,7 @@ func addComment(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
+		_, _ = db.ExecContext(r.Context(), `UPDATE board_cards SET updated_at = NOW() WHERE id = $1`, cardID)
 		boardEvent(r.Context(), companyID, "comment.created", boardID, map[string]any{
 			"cardId": cardID, "commentId": commentID, "mentions": mentions, "actorId": uid,
 		})
@@ -855,35 +872,27 @@ func addComment(db *sql.DB) http.HandlerFunc {
 
 func deleteComment(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
+		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
 			return
 		}
 		boardID, cardID, commentID := r.PathValue("bid"), r.PathValue("cid"), r.PathValue("mid")
-		var owner sql.NullString
-		err := db.QueryRowContext(r.Context(), `
-			SELECT author_id FROM board_card_comments WHERE id = $1 AND card_id = $2 LIMIT 1`,
-			commentID, cardID).Scan(&owner)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		// baseline:作者或 owner/admin 可删
+		// baseline:WHERE author_id = me 的单条 DELETE;行不存在/非作者
+		// 一律 404(存在性不透明)。
 		uidNow, _ := httpx.UserID(r)
-		isAuthor := owner.Valid && owner.String == uidNow
-		if !isAuthor {
-			// 简化:Go 骨架非作者删除 → 403(baseline 校验角色)
-			httpx.WriteError(w, http.StatusForbidden, "only the author can delete this comment")
-			return
-		}
-		if _, err := db.ExecContext(r.Context(),
-			`DELETE FROM board_card_comments WHERE id = $1`, commentID); err != nil {
+		res, err := db.ExecContext(r.Context(),
+			`DELETE FROM board_card_comments WHERE id = $1 AND card_id = $2 AND author_id = $3`,
+			commentID, cardID, uidNow)
+		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
 			return
 		}
-		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
+		if n, _ := res.RowsAffected(); n == 0 {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+			return
+		}
 		boardEvent(r.Context(), companyID, "comment.deleted", boardID, map[string]any{
-			"cardId": cardID, "commentId": commentID,
+			"cardId": cardID, "commentId": commentID, "actorId": uid,
 		})
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
