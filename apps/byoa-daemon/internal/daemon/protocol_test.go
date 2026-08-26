@@ -41,6 +41,9 @@ type stubServer struct {
 
 	inboxRows []map[string]any
 
+	// llm-calls 观测(runner_session_test 用:#64 逐跳台账上送)。
+	llmCalls []map[string]any
+
 	agentTokensIssued int
 }
 
@@ -176,17 +179,35 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// recordingEngine:stub 引擎——记录每次调用的输入,可编排会话 id 序列。
+// recordingEngine:stub 引擎——记录每次 Run 的输入,可编排会话 id 序列。
+// 持久会话/小脑/探针面给最小 no-op(协议测试只驱动一次性 turn 路径)。
 type recordingEngine struct {
 	mu       sync.Mutex
 	id       string
-	calls    []TurnInput
+	calls    []RunArgs
 	sessions []string // 第 n 次调用返回 sessions[n](越界取末元素)
 }
 
-func (e *recordingEngine) ID() string { return e.id }
+func (e *recordingEngine) ID() string  { return e.id }
+func (e *recordingEngine) Bin() string { return e.id }
 
-func (e *recordingEngine) Run(ctx context.Context, in TurnInput) TurnResult {
+func (e *recordingEngine) SeedHome(home string, p Persona) error { return nil }
+
+func (e *recordingEngine) StartSession(args SessionArgs) EngineSession { return nil }
+
+func (e *recordingEngine) Classify(ctx context.Context, args ClassifyArgs) ClassifyResult {
+	return ClassifyResult{Text: "stub"}
+}
+
+func (e *recordingEngine) Probe(ctx context.Context, args ProbeArgs) ClassifyResult {
+	return ClassifyResult{Text: "OK"}
+}
+
+func (e *recordingEngine) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProbeResult {
+	return WakeProbeResult{OK: true, Skipped: true}
+}
+
+func (e *recordingEngine) Run(ctx context.Context, in RunArgs) RunResult {
 	e.mu.Lock()
 	e.calls = append(e.calls, in)
 	n := len(e.calls) - 1
@@ -195,7 +216,7 @@ func (e *recordingEngine) Run(ctx context.Context, in TurnInput) TurnResult {
 		sess = e.sessions[min(n, len(e.sessions)-1)]
 	}
 	e.mu.Unlock()
-	return TurnResult{SessionID: sess, Output: "stub turn output"}
+	return RunResult{ExitCode: 0, SessionID: sess}
 }
 
 func (s *stubServer) publishWake(convo string) {

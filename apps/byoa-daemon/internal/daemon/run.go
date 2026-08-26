@@ -197,7 +197,7 @@ func doctor() {
 		fmt.Printf("engines on PATH: %s\n", joinStrings(engines, ", "))
 		for _, id := range engines {
 			if getAdapter(id) == nil {
-				fmt.Printf("  %s: adapter not yet implemented in the Go daemon (#64–#66)\n", id)
+				fmt.Printf("  %s: adapter not yet implemented in the Go daemon (#66)\n", id)
 			}
 		}
 	}
@@ -334,6 +334,7 @@ func doRun(ctx context.Context, serverOverride string) error {
 	// (测试驱动)干净返回——os.Exit 在测试进程里是框架级 panic。
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig) // 评审 nit:Notify 后不停收,泄漏到进程末尾
 	shutdown := func(why string, exitProcess bool) {
 		poll.Stop()
 		beat.Stop()

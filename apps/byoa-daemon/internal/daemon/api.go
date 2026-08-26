@@ -1,5 +1,5 @@
-// daemon 包 api —— 服务端 HTTP 面(对齐 daemon.ts 的 api/runtimeBest/
-// runtimeGet):短请求一律带超时;runtime 面尽力而为、永不抛错。
+// daemon 包 api —— 服务端 HTTP 面(对齐 daemon.ts 的 api/runtimeBest):
+// 短请求一律带超时;runtime 面尽力而为、错误只回传不打断 agent 环路。
 package daemon
 
 import (
