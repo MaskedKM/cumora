@@ -4,11 +4,12 @@
  * 运行环境须 RESEND_API_KEY 为空(mock 模式,集成 runner 默认强制)。
  * 入站 webhook(HMAC)与重试/GC 任务随同票后续面补测。
  */
-import { test, beforeEach, after } from 'node:test'
+
 import assert from 'node:assert/strict'
+import { after, beforeEach, test } from 'node:test'
 import { pool } from '../db/pool.js'
 import {
-  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, startMirror,teardownAll, 
 } from './_helpers.js'
 
 const USER = 'u-mirror-email'
