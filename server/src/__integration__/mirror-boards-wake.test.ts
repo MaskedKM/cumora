@@ -102,7 +102,8 @@ function collectWakes(token: string, until: (reasons: string[]) => boolean, time
   const timer = setTimeout(() => ctrl.abort(), timeoutMS)
   const events: any[] = []
   let resolveReady: () => void = () => {}
-  const ready = new Promise<void>((res) => { resolveReady = res })
+  let rejectReady: (err: unknown) => void = () => {}
+  const ready = new Promise<void>((res, rej) => { resolveReady = res; rejectReady = rej })
   const done = (async (): Promise<any[]> => {
     try {
       const res = await fetch(`${baseUrl}/runtime/wake-stream`, {
@@ -138,16 +139,21 @@ function collectWakes(token: string, until: (reasons: string[]) => boolean, time
         if (Date.now() >= deadline) break
       }
       return events
-    } catch {
+    } catch (err) {
       // 窗口耗尽后的 ctrl.abort() 会让在飞 read 拒绝(静默用例的常态
-      // 路径)——返回已收集事件;连接失败同样落空数组,由外层计数断言
-      // 给出可读失败。
+      // 路径)——返回已收集事件;连接失败则连带拒绝 ready,让
+      // await ready 的用例拿到真实错误而非悬挂。
+      rejectReady(err)
       return events
     } finally {
       clearTimeout(timer)
       ctrl.abort()
     }
   })()
+  // done 先于 ready 帧 settle(连接失败、断流、窗口耗尽且无 ready 帧)
+  // 时拒绝 ready——已 settle 过则是 no-op。否则 await ready 永不完成,
+  // node:test 会取消整个文件后续用例。
+  done.catch(() => {}).finally(() => rejectReady(new Error('wake-stream ended before ready frame')))
   return { ready, done }
 }
 
@@ -168,7 +174,7 @@ test('[mirror-boards-wake] card create with @mention wakes the agent (reason=man
   assert.equal(manual[0].conversationId, null)
 })
 
-test('[mirror-boards-wake] assignment without @token wakes the assignee; actor never woken', async () => {
+test('[mirror-boards-wake] assignment without @token wakes the assignee', async () => {
   await seed()
   const token2 = signAgentToken({ agentId: fixture.agent2Id, companyId: fixture.companyId })
   const collector = collectWakes(token2, (rs) => rs.filter((r) => r === 'manual').length >= 1)
@@ -224,9 +230,10 @@ test('[mirror-boards-wake] actor self-mention is filtered (the auth user IS an a
     `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status)
      VALUES ('wake-user', $1, 'agent', 'WakerBot', 'tester', 'W', '#222', 'avail')`,
     [fixture.companyId])
-  // 观察者:另一个 agent 的流,窗口内必须静默。
-  const token2 = signAgentToken({ agentId: fixture.agent2Id, companyId: fixture.companyId })
-  const silence = collectWakes(token2, () => false, 1200) // 谓词恒 false → 跑满窗口
+  // 观察者必须是发起者自己的流:唤醒按 agent 分通道投递,actor 过滤
+  // 若被删掉,自我唤醒只会出现在 actor 通道里——看别人的流测不出来。
+  const selfToken = signAgentToken({ agentId: 'wake-user', companyId: fixture.companyId })
+  const silence = collectWakes(selfToken, () => false, 1200) // 谓词恒 false → 跑满窗口
   await silence.ready
   const created = await call(`/boards/${fixture.boardId}/cards`, {
     method: 'POST',
