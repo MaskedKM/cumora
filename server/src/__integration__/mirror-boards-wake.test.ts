@@ -87,59 +87,81 @@ async function call(path: string, init: RequestInit = {}): Promise<{ status: num
   return { status: res.status, body: await res.json().catch(() => null) }
 }
 
-/** 订阅 agent 的 wake-stream,收集 wake 事件直到谓词满足或超时。 */
-async function collectWakes(token: string, until: (reasons: string[]) => boolean, timeoutMS = 6000): Promise<any[]> {
+interface WakeCollector {
+  /** ready 帧已到(订阅已生效——之后的 POST 不会错过 pub/sub)。 */
+  ready: Promise<void>
+  /** 谓词满足或超时后 settle,携带收集到的 wake 事件。 */
+  done: Promise<any[]>
+}
+
+/** 订阅 agent 的 wake-stream。ready 在收到 event: ready 帧时 resolve
+ * (确定性暖机,替代定时睡眠——Redis pub/sub 非持久,SUBSCRIBE 完成
+ * 前的 PUBLISH 会整个丢失)。 */
+function collectWakes(token: string, until: (reasons: string[]) => boolean, timeoutMS = 6000): WakeCollector {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMS)
   const events: any[] = []
-  try {
-    const res = await fetch(`${baseUrl}/runtime/wake-stream`, {
-      headers: { authorization: `Bearer ${token}` },
-      signal: ctrl.signal,
-    })
-    assert.equal(res.status, 200)
-    const reader = (res.body as any).getReader() as { read(): Promise<{ done: boolean; value?: Uint8Array }> }
-    const dec = new TextDecoder()
-    let buf = ''
-    const deadline = Date.now() + timeoutMS
-    for (;;) {
-      const result = await Promise.race([
-        reader.read(),
-        new Promise<{ done: true }>((resolve) => setTimeout(() => resolve({ done: true } as const), Math.max(1, deadline - Date.now()))),
-      ])
-      if (result.done) break
-      buf += dec.decode(result.value, { stream: true })
+  let resolveReady: () => void = () => {}
+  const ready = new Promise<void>((res) => { resolveReady = res })
+  const done = (async (): Promise<any[]> => {
+    try {
+      const res = await fetch(`${baseUrl}/runtime/wake-stream`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      })
+      assert.equal(res.status, 200)
+      const reader = (res.body as any).getReader() as { read(): Promise<{ done: boolean; value?: Uint8Array }> }
+      const dec = new TextDecoder()
+      let buf = ''
+      const deadline = Date.now() + timeoutMS
       for (;;) {
-        const idx = buf.indexOf('\n\n')
-        if (idx < 0) break
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        if (!frame.startsWith('event: wake')) continue
-        const dataLine = frame.split('\n').find((l) => l.startsWith('data: '))
-        if (dataLine) events.push(JSON.parse(dataLine.slice(6)))
-        if (until(events.map((e) => e.reason))) return events
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<{ done: true }>((resolve) => setTimeout(() => resolve({ done: true } as const), Math.max(1, deadline - Date.now()))),
+        ])
+        if (result.done) break
+        buf += dec.decode(result.value, { stream: true })
+        for (;;) {
+          const idx = buf.indexOf('\n\n')
+          if (idx < 0) break
+          const frame = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          if (frame.startsWith('event: ready')) {
+            resolveReady()
+            continue
+          }
+          if (!frame.startsWith('event: wake')) continue
+          const dataLine = frame.split('\n').find((l) => l.startsWith('data: '))
+          if (dataLine) events.push(JSON.parse(dataLine.slice(6)))
+          if (until(events.map((e) => e.reason))) return events
+        }
+        if (Date.now() >= deadline) break
       }
-      if (Date.now() >= deadline) break
+      return events
+    } catch {
+      // 窗口耗尽后的 ctrl.abort() 会让在飞 read 拒绝(静默用例的常态
+      // 路径)——返回已收集事件;连接失败同样落空数组,由外层计数断言
+      // 给出可读失败。
+      return events
+    } finally {
+      clearTimeout(timer)
+      ctrl.abort()
     }
-    return events
-  } finally {
-    clearTimeout(timer)
-    ctrl.abort()
-  }
+  })()
+  return { ready, done }
 }
 
 test('[mirror-boards-wake] card create with @mention wakes the agent (reason=manual)', async () => {
   await seed()
-  const collecting = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
-  // 等流就绪:先建一块无提及的卡(不产唤醒),流上只应有 ready。
-  await new Promise((r) => setTimeout(r, 300))
+  const collector = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
+  await collector.ready
   const created = await call(`/boards/${fixture.boardId}/cards`, {
     method: 'POST',
     body: JSON.stringify({ title: `hey @${fixture.agentId} look`, columnId: fixture.columnId }),
   })
   assert.equal(created.status, 200)
   assert.deepEqual(created.body.mentions, [fixture.agentId])
-  const events = await collecting
+  const events = await collector.done
   const manual = events.filter((e) => e.reason === 'manual')
   assert.equal(manual.length, 1, `exactly one manual wake, got ${JSON.stringify(events)}`)
   assert.equal(manual[0].kind, 'wake')
@@ -149,24 +171,16 @@ test('[mirror-boards-wake] card create with @mention wakes the agent (reason=man
 test('[mirror-boards-wake] assignment without @token wakes the assignee; actor never woken', async () => {
   await seed()
   const token2 = signAgentToken({ agentId: fixture.agent2Id, companyId: fixture.companyId })
-  const collecting = collectWakes(token2, (rs) => rs.filter((r) => r === 'manual').length >= 1)
-  await new Promise((r) => setTimeout(r, 300))
+  const collector = collectWakes(token2, (rs) => rs.filter((r) => r === 'manual').length >= 1)
+  await collector.ready
   const created = await call(`/boards/${fixture.boardId}/cards`, {
     method: 'POST',
     body: JSON.stringify({ title: 'plain card', columnId: fixture.columnId, assigneeId: fixture.agent2Id }),
   })
   assert.equal(created.status, 200)
   const cardId = created.body.id
-  const events = await collecting
+  const events = await collector.done
   assert.equal(events.filter((e) => e.reason === 'manual').length, 1, 'assignee woken exactly once')
-  // 发起者(wake-user 是 human,不可能是 agent)——换 agent 发起者验证自过滤:
-  // 用 agent2 自己指派自己 → 不唤醒任何人(自提及滤除)。
-  const selfAssign = await call(`/boards/${fixture.boardId}/cards/${cardId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ assigneeId: fixture.agent2Id }),
-  })
-  assert.equal(selfAssign.status, 200)
-  await new Promise((r) => setTimeout(r, 600))
 })
 
 test('[mirror-boards-wake] reassignment wakes the new assignee; comment @mention wakes too', async () => {
@@ -179,25 +193,47 @@ test('[mirror-boards-wake] reassignment wakes the new assignee; comment @mention
   const cardId = card.body.id
 
   // 重指派 → 新 assignee 唤醒
-  const collecting = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
-  await new Promise((r) => setTimeout(r, 300))
+  const collector = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
+  await collector.ready
   const moved = await call(`/boards/${fixture.boardId}/cards/${cardId}`, {
     method: 'PATCH',
     body: JSON.stringify({ assigneeId: fixture.agentId }),
   })
   assert.equal(moved.status, 200)
-  let events = await collecting
+  let events = await collector.done
   assert.equal(events.filter((e) => e.reason === 'manual').length, 1, 'reassignment wakes new assignee')
 
   // 评论 @提及 → 唤醒
-  const collecting2 = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
-  await new Promise((r) => setTimeout(r, 300))
+  const collector2 = collectWakes(fixture.token, (rs) => rs.filter((r) => r === 'manual').length >= 1)
+  await collector2.ready
   const commented = await call(`/boards/${fixture.boardId}/cards/${cardId}/comments`, {
     method: 'POST',
     body: JSON.stringify({ body: `ping @${fixture.agentId}` }),
   })
   assert.equal(commented.status, 200)
   assert.deepEqual(commented.body.mentions, [fixture.agentId])
-  events = await collecting2
+  events = await collector2.done
   assert.equal(events.filter((e) => e.reason === 'manual').length, 1, 'comment mention wakes')
+})
+
+test('[mirror-boards-wake] actor self-mention is filtered (the auth user IS an agent)', async () => {
+  await seed()
+  // 发起者本人也是 agent:users 与 participants 共享 id(跨表同 id 是
+  // 合法形态——auth 的 uid 即参与者 id)。@自己 → 滤除,零唤醒。
+  await pool.query(
+    `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status)
+     VALUES ('wake-user', $1, 'agent', 'WakerBot', 'tester', 'W', '#222', 'avail')`,
+    [fixture.companyId])
+  // 观察者:另一个 agent 的流,窗口内必须静默。
+  const token2 = signAgentToken({ agentId: fixture.agent2Id, companyId: fixture.companyId })
+  const silence = collectWakes(token2, () => false, 1200) // 谓词恒 false → 跑满窗口
+  await silence.ready
+  const created = await call(`/boards/${fixture.boardId}/cards`, {
+    method: 'POST',
+    body: JSON.stringify({ title: 'note to self @wake-user', columnId: fixture.columnId, assigneeId: 'wake-user' }),
+  })
+  assert.equal(created.status, 200)
+  assert.deepEqual(created.body.mentions, ['wake-user'], '@解析仍命中(提及入库),但唤醒被 actor 滤除')
+  const events = await silence.done
+  assert.equal(events.length, 0, `self-mention/assign by the actor must not wake anyone, got ${JSON.stringify(events)}`)
 })

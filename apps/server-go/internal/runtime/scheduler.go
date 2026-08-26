@@ -69,14 +69,24 @@ func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actor
 			slog.Warn("[boards] wake lookup failed", "err", err)
 			return
 		}
-		defer rows.Close()
 		var ids []string
 		for rows.Next() {
 			var id string
-			if rows.Scan(&id) == nil {
-				ids = append(ids, id)
+			if err := rows.Scan(&id); err != nil {
+				slog.Warn("[boards] wake row scan failed", "err", err)
+				rows.Close()
+				return
 			}
+			ids = append(ids, id)
 		}
+		if err := rows.Err(); err != nil {
+			// 迭代中途失败 → 列表被截断,按 TS 语义(reject → catch → warn)
+			// 放弃本轮唤醒;消息在卡面上,下个事件仍会触发。
+			slog.Warn("[boards] wake lookup rows failed", "err", err)
+			rows.Close()
+			return
+		}
+		rows.Close() // 投递前归还连接——publish 不占池
 		for _, id := range ids {
 			s.WakeAgent(id, "manual", nil)
 		}
