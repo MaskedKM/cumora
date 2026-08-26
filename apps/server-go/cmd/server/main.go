@@ -23,6 +23,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/conversations"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -88,6 +89,7 @@ func main() {
 	boards.Mount(coreRouter, pool)
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
+	email.Mount(coreRouter, pool)
 	calendar.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
