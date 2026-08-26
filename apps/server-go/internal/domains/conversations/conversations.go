@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -70,6 +71,11 @@ func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actor
 		INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
 		VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
 		"m-"+authn.NewToken()[:12], convID, companyID, actorID, body, sequence)
+	events.MessageNew(ctx, companyID, convID, map[string]any{
+		"id": "m-sys", "conversationId": convID, "authorId": actorID,
+		"kind": "system", "body": string(body), "sequence": sequence,
+		"at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
 }
 
 // postSystemMessage 兼容包装(老签名调用点)
@@ -328,8 +334,11 @@ func typing(db *sql.DB) http.HandlerFunc {
 		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
 			return
 		}
-		// WS typing 广播在 ws 域接管;此处 200 即可(与 baseline 的
-		// publish-only-when-connected 行为等价:无订阅即丢弃)
+		var body struct {
+			Done bool `json:"done"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		events.Typing(r.Context(), companyID, convID, uid, body.Done)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -824,6 +833,11 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		_, _ = db.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID)
+		events.MessageNew(r.Context(), companyID, convID, map[string]any{
+			"id": id, "conversationId": convID, "authorId": uid,
+			"kind": "text", "body": body.Body, "sequence": sequence,
+			"at": time.Now().UTC().Format(time.RFC3339Nano),
+		})
 		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": id, "sequence": sequence})
 	}
 }
