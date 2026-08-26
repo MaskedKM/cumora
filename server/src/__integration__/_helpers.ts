@@ -14,8 +14,8 @@
  * subsume).
  */
 import { createHmac, randomUUID } from 'node:crypto'
-import { pool } from '../db/pool.js'
 import { ensureSchema } from '../db/migrate.js'
+import { pool } from '../db/pool.js'
 import { env } from '../env.js'
 
 let schemaReady: Promise<void> | null = null
@@ -247,9 +247,13 @@ export function startMirror(user: string, company: string): {
     baseUrl: () => base,
     call: (path: string, init?: RequestInit) => (async () => {
       await ready
+      // MIRROR 形态:候选 Go 进程须以 CUMORA_GO_FAKE_AUTH=1 启动并信任
+      // x-test-user(等价本进程的伪造 auth 盖章);TS in-process 形态下
+      // 该头无人消费,带上无害。
+      const authHeaders: Record<string, string> = MIRROR_BASE ? { 'x-test-user': user } : {}
       const res = await fetch(`${base}/api${path}`, {
         ...init,
-        headers: { 'content-type': 'application/json', 'x-company-id': company, ...(init?.headers ?? {}) },
+        headers: { 'content-type': 'application/json', 'x-company-id': company, ...authHeaders, ...(init?.headers ?? {}) },
       })
       return { status: res.status, json: await res.json().catch(() => null) }
     })(),

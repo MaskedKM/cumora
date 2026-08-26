@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"os"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 )
@@ -19,9 +20,21 @@ const (
 
 // Authn 中间件:有令牌就解析并注入 uid(不拒绝——由各 handler 决定,
 // 与 baseline 的 opt-in requireAuth 语义一致)。
+//
+// 验收镜像盖章(#55 起):CUMORA_GO_FAKE_AUTH=1 时信任 x-test-user 头
+// 直接注入 uid——对齐 TS 镜像脚手架的伪造 auth 盖章(见
+// server/src/__integration__/_helpers.ts 的 buildApiTestApp),使
+// MIRROR_BASE 双跑能测认证面。仅限本地双跑,生产不得开。
 func Authn(db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if os.Getenv("CUMORA_GO_FAKE_AUTH") == "1" {
+				if uid := r.Header.Get("x-test-user"); uid != "" {
+					r = r.WithContext(context.WithValue(r.Context(), ctxUserID, uid))
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
 			token := authn.Bearer(r.Header.Get("Authorization"), r.Header.Get("x-session-token"))
 			if token != "" {
 				if uid, ok := authn.ResolveSession(r.Context(), db, token); ok {
