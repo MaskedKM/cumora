@@ -59,9 +59,7 @@ func send(db *sql.DB) http.HandlerFunc {
 		var bodyRaw any
 		_ = json.Unmarshal(body["body"], &bodyRaw)
 		text := strings.TrimSpace(anyString(bodyRaw))
-		if runes := []rune(text); len(runes) > 50_000 {
-			text = string(runes[:50_000])
-		}
+		text = core.Utf16Cap(text, 50_000)
 		toRaw := arrOf(body, "to")
 		if len(toRaw) == 0 || subject == "" || text == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "to, subject, body required")
@@ -100,22 +98,25 @@ func send(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		// 会话成员 = 发送者 + 每个同租户收件人(agent 按地址、human 按 auth email)。
-		memberSet := map[string]bool{me: true}
+		memberIDs := []string{me} // TS:new Set([me, ...]) 保插入序
+		seenMember := map[string]bool{me: true}
+		addMember := func(id string) {
+			if !seenMember[id] {
+				seenMember[id] = true
+				memberIDs = append(memberIDs, id)
+			}
+		}
 		for _, rc := range append(append([]rcpt{}, toResolved...), ccResolved...) {
 			if pid, _, _, ok3 := core.FindParticipantByAddress(r.Context(), db, rc.addr, tenant); ok3 {
-				memberSet[pid] = true
+				addMember(pid)
 				continue
 			}
 			var uid string
 			if db.QueryRowContext(r.Context(), `
 				SELECT u.id FROM users u JOIN company_members cm ON cm.user_id = u.id
 				WHERE LOWER(u.email) = $1 AND cm.company_id = $2 LIMIT 1`, rc.addr, tenant).Scan(&uid) == nil {
-				memberSet[uid] = true
+				addMember(uid)
 			}
-		}
-		memberIDs := []string{}
-		for id := range memberSet {
-			memberIDs = append(memberIDs, id)
 		}
 		messageID := core.MintMessageId()
 		convID, _, err := core.FindOrCreateEmailConversation(r.Context(), db, tenant, "", nil, subject, memberIDs)
@@ -249,9 +250,7 @@ func reply(db *sql.DB) http.HandlerFunc {
 		var bodyRaw any
 		_ = json.Unmarshal(body["body"], &bodyRaw)
 		text := strings.TrimSpace(anyString(bodyRaw))
-		if runes := []rune(text); len(runes) > 50_000 {
-			text = string(runes[:50_000])
-		}
+		text = core.Utf16Cap(text, 50_000)
 		if text == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
 			return
@@ -338,7 +337,7 @@ func reply(db *sql.DB) http.HandlerFunc {
 			ccCombined = append(ccCombined, core.FormatAddress(rc.addr, rc.name))
 		}
 		var newSubject string
-		if replyPrefixRe.MatchString(strings.TrimSpace(subject)) {
+		if replyPrefixRe.MatchString(subject) { // TS 测原值,不 trim
 			newSubject = core.SanitizeSubject(subject)
 		} else {
 			newSubject = core.SanitizeSubject("Re: " + subject)
@@ -387,6 +386,11 @@ func reply(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// Auto-ack:回复即已读(TS 同位)。
+		_, _ = db.ExecContext(r.Context(), `
+			INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`, me, conversationID)
 		code := http.StatusOK
 		if !sendRes.OK {
 			code = http.StatusBadGateway

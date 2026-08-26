@@ -245,14 +245,18 @@ func RunGcTick(ctx context.Context, db *sql.DB) (inspected, deleted int) {
 	}
 	inDB := map[string]bool{}
 	rows, err := db.QueryContext(ctx, `SELECT storage_key FROM email_attachments WHERE storage_key IS NOT NULL`)
-	if err == nil {
-		for rows.Next() {
-			var key string
-			if rows.Scan(&key) == nil {
-				inDB[key] = true
-			}
+	if err != nil {
+		return 0, 0 // 引用键不可知时绝不删(TS:Promise.all reject → 整轮中止)
+	}
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil {
+			inDB[key] = true
 		}
-		rows.Close()
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0
 	}
 	orphans := PickOrphans(inStorage, inDB, time.Now())
 	for _, key := range orphans {

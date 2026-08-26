@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -188,7 +189,15 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 			return
 		}
 		raw, err := io.ReadAll(io.LimitReader(r.Body, inboundMaxBody+1))
-		if err != nil || len(raw) > inboundMaxBody {
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
+			return
+		}
+		if len(raw) > inboundMaxBody {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request entity too large")
+			return
+		}
+		if len(raw) == 0 {
 			httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
 			return
 		}
@@ -197,8 +206,7 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 			return
 		}
 		var payload inboundPayload
-		if err := json.Unmarshal(raw, &payload); err != nil ||
-			payload.MessageID == "" || payload.From == "" {
+		if err := json.Unmarshal(raw, &payload); err != nil {
 			httpx.WriteError(w, http.StatusBadRequest, "bad payload — need messageId + from")
 			return
 		}
@@ -229,6 +237,7 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 		}
 		messageIDNorm := core.NormalizeMessageId(payload.MessageID)
 		if messageIDNorm == "" {
+			// TS:typeof '' === 'string' 过载荷检查,到 normalize 才拒
 			httpx.WriteError(w, http.StatusBadRequest, "invalid messageId")
 			return
 		}
@@ -247,7 +256,7 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 			subjectKey = "(no subject)"
 		}
 		fromFull := core.FormatAddress(fromAddr, fromName)
-		inboundToJSON, _ := json.Marshal(payload.To)
+		inboundToJSON := marshalNoEscape(payload.To)
 		var echoID string
 		if db.QueryRowContext(ctx, `
 			SELECT message_id FROM email_messages
@@ -329,15 +338,13 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 				continue
 			}
 			senderID, _ := resolveSender(ctx, db, fromAddr, fromName, companyID)
-			memberSet := map[string]bool{senderID: true}
+			memberIDs := []string{senderID} // TS:new Set([sender, ...]) 保插入序
+			seenMember := map[string]bool{senderID: true}
 			for _, r2 := range recipients {
-				if c2, pid2, _, _, ok2 := resolveInboundRecipient(ctx, db, r2.addr); ok2 && c2 == companyID {
-					memberSet[pid2] = true
+				if c2, pid2, _, _, ok2 := resolveInboundRecipient(ctx, db, r2.addr); ok2 && c2 == companyID && !seenMember[pid2] {
+					seenMember[pid2] = true
+					memberIDs = append(memberIDs, pid2)
 				}
-			}
-			memberIDs := []string{}
-			for id := range memberSet {
-				memberIDs = append(memberIDs, id)
 			}
 			var inReplyTo string
 			if payload.InReplyTo != nil {
@@ -361,7 +368,7 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 				References: payload.References, Subject: subjectKey,
 				FromAddr: fromFull, ToAddrs: payload.To, CCAddrs: payload.CC,
 				Body: body, HTML: html, RawSizeBytes: payload.RawSizeBytes,
-				AutoSubmitted: payload.AutoSubmitted != nil && *payload.AutoSubmitted != "" && *payload.AutoSubmitted != "no",
+				AutoSubmitted: payload.AutoSubmitted != nil, // TS Boolean(payload.autoSubmitted):"no" 亦真
 				Attachments:   atts,
 			})
 			if err != nil {
@@ -380,6 +387,28 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 	})
 }
 
+// marshalNoEscape:对齐 JSON.stringify(不转义 <>&)。
+func marshalNoEscape(v any) string {
+	var sb strings.Builder
+	enc := json.NewEncoder(&sb)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// base64Decode:Node Buffer.from 宽容语义(去垫/URL 变体回退)。
 func base64Decode(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("illegal base64 data")
 }

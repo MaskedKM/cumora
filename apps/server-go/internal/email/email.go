@@ -98,6 +98,36 @@ func ParseAddress(raw string) (addr string, name string, ok bool) {
 
 var nameQuoteNeeded = regexp.MustCompile(`["<>,;:@()\[\]\\]`)
 
+// utf16Len:JS string.length 的码元数。
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r > 0xFFFF {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+// utf16Cap:按 UTF-16 码元截断(TS slice 语义;边界裂代理保整字,
+// 与 TS 差半个字符,极端边缘)。
+func Utf16Cap(s string, max int) string {
+	n := 0
+	for i, r := range s {
+		units := 1
+		if r > 0xFFFF {
+			units = 2
+		}
+		if n+units > max {
+			return s[:i]
+		}
+		n += units
+	}
+	return s
+}
+
 // FormatAddress 对齐 formatAddress:有名则 "Name" <addr>(含会混淆解析器的
 // 字符时加引号,内部引号转义)。
 func FormatAddress(addr string, name string) string {
@@ -134,32 +164,34 @@ func SanitizeSubject(raw string) string {
 		b.WriteRune(r)
 	}
 	out := strings.Join(strings.Fields(b.String()), " ")
-	if runes := []rune(out); len(runes) > 200 {
-		return string(runes[:200])
-	}
-	return out
+	return Utf16Cap(out, 200)
 }
 
 var (
-	scriptTagRe = buildTagBodyRe([]string{"script", "style", "iframe", "object", "embed", "frame", "frameset", "applet", "svg", "math"})
-	selfCloseRe = buildSelfCloseRe([]string{"script", "style", "iframe", "object", "embed", "frame", "frameset", "applet", "svg", "math"})
+	dangerTags  = []string{"script", "style", "iframe", "object", "embed", "frame", "frameset", "applet", "svg", "math"}
 	linkMetaRe  = regexp.MustCompile(`(?i)<(?:link|meta|base)\b[^>]*/?>`)
 	commentRe   = regexp.MustCompile(`(?s)<!--.*?-->`)
 	eventDqRe   = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*"[^"]*"`)
 	eventSqRe   = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*'[^']*'`)
 	eventBareRe = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*[^\s>]+`)
-	urlAttrRe   = regexp.MustCompile(`(?i)\b(href|src|action|formaction|background|poster|xlink:href|data)\s*=\s*("|'|)\s*(javascript:|vbscript:|data:|file:)`)
-	srcdocRe    = regexp.MustCompile(`(?i)\bsrcdoc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	dataImgRe   = regexp.MustCompile(`^data:image/(png|jpeg|gif|webp|svg\+xml);`)
+	// 捕获属性值尾(含引号内空格);危险 scheme 与 data:image 白名单
+	// 判断在回调里做(RE2 无负向前瞻,对齐 TS 的 data:(?!image/…) 语义)。
+	urlAttrRe = regexp.MustCompile(`(?i)\b(href|src|action|formaction|background|poster|xlink:href|data)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	srcdocRe  = regexp.MustCompile(`(?i)\bsrcdoc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	dataImgRe = regexp.MustCompile(`^data:image/(png|jpeg|gif|webp|svg\+xml);`)
 )
 
-func buildTagBodyRe(tags []string) *regexp.Regexp {
-	alt := strings.Join(tags, "|")
-	return regexp.MustCompile(`(?is)<(` + alt + `)>[\s\S]*?</(` + alt + `)>`)
-}
-func buildSelfCloseRe(tags []string) *regexp.Regexp {
-	alt := strings.Join(tags, "|")
-	return regexp.MustCompile(`(?i)<(?:` + alt + `)\b[^>]*/?>`)
+// dangerousScheme:javascript:/vbscript:/file: 恒危险;data: 仅白名单
+// image MIME 之外危险。
+func dangerousScheme(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "vbscript:") || strings.HasPrefix(lower, "file:") {
+		return true
+	}
+	if strings.HasPrefix(lower, "data:") && !dataImgRe.MatchString(lower) {
+		return true
+	}
+	return false
 }
 
 // SanitizeEmailHtml 对齐 sanitizeEmailHtml(保守:删不转)。RE2 无负向前瞻,
@@ -168,37 +200,41 @@ func SanitizeEmailHtml(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	out := scriptTagRe.ReplaceAllString(raw, "")
-	out = selfCloseRe.ReplaceAllString(out, "")
+	// 逐 tag 构造(TS 同):开标签允许属性(\b),配对体整删;再清残开标签。
+	out := raw
+	for _, tag := range dangerTags {
+		bodyRe := regexp.MustCompile(`(?is)<` + tag + `\b[\s\S]*?</` + tag + `>`)
+		out = bodyRe.ReplaceAllString(out, "")
+		openRe := regexp.MustCompile(`(?i)<` + tag + `\b[^>]*/?>`)
+		out = openRe.ReplaceAllString(out, "")
+	}
 	out = linkMetaRe.ReplaceAllString(out, "")
 	out = commentRe.ReplaceAllString(out, "")
 	out = eventDqRe.ReplaceAllString(out, "")
 	out = eventSqRe.ReplaceAllString(out, "")
 	out = eventBareRe.ReplaceAllString(out, "")
 	out = urlAttrRe.ReplaceAllStringFunc(out, func(m string) string {
-		// m 形如 href="javascript:… / href=javascript:…
-		lower := strings.ToLower(m)
-		idx := strings.Index(lower, "data:")
-		if idx >= 0 {
-			val := m[idx:]
-			if dataImgRe.MatchString(strings.ToLower(val)) {
-				return m // data:image/*; 白名单
-			}
-		}
-		i := strings.IndexAny(m, `="`)
-		if i < 0 {
+		sub := urlAttrRe.FindStringSubmatch(m)
+		if sub == nil {
 			return m
 		}
-		attr := m[:i]
-		rest := m[i:]
-		q := ""
-		if strings.HasPrefix(rest, `="`) || strings.HasPrefix(rest, "='") {
-			q = string(rest[1])
+		attr, value := sub[1], sub[2]
+		if value == "" {
+			value = sub[3]
 		}
-		if q == "" {
-			q = `"`
+		if value == "" {
+			value = sub[4]
 		}
-		return attr + "=" + q + "#" + q
+		if !dangerousScheme(value) {
+			return m
+		}
+		if strings.Contains(sub[0], `="`) {
+			return attr + `="#"`
+		}
+		if strings.Contains(sub[0], "='") {
+			return attr + "='#'"
+		}
+		return attr + `="#"`
 	})
 	out = srcdocRe.ReplaceAllString(out, "")
 	return out
@@ -543,6 +579,9 @@ type PersistArgs struct {
 }
 
 func marshalStrings(xs []string) string {
+	if len(xs) == 0 {
+		return "[]" // TS (args.x ?? []).slice —— 恒数组
+	}
 	b, _ := json.Marshal(xs)
 	return string(b)
 }
@@ -551,6 +590,16 @@ func marshalStrings(xs []string) string {
 // 排 60s 后首试、email_attachments 行、CH_MESSAGE_NEW 带完整 email 头字段
 // (attachments 附 publicUrl)。返回 messageId/sequence。
 func PersistEmailMessage(ctx context.Context, db *sql.DB, args PersistArgs) (string, int, error) {
+	// TS 恒写数组:(ccAddrs ?? []) 等。nil → 空数组。
+	if args.ToAddrs == nil {
+		args.ToAddrs = []string{}
+	}
+	if args.CCAddrs == nil {
+		args.CCAddrs = []string{}
+	}
+	if args.BCCAddrs == nil {
+		args.BCCAddrs = []string{}
+	}
 	messageID := "m-" + randHex(16)
 	var sequence int
 	if err := db.QueryRowContext(ctx, `
@@ -575,12 +624,7 @@ func PersistEmailMessage(ctx context.Context, db *sql.DB, args PersistArgs) (str
 			refs = append(refs, n)
 		}
 	}
-	trunc := func(s string, n int) string {
-		if runes := []rune(s); len(runes) > n {
-			return string(runes[:n])
-		}
-		return s
-	}
+	trunc := Utf16Cap
 	toInt64 := func(xs []string) []string {
 		if len(xs) > 64 {
 			return xs[:64]
@@ -697,9 +741,7 @@ func FindOrCreateEmailConversation(ctx context.Context, db *sql.DB, companyID st
 	if cleanSubject == "" {
 		cleanSubject = "(no subject)"
 	}
-	if runes := []rune(cleanSubject); len(runes) > 200 {
-		cleanSubject = string(runes[:200])
-	}
+	cleanSubject = Utf16Cap(cleanSubject, 200)
 	id := "email-" + randHex(6)
 	seen := map[string]bool{}
 	unique := []string{}
@@ -787,9 +829,7 @@ func ResolveAttachments(raw []any) ([]ResolvedAttachment, string) {
 		a, _ := entry.(map[string]any)
 		key, _ := a["key"].(string)
 		filename, _ := a["filename"].(string)
-		if runes := []rune(filename); len(runes) > 200 {
-			filename = string(runes[:200])
-		}
+		filename = Utf16Cap(filename, 200)
 		mimeType, _ := a["mimeType"].(string)
 		if runes := []rune(mimeType); len(runes) > 120 {
 			mimeType = string(runes[:120])
