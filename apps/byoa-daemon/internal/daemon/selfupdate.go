@@ -8,6 +8,7 @@ package daemon
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -138,10 +139,22 @@ func checkForUpdate(ctx context.Context, currentVersion string, onSupervisedUpda
 	onSupervisedUpdate()
 }
 
-// applySelfUpdate:下载本平台 tar.gz → SHA256SUMS 校验 → 抽出 cumora-daemon
-// → 原子替换自身(同目录 .new 暂存 + rename)。replace 后由调用方等空闲
-// 干净退出,服务管理器(Restart=always/KeepAlive)拉起的就是新二进制。
+// applySelfUpdate:对当前可执行文件执行更新;applySelfUpdateTo 参数化
+// 目标路径(测试驱动真实函数,不碰测试进程本体)。
 func applySelfUpdate(ctx context.Context, rel *ghRelease) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	self, _ = filepath.EvalSymlinks(self)
+	return applySelfUpdateTo(ctx, rel, self)
+}
+
+// applySelfUpdateTo:下载本平台 tar.gz → SHA256SUMS 校验 → 抽出
+// cumora-daemon → 原子替换目标(同目录 .new 暂存 + rename)。replace 后
+// 由调用方等空闲干净退出,服务管理器(Restart=always/KeepAlive)拉起的
+// 就是新二进制。
+func applySelfUpdateTo(ctx context.Context, rel *ghRelease, self string) error {
 	want := daemonAssetName()
 	downloadURL := ""
 	for _, a := range rel.Assets {
@@ -191,11 +204,6 @@ func applySelfUpdate(ctx context.Context, rel *ghRelease) error {
 	if err != nil {
 		return err
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	self, _ = filepath.EvalSymlinks(self)
 	staging := self + ".new"
 	if err := os.WriteFile(staging, bin, 0o755); err != nil {
 		return err
@@ -210,7 +218,7 @@ func applySelfUpdate(ctx context.Context, rel *ghRelease) error {
 
 // extractDaemonFromTarGz:从平台包抽出 cumora-daemon 二进制。
 func extractDaemonFromTarGz(archive []byte) ([]byte, error) {
-	gz, err := gzip.NewReader(strings.NewReader(string(archive)))
+	gz, err := gzip.NewReader(bytes.NewReader(archive)) // 不拷贝(256MB 上限下省一次复制)
 	if err != nil {
 		return nil, err
 	}

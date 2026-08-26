@@ -7,7 +7,10 @@
 > 迁移:`cumora-<os>-<arch>.tar.gz` 解包得到 `cumora-daemon` /
 > `cumora-server`;`cumora-daemon agent computer --pair <code> --server <url>`
 > 配对后 `--install-service` 服务化(单元直指二进制路径,自更新即
-> 空闲下载→校验→自替换→重启)。详见仓库 `docs/BYOA.md`。
+> 空闲下载→校验→自替换→重启)。**macOS 迁移注记**:npm 时代的
+> LaunchAgent 标签是 `io.cumora.daemon`,新版是 `cumora`——先
+> `npx cumora@latest agent computer --uninstall-service` 卸旧再装新,
+> 否则会出现两个并存的 LaunchAgent。详见仓库 `docs/BYOA.md`。
 
 # cumora
 

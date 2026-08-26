@@ -99,6 +99,9 @@ func TestCheckForUpdateSelfReplace(t *testing.T) {
 	mux.HandleFunc("GET /assets/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sumsBody))
 	})
+	mux.HandleFunc("GET /assets/SHA256SUMS-bad", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("0", 64) + "  " + assetName + "\n"))
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	t.Setenv("CUMORA_UPDATE_API", srv.URL)
@@ -121,24 +124,53 @@ func TestCheckForUpdateSelfReplace(t *testing.T) {
 	if err != nil || !bytes.Equal(bin, payload) {
 		t.Fatalf("extract: %v len=%d", err, len(bin))
 	}
-	// 原子替换语义:staging+rename 落在 drill 拷贝上(与 applySelfUpdate 同
-	// 形,仅 self 路径来自参数)。
-	staging := drill + ".new"
-	if err := os.WriteFile(staging, bin, 0o755); err != nil {
+	// M3:真实函数驱动(applySelfUpdateTo 参数化目标)——
+	// ①happy-path:目标=临时拷贝,完成后内容=新载荷、无 .new 残留。
+	drill2 := filepath.Join(t.TempDir(), "cumora-daemon")
+	if err := os.WriteFile(drill2, []byte("OLD BINARY"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(staging, drill); err != nil {
-		t.Fatal(err)
+	happy := *rel
+	happy.Assets = []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	}{
+		{Name: assetName, BrowserDownloadURL: srv.URL + "/assets/" + assetName},
+		{Name: "SHA256SUMS", BrowserDownloadURL: srv.URL + "/assets/SHA256SUMS"},
 	}
-	got, _ := os.ReadFile(drill)
-	if !bytes.Equal(got, payload) {
-		t.Fatal("atomic replace did not land the new binary")
+	if err := applySelfUpdateTo(context.Background(), &happy, drill2); err != nil {
+		t.Fatalf("applySelfUpdateTo happy path: %v", err)
 	}
-	// checksum 拒绝:坏 sums → applySelfUpdate 报错(走真函数,拿坏 URL)。
+	got2, _ := os.ReadFile(drill2)
+	if !bytes.Equal(got2, payload) {
+		t.Fatalf("happy path must land the new binary: %q", string(got2))
+	}
+	if pathExists(drill2 + ".new") {
+		t.Fatal("staging file must not linger after a successful replace")
+	}
+	// ②坏 checksum:SUMS 里的值被篡改 → 拒绝且目标不被触碰。
+	sumsURL2 := srv.URL + "/assets/SHA256SUMS-tampered"
+	_ = sumsURL2
+	tampered := *rel
+	tampered.Assets = []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	}{
+		{Name: assetName, BrowserDownloadURL: srv.URL + "/assets/" + assetName},
+		{Name: "SHA256SUMS", BrowserDownloadURL: srv.URL + "/assets/SHA256SUMS-bad"},
+	}
+	if err := applySelfUpdateTo(context.Background(), &tampered, drill2); err == nil {
+		t.Fatal("checksum mismatch must refuse the update")
+	}
+	got3, _ := os.ReadFile(drill2)
+	if !bytes.Equal(got3, payload) {
+		t.Fatal("refused update must not touch the target binary")
+	}
+	// ③缺 SHA256SUMS 资产 → 拒绝。
 	badRel := *rel
-	badRel.Assets[1].BrowserDownloadURL = "/assets/missing"
+	badRel.Assets = badRel.Assets[:1]
 	if err := applySelfUpdate(context.Background(), &badRel); err == nil {
-		t.Fatal("missing SHA256SUMS must refuse the update")
+		t.Fatal("missing SHA256SUMS asset must refuse the update")
 	}
 	// 回调路径:checkForUpdate 的 supervised 分支(自替换对测试进程本体
 	// 不可做,本例已在其拷贝上验证;此处验证未受管只提示、不回调)。

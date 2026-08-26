@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -36,14 +37,19 @@ func RunComputerDaemon(argv []string) {
 			fmt.Fprintf(os.Stderr, "cumora: %v\n", err)
 			os.Exit(1)
 		}
+		// 已服务化的机器:重新配对后 reload,让受管 daemon 采新配置,
+		// 而不是前台的第二个 daemon 与它竞跑(TS 同)。
+		if serviceInstalled() {
+			if err := reloadService(); err != nil {
+				fmt.Fprintf(os.Stderr, "[computer] service reload failed: %v\n", err)
+			} else {
+				fmt.Println("[computer] background service reloaded with the new pairing")
+			}
+		}
 	case opts.status:
 		printStatus()
 	case opts.installService:
-		server := opts.server
-		if server == "" {
-			server = defaultServerURL()
-		}
-		if err := installService(server); err != nil {
+		if err := installService(opts.server); err != nil {
 			fmt.Fprintf(os.Stderr, "cumora: %v\n", err)
 			os.Exit(1)
 		}
@@ -60,7 +66,7 @@ func RunComputerDaemon(argv []string) {
 	case opts.stop:
 		stopDaemon()
 	case opts.logs:
-		printLogsHint()
+		tailLogs()
 	default:
 		if err := doRun(context.Background(), opts.server); err != nil {
 			if errors.Is(err, errNoLocalEngine) {
@@ -375,8 +381,11 @@ func doRun(ctx context.Context, serverOverride string) error {
 	// 自更新(对齐 TS 节拍:60s 首查、每 6h 复查、30s idle watch)。
 	// 关键纪律:**绝不为(非紧急的)更新打断在飞 turn**——检测到更新即
 	// 停用新二进制(自替换已就位),等全部 agent 空闲才干净退出,由
-	// 服务管理器拉起新版。
+	// 服务管理器拉起新版。updateReady 只在主循环 goroutine 触碰(回调经
+	// channel 送达——评审 M2:goroutine 直写 bool 是数据竞争);就位后
+	// 闩住不再复查/重复下载(评审 m3)。
 	updateReady := false
+	updateReadyCh := make(chan struct{}, 1)
 	updateFirst := time.NewTimer(updateFirstCheck)
 	defer updateFirst.Stop()
 	updateEvery := time.NewTicker(updateCheckEvery)
@@ -384,9 +393,14 @@ func doRun(ctx context.Context, serverOverride string) error {
 	updateIdle := time.NewTicker(updateIdleWatch)
 	defer updateIdle.Stop()
 	runUpdateCheck := func() {
+		if updateReady {
+			return // 已就位——重复下载/替换无益
+		}
 		go checkForUpdate(ctx, currentVersion(), func() {
-			updateReady = true
-			fmt.Println("[computer] update ready — will restart to apply it as soon as all agents are idle")
+			select {
+			case updateReadyCh <- struct{}{}:
+			default: // 已投递
+			}
 		})
 	}
 	allIdle := func() bool {
@@ -448,6 +462,9 @@ func doRun(ctx context.Context, serverOverride string) error {
 			sync()
 		case <-logrot.C:
 			rotateLogsIfNeeded()
+		case <-updateReadyCh:
+			updateReady = true
+			fmt.Println("[computer] update ready — will restart to apply it as soon as all agents are idle")
 		case <-updateFirst.C:
 			runUpdateCheck()
 		case <-updateEvery.C:
@@ -467,13 +484,28 @@ func doRun(ctx context.Context, serverOverride string) error {
 	}
 }
 
-// printLogsHint:--logs 的指引(受管走 journalctl/launchctl,前台走文件)。
-func printLogsHint() {
+// tailLogs:--logs 真流式跟随(TS 同:受管走 journalctl -f,前台 tail -f;
+// execv 替换当前进程)。
+func tailLogs() {
 	if runtime.GOOS == "linux" && serviceInstalled() {
-		fmt.Printf("journalctl --user -u %s -f\n", serviceName())
+		fmt.Printf("[computer] following journalctl --user -u %s (Ctrl-C to detach)\n", serviceName())
+		syscall.Exec(execLookPath("journalctl"), []string{"journalctl", "--user", "-u", serviceName(), "-n", "100", "-f"}, os.Environ())
 		return
 	}
-	fmt.Printf("tail -f %s\n", filepath.Join(configDir(), "daemon.log"))
+	logPath := filepath.Join(configDir(), "daemon.log")
+	fmt.Printf("[computer] tailing %s (Ctrl-C to detach)\n", logPath)
+	syscall.Exec(execLookPath("tail"), []string{"tail", "-n", "100", "-f", logPath}, os.Environ())
+}
+
+func execLookPath(bin string) string {
+	if p, err := execLookPath2(bin); err == nil {
+		return p
+	}
+	return bin
+}
+
+func execLookPath2(bin string) (string, error) {
+	return exec.LookPath(bin)
 }
 
 func containsString(xs []string, v string) bool {

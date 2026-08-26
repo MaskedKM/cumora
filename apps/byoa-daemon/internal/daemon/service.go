@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // serviceName:服务单元名。默认 cumora;CUMORA_SERVICE_NAME 覆盖(多实例、
@@ -57,8 +58,17 @@ func runCmd(name string, args ...string) error {
 // --server,重启不依赖 shell 历史)。ExecStart= <自身二进制> —— systemd/
 // launchd 不经 PATH 解析,升级后的二进制在同路径原地生效。
 func installService(serverURL string) error {
-	if _, err := loadConfig(); err != nil {
+	cfg, err := loadConfig()
+	if err != nil {
 		return fmt.Errorf("pair this computer first: cumora agent computer --pair <code>")
+	}
+	// server 解析链与 TS 同:显式 --server > 配对配置里的 serverUrl >
+	// 官方云——裸 --install-service 不得把自托管机器钉到 api.cumora.ai。
+	if serverURL == "" {
+		serverURL = cfg.ServerURL
+	}
+	if serverURL == "" {
+		serverURL = defaultServerURL()
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -195,32 +205,35 @@ func isStoppableDaemonCommand(cmd string) bool {
 	return strings.Contains(cmd, "agent computer") && !oneShotFlagRe.MatchString(cmd)
 }
 
-// stopDaemon:杀掉在跑的 daemon(受管的卸载后、前台的、或孤儿)。来源:
-// running.json 的 pid + "agent computer" 的 pgrep 扫描;逐候选核实命令行
-// 真是长驻 daemon 且不是本 --stop 一次性进程,再 SIGTERM。
+// stopDaemon:--stop 是**完全停**——先卸后台服务(否则 Restart=always/
+// KeepAlive 会在 5s 内把杀掉的 daemon 拉回来,--stop 变 --restart),再杀
+// 所有仍在跑的 daemon 进程。候选:running.json 的 pid + pgrep 扫描;逐候
+// 选核实命令行真是长驻 daemon(一次性旗过滤),排除自身与父进程;
+// SIGTERM→1.5s→SIGKILL 升级(与 TS killRunningDaemons 同型)。
 func stopDaemon() {
-	kill := func(pid int, cmdline string) {
-		if pid <= 0 || pid == os.Getpid() {
+	if serviceInstalled() {
+		_ = uninstallService() // 移除单元并停载 → 杀掉受管进程
+	} else {
+		fmt.Println("[computer] no background service installed — killing any running daemon process directly.")
+	}
+	self, parent := os.Getpid(), os.Getppid()
+	var victims []int
+	consider := func(pid int) {
+		if pid <= 0 || pid == self || pid == parent {
 			return
 		}
-		if !isStoppableDaemonCommand(cmdline) {
+		cl := procCmdline(pid)
+		if cl == "" || !isStoppableDaemonCommand(cl) {
 			return
 		}
-		p, err := os.FindProcess(pid)
-		if err != nil {
-			return
-		}
-		_ = p.Signal(syscall.SIGTERM)
-		fmt.Printf("[computer] stopped daemon pid %d (%s)\n", pid, truncate(cmdline, 80))
+		victims = append(victims, pid)
 	}
 	if b, err := os.ReadFile(runningPath()); err == nil {
 		var st struct {
 			PID int `json:"pid"`
 		}
 		if jsonUnmarshal(string(b), &st) == nil && st.PID > 0 {
-			if cl := procCmdline(st.PID); cl != "" {
-				kill(st.PID, cl)
-			}
+			consider(st.PID)
 		}
 	}
 	if out, err := exec.Command("pgrep", "-f", "agent computer").Output(); err == nil {
@@ -231,13 +244,27 @@ func stopDaemon() {
 				continue
 			}
 			seen[pid] = true
-			if cl := procCmdline(pid); cl != "" {
-				kill(pid, cl)
-			}
+			consider(pid)
 		}
 	}
+	for _, pid := range victims {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+	}
+	if len(victims) > 0 {
+		time.Sleep(1500 * time.Millisecond)
+		for _, pid := range victims {
+			if p, err := os.FindProcess(pid); err == nil {
+				if p.Signal(syscall.Signal(0)) == nil {
+					_ = p.Signal(syscall.SIGKILL)
+				}
+			}
+		}
+		fmt.Printf("[computer] killed %d running daemon process(es)\n", len(victims))
+	}
 	_ = os.Remove(runningPath())
-	fmt.Println("[computer] stopped all running daemons (service not touched — reinstall with --install-service)")
+	fmt.Println("[computer] stopped — service removed and daemon process(es) killed. Re-pair to start again: cumora agent computer --pair <code>")
 }
 
 // procCmdline:/proc/<pid>/cmdline(Linux);非 Linux 走 ps。空 = 不存在。
