@@ -485,27 +485,32 @@ func doRun(ctx context.Context, serverOverride string) error {
 }
 
 // tailLogs:--logs 真流式跟随(TS 同:受管走 journalctl -f,前台 tail -f;
-// execv 替换当前进程)。
+// execv 替换当前进程;exec 只在失败时返回——此时退回打印可复制命令)。
 func tailLogs() {
 	if runtime.GOOS == "linux" && serviceInstalled() {
 		fmt.Printf("[computer] following journalctl --user -u %s (Ctrl-C to detach)\n", serviceName())
-		syscall.Exec(execLookPath("journalctl"), []string{"journalctl", "--user", "-u", serviceName(), "-n", "100", "-f"}, os.Environ())
+		if p, err := exec.LookPath("journalctl"); err == nil {
+			if err := syscall.Exec(p, []string{"journalctl", "--user", "-u", serviceName(), "-n", "100", "-f"}, os.Environ()); err != nil {
+				fmt.Printf("[computer] could not exec journalctl (%v) — run: journalctl --user -u %s -f\n", err, serviceName())
+			}
+		} else {
+			fmt.Printf("[computer] journalctl not found — run: journalctl --user -u %s -f\n", serviceName())
+		}
 		return
 	}
 	logPath := filepath.Join(configDir(), "daemon.log")
-	fmt.Printf("[computer] tailing %s (Ctrl-C to detach)\n", logPath)
-	syscall.Exec(execLookPath("tail"), []string{"tail", "-n", "100", "-f", logPath}, os.Environ())
-}
-
-func execLookPath(bin string) string {
-	if p, err := execLookPath2(bin); err == nil {
-		return p
+	if !pathExists(logPath) {
+		fmt.Printf("[computer] no log at %s yet — the daemon writes it once it starts.\n", logPath)
+		return
 	}
-	return bin
-}
-
-func execLookPath2(bin string) (string, error) {
-	return exec.LookPath(bin)
+	fmt.Printf("[computer] tailing %s (Ctrl-C to detach)\n", logPath)
+	if p, err := exec.LookPath("tail"); err == nil {
+		if err := syscall.Exec(p, []string{"tail", "-n", "100", "-f", logPath}, os.Environ()); err != nil {
+			fmt.Printf("[computer] could not exec tail (%v) — run: tail -f %s\n", err, logPath)
+		}
+	} else {
+		fmt.Printf("[computer] tail not found — run: tail -f %s\n", logPath)
+	}
 }
 
 func containsString(xs []string, v string) bool {

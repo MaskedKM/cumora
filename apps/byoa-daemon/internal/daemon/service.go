@@ -228,16 +228,17 @@ func stopDaemon() {
 		}
 		victims = append(victims, pid)
 	}
+	seen := map[int]bool{}
 	if b, err := os.ReadFile(runningPath()); err == nil {
 		var st struct {
 			PID int `json:"pid"`
 		}
-		if jsonUnmarshal(string(b), &st) == nil && st.PID > 0 {
+		if jsonUnmarshal(string(b), &st) == nil && st.PID > 0 && !seen[st.PID] {
+			seen[st.PID] = true
 			consider(st.PID)
 		}
 	}
 	if out, err := exec.Command("pgrep", "-f", "agent computer").Output(); err == nil {
-		seen := map[int]bool{}
 		for _, field := range strings.Fields(string(out)) {
 			var pid int
 			if _, err := fmt.Sscanf(field, "%d", &pid); err != nil || pid <= 0 || seen[pid] {

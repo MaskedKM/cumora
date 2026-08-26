@@ -149,8 +149,6 @@ func TestCheckForUpdateSelfReplace(t *testing.T) {
 		t.Fatal("staging file must not linger after a successful replace")
 	}
 	// ②坏 checksum:SUMS 里的值被篡改 → 拒绝且目标不被触碰。
-	sumsURL2 := srv.URL + "/assets/SHA256SUMS-tampered"
-	_ = sumsURL2
 	tampered := *rel
 	tampered.Assets = []struct {
 		Name               string `json:"name"`
