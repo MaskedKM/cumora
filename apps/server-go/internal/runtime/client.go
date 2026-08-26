@@ -48,7 +48,7 @@ func (s *Service) NextConversationSequence(ctx context.Context, conversationID s
 }
 
 // withSeqscanOff:独占连接上 SET enable_seqscan=off → 查询 → RESET。
-// GUC 泄漏防护(对齐 TS 的 release(true) 语义):database/sql 的
+// GUC 泄漏防护(TS release(true) 语义的池化等价物):database/sql 的
 // Conn.Close 只会把连接归还池、无法销毁——而 pgx stdlib 的默认
 // ResetSession 是 noop,带 GUC 残留的"健康"连接回池后会长期毒化后续
 // 查询。因此错误路径必须用不受请求取消影响的独立 ctx 尽力 RESET:
@@ -71,14 +71,14 @@ func (s *Service) withSeqscanOff(ctx context.Context, run func(conn *sql.Conn) e
 		_ = conn.Close()
 	}()
 	if _, err := conn.ExecContext(ctx, `SET enable_seqscan = off`); err != nil {
-		failed = true
 		return err
 	}
+	// SET 已生效:从此直到 RESET 成功,一律视为可能残留——run 闭包若
+	// panic,defer 里的尽力 RESET 同样覆盖(评审复审 MINOR#1)。
+	failed = true
 	if err := run(conn); err != nil {
-		failed = true
 		return err
 	}
-	failed = true // 复位成功前一律视为可能残留
 	resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := conn.ExecContext(resetCtx, `RESET enable_seqscan`); err != nil {

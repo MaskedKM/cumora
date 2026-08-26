@@ -252,6 +252,7 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 	}
 	isFirst := len(set) == 0
 	set[s] = struct{}{}
+	local := len(set) // 锁内取值,防与并发 detach 的删集竞态
 	b.mu.Unlock()
 
 	if isFirst {
@@ -270,7 +271,7 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 			return
 		}
 	}
-	slog.Info("[wake-bus] +sub", "agent", agentID, "local", len(set), "redisSubscribed", isFirst)
+	slog.Info("[wake-bus] +sub", "agent", agentID, "local", local, "redisSubscribed", isFirst)
 
 	if !s.writeSSE("event: ready\ndata: {\"agentId\":\"" + agentID + "\",\"at\":" +
 		strconv.FormatInt(time.Now().UnixMilli(), 10) + "}\n\n") {
