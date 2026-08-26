@@ -361,3 +361,31 @@ func TestMaybeSteerNoopWhenSessionMissing(t *testing.T) {
 	// 无会话(或已死):不 panic、不访问 inbox 也无妨——直接返回。
 	r.maybeSteer("cv-x")
 }
+
+// M2 回归:错误脱敏的顺序与形态——agent home(是 $HOME 的子路径)必须先
+// 替换成 <agent home>,否则 $HOME 先吞掉它、细节泄漏为 ~ 路径。
+func TestVisibleEngineErrorRedaction(t *testing.T) {
+	isolateHome(t)
+	adapter := &sessionAdapter{id: "claude"}
+	r := newAgentRunner(&DaemonConfig{ServerURL: "http://x"}, AgentInfo{ID: "redact", Name: "R"}, adapter)
+	raw := "process exited with code 7\n" +
+		"Error: cannot read " + r.home + "/memory/MEMORY.md\n" +
+		"config at " + homeDir() + "/.zcode/cli/config.json is malformed\n" +
+		"\x1b[31mnoise\x1b[0m\r\n"
+	got := r.visibleEngineError(7, raw)
+	if !strings.Contains(got, "<agent home>/memory/MEMORY.md") {
+		t.Fatalf("agent home must redact to <agent home>: %q", got)
+	}
+	if strings.Contains(got, r.home) || strings.Contains(got, homeDir()+"/.cumora") {
+		t.Fatalf("agent home path leaked: %q", got)
+	}
+	if !strings.Contains(got, "~/.zcode/cli/config.json") {
+		t.Fatalf("operator HOME must redact to ~: %q", got)
+	}
+	if strings.Contains(got, "\x1b[31m") || strings.Contains(got, "\r") {
+		t.Fatalf("ANSI/CR must be stripped: %q", got)
+	}
+	if !strings.HasPrefix(got, "local claude failed (exit 7): ") {
+		t.Fatalf("wrapper shape: %q", got)
+	}
+}

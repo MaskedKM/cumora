@@ -793,31 +793,36 @@ func (codexAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProbe
 	}
 	out := make(chan probeResult, 1)
 	var stderrMu sync.Mutex
-	var exitInfo atomic.Value // string;收割协程尽快填(死因的 exit/signal 段)
-	finish := func(r probeResult) {
-		_ = stdin.Close()
-		_ = killProcess(cmd)
-		// M1:必须收割——不 Wait 每次探测漏一个僵尸(TS/Node 自动收)。
-		go func() {
-			werr := cmd.Wait()
-			seg := ""
-			if werr == nil {
-				seg = "exit 0"
-			} else if ee, ok := werr.(*exec.ExitError); ok {
-				if ee.ExitCode() < 0 {
-					seg = "terminated by " + signalNameOf(ee)
-				} else {
-					seg = fmt.Sprintf("exit %d", ee.ExitCode())
-				}
+	// M1:唯一收割协程,Start 后立即上岗——不 Wait 每次探测漏一个僵尸
+	// (TS/Node 自动收);进程退出即存 exit/signal 段,EOF 轮询时必然可见
+	// (此前收割在 finish 里才起,EOF 路径先轮询后 finish,永远读不到)。
+	var exitInfo atomic.Value // string
+	go func() {
+		werr := cmd.Wait()
+		seg := ""
+		if werr == nil {
+			seg = "exit 0"
+		} else if ee, ok := werr.(*exec.ExitError); ok {
+			if ee.ExitCode() < 0 {
+				seg = "terminated by " + signalNameOf(ee)
 			} else {
-				seg = werr.Error()
+				seg = fmt.Sprintf("exit %d", ee.ExitCode())
 			}
-			exitInfo.Store(seg)
-		}()
-		select {
-		case out <- r:
-		default:
+		} else {
+			seg = werr.Error()
 		}
+		exitInfo.Store(seg)
+	}()
+	var finishOnce sync.Once
+	finish := func(r probeResult) {
+		finishOnce.Do(func() {
+			_ = stdin.Close()
+			_ = killProcess(cmd)
+			select {
+			case out <- r:
+			default:
+			}
+		})
 	}
 	writeRpc := func(v any) {
 		b, err := json.Marshal(v)

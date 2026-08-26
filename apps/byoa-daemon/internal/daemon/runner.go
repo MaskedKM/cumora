@@ -325,11 +325,12 @@ func (r *AgentRunner) visibleEngineError(exitCode int, detail string) string {
 	}
 	clean := truncateRunes(strings.TrimSpace(strings.ReplaceAll(
 		ansiRe.ReplaceAllString(raw, ""), "\r", "")), 900)
-	home := homeDir()
-	if home != "" && home != "." {
+	// 顺序即语义:agent home 先替换(r.home 是 $HOME 的子路径,先替换
+	// $HOME 会把它吞掉,<agent home> 永远命不中)。
+	clean = strings.ReplaceAll(clean, r.home, "<agent home>")
+	if home := homeDir(); home != "" && home != "." {
 		clean = strings.ReplaceAll(clean, home, "~")
 	}
-	clean = strings.ReplaceAll(clean, r.home, "<agent home>")
 	return fmt.Sprintf("local %s failed (exit %d): %s", r.adapter.ID(), exitCode, clean)
 }
 

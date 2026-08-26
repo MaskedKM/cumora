@@ -668,16 +668,18 @@ func TestSeedHomeIdempotentAndNonDestructive(t *testing.T) {
 // 上报 DATA RACE)。假 CLI 慢速持续输出,ctx 中途取消。
 func TestSpawnEngineAbortJoinsReaders(t *testing.T) {
 	bin, _ := fakeEngineDir(t)
+	// 紧密写者(无节拍 sleep):竞争窗口最大化——删掉 spawnEngine 的
+	// <-readersDone join 后,该测试在 -race 下稳定报 DATA RACE(评审
+	// 突变验证);带 50ms 节拍的版本窗口太窄,突变也能绿。
 	writeScript(t, filepath.Join(bin, "claude"), `#!/bin/sh
 i=0
-while [ $i -lt 100 ]; do
-  printf '%s\n' '{"type":"assistant","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"x"}]}}'
+while [ $i -lt 100000 ]; do
+  printf '%s\n' '{"type":"assistant","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","x":"x"},"content":[{"type":"text","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}}'
   i=$((i+1))
-  sleep 0.05
 done
 `)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	done := make(chan RunResult, 1)
 	go func() {
 		done <- spawnEngine(ctx, resolveSpawn("claude"), []string{"-p"}, RunArgs{
@@ -705,6 +707,10 @@ while IFS= read -r line; do
     printf '%s\n' '{"type":"result","is_error":false,"session_id":"s1","usage":{"input_tokens":1,"output_tokens":1}}'
   else
     printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result"}]}}'
+    # 吸收可能被 user 边界冲进来的行(带 1s 超时):残留的 steer 会先落
+    # 进 stdin.log,再出 result——断言不再和回显赛跑。
+    IFS= read -t 1 flushed || true
+    if [ -n "$flushed" ]; then printf '%s\n' "$flushed" >> "$FAKE_T/stdin.log"; fi
     printf '%s\n' '{"type":"result","is_error":false,"session_id":"s1","usage":{"input_tokens":1,"output_tokens":1}}'
   fi
 done
@@ -734,14 +740,17 @@ func TestClaudeSteerQueueClearedAtTurnBoundary(t *testing.T) {
 	if res2.ExitCode != 0 {
 		t.Fatalf("turn two: %+v", res2)
 	}
+	waitFileContains(t, "stdin.log", "turn two", 5*time.Second)
 	got := readObs(t, "stdin.log")
 	if strings.Contains(got, "stale steer") {
 		t.Fatalf("stale steer leaked across the turn boundary; stdin:\n%s", got)
 	}
 }
 
-// M3(b):codex 的 steerGate——item/completed 后短暂闭闸,文本 delta 重开;
-// 闭闸期的 Steer 不得发出,重开后必须能发。
+// M3(b):codex 的 steerGate——item/completed 后闭闸,文本 delta 重开。
+// 假端用带超时的读窗直接捕获 steer:闸关期的 Steer 被吞(读窗超时空过),
+// 闸开后必发(读窗命中落盘)。删 steerGate=true 的突变会让闭闸窗内的
+// steer 被真发并落盘——断言红。
 func TestCodexSteerGateItemBoundary(t *testing.T) {
 	bin, _ := fakeEngineDir(t)
 	writeScript(t, filepath.Join(bin, "codex"), `#!/bin/sh
@@ -755,12 +764,18 @@ while IFS= read -r line; do
       printf '%s\n' "$line" > "$FAKE_T/turnstart.json"
       printf '{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"t-g"}}}\n' "$id"
       printf '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage"}}}\n'
-      sleep 0.4
+      # 闭闸读窗(1s):闸关期被吞的 steer 不会到达;若门被删(突变),
+      # 此刻发出的 steer 直接落盘。
+      IFS= read -t 1 blocked || true
+      if [ -n "$blocked" ]; then printf '%s\n' "$blocked" >> "$FAKE_T/steer.json"; fi
       printf '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"x"}}\n'
-      sleep 0.4
+      printf '%s\n' "$line" > "$FAKE_T/delta-marker.txt"
+      # 开闸读窗(2s):重开后的 steer 必须到达并落盘。两窗都追加写——
+      # 截断写会让"闭闸窗泄漏的 steer"被后续正常 steer 覆盖,门突变检不出。
+      IFS= read -t 2 opened || true
+      if [ -n "$opened" ]; then printf '%s\n' "$opened" >> "$FAKE_T/steer.json"; fi
       printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed"}}}\n'
       ;;
-    turn/steer) printf '%s\n' "$line" > "$FAKE_T/steer.json" ;;
   esac
 done
 `)
@@ -776,11 +791,8 @@ done
 	// turn id 已知 + item/completed 已到(闸关)→ 本 Steer 必须被吞。
 	time.Sleep(150 * time.Millisecond)
 	sess.Steer("blocked steer")
-	time.Sleep(300 * time.Millisecond)
-	if pathExists(filepath.Join(os.Getenv("FAKE_T"), "steer.json")) {
-		t.Fatal("steer must be gated while an item just completed (no delta yet)")
-	}
 	// delta 到达(闸开)→ 本 Steer 必须真发。
+	waitFileContains(t, "delta-marker.txt", "gated turn", 5*time.Second)
 	sess.Steer("open steer")
 	waitFileContains(t, "steer.json", "open steer", 5*time.Second)
 	select {
@@ -788,7 +800,10 @@ done
 		if r.ExitCode != 0 {
 			t.Fatalf("gated turn: %+v", r)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("turn never settled")
+	}
+	if got := readObsQuiet(t, "steer.json"); strings.Contains(got, "blocked steer") {
+		t.Fatalf("gated steer leaked: %s", got)
 	}
 }
