@@ -18,7 +18,17 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
-func Mount(mux *http.ServeMux, db *sql.DB) {
+// WakeMentioned:看板 @提及/指派唤醒钩子(#82,对齐 router.ts
+// wakeMentionedAgents 的 5 个调用点)。nil = no-op(无 Redis 的降级/
+// 单测形态);生产由 main.go 注入 runtime.Service.WakeMentionedAgents。
+type WakeMentioned func(companyID string, mentions []string, actorID string)
+
+func noopWake(string, []string, string) {}
+
+func Mount(mux *http.ServeMux, db *sql.DB, wake WakeMentioned) {
+	if wake == nil {
+		wake = noopWake
+	}
 	mux.HandleFunc("GET /api/boards", list(db))
 	mux.HandleFunc("POST /api/boards", create(db))
 	mux.HandleFunc("GET /api/boards/{id}", snapshot(db))
@@ -28,11 +38,11 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/boards/{id}/columns", addColumn(db))
 	mux.HandleFunc("PATCH /api/boards/{bid}/columns/{cid}", updateColumn(db))
 	mux.HandleFunc("DELETE /api/boards/{bid}/columns/{cid}", deleteColumn(db))
-	mux.HandleFunc("POST /api/boards/{id}/cards", createCard(db))
-	mux.HandleFunc("PATCH /api/boards/{bid}/cards/{cid}", updateCard(db))
+	mux.HandleFunc("POST /api/boards/{id}/cards", createCard(db, wake))
+	mux.HandleFunc("PATCH /api/boards/{bid}/cards/{cid}", updateCard(db, wake))
 	mux.HandleFunc("DELETE /api/boards/{bid}/cards/{cid}", deleteCard(db))
 	mux.HandleFunc("GET /api/boards/{bid}/cards/{cid}/comments", listComments(db))
-	mux.HandleFunc("POST /api/boards/{bid}/cards/{cid}/comments", addComment(db))
+	mux.HandleFunc("POST /api/boards/{bid}/cards/{cid}/comments", addComment(db, wake))
 	mux.HandleFunc("DELETE /api/boards/{bid}/cards/{cid}/comments/{mid}", deleteComment(db))
 }
 
@@ -576,7 +586,7 @@ func deleteColumn(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func createCard(db *sql.DB) http.HandlerFunc {
+func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("id"))
 		if !ok {
@@ -642,11 +652,17 @@ func createCard(db *sql.DB) http.HandlerFunc {
 		boardEvent(r.Context(), companyID, "card.created", boardID, map[string]any{
 			"cardId": cardID, "columnId": columnID, "mentions": mentions, "actorId": uid,
 		})
+		wake(companyID, mentions, uid)
+		// 指派即提及:assignee_id=someone 时,那个 someone 也该知道——
+		// 哪怕正文里没有 @token。
+		if a, ok := assignee.(string); ok && a != "" && a != uid {
+			wake(companyID, []string{a}, uid)
+		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": cardID, "position": position, "mentions": mentions})
 	}
 }
 
-func updateCard(db *sql.DB) http.HandlerFunc {
+func updateCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
@@ -757,6 +773,16 @@ func updateCard(db *sql.DB) http.HandlerFunc {
 		boardEvent(r.Context(), companyID, kind, boardID, map[string]any{
 			"cardId": cardID, "mentions": mentionsOut, "actorId": uid,
 		})
+		wake(companyID, mentions, uid)
+		// 重指派也唤醒新 assignee(键在请求体出现才算变化路径)。
+		if v, has := raw["assigneeId"]; has && string(v) != "null" {
+			var newAssignee string
+			_ = json.Unmarshal(v, &newAssignee)
+			newAssignee = strings.TrimSpace(newAssignee)
+			if newAssignee != "" && newAssignee != uid {
+				wake(companyID, []string{newAssignee}, uid)
+			}
+		}
 		resp := map[string]any{"ok": true}
 		if mentionsOut != nil {
 			resp["mentions"] = mentionsOut
@@ -830,7 +856,7 @@ func listComments(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func addComment(db *sql.DB) http.HandlerFunc {
+func addComment(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, companyID, ok := boardAccess(w, r, db, r.PathValue("bid"))
 		if !ok {
@@ -870,6 +896,7 @@ func addComment(db *sql.DB) http.HandlerFunc {
 		boardEvent(r.Context(), companyID, "comment.created", boardID, map[string]any{
 			"cardId": cardID, "commentId": commentID, "mentions": mentions, "actorId": uid,
 		})
+		wake(companyID, mentions, uid)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"id": commentID, "mentions": mentions})
 	}
 }
