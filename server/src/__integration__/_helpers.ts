@@ -58,6 +58,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'email_contacts',
   'message_reactions',
   'conversation_reads',
+  'conversation_mutes',
   'conversation_counters',
   'messages',
   'conversations',
@@ -65,6 +66,8 @@ const TABLES_TO_WIPE: readonly string[] = [
   'agent_workspace',
   'agent_runs',
   'agent_events',
+  'agent_triages',
+  'llm_calls',
   'agent_tasks',
   'agent_log',
   'workspace_associations',
@@ -75,6 +78,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'participants',
   'users',
   'companies',
+  'app_settings',
 ]
 
 /** Wipe every test table. Call from beforeEach. The check at the top

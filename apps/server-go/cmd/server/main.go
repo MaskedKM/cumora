@@ -31,6 +31,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/runtime"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wsx"
 	"github.com/redis/go-redis/v9"
 )
@@ -84,6 +85,12 @@ func main() {
 
 	// WS 网关(/ws,自带 ws-ticket 鉴权,不走 /api/ 中间件链)
 	wsx.Mount(mux, pool, relay)
+
+	// /runtime 面(#60):BYOA daemon 服务端(wake-stream SSE + 数据面)。
+	// 自带 agent-runtime JWT 鉴权,不嵌 /api。Redis 不可达时 wake-stream
+	// 直接 503(不做半开会话),其余数据面路由照常。
+	runtimeSvc := runtime.New(pool, rdb)
+	runtimeSvc.Mount(mux)
 
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)
 	email.StartRetryWorker(ctxBoot, pool, envInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
