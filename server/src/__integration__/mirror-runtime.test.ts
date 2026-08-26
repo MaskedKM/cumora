@@ -50,7 +50,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll(server ?? undefined)
 })
 
 async function call(
@@ -207,7 +207,7 @@ test('[mirror-runtime] /context marks unread/self and aggregates reactions', asy
   const selfId = await convo.insertMessage(agentId, 'my reply')
   const r = await call('/runtime/context', { token, body: { conversationIds: [convo.convId] } })
   assert.equal(r.status, 200)
-  const rows = r.body?.rows
+  const rows = (r.body?.rows ?? []) as any[]
   assert.equal(rows.length, 2)
   const byId = new Map(rows.map((x: any) => [x.id, x]))
   assert.equal(byId.get(selfId).is_self, true)
@@ -495,7 +495,13 @@ test('[mirror-runtime] /triage: agent_triages row + llm_calls mirror when usage 
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, true)
   {
-    const { rows } = await pool.query<any>(`SELECT * FROM agent_triages WHERE agent_id = $1`, [agentId])
+    // TS 侧 recordTriage 亦 fire-and-forget——轮询等行落库。
+    let rows: any[] = []
+    for (let i = 0; i < 50 && rows.length === 0; i++) {
+      const r = await pool.query<any>(`SELECT * FROM agent_triages WHERE agent_id = $1`, [agentId])
+      rows = r.rows
+      if (rows.length === 0) await new Promise((res) => setTimeout(res, 50))
+    }
     assert.equal(rows.length, 1)
     assert.equal(rows[0].company_id, companyId)
     assert.equal(rows[0].source, 'byoa-claude')
@@ -535,7 +541,13 @@ test('[mirror-runtime] /llm-calls: hop batch with purpose whitelist', async () =
   })
   assert.equal(r.status, 200)
   assert.equal(r.body.inserted, 2)
-  const { rows } = await pool.query<any>(`SELECT purpose, model, source, latency_ms FROM llm_calls WHERE agent_id = $1 ORDER BY latency_ms DESC`, [agentId])
+  // TS 侧 recordLlmCall fire-and-forget——轮询等两行落库。
+  let rows: any[] = []
+  for (let i = 0; i < 50 && rows.length < 2; i++) {
+    const q = await pool.query<any>(`SELECT purpose, model, source, latency_ms FROM llm_calls WHERE agent_id = $1 ORDER BY latency_ms DESC`, [agentId])
+    rows = q.rows
+    if (rows.length < 2) await new Promise((res) => setTimeout(res, 50))
+  }
   assert.equal(rows.length, 2)
   assert.equal(rows[0].purpose, 'agent-turn')
   assert.equal(rows[0].model, 'gpt-5')

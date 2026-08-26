@@ -87,7 +87,7 @@ test('[mirror] pair: redeem + starter team seeding + discovery', async () => {
     headers: { authorization: `Bearer ${paired.json.deviceToken}` },
   })
   assert.equal(discovered.status, 200)
-  const list = await discovered.json()
+  const list = (await discovered.json()) as any[]
   assert.equal(list.length, 4)
   // 坏令牌 401
   const bad = await fetch(`${baseUrl}/api/computers/me/agents`, {
@@ -119,7 +119,7 @@ test('[mirror] heartbeat + runtime-token + revoke lifecycle', async () => {
     method: 'POST', headers: { authorization: `Bearer ${device}` },
   })
   assert.equal(minted.status, 200)
-  const tok = await minted.json()
+  const tok = (await minted.json()) as { token: string; expiresInSeconds: number }
   assert.ok(tok.token.split('.').length === 3)
   assert.equal(tok.expiresInSeconds, 7200)
   // 未分配 agent(另一台机的)→ 403 由场景覆盖:同机 agent 才准
@@ -184,7 +184,10 @@ test('[mirror] invalid pairing token 400; assign agent to computer engine pick',
     method: 'POST', body: JSON.stringify({ code: repair.json.code, hostName: 'other-name' }),
   })
   assert.equal(rePaired.status, 200)
-  assert.equal(rePaired.computerId || rePaired.json.computerId, paired.json.computerId)
+  // call() 已把 body 解析进 .json(原断言误取 wrapper 上的 computerId,
+  // 恒 undefined 后靠 || 兜底蒙混)——直接取 body。
+  const rePairedJson = (rePaired.json ?? {}) as { computerId?: string }
+  assert.equal(rePairedJson.computerId, paired.json.computerId)
 })
 
 test('[mirror] GET /computers lists with daemon fields', async () => {
