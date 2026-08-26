@@ -22,6 +22,308 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/conversations/direct", openDirect(db))
 	mux.HandleFunc("GET /api/conversations/{id}/messages", messages(db))
 	mux.HandleFunc("POST /api/conversations/{id}/messages", sendMessage(db))
+	mux.HandleFunc("POST /api/conversations/{id}/topic", setTopic(db))
+	mux.HandleFunc("POST /api/conversations/{id}/title", setTitle(db))
+	mux.HandleFunc("POST /api/conversations/{id}/pin", setPin(db))
+	mux.HandleFunc("POST /api/conversations/{id}/mute", setMute(db))
+	mux.HandleFunc("POST /api/conversations/{id}/members", addMember(db))
+	mux.HandleFunc("POST /api/conversations/{id}/leave", leave(db))
+	mux.HandleFunc("POST /api/conversations/{id}/typing", typing(db))
+	mux.HandleFunc("POST /api/conversations/{id}/read", markRead(db))
+	mux.HandleFunc("GET /api/conversations/{id}/messages/{rootId}/replies", replies(db))
+}
+
+// memberGate 校验会话存在+成员资格,返回成员列表;非成员 403。
+func memberGate(w http.ResponseWriter, r *http.Request, db *sql.DB, uid, companyID, convID string) ([]string, bool) {
+	var membersJSON string
+	err := db.QueryRowContext(r.Context(),
+		`SELECT members::text FROM conversations WHERE id = $1 AND company_id = $2`, convID, companyID).Scan(&membersJSON)
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "conversation not found")
+		return nil, false
+	}
+	var members []string
+	_ = json.Unmarshal([]byte(membersJSON), &members)
+	for _, m := range members {
+		if m == uid {
+			return members, true
+		}
+	}
+	httpx.WriteError(w, http.StatusForbidden, "not a member of this conversation")
+	return nil, false
+}
+
+func requireConv(w http.ResponseWriter, r *http.Request, db *sql.DB) (uid, companyID string, ok bool) {
+	uid, ok = httpx.RequireAuth(w, r)
+	if !ok {
+		return "", "", false
+	}
+	companyID, ok = httpx.ResolveCompany(w, r, db, uid)
+	if !ok {
+		return "", "", false
+	}
+	return uid, companyID, true
+}
+
+func setTopic(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		var body struct {
+			Topic *string `json:"topic"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		var topic any
+		if body.Topic != nil {
+			topic = *body.Topic
+		}
+		if _, err := db.ExecContext(r.Context(),
+			`UPDATE conversations SET topic = $2, updated_at = NOW() WHERE id = $1`, convID, topic); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "topic": topic})
+	}
+}
+
+func setTitle(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		var body struct {
+			Title string `json:"title"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.TrimSpace(body.Title) == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "title required")
+			return
+		}
+		if _, err := db.ExecContext(r.Context(),
+			`UPDATE conversations SET title = $2, updated_at = NOW() WHERE id = $1`, convID, body.Title); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "title": body.Title})
+	}
+}
+
+func setPin(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		var body struct {
+			Pinned *bool `json:"pinned"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		pinned := true
+		if body.Pinned != nil {
+			pinned = *body.Pinned
+		} else {
+			var cur bool
+			_ = db.QueryRowContext(r.Context(), `SELECT pinned FROM conversations WHERE id = $1`, convID).Scan(&cur)
+			pinned = !cur
+		}
+		if _, err := db.ExecContext(r.Context(),
+			`UPDATE conversations SET pinned = $2 WHERE id = $1`, convID, pinned); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "pinned": pinned})
+	}
+}
+
+func setMute(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		var body struct {
+			Mute  bool   `json:"mute"`
+			Until string `json:"until"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !body.Mute {
+			_, _ = db.ExecContext(r.Context(),
+				`DELETE FROM conversation_mutes WHERE conversation_id = $1 AND user_id = $2`, convID, uid)
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "muted": false, "mutedUntil": nil})
+			return
+		}
+		var until any
+		if body.Until != "" {
+			until = body.Until
+		}
+		if _, err := db.ExecContext(r.Context(), `
+			INSERT INTO conversation_mutes (conversation_id, user_id, muted_until) VALUES ($1, $2, $3::timestamptz)
+			ON CONFLICT (conversation_id, user_id) DO UPDATE SET muted_until = $3::timestamptz`,
+			convID, uid, until); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "muted": true, "mutedUntil": until})
+	}
+}
+
+func addMember(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		members, ok := memberGate(w, r, db, uid, companyID, convID)
+		if !ok {
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.ID == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "id required")
+			return
+		}
+		for _, m := range members {
+			if m == body.ID {
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": members, "alreadyIn": true})
+				return
+			}
+		}
+		var exists bool
+		_ = db.QueryRowContext(r.Context(),
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`, body.ID, companyID).Scan(&exists)
+		if !exists {
+			httpx.WriteError(w, http.StatusBadRequest, "unknown participant")
+			return
+		}
+		next := append(members, body.ID)
+		nj, _ := json.Marshal(next)
+		if _, err := db.ExecContext(r.Context(),
+			`UPDATE conversations SET members = $2::jsonb, updated_at = NOW() WHERE id = $1`, convID, nj); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": next})
+	}
+}
+
+func leave(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		members, ok := memberGate(w, r, db, uid, companyID, convID)
+		if !ok {
+			return
+		}
+		var next []string
+		for _, m := range members {
+			if m != uid {
+				next = append(next, m)
+			}
+		}
+		nj, _ := json.Marshal(next)
+		if _, err := db.ExecContext(r.Context(),
+			`UPDATE conversations SET members = $2::jsonb, updated_at = NOW() WHERE id = $1`, convID, nj); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": next})
+	}
+}
+
+func typing(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		// WS typing 广播在 ws 域接管;此处 200 即可(与 baseline 的
+		// publish-only-when-connected 行为等价:无订阅即丢弃)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+func markRead(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		_, _ = db.ExecContext(r.Context(), `
+			INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+			VALUES ($1, $2, NOW()) ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`,
+			uid, convID)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+func replies(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, companyID, ok := requireConv(w, r, db)
+		if !ok {
+			return
+		}
+		convID := r.PathValue("id")
+		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
+			return
+		}
+		rootID := r.PathValue("rootId")
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT m.id, m.conversation_id, m.author_id, m.kind, m.body, m.sequence, m.created_at
+			  FROM messages m WHERE m.conversation_id = $1 AND m.quoted_message_id = $2
+			 ORDER BY m.sequence ASC`, convID, rootID)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var id, convID2, authorID, kind, body string
+			var sequence int
+			var createdAt sql.NullTime
+			if rows.Scan(&id, &convID2, &authorID, &kind, &body, &sequence, &createdAt) == nil {
+				out = append(out, map[string]any{
+					"id": id, "conversationId": convID2, "authorId": authorID,
+					"kind": kind, "body": body, "sequence": sequence, "createdAt": createdAt.Time.UTC(),
+				})
+			}
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
+	}
 }
 
 func list(db *sql.DB) http.HandlerFunc {
