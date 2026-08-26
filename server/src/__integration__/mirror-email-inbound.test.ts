@@ -14,7 +14,9 @@ import {
 
 const USER = 'u-mirror-emin'
 const COMPANY = 'c-mirror-emin'
-const SECRET = 'mirror-inbound-secret'
+// 密钥跟随环境(CI 注入 ci-test-secret;本地双跑与 Go 候选进程同值):
+// env 模块在 import 期即缓存,测试内改 process.env 无效,必须在加载时读。
+const SECRET = process.env.EMAIL_INBOUND_HMAC_SECRET || 'mirror-inbound-secret'
 
 await ensureSchemaOnce()
 const mirror = startMirror(USER, COMPANY)
