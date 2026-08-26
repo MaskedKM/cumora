@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/conversations"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -81,6 +83,10 @@ func main() {
 	// WS 网关(/ws,自带 ws-ticket 鉴权,不走 /api/ 中间件链)
 	wsx.Mount(mux, pool, relay)
 
+	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)
+	email.StartRetryWorker(ctxBoot, pool, envInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
+	email.StartGcWorker(ctxBoot, pool, envInt("EMAIL_GC_INTERVAL_MS", 24*60*60_000))
+
 	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
@@ -89,6 +95,8 @@ func main() {
 	boards.Mount(coreRouter, pool)
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
+	email.Mount(coreRouter, pool)
+	email.MountInbound(mux, pool)
 	calendar.Mount(coreRouter, pool)
 	push.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
@@ -125,4 +133,13 @@ func main() {
 		slog.Warn("graceful shutdown incomplete", "err", err)
 	}
 	slog.Info("bye")
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }

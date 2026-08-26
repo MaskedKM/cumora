@@ -154,6 +154,10 @@ export async function buildApiTestApp(userId: string): Promise<import('express')
   const expressMod = await import('express')
   const express = expressMod.default
   const app = express()
+  // 入站邮件门先于通用 JSON 解析挂载(raw body HMAC 捕获依赖其自带
+  // parser 的 verify;对齐 index.ts 的挂载顺序)。
+  const { inboundEmailRouter } = await import('../api/inbound-email.js')
+  app.use('/webhooks/email', inboundEmailRouter)
   app.use(express.json({ limit: '34mb' }))
   // Fake auth middleware: stamp authUserId from the test's choice. Real
   // requireAuth() just reads this field, so handlers can't distinguish.
