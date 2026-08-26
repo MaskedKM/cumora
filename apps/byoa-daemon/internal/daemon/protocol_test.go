@@ -103,10 +103,8 @@ func (s *stubServer) handler() http.Handler {
 		wakeC := make(chan string, 8)
 		s.mu.Lock()
 		s.wokenStreams++
-		prev := s.wakeFn
 		s.wakeFn = func(convo string) { wakeC <- convo }
 		s.mu.Unlock()
-		_ = prev
 		fmt.Fprint(w, "event: ready\ndata: {\"agentId\":\"a1\",\"at\":1}\n\n")
 		fl.Flush()
 		for {
@@ -292,6 +290,41 @@ func TestPairPersistsConfigAndRequestsShape(t *testing.T) {
 	if v, _ := body["version"].(string); v == "" {
 		t.Errorf("pair body version missing")
 	}
+	if sup, ok := body["supervised"].(bool); !ok {
+		t.Errorf("pair body supervised must be an explicit bool, got %T", body["supervised"])
+	} else if sup {
+		t.Errorf("pair body supervised should be false without CUMORA_SUPERVISED")
+	}
+	// 探测序保持(claude/codex 按 EngineIDs 序)。
+	if engines[0] != "claude" || engines[1] != "codex" {
+		t.Errorf("pair body engines order: %v", engines)
+	}
+}
+
+func TestPairPreferredEngineSortsFirst(t *testing.T) {
+	home := isolateHome(t)
+	stub := newStubServer()
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	bin := filepath.Join(home, "bin")
+	_ = os.MkdirAll(bin, 0o755)
+	for _, id := range []string{"claude", "codex"} {
+		_ = os.WriteFile(filepath.Join(bin, id), []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	if err := doPair("CODE2", srv.URL, "codex"); err != nil {
+		t.Fatalf("doPair --engine codex: %v", err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.pairCalls) != 1 {
+		t.Fatalf("expected 1 pair call, got %d", len(stub.pairCalls))
+	}
+	engines, _ := stub.pairCalls[0]["engines"].([]any)
+	if len(engines) == 0 || engines[0] != "codex" {
+		t.Fatalf("--engine codex must sort first (server treats engines[0] as default), got %v", engines)
+	}
 }
 
 func TestPairRejectsUnknownEngine(t *testing.T) {
@@ -310,36 +343,49 @@ func TestPairRejectsUnknownEngine(t *testing.T) {
 
 func TestHeartbeatAndAgentSync(t *testing.T) {
 	isolateHome(t)
+	// 配对态落盘,doRun 才会起;serverUrl 由参数覆盖(评审 M3:心跳必须
+	// 由 daemon 主循环自己发出,测试代发无法钉住 daemon 行为)。
+	if err := saveConfig(&DaemonConfig{ServerURL: "http://pending.invalid", ComputerID: "comp-stub-1", DeviceToken: "dev-token-1"}); err != nil {
+		t.Fatal(err)
+	}
 	stub := newStubServer()
 	srv := httptest.NewServer(stub.handler())
 	t.Cleanup(srv.Close)
-	cfg := &DaemonConfig{ServerURL: srv.URL, ComputerID: "comp-stub-1", DeviceToken: "dev-token-1"}
-	engine := &recordingEngine{id: "claude"}
-	RegisterAdapter(engine)
+	RegisterAdapter(&recordingEngine{id: "claude"})
+	// doRun 在心跳前先探测 PATH 引擎——放一个假可执行顶住探测。
+	bin := filepath.Join(t.TempDir(), "bin")
+	_ = os.MkdirAll(bin, 0o755)
+	_ = os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	stub.mu.Lock()
 	stub.agents = []AgentInfo{{ID: "a1", Name: "Atlas", Engine: strPtr("claude")}}
 	stub.mu.Unlock()
 
-	startDaemonRunner(t, cfg, stub.agents[0], engine)
-	waitUntil(t, 5*time.Second, "wake-stream connect", func() bool {
-		stub.mu.Lock()
-		defer stub.mu.Unlock()
-		return stub.wokenStreams >= 1 && stub.agentTokensIssued >= 1
-	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- doRun(ctx, srv.URL) }()
 
-	// 直接调 heartbeat(主循环节奏由 doRun 拥有;这里验证协议形状)。
-	_ = apiCall(context.Background(), cfg.ServerURL, http.MethodPost, "/api/computers/heartbeat",
-		cfg.DeviceToken, map[string]any{"version": currentVersion(), "supervised": false}, nil)
-	waitUntil(t, 3*time.Second, "heartbeat observed", func() bool {
+	// daemon 自己的心跳:设备令牌 Bearer + 版本号非空。
+	waitUntil(t, 6*time.Second, "daemon-issued heartbeat with device bearer", func() bool {
 		stub.mu.Lock()
 		defer stub.mu.Unlock()
-		return len(stub.heartbeats) >= 1
+		for _, hb := range stub.heartbeats {
+			if hb.auth == "Bearer dev-token-1" && hb.version != "" {
+				return true
+			}
+		}
+		return false
 	})
-	stub.mu.Lock()
-	last := stub.heartbeats[len(stub.heartbeats)-1]
-	stub.mu.Unlock()
-	if last.auth != "Bearer dev-token-1" {
-		t.Errorf("heartbeat auth: %q", last.auth)
+	// agent 同步:doRun 挂载 runner → 建起 wake-stream。
+	waitUntil(t, 6*time.Second, "agent sync hosted runner (wake-stream up)", func() bool {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return stub.wokenStreams >= 1
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("doRun returned error on context cancel: %v", err)
 	}
 }
 
@@ -347,6 +393,9 @@ func TestHeartbeatAndAgentSync(t *testing.T) {
 
 func TestWakeConsumptionDrivesRunLifecycle(t *testing.T) {
 	isolateHome(t)
+	// 评审 M3:此前 inbox 恒非空 + 80ms 轮询,SSE 消费全删也能绿——
+	// 这里禁用轮询、唤醒前 inbox 恒空,断言 run 只能由 SSE 唤醒产生。
+	t.Setenv("CUMORA_INBOX_POLL_MS", "600000")
 	stub := newStubServer()
 	srv := httptest.NewServer(stub.handler())
 	t.Cleanup(srv.Close)
@@ -355,16 +404,22 @@ func TestWakeConsumptionDrivesRunLifecycle(t *testing.T) {
 	RegisterAdapter(engine)
 	agent := AgentInfo{ID: "a1", Name: "Atlas", Engine: strPtr("claude")}
 
-	stub.mu.Lock()
-	stub.inboxRows = []map[string]any{{"id": "m1", "conversation_id": "cv-1", "kind": "text"}}
-	stub.mu.Unlock()
-
 	startDaemonRunner(t, cfg, agent, engine)
 	waitUntil(t, 5*time.Second, "wake-stream connected", func() bool {
 		stub.mu.Lock()
 		defer stub.mu.Unlock()
 		return stub.wokenStreams >= 1
 	})
+	// 流已连、无唤醒、inbox 空 → 睡过 2.5s 防抖窗:重连补拍的防抖
+	// 定时在空箱上空发,轮询已禁——此刻必须仍零 run。
+	time.Sleep(2700 * time.Millisecond)
+	stub.mu.Lock()
+	runsBefore := len(stub.runCreates)
+	stub.inboxRows = []map[string]any{{"id": "m1", "conversation_id": "cv-1", "kind": "text"}}
+	stub.mu.Unlock()
+	if runsBefore != 0 {
+		t.Fatalf("runs created before any wake: %d (causality broken)", runsBefore)
+	}
 
 	stub.publishWake("cv-1")
 
@@ -383,6 +438,9 @@ func TestWakeConsumptionDrivesRunLifecycle(t *testing.T) {
 	}
 	if trigger["engine"] != "claude" {
 		t.Errorf("run trigger.engine: %v", trigger["engine"])
+	}
+	if trigger["reason"] != "sse-wake" {
+		t.Fatalf("run must originate from the SSE wake, got reason=%v", trigger["reason"])
 	}
 
 	stub.mu.Lock()
@@ -431,16 +489,17 @@ func TestSessionRecoveryAcrossRestart(t *testing.T) {
 	_ = os.MkdirAll(sessionsDir(), 0o755)
 	_ = os.WriteFile(filepath.Join(sessionsDir(), "a9.session"), []byte("old-session"), 0o600)
 
-	stub.mu.Lock()
-	stub.inboxRows = []map[string]any{{"id": "m1", "conversation_id": "cv-9", "kind": "text"}}
-	stub.mu.Unlock()
-
+	// 与生命周期测试同因:inbox 门控到唤醒之后,run 只能由唤醒产生。
+	t.Setenv("CUMORA_INBOX_POLL_MS", "600000")
 	r1 := startDaemonRunner(t, cfg, agent, engine)
 	waitUntil(t, 5*time.Second, "first stream", func() bool {
 		stub.mu.Lock()
 		defer stub.mu.Unlock()
 		return stub.wokenStreams >= 1
 	})
+	stub.mu.Lock()
+	stub.inboxRows = []map[string]any{{"id": "m1", "conversation_id": "cv-9", "kind": "text"}}
+	stub.mu.Unlock()
 	stub.publishWake("cv-9")
 	waitUntil(t, 6*time.Second, "first run resumed old session", func() bool {
 		engine.mu.Lock()
@@ -449,8 +508,7 @@ func TestSessionRecoveryAcrossRestart(t *testing.T) {
 	})
 	r1.Stop()
 
-	// 新 runner(模拟 daemon 重启):从盘上恢复,再唤醒 → resume=old-session?
-	// 第一世返回了 "old-session"(同 id)——换一个新 session 序列证推进。
+	// 新 runner(模拟 daemon 重启):从盘上恢复,再唤醒 → resume=old-session。
 	engine2 := &recordingEngine{id: "claude", sessions: []string{"new-session"}}
 	RegisterAdapter(engine2)
 	stub.mu.Lock()
@@ -482,10 +540,10 @@ func TestVersionAndDoctorParity(t *testing.T) {
 	// doctor:未配对 + 无引擎时不 panic(输出形状人工可验)。
 	doctor()
 	// 未配对启动:非零路径(doRun 返回错误)。
-	if err := doRun(""); err == nil {
+	if err := doRun(context.Background(), ""); err == nil {
 		t.Fatal("expected error when not paired")
 	}
-	// 空引擎探测:requireLocalEngine 报 TS 同错。
+	// 空引擎探测:requireLocalEngine 报 TS 同错,doRun 包哨兵(退出码 70)。
 	t.Setenv("PATH", "/nonexistent")
 	if _, err := requireLocalEngine(); err == nil || !strings.Contains(err.Error(), "no supported local agent engine") {
 		t.Fatalf("expected engine-missing error, got %v", err)

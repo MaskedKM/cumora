@@ -38,6 +38,8 @@ type AgentRunner struct {
 	// pendingRerun:turn 在飞时又有唤醒折入——本轮结束再跑一次
 	// (对齐 TS 的 coalesce 语义;重跑会重读 inbox)。
 	pendingRerun bool
+	// minting:runtime token 铸造进行中(single-flight)。
+	minting bool
 
 	wakeDebounce  *time.Timer
 	lastWakeConvo string
@@ -88,11 +90,23 @@ func (r *AgentRunner) Start() {
 	go r.pollLoop()
 }
 
-// Stop:不再接新唤醒,取消在飞(引擎子进程应随 ctx 死掉)。
-func (r *AgentRunner) Stop() {
+// BeginStop:软停——不再接新唤醒(停轮询拍、拆防抖定时),但在飞 turn
+// 及其引擎子进程继续跑完(persist session id、finalize run)。宽限窗内
+// 靠它保住 turn 的 HTTP 生命周期(评审 M2:此前直接 cancel,15s 窗形同
+// 虚设——在飞轮立即被掐,run 永不 finish,被服务端陈旧清扫误收)。
+func (r *AgentRunner) BeginStop() {
 	r.mu.Lock()
 	r.stopped = true
+	if r.wakeDebounce != nil {
+		r.wakeDebounce.Stop()
+		r.wakeDebounce = nil
+	}
 	r.mu.Unlock()
+}
+
+// Stop:硬停——软停之上取消 ctx,在飞 turn 与引擎子进程随之中断。
+func (r *AgentRunner) Stop() {
+	r.BeginStop()
 	r.cancel()
 }
 
@@ -101,9 +115,6 @@ func (r *AgentRunner) IsBusy() bool {
 	defer r.mu.Unlock()
 	return r.busy
 }
-
-// BeginStop 与 Stop 同义(骨架:引擎无持久进程面,#64 起拆两段)。
-func (r *AgentRunner) BeginStop() { r.Stop() }
 
 /* ───────── runtime token ───────── */
 
@@ -116,7 +127,29 @@ func (r *AgentRunner) ensureToken() (string, error) {
 		r.mu.Unlock()
 		return t, nil
 	}
+	// single-flight:并发路径(wake-stream 连接 + runTurn)只放一个铸造,
+	// 其余等它完成后读缓存(否则双铸竞态,.runtime-token 后写覆盖)。
+	if r.minting {
+		r.mu.Unlock()
+		for i := 0; i < 200; i++ {
+			time.Sleep(10 * time.Millisecond)
+			r.mu.Lock()
+			if r.token != "" && time.Now().Before(r.tokenExp.Add(-tokenRefreshSkew)) {
+				t := r.token
+				r.mu.Unlock()
+				return t, nil
+			}
+			r.mu.Unlock()
+		}
+		return "", fmt.Errorf("runtime token mint in progress")
+	}
+	r.minting = true
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.minting = false
+		r.mu.Unlock()
+	}()
 	var minted struct {
 		Token            string `json:"token"`
 		ExpiresInSeconds int    `json:"expiresInSeconds"`
@@ -307,11 +340,13 @@ func (r *AgentRunner) runTurn(reason string) error {
 	defer func() {
 		r.mu.Lock()
 		r.busy = false
-		pending := r.pendingRerun
+		pending := r.pendingRerun && !r.stopped
 		r.pendingRerun = false
 		r.mu.Unlock()
-		if pending && !r.IsStopped() {
-			r.scheduleWake("rerun", "")
+		// 折入的重跑立即执行(TS 在 busy 保持下原地 do-while),不再过
+		// 2.5s 防抖——重读本就是重读 inbox 的完整轮。
+		if pending {
+			r.kickTurn("rerun")
 		}
 	}()
 
@@ -330,12 +365,12 @@ func (r *AgentRunner) runTurn(reason string) error {
 		return nil
 	}
 
-	runtimeBest(r.ctx, r.cfg.ServerURL, "/status", token, map[string]any{"status": "working"})
+	runtimeBest(r.ctx, r.cfg.ServerURL, "/status", token, map[string]any{"status": "thinking"})
 	var run struct {
 		RunID string `json:"runId"`
 	}
 	_ = apiCall(r.ctx, r.cfg.ServerURL, http.MethodPost, "/runtime/runs", token,
-		map[string]any{"trigger": map[string]any{"source": "byoa-wake", "engine": r.adapter.ID(), "reason": reason},
+		map[string]any{"trigger": map[string]any{"source": "byoa", "engine": r.adapter.ID(), "reason": reason},
 			"inboxCount": len(inbox.Rows)}, &run)
 	stopBeat := r.beatRun(token, run.RunID)
 	defer stopBeat()
@@ -352,11 +387,15 @@ func (r *AgentRunner) runTurn(reason string) error {
 	}
 
 	status := "completed"
+	summary := truncate(res.Output, 2000)
 	if res.Err != nil {
 		status = "failed"
+		summary = truncate(res.Err.Error(), 2000)
 	}
-	runtimeBest(r.ctx, r.cfg.ServerURL, "/runs/"+run.RunID+"/finish", token,
-		map[string]any{"status": status, "summary": truncate(res.Output, 2000)})
+	if run.RunID != "" {
+		runtimeBest(r.ctx, r.cfg.ServerURL, "/runs/"+run.RunID+"/finish", token,
+			map[string]any{"status": status, "summary": summary})
+	}
 	runtimeBest(r.ctx, r.cfg.ServerURL, "/status", token, map[string]any{"status": "avail"})
 	return res.Err
 }

@@ -54,11 +54,6 @@ func runtimeBest(ctx context.Context, serverURL, path, token string, body any) j
 	return out
 }
 
-// runtimeGet:同上,GET。
-func runtimeGet(ctx context.Context, serverURL, path, token string, out any) bool {
-	return apiCall(ctx, serverURL, http.MethodGet, "/runtime"+path, token, nil, out) == nil
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

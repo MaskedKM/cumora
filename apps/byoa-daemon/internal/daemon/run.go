@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// errNoLocalEngine:PATH 上无任何引擎(退出码 70 的判据)。
+var errNoLocalEngine = errors.New("no supported local agent engine found on PATH")
 
 // RunComputerDaemon:`cumora agent computer <argv>` 的完整分发。
 func RunComputerDaemon(argv []string) {
@@ -34,7 +38,10 @@ func RunComputerDaemon(argv []string) {
 	case opts.status:
 		printStatus()
 	default:
-		if err := doRun(opts.server); err != nil {
+		if err := doRun(context.Background(), opts.server); err != nil {
+			if errors.Is(err, errNoLocalEngine) {
+				os.Exit(70) // 对齐 TS:引擎缺失是可诊断的固定退出码
+			}
 			os.Exit(1)
 		}
 	}
@@ -93,6 +100,8 @@ func HelpText() string {
 		"  cumora agent computer --pair <code> [--server <url>]   pair this machine\n" +
 		"  cumora agent computer [--server <url>]                 start the daemon\n\n" +
 		"Options:\n" +
+		"  --server <url>   target Cumora server (default: CUMORA_SERVER_URL or https://api.cumora.ai)\n" +
+		"  --engine <id>    preferred engine for pairing (claude / codex / grok / cursor)\n" +
 		"  --status   pairing + running state\n" +
 		"  --doctor   check engines, PATH, pairing\n" +
 		"  --version  print the daemon version\n" +
@@ -227,9 +236,10 @@ func writeRunningState() {
 
 /* ───────── 主循环 ───────── */
 
-// doRun:常驻面——心跳/同步/日志轮转/优雅停机。返回 error 仅表示
-// 启动失败(未配对/无引擎)。
-func doRun(serverOverride string) error {
+// doRun:常驻面——心跳/同步/日志轮转/优雅停机。ctx 取消亦触发优雅停机
+// (测试驱动面;进程形态走信号)。返回 error 仅表示启动失败(未配对/无
+// 引擎——后者包 errNoLocalEngine,主函数落退出码 70)。
+func doRun(ctx context.Context, serverOverride string) error {
 	cfg, err := loadConfig()
 	if err != nil || cfg.ComputerID == "" {
 		fmt.Fprintln(os.Stderr, "[computer] not paired. Run: cumora agent computer --pair <code> [--server <url>]")
@@ -241,13 +251,16 @@ func doRun(serverOverride string) error {
 	engines, err := requireLocalEngine()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[computer] %v\n", err)
-		return err
+		return errNoLocalEngine
 	}
 	fmt.Printf("[computer] cumora %s · starting %s @ %s (engines: %s)\n",
 		currentVersion(), cfg.ComputerID, cfg.ServerURL, joinStrings(engines, ", "))
 	writeRunningState()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// 从入参派生(而非 Background):外部取消/测试驱动能传播到主循环与
+	// 全部 runner——此前 Background 直接遮蔽了参数 ctx,取消永远到不了
+	// select(心跳测试挂死的根因)。
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	runners := map[string]*AgentRunner{}
 
@@ -317,13 +330,15 @@ func doRun(serverOverride string) error {
 
 	// 优雅停机:停接新唤醒,给在飞 turn 一个落完窗口(保存 session id、
 	// finalize run);超窗杀引擎,但 session id 已在盘上——重启后 resume。
+	// 信号路径按进程语义 os.Exit(0)(服务管理器据此重启);ctx 取消路径
+	// (测试驱动)干净返回——os.Exit 在测试进程里是框架级 panic。
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	shutdown := func(why string) {
+	shutdown := func(why string, exitProcess bool) {
 		poll.Stop()
 		beat.Stop()
 		for _, r := range runners {
-			r.BeginStop()
+			r.BeginStop() // 软停:在飞 turn 继续跑完(grace 窗的本体)
 		}
 		deadline := time.Now().Add(shutdownGrace())
 		for time.Now().Before(deadline) {
@@ -340,16 +355,21 @@ func doRun(serverOverride string) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 		for _, r := range runners {
-			r.Stop()
+			r.Stop() // 硬停:宽限窗外掐灭引擎子进程
 		}
 		fmt.Printf("[computer] shutting down (%s)\n", why)
-		os.Exit(0)
+		if exitProcess {
+			os.Exit(0)
+		}
 	}
 
 	for {
 		select {
 		case <-sig:
-			shutdown("signal")
+			shutdown("signal", true)
+			return nil
+		case <-ctx.Done():
+			shutdown("context", false)
 			return nil
 		case <-beat.C:
 			heartbeat()
@@ -357,9 +377,6 @@ func doRun(serverOverride string) error {
 			sync()
 		case <-logrot.C:
 			rotateLogsIfNeeded()
-		case <-ctx.Done():
-			shutdown("context")
-			return nil
 		}
 	}
 }

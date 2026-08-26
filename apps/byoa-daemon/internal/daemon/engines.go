@@ -10,11 +10,19 @@ import (
 	"sync"
 )
 
-// 已知引擎 id(对齐 TS ENGINE_IDS;适配器本体随 #64–#66 落位)。
-var EngineIDs = []string{"claude", "codex", "grok", "cursor-agent"}
+// 已知引擎 id(对齐 TS ENGINE_IDS;线上契约用 id——服务端白名单、
+// me/agents 的 engine 字段都是这四个值;适配器本体随 #64–#66 落位)。
+var EngineIDs = []string{"claude", "codex", "grok", "cursor"}
 
-// engineBin:引擎 id → PATH 可执行名(cursor-agent 带连字符,其余同名)。
-func engineBin(id string) string { return id }
+// engineBin:引擎 id → PATH 可执行名(仅 cursor 的可执行叫 cursor-agent,
+// 其余同名——评审 M1:id 与二进制名必须分离,否则 Cursor-only 机器配对
+// 报 cursor-agent 被服务端白名单静默回退 claude)。
+func engineBin(id string) string {
+	if id == "cursor" {
+		return "cursor-agent"
+	}
+	return id
+}
 
 // TurnInput:一次 turn 交给引擎的全部上下文(骨架面:会话恢复 + 提示)。
 // #64 起扩展为完整提示组装(stream-json/standing prompt)。

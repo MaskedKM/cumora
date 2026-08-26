@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -87,7 +86,11 @@ func envMS(name string, def time.Duration) time.Duration {
 // 半开 socket 会让 promise 永不 settle——catch 看不到不抛错的挂死,一个
 // 卡住的 socket 能拖死整机的 agent。wake-stream 是故意的长连接,不受此限。
 func httpTimeout() time.Duration {
-	return envMS("CUMORA_HTTP_TIMEOUT_MS", 20_000*time.Millisecond)
+	t := envMS("CUMORA_HTTP_TIMEOUT_MS", 20_000*time.Millisecond)
+	if t < time.Second {
+		return time.Second // TS Math.max(1_000, …) 同下限
+	}
+	return t
 }
 
 const (
@@ -125,5 +128,5 @@ func detectHostName() string {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return h
 	}
-	return runtime.GOOS + "-box"
+	return "My computer"
 }
