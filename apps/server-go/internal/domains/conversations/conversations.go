@@ -16,6 +16,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 )
 
 func Mount(mux *http.ServeMux, db *sql.DB) {
@@ -870,11 +871,47 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			broadcastMsg["clientId"] = body.ClientID
 		}
 		events.MessageNew(r.Context(), companyID, convID, broadcastMsg)
+		// 推送扇出(#59):不阻塞响应;凭据未配置时软关停为 no-op。
+		go func(convID, uid, msgID, body, companyID string) {
+			ctx := context.Background()
+			recipients := push.ComputeMessageRecipients(ctx, db, convID, uid)
+			if len(recipients) == 0 {
+				return
+			}
+			var title sql.NullString
+			_ = db.QueryRowContext(ctx, `SELECT title FROM conversations WHERE id = $1`, convID).Scan(&title)
+			authorName := uid
+			var dn string
+			if db.QueryRowContext(ctx, `SELECT display_name FROM users WHERE id = $1`, uid).Scan(&dn) == nil && dn != "" {
+				authorName = dn
+			}
+			push.NotifyMessage(ctx, db, struct {
+				ConversationID    string
+				ConversationTitle *string
+				AuthorID          string
+				AuthorName        string
+				MessageID         string
+				Body              string
+				CompanyID         string
+				RecipientUserIDs  []string
+			}{
+				ConversationID: convID, ConversationTitle: nullStrPtr(title),
+				AuthorID: uid, AuthorName: authorName, MessageID: msgID,
+				Body: body, CompanyID: companyID, RecipientUserIDs: recipients,
+			})
+		}(convID, uid, id, body.Body, companyID)
 		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": id, "sequence": sequence})
 	}
 }
 
 /* helpers */
+
+func nullStrPtr(ns sql.NullString) *string {
+	if ns.Valid {
+		return &ns.String
+	}
+	return nil
+}
 
 func jsonbOr(ns sql.NullString, fallback any) any {
 	if ns.Valid && ns.String != "" && ns.String != "null" {
