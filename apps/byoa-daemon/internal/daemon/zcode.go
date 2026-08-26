@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -81,7 +82,8 @@ func resolveZcodeLauncher(env []string) *zcodeLauncher {
 	if home == "" {
 		home = homeDir()
 	}
-	if home != "" && home != "." {
+	// TS 仅在 linux 走桌面 AppImage 分支(其余 OS 的同名文件不是它)。
+	if runtime.GOOS == "linux" && home != "" && home != "." {
 		desktop, err := os.ReadFile(filepath.Join(home, ".local", "share", "applications", "zcode.desktop"))
 		if err == nil {
 			var appimage string
@@ -176,6 +178,9 @@ func zcodeEngineVersion(env []string) string {
 	}
 	out := ansiRe.ReplaceAllString(stdout.String(), "")
 	for _, tok := range strings.Fields(out) {
+		if strings.HasPrefix(tok, "v") && isVersionLike(tok[1:]) {
+			return tok[1:]
+		}
 		if isVersionLike(tok) {
 			return tok
 		}
@@ -223,21 +228,25 @@ type zcodeEnvelope struct {
 }
 
 // parseZcodeEnvelope:整个 stdout 即信封;非信封(自定义参数/未来 CLI 变化)
-// 回退原文。
+// 回退原文。判定用**键存在性**(TS 'response' in parsed || 'sessionId' in
+// parsed):退化信封(response:""/sessionId:"")与字段类型不符(如 usage
+// 是字符串)都仍是信封;逐字段宽容解码,坏字段取零值不整体拒绝。
 func parseZcodeEnvelope(stdout string) (envelope *zcodeEnvelope, text string) {
 	text = strings.TrimSpace(ansiRe.ReplaceAllString(stdout, ""))
 	if !strings.HasPrefix(text, "{") {
 		return nil, text
 	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return nil, text
+	}
+	if _, ok := raw["response"]; !ok {
+		if _, ok := raw["sessionId"]; !ok {
+			return nil, text
+		}
+	}
 	var parsed zcodeEnvelope
-	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
-		return nil, text
-	}
-	// TS 判据:'response' in parsed || 'sessionId' in parsed。Go 结构体判别:
-	// 两者皆零值则视为非信封。
-	if parsed.Response == "" && parsed.SessionID == "" {
-		return nil, text
-	}
+	_ = json.Unmarshal([]byte(text), &parsed) // 宽容:类型不符的字段留零值
 	return &parsed, text
 }
 
@@ -358,6 +367,19 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	if ctx.Err() != nil {
 		_ = killProcess(cmd)
 	}
+	// 中止 watcher(与 spawnEngine 同款):排队中的 turn 在 runner 已停时
+	// 才 spawn 的孤儿防护 + 运行中取消的实际杀灭——没有它,取消后
+	// cmd.Wait 会等自然退出,被取消的轮烧完配额还按成功记账(评审实测)。
+	abort := make(chan struct{})
+	var abortOnce sync.Once
+	stopWatcher := func() { abortOnce.Do(func() { close(abort) }) }
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = killProcess(cmd)
+		case <-abort:
+		}
+	}()
 	var stdoutBuf bytes.Buffer
 	var stderrTail []string
 	var mu sync.Mutex
@@ -369,15 +391,19 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	}()
 	go func() {
 		defer wg.Done()
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
-			if c := cleanLine(sc.Text()); c != "" {
+		r := bufio.NewReader(stderr) // Reader 无界行(Scanner 64KB 帽会截断长 stderr)
+		for {
+			line, rerr := r.ReadString('\n')
+			if c := cleanLine(line); c != "" {
 				mu.Lock()
 				pushTail(&stderrTail, c)
 				mu.Unlock()
 				if onLog != nil {
 					onLog(c)
 				}
+			}
+			if rerr != nil {
+				return
 			}
 		}
 	}()
@@ -394,6 +420,7 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 		waitErr <- cmd.Wait()
 	}()
 	werr := <-waitErr
+	stopWatcher()
 	<-readersDone
 	exitCode, signalName := 1, ""
 	if werr == nil {

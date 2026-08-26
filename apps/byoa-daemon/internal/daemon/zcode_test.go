@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 /* ───────── launcher 三级解析 ───────── */
@@ -71,10 +72,103 @@ func TestZcodeLauncherAppImageExtraction(t *testing.T) {
 	if got := readObsAt(t, home, "extract-count"); strings.Count(got, "run") != 1 {
 		t.Fatalf("cache hit must not re-extract, got %q", got)
 	}
-	// .mount_ 路径(运行中的挂载点)不作稳定指针。
-	_ = os.WriteFile(filepath.Join(applications, "zcode.desktop"), []byte("[Desktop Entry]\nExec=/tmp/.mount_zcode123/AppRun\n"), 0o644)
+	// .mount_ 路径(运行中的挂载点)不作稳定指针—— planted 一个**功能
+	// 完好**的假 AppImage 在真实存在的 .mount_ 路径(不存在的路径 os.Stat
+	// 先失败,删掉 .mount_ 守卫测试照样绿=空洞;评审突变证实)。
+	mountDir := filepath.Join(home, "tmp", ".mount_zcode123")
+	_ = os.MkdirAll(mountDir, 0o755)
+	mountApp := filepath.Join(mountDir, "AppRun")
+	writeScript(t, mountApp, "#!/bin/sh\nmkdir -p \"$PWD/squashfs-root/resources/glm\"\nprintf 'x' > \"$PWD/squashfs-root/resources/glm/zcode.cjs\"\n")
+	_ = os.WriteFile(filepath.Join(applications, "zcode.desktop"), []byte("[Desktop Entry]\nExec=\""+mountApp+"\" %U\n"), 0o644)
 	if resolveZcodeLauncher(env) != nil {
 		t.Fatal(".mount_ exec must not resolve")
+	}
+}
+
+// M4:AppImage 升级(size+mtime 变)→ 新缓存键 → 重抽;旧缓存不误命中。
+func TestZcodeAppImageUpgradeReextracts(t *testing.T) {
+	home := t.TempDir()
+	appimage := filepath.Join(home, "ZCode.AppImage")
+	writeScript(t, appimage, "#!/bin/sh\nmkdir -p \"$PWD/squashfs-root/resources/glm\"\nprintf 'v1' > \"$PWD/squashfs-root/resources/glm/zcode.cjs\"\necho run >> \""+home+"/extract-count\"\n")
+	applications := filepath.Join(home, ".local", "share", "applications")
+	_ = os.MkdirAll(applications, 0o755)
+	_ = os.WriteFile(filepath.Join(applications, "zcode.desktop"), []byte("[Desktop Entry]\nExec=\""+appimage+"\"\n"), 0o644)
+	env := []string{"HOME=" + home, "XDG_CACHE_HOME=" + filepath.Join(home, ".cache"), "PATH="}
+
+	l1 := resolveZcodeLauncher(env)
+	if l1 == nil {
+		t.Fatal("first resolve failed")
+	}
+	if b, _ := os.ReadFile(l1.prefix[0]); string(b) != "v1" {
+		t.Fatalf("payload v1: %q", string(b))
+	}
+	// "升级":改内容并 bump mtime → 新缓存键。
+	time.Sleep(10 * time.Millisecond)
+	writeScript(t, appimage, "#!/bin/sh\nmkdir -p \"$PWD/squashfs-root/resources/glm\"\nprintf 'v2' > \"$PWD/squashfs-root/resources/glm/zcode.cjs\"\necho run >> \""+home+"/extract-count\"\n")
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(appimage, future, future)
+	l2 := resolveZcodeLauncher(env)
+	if l2 == nil || l2.prefix[0] == l1.prefix[0] {
+		t.Fatalf("upgrade must re-key the cache: %v vs %v", l1.prefix, l2.prefix)
+	}
+	if b, _ := os.ReadFile(l2.prefix[0]); string(b) != "v2" {
+		t.Fatalf("payload v2: %q", string(b))
+	}
+	if got := readObsAt(t, home, "extract-count"); strings.Count(got, "run") != 2 {
+		t.Fatalf("expected two extractions, got %q", got)
+	}
+}
+
+// M4:非信封输出经 Run 全程回退原文(spawnZcodeJson 的 raw-text 路径)。
+func TestZcodeRunRawTextFallback(t *testing.T) {
+	fakeZcodeBin(t, `#!/bin/sh
+printf 'not json at all\n'
+`)
+	var logs []string
+	res := (zcodeAdapter{}).Run(context.Background(), RunArgs{
+		Home: t.TempDir(), Prompt: "p", Env: os.Environ(), OnLog: func(l string) { logs = append(logs, l) },
+	})
+	if res.ExitCode != 0 {
+		t.Fatalf("raw text with exit 0 is not an error: %+v", res)
+	}
+	if res.SessionID != "" || res.Usage != nil {
+		t.Fatalf("no envelope → no session/usage: %+v", res)
+	}
+}
+
+// M4:畸形项目配置 → 归因落穿到用户级(不炸、不静默丢)。
+func TestZcodeAttributionMalformedProjectConfig(t *testing.T) {
+	userHome := fakeZcodeUserConfig(t, map[string]string{"kimi": "https://kimi"})
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".zcode"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".zcode", "config.json"), []byte(`{broken json`), 0o600)
+	if got := readZcodeMainModel(append(os.Environ(), "HOME="+userHome), home); got != "bigmodel/glm-5.1" {
+		t.Fatalf("malformed project config must fall through to the user pin: %q", got)
+	}
+}
+
+// M4:CLI 漂移提示(Unknown option → 可行动诊断)。
+func TestZcodeDriftHint(t *testing.T) {
+	fakeZcodeBin(t, `#!/bin/sh
+printf 'Error: Unknown option --no-color\n' >&2
+exit 64
+`)
+	res := (zcodeAdapter{}).Run(context.Background(), RunArgs{Home: t.TempDir(), Prompt: "p", Env: os.Environ(), OnLog: func(string) {}})
+	if res.ExitCode == 0 {
+		t.Fatal("unknown option must fail")
+	}
+	if !strings.Contains(res.Err, "Unknown option") || !strings.Contains(res.Err, "CLI drift") || !strings.Contains(res.Err, "CUMORA_ZCODE_BIN") {
+		t.Fatalf("drift hint: %q", res.Err)
+	}
+}
+
+// M1:退化信封(键存在但值空/类型错)仍是信封。
+func TestZcodeDegenerateEnvelopes(t *testing.T) {
+	if env, _ := parseZcodeEnvelope(`{"response":"","sessionId":""}`); env == nil {
+		t.Fatal("empty-valued keys still form the envelope (TS 'in' semantics)")
+	}
+	if env, _ := parseZcodeEnvelope(`{"sessionId":123,"usage":"str"}`); env == nil {
+		t.Fatal("wrong-typed fields still form the envelope (lenient decode)")
 	}
 }
 
@@ -425,4 +519,31 @@ func TestZcodeNoPersistentSession(t *testing.T) {
 	if (zcodeAdapter{}).StartSession(SessionArgs{}) != nil {
 		t.Fatal("zcode has no persistent session")
 	}
+}
+
+// B1 回归:运行中取消必须杀进程并立刻带错结算——没有中止 watcher 时,
+// 取消的轮会跑到自然退出且按成功记账(评审实测 5s 空跑 + 覆盖 resume id)。
+func TestZcodeAbortKillsPromptly(t *testing.T) {
+	bin, _ := fakeEngineDir(t)
+	wrapper := filepath.Join(bin, "zcode-slow")
+	writeScript(t, wrapper, "#!/bin/sh\nsleep 5\nprintf '%s\\n' '{\"sessionId\":\"s\",\"response\":\"late\"}'\n")
+	t.Setenv("CUMORA_ZCODE_BIN", wrapper)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+	done := make(chan RunResult, 1)
+	go func() {
+		done <- (zcodeAdapter{}).Run(ctx, RunArgs{Home: t.TempDir(), Prompt: "slow", Env: os.Environ(), OnLog: func(string) {}})
+	}()
+	select {
+	case r := <-done:
+		if r.ExitCode == 0 {
+			t.Fatal("aborted turn must not report success")
+		}
+		if r.SessionID != "" {
+			t.Fatal("aborted turn must not poison the stored session id")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("abort must settle promptly (watcher missing = runs to completion)")
+	}
+	cancel()
 }
