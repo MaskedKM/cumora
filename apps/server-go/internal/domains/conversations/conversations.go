@@ -59,7 +59,7 @@ func memberCheck(ctx context.Context, db *sql.DB, uid, companyID, convID string)
 func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actorID, sysKind, participantID string) {
 	var sequence int
 	if err := db.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 1)
+		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
 		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
 		RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
 		return
@@ -800,21 +800,27 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				Name *string `json:"name"`
 				Kind string  `json:"kind"`
 			}
-			if json.Unmarshal(body.Attachment, &att) != nil || att.URL == nil || att.Name == nil {
-				httpx.WriteError(w, http.StatusBadRequest, "attachment requires url and name strings")
-				return
-			}
-			switch att.Kind {
-			case "img", "pdf", "file", "fig":
-			default:
-				var fixed map[string]any
-				_ = json.Unmarshal(body.Attachment, &fixed)
-				fixed["kind"] = "img"
-				if b, err := json.Marshal(fixed); err == nil {
-					body.Attachment = b
+			malformed := json.Unmarshal(body.Attachment, &att) != nil || att.URL == nil || att.Name == nil
+			if malformed {
+				// baseline:畸形附件降级为纯文本(仅双缺才 400 'empty message')
+				if strings.TrimSpace(body.Body) == "" {
+					httpx.WriteError(w, http.StatusBadRequest, "empty message")
+					return
 				}
+				body.Attachment = nil
+			} else {
+				switch att.Kind {
+				case "img", "pdf", "file", "fig":
+				default:
+					var fixed map[string]any
+					_ = json.Unmarshal(body.Attachment, &fixed)
+					fixed["kind"] = "img"
+					if b, err := json.Marshal(fixed); err == nil {
+						body.Attachment = b
+					}
+				}
+				attachmentJSON = json.RawMessage(body.Attachment)
 			}
-			attachmentJSON = json.RawMessage(body.Attachment)
 		}
 		if strings.TrimSpace(body.Body) == "" && attachmentJSON == nil {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
