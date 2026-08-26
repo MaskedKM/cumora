@@ -456,3 +456,34 @@ export function proseMirrorNodeToYXml(node: ProseMirrorJsonNode): Y.XmlElement |
 export function markdownToYXml(markdown: string): Array<Y.XmlElement | Y.XmlText> {
   return markdownToProseMirrorContent(markdown).map(proseMirrorNodeToYXml)
 }
+
+/** Placement spec for the `image` agent op.
+ *
+ *  Two modes:
+ *   - absolute: insert at the start or end of the document
+ *   - anchored: find a block (paragraph / heading / list item) whose text
+ *     contains `anchorText` and place the image relative to it
+ *
+ *  `replace` is the killer: agents can swap a previously-emitted but
+ *  inert `![alt](url)` markdown paragraph for a real image node by
+ *  passing the exact markdown text as the anchor. */
+export type AgentImagePlacement =
+  | { mode: 'start' | 'end' }
+  | { mode: 'replace' | 'after' | 'before'; anchorText: string }
+
+/** Explicit type guard for the anchored half of {@link AgentImagePlacement}.
+ *  Some TS versions (including the one CI runs) don't narrow
+ *  `placement.anchorText` after `mode === 'start' / 'end'` checks even
+ *  though discriminated-union rules say they should. A user-defined
+ *  predicate sidesteps the issue. */
+export function isAnchoredImagePlacement(
+  p: AgentImagePlacement,
+): p is { mode: 'replace' | 'after' | 'before'; anchorText: string } {
+  return p.mode === 'replace' || p.mode === 'after' || p.mode === 'before'
+}
+
+/** Match spec for the image-delete agent op. */
+export type AgentImageDeleteMatch =
+  | { by: 'src'; src: string }
+  | { by: 'src-contains'; substring: string }
+  | { by: 'alt'; alt: string }

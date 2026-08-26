@@ -419,6 +419,12 @@ export const env = {
    * of falling back to plaintext.
    */
   CUMORA_SECRETS_KEY: process.env.CUMORA_SECRETS_KEY ?? '',
+  /** Yjs 协同 sidecar(#50):内表面地址与共享令牌;sidecar 侧监听端口。 */
+  YJS_SIDECAR_URL: process.env.YJS_SIDECAR_URL ?? 'http://127.0.0.1:5182',
+  YJS_SIDECAR_TOKEN: process.env.YJS_SIDECAR_TOKEN ?? '',
+  YJS_SIDECAR_PORT: Number(process.env.YJS_SIDECAR_PORT ?? 5182),
+  /** 单次 sidecar 调用超时(ms)——挂起(非宕机)不得拖住 WS 帧。 */
+  YJS_SIDECAR_TIMEOUT_MS: Number(process.env.YJS_SIDECAR_TIMEOUT_MS ?? 5000),
 }
 
 // Production-secret gate: refuse to boot in production while any security

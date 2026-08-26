@@ -25,7 +25,7 @@
   "scripts": {
     "setup": "npm install && npm install --prefix workers/email-gate",
     "dev": "npm run dev -w apps/web",
-    "dev:all": "concurrently -k -n web,api -c blue,magenta \"npm:dev\" \"npm:server:dev\"",
+    "dev:all": "concurrently -k -n web,api,sidecar -c blue,magenta,cyan \"npm:dev\" \"npm:server:dev\" \"npm:sidecar:dev\"",
     "build": "npm run build -w apps/web",
     "preview": "npm run preview -w apps/web",
     "typecheck": "npm run typecheck -w apps/web",
@@ -36,7 +36,7 @@
     "guard:llm-tracked": "node scripts/guard-llm-tracked.mjs",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "test": "node --import tsx --test \"server/src/__tests__/**/*.test.ts\" \"workers/**/*.test.ts\"",
+    "test": "node --import tsx --test --test-force-exit \"server/src/__tests__/**/*.test.ts\" \"apps/yjs-sidecar/src/**/*.test.ts\" \"workers/**/*.test.ts\"",
     "test:integration": "node server/run-integration-tests.mjs",
     "migrate": "tsx server/src/migrate-bin.ts",
     "icons": "python3 scripts-make-mac-icon.py && npx -y electron-icon-builder -i build/icon.png -o build --flatten && node scripts-sync-electron-dev-icon.mjs",
@@ -52,7 +52,9 @@
     "mobile:android": "npm run mobile:sync && npx cap open android",
     "mobile:android:run": "npm run mobile:sync && npx cap run android",
     "contract:gen": "node scripts/contract-coverage.mjs && openapi-typescript packages/contract/openapi.yaml -o packages/contract/src/schema.d.ts && bash scripts/contract-gen-go.sh",
-    "contract:check": "bash scripts/contract-check.sh"
+    "contract:check": "bash scripts/contract-check.sh",
+    "sidecar:dev": "tsx watch apps/yjs-sidecar/src/main.ts",
+    "sidecar:start": "tsx apps/yjs-sidecar/src/main.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",

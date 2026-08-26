@@ -5895,7 +5895,7 @@ api.get('/calendar/events/:id/dispatches', async (req, res) => {
 //
 // REST is just the metadata + bootstrap path. The actual content sync
 // happens over the WS doc subprotocol (doc.subscribe/update/awareness)
-// — see server/src/documents/rooms.ts + ws.ts.
+// — see apps/yjs-sidecar/src/rooms.ts + server/src/documents/relay.ts.
 
 interface DocumentRow {
   id: string

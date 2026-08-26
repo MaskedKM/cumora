@@ -10,7 +10,7 @@ import { seedIfEmpty } from './seed.js'
 import { api } from './api/router.js'
 import { storage, UPLOAD_DIR } from './storage.js'
 import { attachWebSocket, resetHumanPresenceOnBoot } from './ws.js'
-import { bootDocumentBus } from './documents/rooms.js'
+import { bootDocRelay } from './documents/relay.js'
 import { pool } from './db/pool.js'
 import { redis } from './redis.js'
 import { startScanner } from './agents/scanner.js'
@@ -231,7 +231,7 @@ async function main() {
   attachWebSocket(server)
   // Cross-instance Y.Doc fan-out — the room manager subscribes to the
   // doc redis channels here so two server instances stay convergent.
-  bootDocumentBus()
+  bootDocRelay()
 
   server.listen(env.PORT, () => {
     console.log(`[boot] cumora server :${env.PORT} · instance ${env.INSTANCE_ID} · model ${env.OPENAI_MODEL}`)

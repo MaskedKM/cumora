@@ -15,15 +15,18 @@
  * twice is a no-op.
  */
 import * as Y from 'yjs'
-import { pool } from '../db/pool.js'
+import { pool } from '../../../server/src/db/pool.js'
 import {
   redis, sub, publish,
   CH_DOC_UPDATE, CH_DOC_AWARENESS,
   type DocUpdateEvent, type DocAwarenessEvent,
-} from '../redis.js'
-import { env } from '../env.js'
-import { normalizeStorageKey, signedUrlExpiresSoon, storage, storageKeyFromPublicUrl } from '../storage.js'
+} from '../../../server/src/redis.js'
+import { env } from '../../../server/src/env.js'
+import { normalizeStorageKey, signedUrlExpiresSoon, storage, storageKeyFromPublicUrl } from '../../../server/src/storage.js'
 import {
+  type AgentImagePlacement,
+  type AgentImageDeleteMatch,
+  isAnchoredImagePlacement,
   markdownToYXml,
   parseMarkdownImageBlock,
   proseMirrorNodeToYXml,
@@ -627,31 +630,6 @@ function insertAgentMarkdown(fragment: Y.XmlFragment, text: string, index?: numb
  *     end depending on `at`.
  *
  *  Wrapped in a single Yjs transaction so observers see one update. */
-/** Placement spec for the `image` agent op.
- *
- *  Two modes:
- *   - absolute: insert at the start or end of the document
- *   - anchored: find a block (paragraph / heading / list item) whose text
- *     contains `anchorText` and place the image relative to it
- *
- *  `replace` is the killer: agents can swap a previously-emitted but
- *  inert `![alt](url)` markdown paragraph for a real image node by
- *  passing the exact markdown text as the anchor. */
-export type AgentImagePlacement =
-  | { mode: 'start' | 'end' }
-  | { mode: 'replace' | 'after' | 'before'; anchorText: string }
-
-/** Explicit type guard for the anchored half of {@link AgentImagePlacement}.
- *  Some TS versions (including the one CI runs) don't narrow
- *  `placement.anchorText` after `mode === 'start' / 'end'` checks even
- *  though discriminated-union rules say they should. A user-defined
- *  predicate sidesteps the issue. */
-export function isAnchoredImagePlacement(
-  p: AgentImagePlacement,
-): p is { mode: 'replace' | 'after' | 'before'; anchorText: string } {
-  return p.mode === 'replace' || p.mode === 'after' || p.mode === 'before'
-}
-
 /** Walk the fragment top-to-bottom, return (index, element) of the first
  *  XmlElement whose flattened text content contains `needle`. Returns
  *  null when no block matches — caller decides whether to fall back. */
@@ -666,12 +644,6 @@ function findFirstBlockContaining(
   }
   return null
 }
-
-/** Match spec for the image-delete agent op. */
-export type AgentImageDeleteMatch =
-  | { by: 'src'; src: string }
-  | { by: 'src-contains'; substring: string }
-  | { by: 'alt'; alt: string }
 
 /** Find every image element under `parent` (recursively) and return their
  *  (parent-index, element) pairs. Used by the image-delete op to locate
