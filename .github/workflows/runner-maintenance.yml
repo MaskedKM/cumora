@@ -46,6 +46,12 @@ jobs:
       # NOT --volumes (never risks data).
       - name: Prune docker garbage
         run: docker system prune -f
+      # Build cache was the #1 disk hog on this host (240GB over months of
+      # other projects' image builds — the 2026-08-26 outage's root cause).
+      # Keep 72h of cache so iterative builds stay fast; older layers rebuild
+      # on demand.
+      - name: Prune stale build cache
+        run: docker builder prune -f --filter until=72h
       # Return container-root-owned residue under this runner's _work to the
       # runner user, so its own workspace cleanup can delete it again. Uses
       # the node image already cached by the CI jobs (no extra pull).
