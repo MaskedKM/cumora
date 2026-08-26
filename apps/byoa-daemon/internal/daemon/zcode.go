@@ -464,7 +464,7 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	return res, envelope.Response
 }
 
-/* ───────── 适配器 ───────── */ /* ───────── 适配器 ───────── */
+/* ───────── 适配器 ───────── */
 
 type zcodeAdapter struct{}
 
