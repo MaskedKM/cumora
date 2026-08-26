@@ -125,7 +125,7 @@ func (r *AgentRunner) Start() {
 	if err := writeShim(r.binDir); err != nil {
 		slog.Warn("[computer] writeShim failed", "agent", r.agent.ID, "err", err)
 	}
-	if err := r.adapter.SeedHome(r.home, Persona{ID: r.agent.ID, Name: r.agent.Name, Role: r.agent.Role, SystemPrompt: r.agent.SystemPrompt}); err != nil {
+	if err := r.adapter.SeedHome(r.home, Persona{ID: r.agent.ID, Name: r.agent.Name, Role: r.agent.Role, SystemPrompt: r.agent.SystemPrompt, Model: r.agent.Model, FastModel: r.agent.FastModel}); err != nil {
 		slog.Warn("[computer] seedHome failed", "agent", r.agent.ID, "err", err)
 	}
 	if s, err := os.ReadFile(r.sessionFile); err == nil {
