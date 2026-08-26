@@ -192,7 +192,7 @@ func doctor() {
 	fmt.Printf("cumora %s — doctor\n", currentVersion())
 	engines := detectLocalEngines()
 	if len(engines) == 0 {
-		fmt.Println("engines: NONE found on PATH — install claude / codex / grok / cursor-agent")
+		fmt.Println("engines: NONE found on PATH — install claude / codex / grok / cursor-agent / zcode")
 	} else {
 		fmt.Printf("engines on PATH: %s\n", joinStrings(engines, ", "))
 		for _, id := range engines {

@@ -23,8 +23,8 @@ import (
 )
 
 // 已知引擎 id(对齐 TS ENGINE_IDS;线上契约用 id——服务端白名单、
-// me/agents 的 engine 字段都是这四个值)。
-var EngineIDs = []string{"claude", "codex", "grok", "cursor"}
+// me/agents 的 engine 字段都是这些值)。
+var EngineIDs = []string{"claude", "codex", "grok", "cursor", "zcode"}
 
 // engineBin:引擎 id → PATH 可执行名(仅 cursor 的可执行叫 cursor-agent,
 // 其余同名——id 与二进制名必须分离,否则 Cursor-only 机器配对报
@@ -38,12 +38,15 @@ func engineBin(id string) string {
 
 /* ───────── 适配器协议类型(对齐 engine.ts 的导出接口) ───────── */
 
-// Persona:适配器落盘人格所需的 agent 字段。
+// Persona:适配器落盘人格所需的 agent 字段。Model/FastModel 是 per-agent
+// 模型路由(zcode 经项目级配置钉住;claude/codex 走 --model/env)。
 type Persona struct {
 	ID           string
 	Name         string
 	Role         *string
 	SystemPrompt *string
+	Model        *string
+	FastModel    *string
 }
 
 // EngineUsage:引擎原始 token 用量(Anthropic 字段名,逐字段透传——
@@ -198,6 +201,14 @@ func getAdapter(id string) EngineAdapter {
 func detectLocalEngines() []string {
 	var out []string
 	for _, id := range EngineIDs {
+		if id == "zcode" {
+			// zcode 的真实入口不是 PATH 二进制——launcher 三级解析覆盖
+			// CUMORA_ZCODE_BIN / 未来的 zcode-cli / 桌面 AppImage。
+			if resolveZcodeLauncher(os.Environ()) != nil {
+				out = append(out, id)
+			}
+			continue
+		}
 		if _, err := exec.LookPath(engineBin(id)); err == nil {
 			out = append(out, id)
 		}
