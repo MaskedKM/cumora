@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -33,24 +34,52 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /api/conversations/{id}/messages/{rootId}/replies", replies(db))
 }
 
-// memberGate 校验会话存在+成员资格,返回成员列表;非成员 403。
-func memberGate(w http.ResponseWriter, r *http.Request, db *sql.DB, uid, companyID, convID string) ([]string, bool) {
+// memberCheck:会话存在+成员资格。非成员返回 404(baseline 的存在性
+// 不透明策略:探测者分不出"不存在"和"不在内");路由级差异消息由调用方覆写。
+func memberCheck(ctx context.Context, db *sql.DB, uid, companyID, convID string) ([]string, int, string) {
 	var membersJSON string
-	err := db.QueryRowContext(r.Context(),
+	err := db.QueryRowContext(ctx,
 		`SELECT members::text FROM conversations WHERE id = $1 AND company_id = $2`, convID, companyID).Scan(&membersJSON)
 	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "conversation not found")
-		return nil, false
+		return nil, http.StatusNotFound, "conversation not found"
 	}
 	var members []string
 	_ = json.Unmarshal([]byte(membersJSON), &members)
 	for _, m := range members {
 		if m == uid {
-			return members, true
+			return members, 0, ""
 		}
 	}
-	httpx.WriteError(w, http.StatusForbidden, "not a member of this conversation")
-	return nil, false
+	return nil, http.StatusNotFound, "conversation not found"
+}
+
+// postSystemMessage 对齐 membership.postMembershipSystemMessage:
+// body = JSON {kind, participantId, actorId};消费 WS 广播留 Redis 面。
+func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actorID, sysKind, participantID string) {
+	var sequence int
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 1)
+		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
+		RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
+		return
+	}
+	body, _ := json.Marshal(map[string]string{
+		"kind": sysKind, "participantId": participantID, "actorId": actorID,
+	})
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
+		VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
+		"m-"+authn.NewToken()[:12], convID, companyID, actorID, body, sequence)
+}
+
+// postSystemMessage 兼容包装(老签名调用点)
+func memberGate(w http.ResponseWriter, r *http.Request, db *sql.DB, uid, companyID, convID string) ([]string, bool) {
+	members, code, msg := memberCheck(r.Context(), db, uid, companyID, convID)
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return nil, false
+	}
+	return members, true
 }
 
 func requireConv(w http.ResponseWriter, r *http.Request, db *sql.DB) (uid, companyID string, ok bool) {
@@ -106,16 +135,26 @@ func setTitle(db *sql.DB) http.HandlerFunc {
 			Title string `json:"title"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if strings.TrimSpace(body.Title) == "" {
+		title := strings.TrimSpace(body.Title)
+		if runes := []rune(title); len(runes) > 80 {
+			title = string(runes[:80])
+		}
+		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
+		var kind string
+		_ = db.QueryRowContext(r.Context(), `SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&kind)
+		if kind != "group" {
+			httpx.WriteError(w, http.StatusBadRequest, "only group conversations can be renamed")
+			return
+		}
 		if _, err := db.ExecContext(r.Context(),
-			`UPDATE conversations SET title = $2, updated_at = NOW() WHERE id = $1`, convID, body.Title); err != nil {
+			`UPDATE conversations SET title = $2, updated_at = NOW() WHERE id = $1`, convID, title); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
 			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "title": body.Title})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "title": title})
 	}
 }
 
@@ -142,7 +181,7 @@ func setPin(db *sql.DB) http.HandlerFunc {
 			pinned = !cur
 		}
 		if _, err := db.ExecContext(r.Context(),
-			`UPDATE conversations SET pinned = $2 WHERE id = $1`, convID, pinned); err != nil {
+			`UPDATE conversations SET pinned = $2, updated_at = NOW() WHERE id = $1`, convID, pinned); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
 			return
 		}
@@ -173,6 +212,15 @@ func setMute(db *sql.DB) http.HandlerFunc {
 		}
 		var until any
 		if body.Until != "" {
+			t, err := time.Parse(time.RFC3339, body.Until)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid until timestamp")
+				return
+			}
+			if !t.After(time.Now()) {
+				httpx.WriteError(w, http.StatusBadRequest, "until must be in the future")
+				return
+			}
 			until = body.Until
 		}
 		if _, err := db.ExecContext(r.Context(), `
@@ -205,6 +253,12 @@ func addMember(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "id required")
 			return
 		}
+		var convKind string
+		_ = db.QueryRowContext(r.Context(), `SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&convKind)
+		if convKind == "direct" {
+			httpx.WriteError(w, http.StatusBadRequest, "cannot add to a direct conversation")
+			return
+		}
 		for _, m := range members {
 			if m == body.ID {
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": members, "alreadyIn": true})
@@ -225,6 +279,7 @@ func addMember(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
 			return
 		}
+		postSystemMessage(r.Context(), db, convID, companyID, uid, "joined", body.ID)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": next})
 	}
 }
@@ -240,6 +295,13 @@ func leave(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		var kind string
+		_ = db.QueryRowContext(r.Context(), `SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&kind)
+		if kind == "direct" {
+			httpx.WriteError(w, http.StatusBadRequest, "cannot leave a direct conversation")
+			return
+		}
+		postSystemMessage(r.Context(), db, convID, companyID, uid, "left", uid)
 		var next []string
 		for _, m := range members {
 			if m != uid {
@@ -560,86 +622,122 @@ func messages(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		convID := r.PathValue("id")
-		// 会话存在 + 成员资格
-		var membersJSON string
-		err := db.QueryRowContext(r.Context(),
-			`SELECT members::text FROM conversations WHERE id = $1 AND company_id = $2`, convID, companyID).Scan(&membersJSON)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "conversation not found")
+		// 会话存在 + 成员资格(非成员 404,baseline 的"存在性不透明"策略)
+		members, code, msg := memberCheck(r.Context(), db, uid, companyID, convID)
+		if code != 0 {
+			httpx.WriteError(w, code, msg)
 			return
 		}
-		var members []string
-		_ = json.Unmarshal([]byte(membersJSON), &members)
-		isMember := false
-		for _, m := range members {
-			if m == uid {
-				isMember = true
-				break
+		_ = members
+		// 分页对齐 baseline:默认 80,clamp [1,500],before 非数值忽略
+		limit := 80
+		if v := r.URL.Query().Get("limit"); v != "" {
+			var n int
+			if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+				limit = n
+				if limit < 1 {
+					limit = 1
+				}
+				if limit > 500 {
+					limit = 500
+				}
 			}
 		}
-		if !isMember {
-			httpx.WriteError(w, http.StatusForbidden, "not a member of this conversation")
-			return
-		}
-		limit, before := r.URL.Query().Get("limit"), r.URL.Query().Get("before")
-		// baseline: 默认最近 50 条,倒序返回
 		q := `
-			SELECT m.id, m.conversation_id, m.author_id, m.kind, m.body, m.sequence, m.created_at,
-			       m.reactions::text, m.tool::text, m.attachment::text
+			SELECT m.id, m.conversation_id, m.author_id, m.kind, m.body, m.sequence,
+			       m.client_id, m.tool::text, m.attachment::text, m.poll::text,
+			       COALESCE((
+			         SELECT jsonb_agg(jsonb_build_object('optionId', pv.option_id, 'count', pv.cnt, 'voterIds', pv.voter_ids)
+			           ORDER BY pv.cnt DESC, pv.option_id ASC)
+			         FROM (SELECT option_id, COUNT(*)::int AS cnt,
+			                      array_agg(voter_participant_id ORDER BY voter_participant_id) AS voter_ids
+			                 FROM poll_votes WHERE message_id = m.id GROUP BY option_id) pv
+			       ), '[]'::jsonb)::text AS poll_tallies,
+			       m.quoted_message_id, m.created_at,
+			       (
+			         SELECT jsonb_build_object('subject', em.subject, 'from', em.from_addr,
+			             'to', em.to_addrs, 'cc', em.cc_addrs, 'direction', em.direction,
+			             'transportStatus', em.transport_status, 'transportError', em.transport_error,
+			             'smtpMessageId', em.smtp_message_id, 'inReplyTo', em.in_reply_to,
+			             'hasHtml', em.html IS NOT NULL, 'autoSubmitted', em.auto_submitted,
+			             'attachments', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			                 'id', ea.id, 'filename', ea.filename, 'mimeType', ea.mime_type,
+			                 'sizeBytes', ea.size_bytes, 'storageKey', ea.storage_key, 'truncated', ea.truncated
+			               ) ORDER BY ea.created_at) FROM email_attachments ea WHERE ea.message_id = m.id), '[]'::jsonb)
+			       )::text AS email_fields
+			         FROM email_messages em WHERE em.message_id = m.id
+			       ),
+			       COALESCE((
+			         SELECT jsonb_agg(jsonb_build_object('emoji', rx.emoji, 'count', rx.count, 'users', rx.users))
+			         FROM (SELECT emoji, COUNT(*)::int AS count, array_agg(user_id ORDER BY user_id) AS users
+			                 FROM message_reactions WHERE message_id = m.id GROUP BY emoji
+			                ORDER BY count DESC, emoji ASC) rx
+			       ), '[]'::jsonb)::text AS reactions_agg,
+			       (
+			         SELECT jsonb_build_object('id', qm.id, 'authorId', qm.author_id,
+			             'authorName', COALESCE(qp.name, qu.display_name, qm.author_id),
+			             'kind', qm.kind, 'body', LEFT(qm.body, 240), 'sequence', qm.sequence)
+			         FROM messages qm
+			         LEFT JOIN participants qp ON qp.id = qm.author_id AND qp.company_id = $2
+			         LEFT JOIN users qu ON qu.id = qm.author_id
+			         WHERE qm.id = m.quoted_message_id AND qm.conversation_id = m.conversation_id
+			       )::text AS quoted_summary,
+			       (SELECT COUNT(*)::int FROM messages rm WHERE rm.quoted_message_id = m.id) AS reply_count
 			  FROM messages m WHERE m.conversation_id = $1`
-		args := []any{convID}
-		if before != "" {
-			q += fmt.Sprintf(" AND m.sequence < $%d", len(args)+1)
-			args = append(args, before)
-		}
-		q += " ORDER BY m.sequence DESC"
-		n := 50
-		if limit != "" {
-			fmt.Sscanf(limit, "%d", &n)
-			if n <= 0 || n > 200 {
-				n = 50
+		args := []any{convID, companyID}
+		if v := r.URL.Query().Get("before"); v != "" {
+			var b int
+			if _, err := fmt.Sscanf(v, "%d", &b); err == nil {
+				q += fmt.Sprintf(" AND m.sequence < $%d", len(args)+1)
+				args = append(args, b)
 			}
 		}
-		q += fmt.Sprintf(" LIMIT %d", n)
+		q += fmt.Sprintf(" ORDER BY m.sequence DESC LIMIT %d", limit)
 		rows, err := db.QueryContext(r.Context(), q, args...)
 		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 		defer rows.Close()
-		out := []map[string]any{}
+		// DESC 取最新 N 条,内存翻转为 ASC(baseline 语义:渲染端 append-only 假设)
+		var ordered []*map[string]any
 		for rows.Next() {
 			var id, convID2, authorID, kind, body string
 			var sequence int
+			var clientID, tool, attachment, poll, pollTallies, quotedID sql.NullString
 			var createdAt sql.NullTime
-			var reactions, tool, attachment sql.NullString
-			if err := rows.Scan(&id, &convID2, &authorID, &kind, &body, &sequence, &createdAt, &reactions, &tool, &attachment); err != nil {
+			var emailF, reactions, quotedSummary sql.NullString
+			var replyCount int
+			if err := rows.Scan(&id, &convID2, &authorID, &kind, &body, &sequence,
+				&clientID, &tool, &attachment, &poll, &pollTallies, &quotedID, &createdAt,
+				&emailF, &reactions, &quotedSummary, &replyCount); err != nil {
 				continue
 			}
 			msg := map[string]any{
 				"id": id, "conversationId": convID2, "authorId": authorID,
 				"kind": kind, "body": body, "sequence": sequence,
-				"createdAt": createdAt.Time.UTC(),
+				"pollTallies": jsonbOr(pollTallies, []any{}),
+				"replyCount":  replyCount,
+				"createdAt":   createdAt.Time.UTC(),
+				"reactions":   jsonbOr(reactions, []any{}),
 			}
-			if reactions.Valid && reactions.String != "" && reactions.String != "null" {
-				var dec []any
-				if json.Unmarshal([]byte(reactions.String), &dec) == nil {
-					msg["reactions"] = dec
-				}
+			if clientID.Valid && clientID.String != "" {
+				msg["clientId"] = clientID.String
 			}
-			if tool.Valid && tool.String != "" && tool.String != "null" {
-				var dec any
-				if json.Unmarshal([]byte(tool.String), &dec) == nil {
-					msg["tool"] = dec
-				}
+			msg["tool"] = jsonbOrNull(tool)
+			msg["attachment"] = jsonbOrNull(attachment)
+			msg["poll"] = jsonbOrNull(poll)
+			msg["email"] = jsonbOrNull(emailF)
+			if quotedID.Valid && quotedID.String != "" {
+				msg["quotedMessageId"] = quotedID.String
 			}
-			if attachment.Valid && attachment.String != "" && attachment.String != "null" {
-				var dec any
-				if json.Unmarshal([]byte(attachment.String), &dec) == nil {
-					msg["attachment"] = dec
-				}
-			}
-			out = append(out, msg)
+			msg["quoted"] = jsonbOrNull(quotedSummary)
+			ordered = append(ordered, &msg)
+		}
+		// 反转为 ASC
+		out := make([]map[string]any, len(ordered))
+		for i, m := range ordered {
+			out[len(ordered)-1-i] = *m
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)
 	}
@@ -656,6 +754,10 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		convID := r.PathValue("id")
+		if _, code, msg := memberCheck(r.Context(), db, uid, companyID, convID); code != 0 {
+			httpx.WriteError(w, code, msg)
+			return
+		}
 		var body struct {
 			Body            string          `json:"body"`
 			Attachment      json.RawMessage `json:"attachment"`
@@ -663,48 +765,61 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			ClientID        string          `json:"clientId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if strings.TrimSpace(body.Body) == "" && len(body.Attachment) == 0 {
+		if len([]rune(body.Body)) > 50_000 {
+			httpx.WriteError(w, http.StatusBadRequest, "body too long (max 50000 chars)")
+			return
+		}
+		if len(body.ClientID) > 80 {
+			httpx.WriteError(w, http.StatusBadRequest, "clientId too long (max 80 chars)")
+			return
+		}
+		// attachment 形状校验(对齐 baseline:需 name+kind 白名单;url 可缺省=mock)
+		var attachmentJSON any
+		if len(body.Attachment) > 0 && string(body.Attachment) != "null" {
+			var att struct {
+				Name string `json:"name"`
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(body.Attachment, &att) != nil || att.Name == "" {
+				httpx.WriteError(w, http.StatusBadRequest, "attachment requires name and kind")
+				return
+			}
+			switch att.Kind {
+			case "img", "pdf", "file", "fig":
+			default:
+				httpx.WriteError(w, http.StatusBadRequest, "attachment.kind must be one of: img, pdf, file, fig")
+			}
+			attachmentJSON = json.RawMessage(body.Attachment)
+		}
+		if strings.TrimSpace(body.Body) == "" && attachmentJSON == nil {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
 			return
 		}
-		// 会话存在 + 成员资格(与 GET 同门)
-		var membersJSON string
-		err := db.QueryRowContext(r.Context(),
-			`SELECT members::text FROM conversations WHERE id = $1 AND company_id = $2`, convID, companyID).Scan(&membersJSON)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "conversation not found")
-			return
-		}
-		var members []string
-		_ = json.Unmarshal([]byte(membersJSON), &members)
-		isMember := false
-		for _, m := range members {
-			if m == uid {
-				isMember = true
-				break
+		// quoted 同会话校验(防跨房间泄漏;未知静默丢弃)
+		var quoted any
+		if body.QuotedMessageID != "" {
+			var exists bool
+			_ = db.QueryRowContext(r.Context(),
+				`SELECT 1 FROM messages WHERE id = $1 AND conversation_id = $2 LIMIT 1`,
+				body.QuotedMessageID, convID).Scan(&exists)
+			if exists {
+				quoted = body.QuotedMessageID
 			}
 		}
-		if !isMember {
-			httpx.WriteError(w, http.StatusForbidden, "not a member of this conversation")
-			return
-		}
-		// 原子取序(UPDATE RETURNING,与 baseline UPsert 等价语义)
+		// 原子取序(counters 行缺失即补——upsert 语义)
 		var sequence int
 		if err := db.QueryRowContext(r.Context(), `
-			UPDATE conversation_counters SET next_sequence = next_sequence + 1
-			 WHERE conversation_id = $1 RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
+			INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 1)
+			ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
+			RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
 			return
 		}
 		id := "m-" + authn.NewToken()[:12]
-		var quoted any
-		if body.QuotedMessageID != "" {
-			quoted = body.QuotedMessageID
-		}
 		if _, err := db.ExecContext(r.Context(), `
-			INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, quoted_message_id, client_id)
-			VALUES ($1, $2, $3, 'text', $4, $5, $6, NULLIF($7,''))`,
-			id, convID, uid, body.Body, sequence, quoted, body.ClientID); err != nil {
+			INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence, quoted_message_id, client_id, attachment)
+			VALUES ($1, $2, $3, $4, 'text', $5, $6, $7, NULLIF($8,''), $9)`,
+			id, convID, companyID, uid, body.Body, sequence, quoted, body.ClientID, attachmentJSON); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 			return
 		}
@@ -714,6 +829,18 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 }
 
 /* helpers */
+
+func jsonbOr(ns sql.NullString, fallback any) any {
+	if ns.Valid && ns.String != "" && ns.String != "null" {
+		var v any
+		if json.Unmarshal([]byte(ns.String), &v) == nil {
+			return v
+		}
+	}
+	return fallback
+}
+
+func jsonbOrNull(ns sql.NullString) any { return jsonbOr(ns, nil) }
 
 func nullOr(ns sql.NullString) any {
 	if ns.Valid {
