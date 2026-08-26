@@ -118,17 +118,14 @@ func TestGrokSessionHandshakeAndTurn(t *testing.T) {
 	sess.Steer("ping")
 	sess.Steer("ping again")
 	mu.Lock()
-	warns := strings.Count(joined, "same-turn steer is not supported")
-	logsNow := strings.Join(logs, "\n")
-	mu.Unlock()
-	if warns+strings.Count(logsNow, "same-turn steer is not supported") != 1 {
-		// joined 是 Steer 前快照;用最新全量再判。
-	}
-	mu.Lock()
 	total := strings.Count(strings.Join(logs, "\n"), "same-turn steer is not supported")
 	mu.Unlock()
 	if total != 1 {
 		t.Fatalf("steer warning must fire exactly once, got %d", total)
+	}
+	// MINOR 2:initialize 握手形状钉死(protocolVersion/fs 关闭)。
+	if got := readObs(t, "grok-initialize.json"); !strings.Contains(got, `"protocolVersion":1`) || !strings.Contains(got, `"readTextFile":false`) || !strings.Contains(got, `"writeTextFile":false`) {
+		t.Fatalf("initialize handshake shape: %s", got)
 	}
 }
 
@@ -399,5 +396,44 @@ func TestCursorSeedHomeGolden(t *testing.T) {
 func TestEngineBinCursorMapping(t *testing.T) {
 	if engineBin("cursor") != "cursor-agent" {
 		t.Fatalf("cursor maps to cursor-agent: %q", engineBin("cursor"))
+	}
+}
+
+// MINOR 3:probe 的 argv 形状(grok small→grok-4.5;cursor small→
+// CUMORA_TRIAGE_MODEL,缺省不加 --model)。
+func TestGrokAndCursorProbeArgv(t *testing.T) {
+	bin, _ := fakeEngineDir(t)
+	writeScript(t, filepath.Join(bin, "grok"), `#!/bin/sh
+echo "$@" > "$FAKE_T/grok-probe-argv.txt"
+printf '%s\n' '{"text":"OK"}'
+`)
+	res := grokAdapter{}.Probe(context.Background(), ProbeArgs{Tier: "small", Cwd: t.TempDir(), Env: os.Environ()})
+	if res.Err != "" {
+		t.Fatalf("grok probe: %+v", res)
+	}
+	if got := readObs(t, "grok-probe-argv.txt"); !strings.Contains(got, "--model grok-4.5") {
+		t.Fatalf("grok small probe must pin grok-4.5: %s", got)
+	}
+	res = grokAdapter{}.Probe(context.Background(), ProbeArgs{Tier: "big", Cwd: t.TempDir(), Env: os.Environ()})
+	if got := readObs(t, "grok-probe-argv.txt"); strings.Contains(got, "--model") {
+		t.Fatalf("grok big probe must not pin: %s", got)
+	}
+	writeScript(t, filepath.Join(bin, "cursor-agent"), `#!/bin/sh
+echo "$@" > "$FAKE_T/cursor-probe-argv.txt"
+printf '%s\n' '{"type":"result","is_error":false}'
+`)
+	t.Setenv("CUMORA_TRIAGE_MODEL", "my-alias")
+	if r := (cursorAdapter{}).Probe(context.Background(), ProbeArgs{Tier: "small", Cwd: t.TempDir(), Env: os.Environ()}); r.Err != "" {
+		t.Fatalf("cursor probe small: %+v", r)
+	}
+	if got := readObs(t, "cursor-probe-argv.txt"); !strings.Contains(got, "--model my-alias") {
+		t.Fatalf("cursor small probe must pin CUMORA_TRIAGE_MODEL: %s", got)
+	}
+	t.Setenv("CUMORA_TRIAGE_MODEL", "")
+	if r := (cursorAdapter{}).Probe(context.Background(), ProbeArgs{Tier: "big", Cwd: t.TempDir(), Env: os.Environ()}); r.Err != "" {
+		t.Fatalf("cursor probe big: %+v", r)
+	}
+	if got := readObs(t, "cursor-probe-argv.txt"); strings.Contains(got, "--model") {
+		t.Fatalf("cursor big probe must not pin: %s", got)
 	}
 }

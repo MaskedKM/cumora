@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // resolveGrokBin:官方安装躺在 ~/.grok/bin(PATH 常因 launchd/login-shell
@@ -168,7 +169,7 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 	}
 	cmd := exec.Command(bin, spawnArgs...)
 	cmd.Dir = args.Home
-	cmd.Env = withEnvDefault(args.Env, "GROK_DISABLE_AUTOUPDATER=1")
+	cmd.Env = withEnvDefaultKeep(args.Env, "GROK_DISABLE_AUTOUPDATER", "1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		s.die(1, err.Error())
@@ -644,7 +645,7 @@ func (a grokAdapter) Probe(ctx context.Context, args ProbeArgs) ClassifyResult {
 	} else {
 		argv = append([]string{"-p", doctorPrompt}, base[1:]...)
 	}
-	return spawnCapture(ctx, plan, argv, args.Cwd, withEnvDefault(args.Env, "GROK_DISABLE_AUTOUPDATER=1"), nil, stdinText)
+	return spawnCapture(ctx, plan, argv, args.Cwd, withEnvDefaultKeep(args.Env, "GROK_DISABLE_AUTOUPDATER", "1"), nil, stdinText)
 }
 
 // ProbeWake:与 startSession 同门(参数覆盖/显式退出/Windows 折叠为一次性
@@ -656,7 +657,7 @@ func (a grokAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProb
 	command := a.command(args.Env)
 	cmd := exec.Command(command, "agent", "--always-approve", "--no-leader", "stdio")
 	cmd.Dir = args.Cwd
-	cmd.Env = withEnvDefault(args.Env, "GROK_DISABLE_AUTOUPDATER=1")
+	cmd.Env = withEnvDefaultKeep(args.Env, "GROK_DISABLE_AUTOUPDATER", "1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return WakeProbeResult{Detail: "stdin pipe: " + err.Error()}
@@ -680,7 +681,23 @@ func (a grokAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProb
 	}
 	out := make(chan probeResult, 1)
 	var reaped atomic.Bool
-	go func() { _ = cmd.Wait() }()
+	var exitInfo atomic.Value // string;收割协程尽快填(死因的 exit/signal 段)
+	go func() {
+		werr := cmd.Wait()
+		seg := ""
+		if werr == nil {
+			seg = "exit 0"
+		} else if ee, ok := werr.(*exec.ExitError); ok {
+			if ee.ExitCode() < 0 {
+				seg = "terminated by " + signalNameOf(ee)
+			} else {
+				seg = fmt.Sprintf("exit %d", ee.ExitCode())
+			}
+		} else {
+			seg = werr.Error()
+		}
+		exitInfo.Store(seg)
+	}()
 	finish := func(r probeResult) {
 		if reaped.Swap(true) {
 			return
@@ -753,13 +770,25 @@ func (a grokAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProb
 				if !initialized {
 					stage = "before initialize ack"
 				}
+				var seg string
+				for i := 0; i < 20; i++ { // EOF 时进程已退——至多等收割 200ms
+					if v, ok := exitInfo.Load().(string); ok && v != "" {
+						seg = v
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				detail := "grok agent stdio died " + stage
+				if seg != "" {
+					detail += " (" + seg + ")"
+				}
 				stderrMu.Lock()
 				salient := salientError(string(stderrBuf))
 				stderrMu.Unlock()
 				if salient == "" {
 					salient = "no stderr"
 				}
-				finish(probeResult{detail: "grok agent stdio died " + stage + ": " + salient})
+				finish(probeResult{detail: detail + ": " + salient})
 				return
 			}
 		}
@@ -791,6 +820,9 @@ func (a grokAdapter) ProbeWake(ctx context.Context, args WakeProbeArgs) WakeProb
 
 // SeedHome:AGENTS.md 仅缺失时写(write-once——grok 会把规则并入自身会话
 // 状态,重写等于每轮重置;与 claude/codex/zcode 的恒重写相反)。
+// 注:session/update 的 title 提取在"kind 来自 params.sessionUpdate 字符串
+// 且无 params.update"的罕见形状下比 TS 多保留 title(TS 该形状静默丢弃)——
+// 有意偏差:日志多一行信号无害,少一行才是损失。
 func (grokAdapter) SeedHome(home string, p Persona) error {
 	if err := ensureCommonHome(home); err != nil {
 		return err
@@ -833,7 +865,7 @@ func (grokAdapter) Run(ctx context.Context, args RunArgs) RunResult {
 			argv = append([]string{"-p", args.Prompt}, base[1:]...)
 		}
 	}
-	args.Env = withEnvDefault(args.Env, "GROK_DISABLE_AUTOUPDATER=1")
+	args.Env = withEnvDefaultKeep(args.Env, "GROK_DISABLE_AUTOUPDATER", "1")
 	return spawnEngine(ctx, plan, argv, args, stdinText)
 }
 
