@@ -101,7 +101,7 @@ func main() {
 	coreRouter := http.NewServeMux()
 	core.Mount(coreRouter, pool)
 	conversations.Mount(coreRouter, pool)
-	boards.Mount(coreRouter, pool)
+	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
 	email.Mount(coreRouter, pool)
