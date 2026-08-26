@@ -1,0 +1,63 @@
+# ser8 runner fleet disk hygiene — keeps the self-hosted CI from slowly
+# filling the host disk again (the failure that took the fleet down on
+# 2026-08-26: `no space left on device` during job-container image pulls).
+#
+# Two accumulation sources on a self-hosted runner:
+#   1. Rolling-tag images (node:24-bookworm, golang:1.24-*, pgvector:pg16…):
+#      each upstream rebuild pulls fresh layers; the old ones turn dangling
+#      and nothing removes them.
+#   2. Root-owned residue in _work: a job that dies before its
+#      `if: always()` chown step (cancelled, disk-full, infra kill) leaves
+#      container-root-owned files the runner user cannot clean at the next
+#      job's workspace cleanup.
+#
+# Runs directly on the runner host (NO container) on a nightly schedule
+# plus manual dispatch. Trust boundary: `schedule` always executes the
+# workflow file from the DEFAULT branch, so a PR can never alter what runs
+# here; there is no pull_request trigger, so PR code is never executed
+# outside a container. Steps only touch docker garbage and file ownership
+# inside the runner's own _work — `system prune` without --volumes/--all
+# never removes tagged images in use or any volume data.
+#
+# NOTE: both runner slots live on the same host and share one docker
+# daemon, so one prune covers the fleet; the _work chown is best-effort
+# for whichever runner picks the job up.
+
+name: Runner maintenance
+
+on:
+  schedule:
+    # 03:30 Beijing time (19:30 UTC) — quiet hours, before the workday.
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Docker prune + _work ownership rescue
+    runs-on: [self-hosted, linux, ser8]
+    timeout-minutes: 10
+    steps:
+      - name: Disk state before
+        run: df -h / && docker system df
+      # Dangling images (old rolling-tag layers), stopped containers, unused
+      # networks. NOT --all (tagged images stay cached for fast job startup),
+      # NOT --volumes (never risks data).
+      - name: Prune docker garbage
+        run: docker system prune -f
+      # Return container-root-owned residue under this runner's _work to the
+      # runner user, so its own workspace cleanup can delete it again. Uses
+      # the node image already cached by the CI jobs (no extra pull).
+      - name: Rescue root-owned _work residue
+        run: |
+          WORK="$(dirname "$(dirname "$GITHUB_WORKSPACE")")"
+          echo "work root: $WORK"
+          OWNER="$(id -u):$(id -g)"
+          if [ "$(find "$WORK" -xdev -uid 0 -print -quit)" ]; then
+            docker run --rm -v "$WORK":/w node:24-bookworm chown -R "$OWNER" /w
+          else
+            echo "no root-owned residue — nothing to do"
+          fi
+      - name: Disk state after
+        run: df -h / && docker system df

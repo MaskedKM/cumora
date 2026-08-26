@@ -77,12 +77,15 @@ jobs:
   go:
     name: Go (gofmt + vet + build)
     runs-on: [self-hosted, linux, ser8]
+    # Pure-Go module (pgx only, no cgo) — alpine is half the on-disk size of
+    # bookworm on the runner, and vet/build don't need a C toolchain.
     container:
-      image: golang:1.24-bookworm
+      image: golang:1.24-alpine
     timeout-minutes: 10
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
       GOCACHE: /tmp/gocache
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
       - name: gofmt check
