@@ -67,12 +67,13 @@ func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actor
 	body, _ := json.Marshal(map[string]string{
 		"kind": sysKind, "participantId": participantID, "actorId": actorID,
 	})
+	msgID := "m-" + authn.NewToken()[:12]
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
 		VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
-		"m-"+authn.NewToken()[:12], convID, companyID, actorID, body, sequence)
+		msgID, convID, companyID, actorID, body, sequence)
 	events.MessageNew(ctx, companyID, convID, map[string]any{
-		"id": "m-sys", "conversationId": convID, "authorId": actorID,
+		"id": msgID, "conversationId": convID, "authorId": actorID,
 		"kind": "system", "body": string(body), "sequence": sequence,
 		"at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
@@ -116,7 +117,15 @@ func setTopic(db *sql.DB) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		var topic any
 		if body.Topic != nil {
-			topic = *body.Topic
+			t := strings.TrimSpace(*body.Topic)
+			if runes := []rune(t); len(runes) > 200 {
+				t = string(runes[:200])
+			}
+			if t == "" {
+				topic = nil
+			} else {
+				topic = t
+			}
 		}
 		if _, err := db.ExecContext(r.Context(),
 			`UPDATE conversations SET topic = $2, updated_at = NOW() WHERE id = $1`, convID, topic); err != nil {
@@ -510,13 +519,17 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
-		memberSet := map[string]bool{uid: true}
+		seen := map[string]bool{uid: true}
+		members := []string{}
 		for _, m := range body.Members {
-			if m = strings.TrimSpace(m); m != "" {
-				memberSet[m] = true
+			if m = strings.TrimSpace(m); m != "" && !seen[m] {
+				seen[m] = true
+				members = append(members, m)
 			}
 		}
-		members := keys(memberSet)
+		if !seen[uid] || !contains(members, uid) {
+			members = append(members, uid) // 调用者自动并入(baseline memberSet.add(me))
+		}
 		if len(members) < 2 {
 			httpx.WriteError(w, http.StatusBadRequest, "pick at least one teammate")
 			return
@@ -774,29 +787,32 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			ClientID        string          `json:"clientId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if len([]rune(body.Body)) > 50_000 {
-			httpx.WriteError(w, http.StatusBadRequest, "body too long (max 50000 chars)")
-			return
-		}
 		if len(body.ClientID) > 80 {
 			httpx.WriteError(w, http.StatusBadRequest, "clientId too long (max 80 chars)")
 			return
 		}
-		// attachment 形状校验(对齐 baseline:需 name+kind 白名单;url 可缺省=mock)
+		// attachment 形状对齐 baseline:要求 url+name 为字符串;kind 非白名单
+		// 强转 'img'(从不拒绝)——见 router.ts readAttachment 的 coerce 语义。
 		var attachmentJSON any
 		if len(body.Attachment) > 0 && string(body.Attachment) != "null" {
 			var att struct {
-				Name string `json:"name"`
-				Kind string `json:"kind"`
+				URL  *string `json:"url"`
+				Name *string `json:"name"`
+				Kind string  `json:"kind"`
 			}
-			if json.Unmarshal(body.Attachment, &att) != nil || att.Name == "" {
-				httpx.WriteError(w, http.StatusBadRequest, "attachment requires name and kind")
+			if json.Unmarshal(body.Attachment, &att) != nil || att.URL == nil || att.Name == nil {
+				httpx.WriteError(w, http.StatusBadRequest, "attachment requires url and name strings")
 				return
 			}
 			switch att.Kind {
 			case "img", "pdf", "file", "fig":
 			default:
-				httpx.WriteError(w, http.StatusBadRequest, "attachment.kind must be one of: img, pdf, file, fig")
+				var fixed map[string]any
+				_ = json.Unmarshal(body.Attachment, &fixed)
+				fixed["kind"] = "img"
+				if b, err := json.Marshal(fixed); err == nil {
+					body.Attachment = b
+				}
 			}
 			attachmentJSON = json.RawMessage(body.Attachment)
 		}
@@ -818,7 +834,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		// 原子取序(counters 行缺失即补——upsert 语义)
 		var sequence int
 		if err := db.QueryRowContext(r.Context(), `
-			INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 1)
+			INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
 			ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
 			RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
@@ -833,11 +849,21 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		_, _ = db.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID)
-		events.MessageNew(r.Context(), companyID, convID, map[string]any{
+		broadcastMsg := map[string]any{
 			"id": id, "conversationId": convID, "authorId": uid,
 			"kind": "text", "body": body.Body, "sequence": sequence,
 			"at": time.Now().UTC().Format(time.RFC3339Nano),
-		})
+		}
+		if attachmentJSON != nil {
+			broadcastMsg["attachment"] = attachmentJSON
+		}
+		if body.QuotedMessageID != "" && quoted != nil {
+			broadcastMsg["quotedMessageId"] = body.QuotedMessageID
+		}
+		if body.ClientID != "" {
+			broadcastMsg["clientId"] = body.ClientID
+		}
+		events.MessageNew(r.Context(), companyID, convID, broadcastMsg)
 		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": id, "sequence": sequence})
 	}
 }
@@ -878,6 +904,15 @@ func nullTimeOr(nt sql.NullTime) any {
 		return nt.Time.UTC()
 	}
 	return nil
+}
+
+func contains(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func keys(set map[string]bool) []string {
