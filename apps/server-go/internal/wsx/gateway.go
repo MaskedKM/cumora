@@ -15,6 +15,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/coder/websocket"
 )
 
@@ -81,19 +82,24 @@ func (g *Gateway) docCompanyFor(ctx context.Context, documentID, userID string) 
 func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	ticket := r.URL.Query().Get("t")
 	if ticket == "" {
-		httpxWriteError(w, http.StatusUnauthorized, "ticket required")
+		httpx.WriteError(w, http.StatusUnauthorized, "ticket required")
 		return
 	}
-	userID, ok := g.consumeWsTicket(r.Context(), ticket)
-	if !ok {
-		httpxWriteError(w, http.StatusUnauthorized, "invalid or expired ticket")
-		return
-	}
+	// 先升级再消费票据,对齐 TS(在 connection 回调里校验):升级被中间层
+	// 掐掉的合法客户端不烧掉它的一次性票据。
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// TS ws 服务器不做 origin 校验(浏览器同站由部署层保证)。
 		OriginPatterns: []string{"*"},
 	})
 	if err != nil {
+		return
+	}
+	// 库默认读上限只有 32KB;TS WebSocketServer maxPayload=4MB。不调
+	// SetReadLimit,大文档的初态同步/大粘贴会被 1009 断连。
+	ws.SetReadLimit(maxFrameBytes)
+	userID, ok := g.consumeWsTicket(r.Context(), ticket)
+	if !ok {
+		_ = ws.Close(websocket.StatusPolicyViolation, "invalid or expired ticket")
 		return
 	}
 	c := &conn{ws: ws, userID: userID, originID: "ws-" + authn.NewToken()[:12], docSubs: map[string]*docrelay.Subscriber{}}
@@ -146,7 +152,7 @@ func (g *Gateway) readLoop(c *conn) {
 			continue
 		}
 		typ, _ := msg["type"].(string)
-		if !strings_hasPrefixDoc(typ) {
+		if !hasDocPrefix(typ) {
 			continue // 非 doc 帧:消息面归 #60,静默忽略
 		}
 		if err := g.handleDocFrame(ctx, c, msg); err != nil {
@@ -157,7 +163,7 @@ func (g *Gateway) readLoop(c *conn) {
 	}
 }
 
-func strings_hasPrefixDoc(typ string) bool { return len(typ) >= 4 && typ[:4] == "doc." }
+func hasDocPrefix(typ string) bool { return len(typ) >= 4 && typ[:4] == "doc." }
 
 func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]any) error {
 	typ, _ := msg["type"].(string)
@@ -262,10 +268,4 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		return g.processDocMention(ctx, documentID, companyID, c.userID, requested)
 	}
 	return nil
-}
-
-func httpxWriteError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("content-type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

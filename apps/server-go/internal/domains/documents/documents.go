@@ -134,18 +134,18 @@ func create(db *sql.DB) http.HandlerFunc {
 		if title == "" {
 			title = "Untitled"
 		}
-		// 可选钉到会话;校验属本租户。
+		// 可选钉到会话;校验属本租户。原值不 trim(TS 语义:`" conv-x "`
+		// 这样的值在基线里 404,trim 会静默"修好"它)。
 		var convo sql.NullString
-		if strings.TrimSpace(body.ConversationID) != "" {
-			cid := strings.TrimSpace(body.ConversationID)
+		if body.ConversationID != "" {
 			var exists bool
 			if err := db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM conversations WHERE id = $1 AND company_id = $2 LIMIT 1`,
-				cid, companyID).Scan(&exists); err != nil || !exists {
+				body.ConversationID, companyID).Scan(&exists); err != nil || !exists {
 				httpx.WriteError(w, http.StatusNotFound, "conversation not found")
 				return
 			}
-			convo = sql.NullString{String: cid, Valid: true}
+			convo = sql.NullString{String: body.ConversationID, Valid: true}
 		}
 		id := "doc_" + shortHex(8)
 		if _, err := db.ExecContext(r.Context(), `

@@ -38,6 +38,10 @@ type Relay struct {
 
 	httpClient *http.Client
 
+	// off = Redis 不可达的降级态:订阅必须快败(否则客户端拿到永远收
+	// 不到扇出的半开协同会话——TS 无此分裂态)。
+	off bool
+
 	mu        sync.Mutex
 	subs      map[string]map[*Subscriber]struct{} // documentId → 订阅集合
 	refcounts map[string]int
@@ -57,9 +61,10 @@ func New(sidecarURL, token string, timeoutMS int, instanceID string) *Relay {
 
 // Boot 订阅 sidecar 的两条扇出通道;断线由 go-redis PubSub 内部重连,
 // 通道随 Receive 循环恢复。进程生命周期内常驻。rdb 为 nil(redis 不可达
-// 降级)时不订阅——协同面不可用,HTTP 域照常。
+// 降级)时标记 off——协同面整体快败,HTTP 域照常。
 func (r *Relay) Boot(ctx context.Context, rdb *redis.Client) {
 	if rdb == nil {
+		r.off = true
 		slog.Warn("docrelay off — redis unreachable; doc collab unavailable this run")
 		return
 	}
@@ -164,6 +169,9 @@ func (r *Relay) call(ctx context.Context, path string, body any, out any) error 
 // 完成登记与取态——sidecar 侧按 (doc, subscriberId) 幂等)。侧失败回滚
 // 本地登记后向上抛,WS 网关给客户端发 doc.error。
 func (r *Relay) Subscribe(ctx context.Context, documentID, companyID string, s *Subscriber) ([]byte, error) {
+	if r.off {
+		return nil, fmt.Errorf("docrelay off (redis unreachable)")
+	}
 	r.mu.Lock()
 	set := r.subs[documentID]
 	if set == nil {

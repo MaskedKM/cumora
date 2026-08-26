@@ -21,14 +21,12 @@ func shortID16(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// resolveDisplayName 对齐 ws.ts:users.display_name 优先(人类),
-// 回退 participants.name,再回退 id 本身。
+// resolveDisplayName 对齐 ws.ts 的实际行为:其 users 查询引用不存在的
+// users.name 列(schema 里是 display_name)——该查询恒报错被 catch 吞掉,
+// 所以基线总是落到 participants.name,再回退 id。严格平价 = 复刻这一
+// 有效行为(修复基线 bug 是切换日后的独立决定)。
 func (g *Gateway) resolveDisplayName(ctx context.Context, id, companyID string) string {
 	var name string
-	if err := g.db.QueryRowContext(ctx,
-		`SELECT display_name FROM users WHERE id = $1 LIMIT 1`, id).Scan(&name); err == nil && name != "" {
-		return name
-	}
 	if err := g.db.QueryRowContext(ctx,
 		`SELECT name FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
 		id, companyID).Scan(&name); err == nil && name != "" {
@@ -83,7 +81,7 @@ func (g *Gateway) processDocMention(ctx context.Context, documentID, companyID, 
 			continue // 窗口内重复
 		}
 		if err != sql.ErrNoRows {
-			continue // 去重查询失败:宁可不通知不刷屏
+			return err // 去重查询失败向上抛 → doc.error(TS 同)
 		}
 		if _, err := g.db.ExecContext(ctx, `
 			INSERT INTO document_mentions (id, document_id, company_id, mentioner_id, mentioned_id)
@@ -95,11 +93,12 @@ func (g *Gateway) processDocMention(ctx context.Context, documentID, companyID, 
 		if m.kind == "agent" {
 			ref, _ := json.Marshal(map[string]string{"documentId": documentID, "mentionerId": mentionerID})
 			// 面包屑失败不阻断其余提及(对齐 TS 的 catch-warn)。
+			// 标题原样嵌入(TS 是裸拼接,%q 会转义引号造成字节级漂移)。
 			_, _ = g.db.ExecContext(ctx, `
 				INSERT INTO agent_log (id, agent_id, company_id, kind, body, ref)
 				VALUES ($1, $2, $3, 'doc_mention', $4, $5::jsonb)`,
 				shortID16("log_"), m.id, companyID,
-				fmt.Sprintf("%s @-mentioned you in doc %q", mentionerName, title), ref)
+				fmt.Sprintf(`%s @-mentioned you in doc "%s"`, mentionerName, title), ref)
 			// agent 唤醒(合成唤醒消息)→ #82
 		}
 	}
