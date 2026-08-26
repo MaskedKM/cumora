@@ -768,6 +768,48 @@ test('[mirror-runtime] /wake-stream: ready frame, then a published wake event', 
   await Promise.all([streamDone, wakeSeen])
 })
 
+test('[mirror-runtime] /wake-stream: the stream STAYS OPEN after ready (no early server close)', async () => {
+  // 真机 daemon 曾抓到的形态:ready 帧后服务端立刻关流,daemon 退避重连
+  // 风暴。镜像测试此前读完首帧即 abort,测不出"早关"——这里在 ready 后
+  // 静置 1.5s,断言流仍未 EOF(连接仍活)。
+  const { token } = await seedAgent()
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 6000)
+  try {
+    const res = await fetch(`${baseUrl}/runtime/wake-stream`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: ctrl.signal,
+    })
+    assert.equal(res.status, 200)
+    const reader = (res.body as any).getReader() as { read(): Promise<{ done: boolean; value?: Uint8Array }> }
+    const dec = new TextDecoder()
+    let buf = ''
+    let sawReady = false
+    const deadline = Date.now() + 1500
+    for (;;) {
+      const waitMS = sawReady ? Math.max(1, deadline - Date.now()) : 6000
+      const result = await Promise.race([
+        reader.read(),
+        new Promise<{ done: true }>((resolve) => setTimeout(() => resolve({ done: true } as const), waitMS)),
+      ])
+      if (result.done) {
+        if (!sawReady) throw new Error('stream ended before the ready frame')
+        // 超时窗口耗尽而未 EOF = 流仍开。若真 EOF,done 会带着 value 缺失
+        // 提前到达——此处到达即说明 ready 后 1.5s 内被服务端关闭。
+        const endedEarly = Date.now() < deadline
+        assert.ok(!endedEarly, `server closed the stream right after ready (${Date.now()} < ${deadline})`)
+        return
+      }
+      buf += dec.decode(result.value, { stream: true })
+      if (!sawReady && buf.includes('event: ready')) sawReady = true
+      if (Date.now() >= deadline) return // 静置窗口过完,流仍开 = 通过
+    }
+  } finally {
+    clearTimeout(timer)
+    ctrl.abort()
+  }
+})
+
 test('[mirror-runtime] /wake-stream: steer events ride the same stream', async () => {
   const { agentId, token } = await seedAgent()
   let resolveSeen: () => void = () => {}
