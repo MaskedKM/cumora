@@ -726,6 +726,17 @@ func salientError(raw string) string {
 
 // withEnvDefault:替换式 env 注入(TS 的 {...env, K:V} 语义)。重复键下
 // getenv 取首值——纯追加会让操作者自设的旧值继续生效。
+//
+// withEnvDefaultKeep:TS 的 env.K ?? '1' 语义——键已存在(含显式空串)
+// 则保留操作者的值,仅缺键时补默认(grok 的 GROK_DISABLE_AUTOUPDATER)。
+func withEnvDefaultKeep(env []string, key, def string) []string {
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			return env
+		}
+	}
+	return append(append([]string{}, env...), key+"="+def)
+}
 func withEnvDefault(env []string, kv string) []string {
 	key := kv[:strings.IndexByte(kv, '=')]
 	out := make([]string, 0, len(env)+1)
