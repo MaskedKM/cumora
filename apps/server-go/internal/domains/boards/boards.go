@@ -148,6 +148,9 @@ func boardEvent(ctx context.Context, companyID, kind, boardID string, extra map[
 		"type": "board.changed", "kind": kind, "boardId": boardID, "companyId": companyID,
 	}
 	for k, v := range extra {
+		if v == nil {
+			continue // baseline:undefined 字段 JSON 序列化即省略
+		}
 		payload[k] = v
 	}
 	b, _ := json.Marshal(payload)
@@ -863,6 +866,7 @@ func addComment(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		_, _ = db.ExecContext(r.Context(), `UPDATE board_cards SET updated_at = NOW() WHERE id = $1`, cardID)
+		_, _ = db.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
 		boardEvent(r.Context(), companyID, "comment.created", boardID, map[string]any{
 			"cardId": cardID, "commentId": commentID, "mentions": mentions, "actorId": uid,
 		})
