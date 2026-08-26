@@ -17,11 +17,16 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/boards"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/conversations"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/wsx"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -46,6 +51,34 @@ func main() {
 	mux := http.NewServeMux()
 	httpx.MountHealth(mux, pool)
 
+	// Redis(#55 引入):文档协同的跨进程扇出链路(Go relay ← sidecar)
+	// 必须有真订阅端;publish 面从 Noop 升级为真广播。不可达时降级
+	// Noop(HTTP 域照常,协同 401/超时,与 TS 未配 token 的姿态一致)。
+	ctxBoot, cancelBoot := context.WithCancel(context.Background())
+	defer cancelBoot()
+	var rdb *redis.Client
+	if ropts, err := redis.ParseURL(cfg.RedisURL); err != nil {
+		slog.Warn("REDIS_URL unparsable — events degrade to noop, doc collab unavailable", "err", err)
+	} else {
+		rdb = redis.NewClient(ropts)
+	}
+	if rdb != nil && rdb.Ping(ctxBoot).Err() != nil {
+		slog.Warn("redis unreachable — events degrade to noop, doc collab unavailable", "url", cfg.RedisURL)
+		rdb = nil
+	}
+	if rdb != nil {
+		events.SetPublisher(events.RedisPublisher{RDB: rdb})
+		defer rdb.Close()
+	} else {
+		events.SetPublisher(events.NoopPublisher{})
+	}
+
+	relay := docrelay.New(cfg.YjsSidecarURL, cfg.YjsSidecarToken, cfg.YjsSidecarTimeout, cfg.InstanceID)
+	relay.Boot(ctxBoot, rdb)
+
+	// WS 网关(/ws,自带 ws-ticket 鉴权,不走 /api/ 中间件链)
+	wsx.Mount(mux, pool, relay)
+
 	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
@@ -53,6 +86,7 @@ func main() {
 	conversations.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool)
 	workspaces.Mount(coreRouter, pool)
+	documents.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
 	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
