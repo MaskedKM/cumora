@@ -505,7 +505,14 @@ test('[mirror-runtime] /triage: agent_triages row + llm_calls mirror when usage 
     assert.equal(rows[0].input_tokens, 100)
   }
   {
-    const { rows } = await pool.query<any>(`SELECT * FROM llm_calls WHERE agent_id = $1`, [agentId])
+    // TS 侧 recordLlmCall 是 fire-and-forget(res.json 不等插入)——立即
+    // 查询会输给竞态;轮询短窗等待镜像行落库(Go 侧同步插入,首查即中)。
+    let rows: any[] = []
+    for (let i = 0; i < 50 && rows.length === 0; i++) {
+      const r = await pool.query<any>(`SELECT * FROM llm_calls WHERE agent_id = $1`, [agentId])
+      rows = r.rows
+      if (rows.length === 0) await new Promise((res) => setTimeout(res, 50))
+    }
     assert.equal(rows.length, 1, 'mirrored into the universal ledger')
     assert.equal(rows[0].purpose, 'inbox-triage')
     assert.equal(rows[0].source, 'byoa-claude')

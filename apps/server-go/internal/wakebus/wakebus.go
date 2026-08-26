@@ -4,6 +4,13 @@
 // 时 UNSUBSCRIBE;Deliver 发布事件并返回接收端数(0 = 全集群无在线 Pod,
 // daemon 靠重连后的 inbox 兜底)。同 agent 允许多订阅(滚动重启的重叠窗口),
 // Pod 按事件 id 去重。
+//
+// 分发模型(评审 M2 修正):Redis 分发协程绝不直接写 ResponseWriter——
+// 一个停止读取的慢客户端会让写阻塞到写超时,把总线卡在它身上、并让
+// go-redis Channel() 的有界缓冲溢出丢事件(全集群静默丢唤醒)。对齐 TS
+// 的背压语义(writableLength > 1MB 即弃该订阅者):每订阅者一条有界事件
+// 队列 + 一个专职写协程;队列写满(不排空)即弃该订阅者——唤醒在 inbox
+// 里有持久兜底,daemon 重连后补排。
 package wakebus
 
 import (
@@ -25,14 +32,17 @@ const ChWakePrefix = "cumora:wake:"
 
 func channel(agentID string) string { return ChWakePrefix + agentID }
 
-// SSE 写超时:TS 版以 socket.writableLength > 1MB 断开落后订阅者防 OOM;
-// Go 的 ResponseWriter 写路径内核缓冲有界、慢客户端只会阻塞写协程,这里用
-// 写超时达成同等保护——10s 内写不下去即视为不可排空,断开(唤醒在 inbox
-// 里有持久兜底,daemon 重连后补排)。
-const sseWriteTimeout = 10 * time.Second
-
-// ssePingEvery:每 25s 一条注释 ping,30s 空闲超时的代理下保活。
-const ssePingEvery = 25 * time.Second
+const (
+	// sseWriteTimeout:单帧 SSE 写超时(TS 以 socket.writableLength > 1MB
+	// 断开落后订阅者;Go 写路径内核缓冲有界,以写超时达成同等保护)。
+	sseWriteTimeout = 10 * time.Second
+	// ssePingEvery:每 25s 一条注释 ping,30s 空闲超时的代理下保活。
+	ssePingEvery = 25 * time.Second
+	// subQueueDepth:每订阅者的事件队列深度。写满 = 客户端不排空 → 弃之
+	// (对齐 TS 的 1MB 背压断连;64 条小事件远小于 1MB 但同向同义,
+	// 且每事件有 id,重连的 Pod 去重兜底)。
+	subQueueDepth = 64
+)
 
 // uuidv4:随机 16 字节格式化为 8-4-4-4-12,与 TS randomUUID 同形。
 func uuidv4() string {
@@ -49,24 +59,37 @@ func uuidv4() string {
 type subscriber struct {
 	agentID string
 	w       http.ResponseWriter
-	mu      sync.Mutex // ResponseWriter 非并发安全:ready/ping/fan-out三条路径互斥
-	closed  bool
+	// ch:待写事件的有界队列;close 即通知写协程收尾。仅经 bus.mu 保护。
+	ch     chan map[string]any
+	closed bool
 }
 
-// writeSSE:带写超时的一帧写入;失败标记 closed(close 处理器会做回收)。
-func (s *subscriber) writeSSE(frame string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return
-	}
+// writeSSE:带写超时的一帧写出;失败由调用方处置(弃订阅者)。
+func (s *subscriber) writeSSE(frame string) bool {
 	rc := http.NewResponseController(s.w)
 	_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	if _, err := fmt.Fprint(s.w, frame); err != nil {
-		s.closed = true
-		return
+		return false
 	}
 	rc.Flush()
+	return true
+}
+
+// deliver:按 TS 帧格式写出 event/id/data 三段。
+func (s *subscriber) deliver(evt map[string]any) bool {
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return true
+	}
+	kind, _ := evt["kind"].(string)
+	id, _ := evt["id"].(string)
+	if !s.writeSSE("event: " + kind + "\n") {
+		return false
+	}
+	if !s.writeSSE("id: " + id + "\n") {
+		return false
+	}
+	return s.writeSSE("data: " + string(data) + "\n\n")
 }
 
 // Bus:进程级单例。subs 按 agent 分组;一条 PubSub 连接承载全部通道,
@@ -85,6 +108,8 @@ func New(rdb redis.UniversalClient) *Bus {
 }
 
 // ensurePubsub:惰性建立共享 PubSub + 分发协程(首个 attach 时)。
+// Ping 失败必须 Close——留着一个不断重连的 PubSub 对象,Redis 故障期
+// 每次重试都泄漏一个(评审 M10)。
 func (b *Bus) ensurePubsub() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -95,6 +120,7 @@ func (b *Bus) ensurePubsub() error {
 	ps := b.rdb.Subscribe(ctx)
 	if err := ps.Ping(ctx); err != nil {
 		cancel()
+		_ = ps.Close()
 		return err
 	}
 	b.pubsub = ps
@@ -107,7 +133,8 @@ func (b *Bus) ensurePubsub() error {
 	return nil
 }
 
-// fanOut:把 Redis 消息扇出给该 agent 的全部本地订阅者。
+// fanOut:Redis 消息 → 该 agent 的全部本地订阅者队列(非阻塞投递)。
+// 分发协程永不被慢订阅者阻塞——满队即弃该订阅者(背压保护)。
 func (b *Bus) fanOut(ch, payload string) {
 	if len(ch) <= len(ChWakePrefix) || ch[:len(ChWakePrefix)] != ChWakePrefix {
 		return
@@ -125,21 +152,34 @@ func (b *Bus) fanOut(ch, payload string) {
 	}
 	b.mu.Unlock()
 	for _, s := range subs {
-		s.deliver(evt)
+		b.enqueue(s, evt)
 	}
 }
 
-// deliver:按 TS 帧格式写出 event/id/data 三段。
-func (s *subscriber) deliver(evt map[string]any) {
-	data, err := json.Marshal(evt)
-	if err != nil {
+// enqueue:非阻塞投递;满队 = 不可排空 → 弃置该订阅者并从表中摘除
+// (写协程随队列 close 而退,HTTP 响应随下一次写失败或客户端断开关闭)。
+func (b *Bus) enqueue(s *subscriber, evt map[string]any) {
+	b.mu.Lock()
+	if s.closed {
+		b.mu.Unlock()
 		return
 	}
-	kind, _ := evt["kind"].(string)
-	id, _ := evt["id"].(string)
-	s.writeSSE("event: " + kind + "\n")
-	s.writeSSE("id: " + id + "\n")
-	s.writeSSE("data: " + string(data) + "\n\n")
+	select {
+	case s.ch <- evt:
+		b.mu.Unlock()
+	default:
+		s.closed = true
+		set := b.subs[s.agentID]
+		if set != nil {
+			delete(set, s)
+			if len(set) == 0 {
+				delete(b.subs, s.agentID)
+			}
+		}
+		b.mu.Unlock()
+		slog.Warn("[wake-bus] subscriber not draining — dropped (inbox 兜底)", "agent", s.agentID)
+		close(s.ch)
+	}
 }
 
 // Deliver:为 agent 铸一枚事件并发布到集群,返回 Redis 报告的接收端数。
@@ -176,26 +216,17 @@ func (b *Bus) ListLocalSubscribedAgents() []string {
 	defer b.mu.Unlock()
 	out := make([]string, 0, len(b.subs))
 	for id, set := range b.subs {
-		for s := range set {
-			if !s.isClosed() {
-				out = append(out, id)
-				break
-			}
+		if len(set) > 0 {
+			out = append(out, id)
 		}
 	}
 	return out
 }
 
-func (s *subscriber) isClosed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.closed
-}
-
 // Attach:把一条 SSE 长响应挂上总线。写头、(必要时)SUBSCRIBE 通道、
-// 发 ready 帧、起 25s ping,然后保持响应打开直到客户端断开(reqCtx
-// 取消)。SUBSCRIBE 必须先于 ready——否则间隙期到达的唤醒会被静默丢掉
-// (inbox 兜底存在,但能不依赖兜底就不依赖)。
+// 发 ready 帧、起写协程(事件 + 25s ping),然后保持响应打开直到客户端
+// 断开(reqCtx 取消)。SUBSCRIBE 必须先于 ready——否则间隙期到达的唤醒
+// 会被静默丢掉(inbox 兜底存在,但能不依赖兜底就不依赖)。
 func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Context) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -211,7 +242,7 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 		return
 	}
 
-	s := &subscriber{agentID: agentID, w: w}
+	s := &subscriber{agentID: agentID, w: w, ch: make(chan map[string]any, subQueueDepth)}
 
 	b.mu.Lock()
 	set := b.subs[agentID]
@@ -241,39 +272,51 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 	}
 	slog.Info("[wake-bus] +sub", "agent", agentID, "local", len(set), "redisSubscribed", isFirst)
 
-	s.writeSSE("event: ready\ndata: {\"agentId\":\"" + agentID + "\",\"at\":" +
-		strconv.FormatInt(time.Now().UnixMilli(), 10) + "}\n\n")
+	if !s.writeSSE("event: ready\ndata: {\"agentId\":\"" + agentID + "\",\"at\":" +
+		strconv.FormatInt(time.Now().UnixMilli(), 10) + "}\n\n") {
+		b.detach(s)
+		return
+	}
 
+	// 写协程:本订阅者全部 SSE 写出在此串行化(事件帧 + ping),读侧
+	// 断开(reqCtx 取消)立即退出——清理不等 ping 节拍(评审 M1)。
 	ping := time.NewTicker(ssePingEvery)
 	defer ping.Stop()
-	done := make(chan struct{})
+	writerDone := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(writerDone)
 		for {
 			select {
+			case <-reqCtx.Done():
+				return
 			case <-ping.C:
-				if s.isClosed() {
+				if !s.writeSSE(": ping " + strconv.FormatInt(time.Now().UnixMilli(), 10) + "\n\n") {
 					return
 				}
-				s.writeSSE(": ping " + strconv.FormatInt(time.Now().UnixMilli(), 10) + "\n\n")
+			case evt, ok := <-s.ch:
+				if !ok {
+					return
+				}
+				if !s.deliver(evt) {
+					return
+				}
 			}
 		}
 	}()
-	// 阻塞到客户端断开(req context 取消)再走清理。
 	<-reqCtx.Done()
-	<-done
-
-	b.cleanup(s)
+	<-writerDone
+	b.detach(s)
 }
 
-// cleanup:摘除订阅者;最后一个断开时 UNSUBSCRIBE(尽力而为,
-// 失败只留下扇出给空集的微小泄漏,下次 attach 同 agent 时自愈)。
-func (b *Bus) cleanup(s *subscriber) {
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
-
+// detach:写协程退出后由 Attach 调用——关队列、摘订阅者;最后一个断开
+// 时 UNSUBSCRIBE(尽力而为,失败只留下扇出给空集的微小泄漏,下次 attach
+// 同 agent 时自愈)。
+func (b *Bus) detach(s *subscriber) {
 	b.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
 	set := b.subs[s.agentID]
 	if set != nil {
 		delete(set, s)

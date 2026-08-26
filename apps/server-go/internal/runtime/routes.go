@@ -116,6 +116,15 @@ func bodyFloat(body map[string]any, key string) (float64, bool) {
 	return v, ok
 }
 
+// strPtrOfRaw:TS `x ?? null` 的可选串语义——键存在且为串(含空串)→指针,
+// 否则 nil。
+func strPtrOfRaw(body map[string]any, key string) *string {
+	if v, ok := body[key].(string); ok {
+		return &v
+	}
+	return nil
+}
+
 func bodyStrSlice(body map[string]any, key string) []string {
 	raw, ok := body[key].([]any)
 	if !ok {
@@ -570,9 +579,10 @@ func (s *Service) handleCreateRun(w http.ResponseWriter, r *http.Request, agentI
 	if f, ok := bodyFloat(body, "inboxCount"); ok {
 		inboxCount = int64(f)
 	}
+	// TS `fingerprint ?? null`:空串是有效值(保留),仅缺键为 null。
 	var fingerprint *string
-	if fp := bodyStr(body, "fingerprint"); fp != "" {
-		fingerprint = &fp
+	if fpRaw, ok := body["fingerprint"].(string); ok {
+		fingerprint = &fpRaw
 	}
 	runID, err := s.CreateAgentRun(r.Context(), struct {
 		AgentID         string
@@ -645,15 +655,9 @@ func (s *Service) handleRecordTriage(w http.ResponseWriter, r *http.Request, age
 	if source == "" {
 		source = "byoa-claude"
 	}
-	var model *string
-	if m := bodyStr(body, "model"); m != "" {
-		model = &m
-	}
+	model := strPtrOfRaw(body, "model")
 	actionable := bodyBool(body, "actionable")
-	var reason *string
-	if rs := bodyStr(body, "reason"); rs != "" {
-		reason = &rs
-	}
+	reason := strPtrOfRaw(body, "reason")
 	usage := usageFromWire(body["usage"])
 	daemonVersion := normalizeDaemonVersion(bodyStr(body, "daemonVersion"))
 	s.RecordTriage(agentID, companyID, &source, model, actionable, reason, usage)
@@ -671,7 +675,7 @@ func (s *Service) handleRecordTriage(w http.ResponseWriter, r *http.Request, age
 		}
 		modelName := "<unknown>"
 		if model != nil {
-			modelName = *model
+			modelName = *model // TS `body.model ?? '<unknown>'`:空串保留
 		}
 		s.RecordLlmCall(LlmCallRecord{
 			Purpose:       "inbox-triage",
@@ -789,16 +793,14 @@ func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ stri
 		httpx.WriteError(w, http.StatusBadRequest, "status required")
 		return
 	}
-	var summary, errMsg, model *string
-	if v := bodyStr(body, "summary"); v != "" {
-		summary = &v
+	// TS `?? null` 语义:空串保留,仅缺键为 null。
+	strPtrOf := func(key string) *string {
+		if v, ok := body[key].(string); ok {
+			return &v
+		}
+		return nil
 	}
-	if v := bodyStr(body, "error"); v != "" {
-		errMsg = &v
-	}
-	if v := bodyStr(body, "model"); v != "" {
-		model = &v
-	}
+	summary, errMsg, model := strPtrOf("summary"), strPtrOf("error"), strPtrOf("model")
 	var toolCallCount, tokenCount *int64
 	if f, ok := bodyFloat(body, "toolCallCount"); ok {
 		n := int64(f)

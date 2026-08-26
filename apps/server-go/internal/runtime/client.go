@@ -47,32 +47,44 @@ func (s *Service) NextConversationSequence(ctx context.Context, conversationID s
 	return seq, err
 }
 
-// withSeqscanOff:独占连接上 SET enable_seqscan=off → 查询 → RESET;
-// 任何错误销毁连接(release(true) 语义),防 GUC 回渗池中。
+// withSeqscanOff:独占连接上 SET enable_seqscan=off → 查询 → RESET。
+// GUC 泄漏防护(对齐 TS 的 release(true) 语义):database/sql 的
+// Conn.Close 只会把连接归还池、无法销毁——而 pgx stdlib 的默认
+// ResetSession 是 noop,带 GUC 残留的"健康"连接回池后会长期毒化后续
+// 查询。因此错误路径必须用不受请求取消影响的独立 ctx 尽力 RESET:
+// RESET 成功 → 连接干净归还;RESET 失败 → 连接本身已坏,池的下一次
+// 使用/健康检查会将其丢弃。成功路径的 RESET 同样走独立 ctx——查询行
+// 读完但请求 ctx 恰被取消(客户端中途断开)时,取消信号不该中断复位。
 func (s *Service) withSeqscanOff(ctx context.Context, run func(conn *sql.Conn) error) error {
 	conn, err := s.DB.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	destroy := false
+	failed := false
 	defer func() {
-		if destroy {
-			conn.Close()
-			return
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if failed {
+			// 尽力复位;失败即连接已坏,归还后由池的下次使用淘汰。
+			_, _ = conn.ExecContext(resetCtx, `RESET enable_seqscan`)
 		}
-		conn.Close()
+		_ = conn.Close()
 	}()
 	if _, err := conn.ExecContext(ctx, `SET enable_seqscan = off`); err != nil {
+		failed = true
 		return err
 	}
 	if err := run(conn); err != nil {
-		destroy = true
+		failed = true
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, `RESET enable_seqscan`); err != nil {
-		destroy = true
+	failed = true // 复位成功前一律视为可能残留
+	resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := conn.ExecContext(resetCtx, `RESET enable_seqscan`); err != nil {
 		return err
 	}
+	failed = false
 	return nil
 }
 
@@ -488,17 +500,24 @@ func (s *Service) IsConversationMember(ctx context.Context, conversationID, agen
 
 // PostSystemNotice:往会话落一条 kind='system' 的 notice 消息,成员可见
 // "agent 为何静默"(配额耗尽、供应商故障等)。NX/EX 去重——同室多 agent
-// 同时 429 只发一条;未抢到锁返回 posted=false。
+// 同时 429 只发一条;未抢到锁返回 posted=false。Redis 操作错误必须上抛
+// (TS 的 set 抛错 → 500,daemon 侧重试)——吞成 posted:false 会让引擎
+// 故障通知被静默丢失且永不重试(评审 M3)。
 func (s *Service) PostSystemNotice(ctx context.Context, conversationID string, companyID *string,
 	agentID, noticeKind, text, dedupeKey string, dedupeTTLSec int) (bool, error) {
 	rdb := s.redis()
 	if rdb != nil {
 		acquired, err := rdb.SetNX(ctxBG, "notice:"+dedupeKey, agentID,
 			time.Duration(dedupeTTLSec)*time.Second).Result()
-		if err != nil || !acquired {
+		if err != nil {
+			return false, err
+		}
+		if !acquired {
 			return false, nil
 		}
 	}
+	// rdb == nil(单机降级)时跳过去重照发:该形态本就单进程,无跨进程
+	// 重复可虑。
 	messageID := "m-" + uuidHex()
 	sequence, err := s.NextConversationSequence(ctx, conversationID)
 	if err != nil {

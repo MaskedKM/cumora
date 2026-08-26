@@ -327,6 +327,10 @@ func (s *Service) ClaimWork(scopeKey, agentID, taskType, subject string, ttlSec 
 		return ClaimWorkResult{Accepted: true}
 	}
 	raw, err := rdb.HGet(ctxBG, key, field).Result()
+	if err != nil && err != redis.Nil {
+		slog.Warn("[runtime] claimWork HGet failed — fail-open", "agent", agentID, "task", taskType, "err", err)
+		return ClaimWorkResult{Accepted: true}
+	}
 	if err != nil || raw == "" {
 		// HSETNX 与 HGET 之间被人 release:再试一次。
 		retry, _ := rdb.HSetNX(ctxBG, key, field, string(entry)).Result()

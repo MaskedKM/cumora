@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 )
 
@@ -332,30 +331,4 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-// errorText:对齐 observability.ts errorText(带栈);Go 侧退化为错误串。
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-// isRateLimitedText:错误串是否为限流/配额/过载信号(基础设施错误分类,
-// 不是内容分类)。决定 triage 失败时 FAIL-CLOSED 而非 fail-open。
-var rateLimitMarkers = []string{
-	"429", "503", "too many requests", "rate limit", "rate.limit", "ratelimit",
-	"quota", "resource_exhausted", "usage limit", "session limit", "overloaded",
-	"insufficient_quota", "service unavailable", "service temporarily unavailable",
-}
-
-func isRateLimitedText(text string) bool {
-	l := strings.ToLower(text)
-	for _, m := range rateLimitMarkers {
-		if strings.Contains(l, m) {
-			return true
-		}
-	}
-	return false
 }

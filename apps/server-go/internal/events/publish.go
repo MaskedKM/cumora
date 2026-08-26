@@ -34,13 +34,17 @@ var active Publisher = NoopPublisher{}
 
 func SetPublisher(p Publisher) { active = p }
 
-// MessageNew 广播一条新消息(载荷对齐 MessageNewEvent)。
+// MessageNew 广播一条新消息(载荷对齐 MessageNewEvent)。companyId 为空
+// 时省键——TS 是 `companyId: x ?? undefined`,JSON 序列化即无此键;
+// 空串键在消费端虽为假值等价,但线上形状保持一致。
 func MessageNew(ctx context.Context, companyID, convID string, msg map[string]any) {
 	payload := map[string]any{
 		"type":           "message.new",
-		"companyId":      companyID,
 		"conversationId": convID,
 		"message":        msg,
+	}
+	if companyID != "" {
+		payload["companyId"] = companyID
 	}
 	_ = publishJSON(ctx, ChMessageNew, payload)
 }

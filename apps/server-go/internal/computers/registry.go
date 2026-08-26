@@ -360,6 +360,9 @@ func VerifyAgentToken(token string) (agentID string, companyID *string, ok bool)
 	if claims.Exp < float64(time.Now().Unix()) {
 		return "", nil, false
 	}
+	if claims.Sub == "" {
+		return "", nil, false // TS jwt.ts 'missing sub' 同拒
+	}
 	return claims.Sub, claims.CompanyID, true
 }
 
