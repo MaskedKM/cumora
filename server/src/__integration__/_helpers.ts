@@ -37,6 +37,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'shipping_regressions',
   'shipping_friction_reports',
   'shipping_releases',
+  'computers',
   'shipping_verifications',
   'shipping_invariants',
   'shipping_features',

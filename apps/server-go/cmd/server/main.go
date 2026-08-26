@@ -16,11 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/boards"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
+	domcomputers "github.com/MaskedKM/cumora/apps/server-go/internal/domains/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/conversations"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
@@ -99,6 +101,8 @@ func main() {
 	email.MountInbound(mux, pool)
 	calendar.Mount(coreRouter, pool)
 	push.Mount(coreRouter, pool)
+	domcomputers.Mount(coreRouter, pool)
+	computers.StartSweepWorker(ctxBoot, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
 	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
