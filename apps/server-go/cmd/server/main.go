@@ -26,6 +26,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wsx"
 	"github.com/redis/go-redis/v9"
 )
@@ -89,6 +90,7 @@ func main() {
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
 	calendar.Mount(coreRouter, pool)
+	push.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
 	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
