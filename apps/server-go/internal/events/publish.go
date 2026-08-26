@@ -51,6 +51,11 @@ func Typing(ctx context.Context, companyID, convID, agentID string, done bool) {
 	_ = publishJSON(ctx, ChTyping, payload)
 }
 
+// PublishRaw 供域包广播自定义通道(如 CH_BOARDS)。
+func PublishRaw(ctx context.Context, channel string, payload []byte) error {
+	return active.Publish(ctx, channel, payload)
+}
+
 func publishJSON(ctx context.Context, channel string, payload map[string]any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
