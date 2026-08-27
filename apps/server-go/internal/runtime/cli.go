@@ -10,7 +10,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 // scanJSONB:pgx 把 jsonb 列交给 Scan 成 []byte;这里解到目标结构。
@@ -26,6 +30,39 @@ func scanJSONB(src any, v any) error {
 		return fmt.Errorf("scanJSONB: unsupported %T", src)
 	}
 }
+
+// without:去掉首个等于 s 的成员(不动原切片)。
+func (a cliStrArr) without(s string) cliStrArr {
+	out := make(cliStrArr, 0, len(a))
+	dropped := false
+	for _, v := range a {
+		if !dropped && v == s {
+			dropped = true
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func jsonMarshalStrings(xs []string) (string, error) {
+	if xs == nil {
+		xs = []string{}
+	}
+	b, err := json.Marshal(xs)
+	return string(b), err
+}
+
+// eventsPublishMessageNew:CH_MESSAGE_NEW 广播(companyId 空则省键)。
+func eventsPublishMessageNew(ctx context.Context, companyID *string, convID string, msg map[string]any) {
+	company := ""
+	if companyID != nil {
+		company = *companyID
+	}
+	events.MessageNew(ctx, company, convID, msg)
+}
+
+func isoNowMs() string { return httpx.ISOms(time.Now()) }
 
 /* ============== argv parsing(cli-parse.ts 等价) ============== */
 
@@ -353,6 +390,14 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdMute(ctx, parsed)
 	case "follow":
 		return s.cliCmdFollow(ctx, parsed)
+	case "reply":
+		return s.cliCmdReply(ctx, parsed)
+	case "leave":
+		return s.cliCmdLeave(ctx, parsed)
+	case "invite":
+		return s.cliCmdInvite(ctx, parsed)
+	case "kick":
+		return s.cliCmdKick(ctx, parsed)
 	default:
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}
