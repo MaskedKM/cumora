@@ -175,15 +175,17 @@ func (s *Service) handleWakeStream(w http.ResponseWriter, r *http.Request, agent
 // parseArgs 取最后一次出现,不剥就被冒充),再交 RunCli 分发。
 func (s *Service) handleCli(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	body := readJSON(w, r)
-	rawArgv, _ := body["argv"].([]any)
+	// TS 语义:argv 非数组才 400;数组里的非字符串元素被过滤而非拒收。
+	rawArgv, ok := body["argv"].([]any)
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "argv (string[]) required")
+		return
+	}
 	argv := make([]string, 0, len(rawArgv))
 	for _, a := range rawArgv {
-		str, ok := a.(string)
-		if !ok {
-			httpx.WriteError(w, http.StatusBadRequest, "argv (string[]) required")
-			return
+		if str, isStr := a.(string); isStr {
+			argv = append(argv, str)
 		}
-		argv = append(argv, str)
 	}
 	res := s.RunCli(r.Context(), cliBuildRuntimeArgv(agentID, argv))
 	sideEffects := res.sideEffects
