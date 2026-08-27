@@ -45,27 +45,37 @@ interface ProviderConfig {
   authorizeUrl: string
   tokenUrl: string
   userInfoUrl: string
+  emailsUrl: string | null
   scope: string
   clientId: string
   clientSecret: string
 }
 
+// process.env 直读 + CUMORA_OAUTH_<P>_BASE 覆盖(/api/metrics 同例):凭据
+// 与端点可运行期轮换,也让双跑镜像测试能把 provider 指到本地桩(两形
+// 态同源同桩);不设覆盖时与线上 URL 逐字一致。
 function providerConfig(p: Provider): ProviderConfig {
-  if (p === 'google') return {
-    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    tokenUrl:     'https://oauth2.googleapis.com/token',
-    userInfoUrl:  'https://openidconnect.googleapis.com/v1/userinfo',
-    scope:        'openid email profile',
-    clientId:     env.GOOGLE_CLIENT_ID,
-    clientSecret: env.GOOGLE_CLIENT_SECRET,
+  if (p === 'google') {
+    const base = process.env.CUMORA_OAUTH_GOOGLE_BASE ?? ''
+    return {
+      authorizeUrl: `${base || 'https://accounts.google.com'}/o/oauth2/v2/auth`,
+      tokenUrl:     `${base || 'https://oauth2.googleapis.com'}/token`,
+      userInfoUrl:  `${base || 'https://openidconnect.googleapis.com'}/v1/userinfo`,
+      emailsUrl:    null,
+      scope:        'openid email profile',
+      clientId:     process.env.GOOGLE_CLIENT_ID ?? env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? env.GOOGLE_CLIENT_SECRET,
+    }
   }
+  const base = process.env.CUMORA_OAUTH_GITHUB_BASE ?? ''
   return {
-    authorizeUrl: 'https://github.com/login/oauth/authorize',
-    tokenUrl:     'https://github.com/login/oauth/access_token',
-    userInfoUrl:  'https://api.github.com/user',
+    authorizeUrl: `${base || 'https://github.com/login/oauth'}/authorize`,
+    tokenUrl:     `${base || 'https://github.com/login/oauth'}/access_token`,
+    userInfoUrl:  `${base || 'https://api.github.com'}/user`,
+    emailsUrl:    `${base || 'https://api.github.com'}/user/emails`,
     scope:        'read:user user:email',
-    clientId:     env.GITHUB_CLIENT_ID,
-    clientSecret: env.GITHUB_CLIENT_SECRET,
+    clientId:     process.env.GITHUB_CLIENT_ID ?? env.GITHUB_CLIENT_ID,
+    clientSecret: process.env.GITHUB_CLIENT_SECRET ?? env.GITHUB_CLIENT_SECRET,
   }
 }
 
@@ -101,7 +111,12 @@ interface StateData {
  *  (`http://evil.com?https://app.cumora.ai/`). */
 export function returnUrlAllowed(url: string): boolean {
   if (!url) return false
-  return env.AUTH_RETURN_ALLOWLIST.some((prefix) => url.startsWith(prefix))
+  // 直读 process.env(与 providerConfig 同因):运行期/测试期可换白名单。
+  const raw = process.env.CUMORA_AUTH_RETURN_ALLOWLIST
+  const list = raw !== undefined
+    ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+    : env.AUTH_RETURN_ALLOWLIST
+  return list.some((prefix) => url.startsWith(prefix))
 }
 
 /** Mint a state token, save it + the requested return URL + optional invite
@@ -206,7 +221,7 @@ export async function fetchProfile(p: Provider, accessToken: string): Promise<No
   // so fall back to any verified email rather than refusing outright.
   const [userR, emailsR] = await Promise.all([
     fetch(cfg.userInfoUrl, { headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json', 'user-agent': 'cumora' } }),
-    fetch('https://api.github.com/user/emails', { headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json', 'user-agent': 'cumora' } }),
+    fetch(cfg.emailsUrl!, { headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json', 'user-agent': 'cumora' } }),
   ])
   if (!userR.ok) throw new Error(`github user ${userR.status}`)
   if (!emailsR.ok) throw new Error(`github emails ${emailsR.status}`)
