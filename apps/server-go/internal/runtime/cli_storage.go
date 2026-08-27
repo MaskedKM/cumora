@@ -19,11 +19,11 @@ import (
 // 在有值时出现(TS 字面量 undefined 键被 stringify 丢弃)。
 type agentAttachment struct {
 	URL  string `json:"url"`
+	Key  *string `json:"key,omitempty"`
 	Name string `json:"name"`
 	Kind string `json:"kind"` // 'img' | 'file'
 	Mime *string `json:"mime,omitempty"`
 	Size *int64  `json:"size,omitempty"`
-	Key  *string `json:"key,omitempty"`
 }
 
 func uploadDir() string {

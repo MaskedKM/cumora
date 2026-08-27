@@ -428,6 +428,28 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdClaim(ctx, parsed, "unclaim")
 	case "doc":
 		return s.cliCmdDoc(ctx, parsed)
+	case "ship":
+		return s.cliCmdShip(ctx, parsed)
+	case "avatar":
+		return s.cliCmdAvatar(ctx, parsed)
+	case "skills":
+		return s.cliCmdSkills(ctx, parsed)
+	case "email":
+		return s.cliCmdEmail(ctx, parsed)
+	case "poll":
+		return s.cliCmdPoll(ctx, parsed)
+	case "contacts":
+		return s.cliCmdContacts(ctx, parsed)
+	case "react":
+		return s.cliRunTool(ctx, "react", parsed)
+	case "dm":
+		return s.cliRunTool(ctx, "dm_with", parsed)
+	case "pull-group":
+		return s.cliRunTool(ctx, "pull_group", parsed)
+	case "palette":
+		return s.cliRunTool(ctx, "palette", parsed)
+	case "image":
+		return s.cliCmdImage(ctx, parsed)
 	default:
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}
