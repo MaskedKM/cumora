@@ -20,6 +20,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/admin"
 	domagents "github.com/MaskedKM/cumora/apps/server-go/internal/domains/agents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/boards"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
@@ -136,6 +137,9 @@ func main() {
 	search.Mount(coreRouter, pool)
 	domagents.Mount(coreRouter, pool, func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) })
 	devtools.Mount(coreRouter, pool, runtimeSvc.GenerateAgentAvatar)
+	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
+	// users/waitlist/stats/observability-llm 子面留待完整化票。
+	admin.Mount(coreRouter, pool)
 	computers.StartSweepWorker(ctxBoot, pool)
 
 	// 观察面(#68):runs/triage 经济学/llm-spend(runtime 包自有实现,
