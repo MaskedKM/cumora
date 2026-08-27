@@ -91,6 +91,7 @@ func (s *Service) auth(next func(w http.ResponseWriter, r *http.Request, agentID
 // 的显式错误形状对齐 runtimeRouter 的 json 解析失败路径。上限按
 // runtime/server.ts 的 4mb(#89 挂载形态;TS 全局 34mb 属 /api 域)。
 // 返回 (body, ok);ok=false 时响应已写完,调用方直返。
+// (EOF 与空体沿用 {} 语义——TS express.json 对空体同样放行。)
 func readJSON(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	body := map[string]any{}
 	if r.Body == nil {
