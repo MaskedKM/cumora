@@ -1,5 +1,8 @@
 /**
  * Mirror test: 长尾路由补覆盖(#77)——TS in-process 与 Go(MIRROR)双跑。
+ * 头像全链用例在文件内起最小 OpenAI 形桩(/v1/responses 性别分类 +
+ * /v1/images/generations 1×1 PNG)——CI 无外部 mock,TS SDK 读
+ * process.env.OPENAI_BASE_URL(legacy client 构造时),before() 钉到桩。
  * 覆盖:uploads(presign 本地 501 / refresh-url 键解析)、devtools 门禁
  * (x-cumora-dev-mode + 角色)、agent workspace 文件读、run 事件流、
  * 纯 agent 房偷看(owner-only + 混合房 404)、admin 头像生成(非 agent
@@ -24,9 +27,44 @@ const memberOnlyMirror = startMirror(MEMBER_USER, COMPANY)
 
 let dualBase = ''
 let dualServer: import('node:http').Server | null = null
+let mockLLM: import('node:http').Server | null = null
+
+// 1×1 透明 PNG(cli_mocks.py 同款)。
+const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 before(async () => {
   await ensureSchemaOnce()
+  // CI 无外部 mock:文件内桩接管 TS 侧的性别分类与图像生成。
+  // (MIRROR 形态该桩闲置——头像路径由 Go 进程自己的 env 指向其桩。)
+  const http = await import('node:http')
+  mockLLM = http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => {
+      if (req.url?.endsWith('/responses')) {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({
+          id: 'resp-mock', object: 'response', status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'feminine' }] }],
+        }))
+        return
+      }
+      if (req.url?.endsWith('/images/generations')) {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }))
+        return
+      }
+      res.statusCode = 404
+      res.end('{}')
+    })
+  })
+  await new Promise<void>((resolve) => mockLLM!.listen(0, '127.0.0.1', resolve))
+  const mockAddr = mockLLM!.address()
+  if (mockAddr && typeof mockAddr === 'object') {
+    // OpenAI SDK 在 client 构造时读 OPENAI_BASE_URL——本文件进程内
+    // 首次 LLM 调用发生在头像用例,时序安全。
+    process.env.OPENAI_BASE_URL = `http://127.0.0.1:${mockAddr.port}/v1`
+  }
   if (MIRROR_BASE) {
     dualBase = MIRROR_BASE // Go 候选本就同时挂 /api 与 /runtime
     return
@@ -64,6 +102,9 @@ beforeEach(async () => {
 })
 
 after(async () => {
+  if (mockLLM?.listening) {
+    await new Promise<void>((resolve) => mockLLM!.close(() => resolve()))
+  }
   if (dualServer?.listening) {
     await new Promise<void>((resolve) => dualServer!.close(() => resolve()))
   }
