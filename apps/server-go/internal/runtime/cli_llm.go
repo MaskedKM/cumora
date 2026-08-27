@@ -202,6 +202,7 @@ type cliResponsesArgs struct {
 	Input           string
 	MaxOutputTokens int64  // 0 = 省略
 	JSONMode        bool   // text.format.type == 'json_object'
+	ReasoningEffort string // "" = 省略(适配器路径本就丢弃)
 }
 
 // cliResponsesResult:output_text + 用量(台账用)。
@@ -258,6 +259,9 @@ func (s *Service) cliResponsesCreate(ctx context.Context, tenant string, args cl
 		}
 		if args.JSONMode {
 			body["text"] = map[string]any{"format": map[string]any{"type": "json_object"}}
+		}
+		if args.ReasoningEffort != "" {
+			body["reasoning"] = map[string]any{"effort": args.ReasoningEffort}
 		}
 	}
 	method = http.MethodPost
