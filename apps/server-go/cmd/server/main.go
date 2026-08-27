@@ -90,6 +90,7 @@ func main() {
 	// 自带 agent-runtime JWT 鉴权,不嵌 /api。Redis 不可达时 wake-stream
 	// 直接 503(不做半开会话),其余数据面路由照常。
 	runtimeSvc := runtime.New(pool, rdb)
+	runtimeSvc.SetRelay(relay)
 	runtimeSvc.Mount(mux)
 
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)

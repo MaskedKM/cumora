@@ -170,11 +170,34 @@ func (s *Service) handleWakeStream(w http.ResponseWriter, r *http.Request, agent
 	s.Bus.Attach(agentID, w, r.Context())
 }
 
-// handleCli:世界动作命令面(runCli)未随 #60 移植——见后续票。显式
-// 501 + 可识别错误,daemon 能区分"未迁移"与"瞬时故障"。
-func (s *Service) handleCli(w http.ResponseWriter, _ *http.Request, _ string, _ *string) {
-	httpx.WriteError(w, http.StatusNotImplemented,
-		"runtime /cli outlet not yet migrated to the Go server (tracked separately); all other /runtime routes are equivalent")
+// handleCli:世界动作命令面(#89)。daemon 的 cumora shim 把 argv POST
+// 到这里;JWT 钉死身份——剥净调用方 --as 后注入 --as <sub>(防御纵深:
+// parseArgs 取最后一次出现,不剥就被冒充),再交 RunCli 分发。
+func (s *Service) handleCli(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+	body := readJSON(w, r)
+	// TS 语义:argv 非数组才 400;数组里的非字符串元素被过滤而非拒收。
+	rawArgv, ok := body["argv"].([]any)
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "argv (string[]) required")
+		return
+	}
+	argv := make([]string, 0, len(rawArgv))
+	for _, a := range rawArgv {
+		if str, isStr := a.(string); isStr {
+			argv = append(argv, str)
+		}
+	}
+	res := s.RunCli(r.Context(), cliBuildRuntimeArgv(agentID, argv))
+	sideEffects := res.sideEffects
+	if sideEffects == nil {
+		sideEffects = []cliSideEffect{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"text":        res.text,
+		"exitCode":    res.exitCode,
+		"ok":          res.ok,
+		"sideEffects": sideEffects,
+	})
 }
 
 /* ───────── 读面 ───────── */
@@ -346,8 +369,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 // handleAgenda:BYOA 板感知——服务端收集该 agent 的可行动议程(非 done
 // 列里指派/@点名的看板卡 + 到期日历事件)。byoa 路由返回分类器载荷
 // (instructions/input + 原始 agenda 供本地回退),daemon 本地 classify
-// 后把判定 POST 回 /agenda/verdict;remote 路由在 #60 阶段按分类器故障
-// 语义走确定性回退(remote classify 属认知辅票)。
+// 后把判定 POST 回 /agenda/verdict;remote 路由同步云分类(#89)。
 func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
 	ctx := r.Context()
 	if companyID == nil {
@@ -386,9 +408,10 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 		})
 		return
 	}
-	// remote 路由:本票未移植云分类调用;按分类器故障的确定性回退
-	// (与 TS 断供期行为一致,finalize 共用同一尾部)。
-	verdict := AgendaDeterministicFallback(agenda)
+	// remote 路由:云分类同步跑在这里(classifyAgendaActionable ——
+	// cerebellum 适配器或 legacy tracked OpenAI),失败退确定性回退;
+	// finalize 与 /agenda/verdict 共用同一尾部保证字节同形。
+	verdict := s.ClassifyAgendaActionable(ctx, persona, *companyID, agentID, agenda, time.Now().UnixMilli())
 	httpx.WriteJSON(w, http.StatusOK, s.FinalizeAgendaVerdict(ctx, agenda, verdict))
 }
 

@@ -706,18 +706,63 @@ test('[mirror-runtime] /notices: member gate + dedupe + system row', async () =>
   assert.equal(payload.text, 'quota gone')
 })
 
-// ── /cli 出口(#60 拆票:MIRROR 侧 501,TS 侧维持原 400 校验) ─────────
+// ── /cli 出口(#89 落地:两侧同形断言) ────────────────────────────────
 
-test('[mirror-runtime] /cli outlet: argv validation (TS) / explicit not-yet-migrated (Go)', async () => {
+test('[mirror-runtime] /cli outlet: argv validation', async () => {
   const { token } = await seedAgent()
-  if (MIRROR_BASE) {
-    const r = await call('/runtime/cli', { token, body: { argv: ['inbox'] } })
-    assert.equal(r.status, 501)
-    assert.match(String(r.body?.error ?? ''), /not yet migrated/i)
-  } else {
-    const bad = await call('/runtime/cli', { token, body: {} })
-    assert.equal(bad.status, 400)
-  }
+  // argv 缺失/非数组 → 400 + 统一错误文本(两侧同形)。
+  const bad = await call('/runtime/cli', { token, body: {} })
+  assert.equal(bad.status, 400)
+  assert.equal(bad.body?.error, 'argv (string[]) required')
+  const badArr = await call('/runtime/cli', { token, body: { argv: 'whoami' } })
+  assert.equal(badArr.status, 400)
+})
+
+test('[mirror-runtime] /cli outlet: non-string argv entries are filtered, not rejected', async () => {
+  const { agentId, token } = await seedAgent()
+  const r = await call('/runtime/cli', { token, body: { argv: [123, null, 'whoami'] } })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.ok, true)
+  assert.equal(r.body.exitCode, 0)
+  assert.match(r.body.text, new RegExp(agentId))
+})
+
+test('[mirror-runtime] /cli outlet: JWT pins identity (--as is stripped)', async () => {
+  const { agentId, token } = await seedAgent()
+  const r = await call('/runtime/cli', { token, body: { argv: ['whoami', '--as', 'someone-else'] } })
+  assert.equal(r.status, 200)
+  assert.match(r.body.text, new RegExp(agentId))
+  assert.doesNotMatch(r.body.text, /someone-else/)
+})
+
+test('[mirror-runtime] /cli outlet: help + unknown subcommand exit codes', async () => {
+  const { token } = await seedAgent()
+  const help = await call('/runtime/cli', { token, body: { argv: [] } })
+  assert.equal(help.status, 200)
+  assert.equal(help.body.ok, true)
+  assert.equal(help.body.exitCode, 0)
+  assert.match(help.body.text, /usage/i)
+  assert.deepEqual(help.body.sideEffects, [])
+  const bogus = await call('/runtime/cli', { token, body: { argv: ['bogus-subcommand'] } })
+  assert.equal(bogus.status, 200)
+  assert.equal(bogus.body.ok, false)
+  assert.equal(bogus.body.exitCode, 1)
+  assert.equal(bogus.body.text, 'unknown subcommand: bogus-subcommand\nrun "cumora help" for usage')
+})
+
+test('[mirror-runtime] /cli outlet: write path returns side effects (skills create + list)', async () => {
+  const { token } = await seedAgent()
+  const created = await call('/runtime/cli', { token, body: { argv: ['skills', 'create', 'mirror-smoke', 'Mirror harness fixture skill'] } })
+  assert.equal(created.status, 200)
+  assert.equal(created.body.ok, true)
+  assert.equal(created.body.exitCode, 0)
+  assert.match(created.body.text, /created skill "mirror-smoke"/)
+  assert.ok(Array.isArray(created.body.sideEffects) && created.body.sideEffects.length === 1)
+  assert.equal(created.body.sideEffects[0].event, 'skill.created')
+  assert.equal(created.body.sideEffects[0].skillName, 'mirror-smoke')
+  const listed = await call('/runtime/cli', { token, body: { argv: ['skills', 'list'] } })
+  assert.equal(listed.status, 200)
+  assert.match(listed.body.text, /mirror-smoke/)
 })
 
 // ── wake-stream(SSE + Redis 总线) ────────────────────────────────────

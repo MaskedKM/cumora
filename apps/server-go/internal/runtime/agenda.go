@@ -13,8 +13,17 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
+	"io"
+	"net/http"
 )
 
 func getenv(name string) string           { return os.Getenv(name) }
@@ -709,4 +718,263 @@ func (s *Service) ResolveCerebellumRouteForAgent(ctx context.Context, agentID st
 		}
 	}
 	return "remote"
+}
+
+/* ───────── remote 分类(classifyAgendaActionable,#89) ───────── */
+
+// CerebellumApiKeyPlaintext:app_settings.cerebellum_api_key 的 AES-256-GCM
+// 解密("iv.tag.ciphertext" 各 base64;主键 = sha256(CUMORA_SECRETS_KEY))。
+// 任何失败(缺主键/主键轮换/坏数据)都返回 "" —— 按 ADR 0001,丢失主键
+// 只是让配置"看起来未设置",绝不抛错。
+func (s *Service) CerebellumApiKeyPlaintext(ctx context.Context) string {
+	master := os.Getenv("CUMORA_SECRETS_KEY")
+	if master == "" {
+		return ""
+	}
+	var stored []byte
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT value FROM app_settings WHERE key = 'cerebellum_api_key' LIMIT 1`).Scan(&stored)
+	if err != nil {
+		return ""
+	}
+	var enc string
+	if jsonUnmarshal(stored, &enc) != nil || enc == "" {
+		return ""
+	}
+	parts := strings.Split(enc, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	iv, err1 := base64.StdEncoding.DecodeString(parts[0])
+	tag, err2 := base64.StdEncoding.DecodeString(parts[1])
+	ct, err3 := base64.StdEncoding.DecodeString(parts[2])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return ""
+	}
+	key := sha256.Sum256([]byte(master))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return ""
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return ""
+	}
+	if len(tag) != gcm.Overhead() {
+		return ""
+	}
+	plain, err := gcm.Open(nil, iv, append(ct, tag...), nil)
+	if err != nil {
+		return ""
+	}
+	return string(plain)
+}
+
+// cerebellumRemoteConfigured:适配器可达的最小配置(baseUrl + apiKey)。
+func (s *Service) cerebellumRemoteConfigured(ctx context.Context) (baseURL, apiKey string, ok bool) {
+	settings := s.GetCerebellumSettings(ctx)
+	apiKey = s.CerebellumApiKeyPlaintext(ctx)
+	return settings.BaseURL, apiKey, settings.BaseURL != "" && apiKey != ""
+}
+
+var agendaFenceOpen = regexp.MustCompile(`(?i)^` + "```" + `(?:json)?\s*`)
+var agendaFenceClose = regexp.MustCompile("(?i)\\s*```$")
+var agendaActionableSalvage = regexp.MustCompile(`(?i)["']?actionable["']?\s*:\s*(true|false|1|0|["']true["']|["']false["'])`)
+
+// agendaSalvageStringField:JSON.parse 失败后的逐字段抢救(同 TS;RE2 无
+// 反向引用,用双/单引号交替分支表达 "开头引号=结尾引号")。
+func agendaSalvageStringField(candidate, name string) string {
+	head := `(?i)["']?` + regexp.QuoteMeta(name) + `["']?\s*:\s*`
+	re := regexp.MustCompile(head + `"([^"]*)"|` + head + `'([^']*)'`)
+	m := re.FindStringSubmatch(candidate)
+	if m == nil {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
+}
+
+// AgendaParsedVerdict:parseAgendaVerdict 的中间形。
+type AgendaParsedVerdict struct {
+	Actionable bool
+	Focus      string
+	Reason     string
+}
+
+// ParseAgendaVerdict:剥 ```json 围栏 → 首尾大括号截取 → JSON.parse;
+// 失败退保守字段抢救。返回 nil = 无可恢复判定。
+func ParseAgendaVerdict(raw string) *AgendaParsedVerdict {
+	unfenced := agendaFenceClose.ReplaceAllString(agendaFenceOpen.ReplaceAllString(strings.TrimSpace(raw), ""), "")
+	first := strings.Index(unfenced, "{")
+	if first < 0 {
+		return nil
+	}
+	candidate := unfenced[first:]
+	if last := strings.LastIndex(unfenced, "}"); last > first {
+		candidate = unfenced[first : last+1]
+	}
+	var parsed struct {
+		Actionable any `json:"actionable"`
+		Focus      any `json:"focus"`
+		Reason     any `json:"reason"`
+	}
+	if err := jsonUnmarshal([]byte(candidate), &parsed); err == nil {
+		return coerceAgendaVerdictAny(parsed.Actionable, parsed.Focus, parsed.Reason)
+	}
+	m := agendaActionableSalvage.FindStringSubmatch(candidate)
+	if m == nil {
+		return nil
+	}
+	token := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(m[1], `"`, ""), `'`, ""))
+	actionable := token == "true" || token == "1"
+	focus := agendaSalvageStringField(candidate, "focus")
+	reason := agendaSalvageStringField(candidate, "reason")
+	if actionable && strings.TrimSpace(focus) == "" {
+		return &AgendaParsedVerdict{Actionable: false, Focus: "", Reason: "malformed positive verdict without focus"}
+	}
+	return &AgendaParsedVerdict{Actionable: actionable, Focus: focus, Reason: reason}
+}
+
+// coerceAgendaVerdictAny:JSON 成功路径的收窄 —— true/"true"/1 才算
+// actionable(模型答 "no" 之类的自然语言一律视为否),focus/reason 钳 240。
+func coerceAgendaVerdictAny(a, focus, reason any) *AgendaParsedVerdict {
+	actionable := a == true || a == "true" || a == float64(1)
+	return &AgendaParsedVerdict{Actionable: actionable, Focus: jsStringClamp(focus, 240), Reason: jsStringClamp(reason, 240)}
+}
+
+// jsStringClamp:JS String(v ?? ”) 语义 —— 数值/布尔转字符串,数组按
+// JS 逗号连接,统一 UTF-16 钳长。
+func jsStringClamp(v any, max int) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return sliceUTF16(t, max)
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, e := range t {
+			if e == nil {
+				parts = append(parts, "")
+				continue
+			}
+			parts = append(parts, jsStringClamp(e, 1<<30))
+		}
+		return sliceUTF16(strings.Join(parts, ","), max)
+	case float64:
+		// JS Number→String:整数值不带小数点;Go %v 同形。
+		return sliceUTF16(strconv.FormatFloat(t, 'g', -1, 64), max)
+	case bool:
+		return sliceUTF16(strconv.FormatBool(t), max)
+	default:
+		return sliceUTF16(fmt.Sprint(t), max)
+	}
+}
+
+// ClassifyAgendaActionable:remote 路由的云分类 —— 通用 cerebellum 适配器
+// (任意 Chat-Completions 兼容供应商)或 legacy tracked OpenAI 客户端;
+// 任何失败退确定性回退,分类器断供绝不烧脑调用。
+func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona, companyID, agentID string, agenda AgentAgenda, nowMS int64) AgendaVerdict {
+	built := BuildAgendaClassifierRequest(persona, agenda, nowMS)
+	if built.Verdict != nil {
+		return *built.Verdict
+	}
+	if agentID != "" && s.ResolveCerebellumRouteForAgent(ctx, agentID) == "byoa" {
+		slog.Warn("[agenda] classifyAgendaActionable called for byoa-routed agent " + agentID + " — caller should use the /runtime/agenda daemon-poll path instead of the remote classifier")
+		return AgendaVerdict{Actionable: false, Focus: "", Reason: AgendaClassifierError}
+	}
+	adapterBase, adapterKey, useAdapter := s.cerebellumRemoteConfigured(ctx)
+	settings := s.GetCerebellumSettings(ctx)
+	model := supportModelEnv()
+	if useAdapter && settings.Model != "" {
+		model = settings.Model
+	}
+	args := cliResponsesArgs{
+		Model:           model,
+		Instructions:    built.Instructions,
+		Input:           built.Input,
+		JSONMode:        true,
+		MaxOutputTokens: 2000,
+		ReasoningEffort: "minimal",
+	}
+	t0 := time.Now()
+	var outputText string
+	var usage *TokenUsage
+	var err error
+	if useAdapter {
+		// 适配器路径不走 llm 台账(TS ponytail 备注);Chat-Completions
+		// 翻译与 novita 分支同构。
+		outputText, usage, err = s.cerebellumResponsesCreate(ctx, adapterBase, adapterKey, args)
+	} else {
+		agentArg, tenantArg := agentID, companyID
+		record := func(status string, errMsg *string) {
+			s.RecordLlmCall(LlmCallRecord{
+				Purpose: "agenda", CompanyID: &tenantArg, AgentID: &agentArg, Source: "cloud",
+				Model: model, Usage: usage, LatencyMS: msSince(t0), Status: status, Error: errMsg,
+				Extras: map[string]any{
+					"cards":   len(agenda.Cards),
+					"events":  len(agenda.Events),
+					"stalls":  len(agenda.Stalls),
+					"persona": persona.Name,
+				},
+			})
+		}
+		var res cliResponsesResult
+		res, err = s.cliResponsesCreate(ctx, companyID, args)
+		if err != nil {
+			msg := err.Error()
+			record("failed", &msg)
+		} else {
+			usage = res.Usage
+			record("ok", nil)
+		}
+		outputText = res.OutputText
+	}
+	if err == nil {
+		if parsed := ParseAgendaVerdict(outputText); parsed != nil {
+			return AgendaVerdict{Actionable: parsed.Actionable, Focus: parsed.Focus, Reason: parsed.Reason}
+		}
+		err = fmt.Errorf("agenda classifier returned no recoverable verdict")
+	}
+	slog.Warn("[agenda] classifier failed", "err", err.Error())
+	return AgendaDeterministicFallback(agenda)
+}
+
+// cerebellumResponsesCreate:Responses 参数 → Chat-Completions 翻译
+// (cerebellum-adapter.ts 的非流式分支;模型名原样透传)。
+func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args cliResponsesArgs) (string, *TokenUsage, error) {
+	body := map[string]any{
+		"model":    args.Model,
+		"messages": novitaChatMessages(args.Instructions, args.Input),
+		"stream":   false,
+	}
+	if args.MaxOutputTokens > 0 {
+		body["max_tokens"] = args.MaxOutputTokens
+	}
+	if args.JSONMode {
+		body["response_format"] = map[string]any{"type": "json_object"}
+	}
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(baseURL, "/")+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer "+apiKey)
+	resp, err := httpClientLLM.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("%d %s", resp.StatusCode, truncateRunesSimple(string(raw), 400))
+	}
+	out, err := parseNovitaChatCompletion(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return out.OutputText, out.Usage, nil
 }

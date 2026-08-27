@@ -270,6 +270,16 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// randUUID36:randomUUID() 的虚线形态(8-4-4-4-12)。
+func randUUID36() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+}
+
 // MintMessageId 对齐 mintMessageId:<36 进制时间>-<22hex>@<EMAIL_DOMAIN>。
 func MintMessageId() string {
 	dom := RootDomain()
@@ -600,7 +610,7 @@ func PersistEmailMessage(ctx context.Context, db *sql.DB, args PersistArgs) (str
 	if args.BCCAddrs == nil {
 		args.BCCAddrs = []string{}
 	}
-	messageID := "m-" + randHex(16)
+	messageID := "m-" + randUUID36()
 	var sequence int
 	if err := db.QueryRowContext(ctx, `
 		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
@@ -742,7 +752,7 @@ func FindOrCreateEmailConversation(ctx context.Context, db *sql.DB, companyID st
 		cleanSubject = "(no subject)"
 	}
 	cleanSubject = Utf16Cap(cleanSubject, 200)
-	id := "email-" + randHex(6)
+	id := "email-" + randUUID36()[:12]
 	seen := map[string]bool{}
 	unique := []string{}
 	for _, m := range memberIDs {
