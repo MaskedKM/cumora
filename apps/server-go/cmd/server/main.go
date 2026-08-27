@@ -93,6 +93,14 @@ func main() {
 	runtimeSvc.SetRelay(relay)
 	runtimeSvc.Mount(mux)
 
+	// 认知辅后台任务组(#62):mailbox scheduler(msg.new/polls 订阅 →
+	// 唤醒/steer)、背景扫描、idle 调度、llm_calls_rollup 刷新——各自
+	// env 门控对齐 TS index.ts(ENABLE_*/INTERVAL),tick 失败自隔离。
+	runtimeSvc.StartScheduler()
+	runtimeSvc.StartScanner()
+	runtimeSvc.StartIdleScheduler()
+	runtimeSvc.StartLlmRollupRefresher()
+
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)
 	email.StartRetryWorker(ctxBoot, pool, envInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
 	email.StartGcWorker(ctxBoot, pool, envInt("EMAIL_GC_INTERVAL_MS", 24*60*60_000))
