@@ -139,7 +139,12 @@ func runEvents(db *sql.DB) http.HandlerFunc {
 		if err := db.QueryRowContext(r.Context(),
 			`SELECT 1 FROM agent_runs WHERE id = $1 AND company_id = $2 LIMIT 1`,
 			runID, tenant).Scan(&one); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
+			if err == sql.ErrNoRows {
+				httpx.WriteError(w, http.StatusNotFound, "not found")
+			} else {
+				// 门禁查询失败 ≠ 不存在(TS throw → 500,#107 评审 NIT5)。
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			}
 			return
 		}
 		rows, err := db.QueryContext(r.Context(), `
@@ -193,7 +198,15 @@ func peekAgentChat(db *sql.DB) http.HandlerFunc {
 			    )
 			 ) FROM conversations c
 			WHERE c.id = $1 AND c.company_id = $2
-			LIMIT 1`, id, tenant).Scan(&isAgentOnly); err != nil || !isAgentOnly {
+			LIMIT 1`, id, tenant).Scan(&isAgentOnly); err != nil {
+			if err == sql.ErrNoRows {
+				httpx.WriteError(w, http.StatusNotFound, "not found")
+			} else {
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		if !isAgentOnly {
 			httpx.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}

@@ -385,9 +385,15 @@ func orNone(s string) string {
 // 签名确定性于 id+gender;image API → avatars/ 存储 → participants.
 // avatar_url → persona 缓存失效 → CH_STATUS 广播。失败抛错由命令层接。
 // GenerateAgentAvatar:admin 头像生成路由的注入面(domains/devtools 钩子;
-// boards 的 WakeMentioned 同款依赖倒置)。
+// boards 的 WakeMentioned 同款依赖倒置)。退化图像分支文本按 admin 路径
+// 的 TS 语义翻译:router.ts 抛 'image API returned no image',而共享的
+// CLI 生成器沿 cli.ts 说 'no data'(#107 评审 NIT4)。
 func (s *Service) GenerateAgentAvatar(ctx context.Context, agentID, tenant string) (string, error) {
-	return s.cliGenerateAndPersistAvatar(ctx, agentID, tenant)
+	url, err := s.cliGenerateAndPersistAvatar(ctx, agentID, tenant)
+	if err != nil && err.Error() == "image API returned no data" {
+		return "", fmt.Errorf("image API returned no image")
+	}
+	return url, err
 }
 
 func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tenant string) (string, error) {
@@ -398,8 +404,13 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT name, role, system_prompt, kind FROM participants WHERE id = $1 AND company_id = $2`,
 		agentID, tenant).Scan(&name, &role, &systemPrompt, &kind)
-	if err != nil {
+	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("not found")
+	}
+	if err != nil {
+		// TS:非缺失错误原样上抛 → admin 路由落 502 image generation
+		// failed(瞬态 DB 故障不得伪装成 404,#107 评审 MINOR1)。
+		return "", err
 	}
 	if kind != "agent" {
 		return "", fmt.Errorf("avatar generation is only for agents")

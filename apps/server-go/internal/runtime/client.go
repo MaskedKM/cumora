@@ -10,11 +10,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
 )
 
 // GetConversationCompanyId:会话 → 租户(inbox 空时归 run 用)。
@@ -415,17 +415,15 @@ func freshenAttachmentURLs(rows []map[string]any) {
 			continue
 		}
 		key, _ := att["key"].(string)
-		if key == "" && strings.HasPrefix(url, "/uploads/") {
-			key = strings.TrimPrefix(url, "/uploads/")
-			// 与 storage.ts 前缀白名单对齐;反解不出合法键保持原样。
-			if !strings.HasPrefix(key, "attachments/") && !strings.HasPrefix(key, "email-attachments/") && !strings.HasPrefix(key, "avatars/") {
-				continue
-			}
+		if key == "" {
+			// storageKeyFromPublicUrl 共享实现(#77 评审 MINOR2:含
+			// percent-decode/trim/前缀白名单,与 TS freshen 同源)。
+			key = storage.StorageKeyFromPublicUrl(url)
 		}
 		if key == "" {
 			continue
 		}
-		att["url"] = "/uploads/" + key
+		att["url"] = storage.PublicUrl(key)
 		att["key"] = key
 	}
 }

@@ -113,6 +113,9 @@ after(async () => {
   await memberMirror.close()
 })
 
+// 注:两测试形态都在 NODE_ENV≠production 下跑(devtools 门 localDev 恒
+// 开),DEV 头在这两形态里是装饰性的——403 'not enabled' 分支仅在
+// NODE_ENV=production 的部署可达,镜像无法覆盖(#107 评审 NIT6 留档)。
 const DEV = { 'x-cumora-dev-mode': '1' }
 
 async function seedAgentRow(id: string): Promise<void> {
