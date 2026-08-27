@@ -73,6 +73,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           set -euo pipefail
+          # checkout@v4 把 safe.directory 写进它自己的"临时 git global
+          # config",对本步骤不可见;ser8 串行复用同一工作区,上一个 job
+          # 的 give-back 已把属主还给 runner 用户,容器 root 的 git 因此
+          # 拒绝(v0.3.0-go.1 首演练即栽在这里)。本 job 自己补一条。
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --quiet origin my-custom main
           if ! git branch -r --contains "$GITHUB_SHA" | grep -E 'origin/(my-custom|main)$'; then
             echo "::error::tag $GITHUB_REF_NAME is not on my-custom/main — refusing to publish"
