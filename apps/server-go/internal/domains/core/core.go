@@ -18,12 +18,18 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/redis/go-redis/v9"
 )
 
-func Mount(mux *http.ServeMux, db *sql.DB) {
+func Mount(mux *http.ServeMux, db *sql.DB, rdb *redis.Client) {
 	mux.HandleFunc("GET /api/auth/me", authMe(db))
 	mux.HandleFunc("POST /api/auth/logout", logout(db))
 	mux.HandleFunc("POST /api/auth/ws-ticket", wsTicket(db))
+	// OAuth 登录流(#109):匿名路由(start 302 出去、callback 302 回来),
+	// 不走 requireAuth;state 走 Redis。
+	oauthDeps := oauthDeps{db: db, rdb: rdb}
+	mux.HandleFunc("GET /api/auth/start/{provider}", oauthStart(oauthDeps))
+	mux.HandleFunc("GET /api/auth/callback/{provider}", oauthCallback(oauthDeps))
 	mux.HandleFunc("GET /api/me", me(db))
 	mux.HandleFunc("GET /api/me/quota", quota())
 	mux.HandleFunc("GET /api/me/preferences", preferencesGet(db))
