@@ -34,6 +34,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/runtime"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/webapp"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wsx"
 	"github.com/redis/go-redis/v9"
 )
@@ -94,6 +95,10 @@ func main() {
 	runtimeSvc := runtime.New(pool, rdb)
 	runtimeSvc.SetRelay(relay)
 	runtimeSvc.Mount(mux)
+
+	// 静态托管(#69 切换日):SPA(生产 dist/)与 /uploads 本地目录——
+	// 全量承载前端所需,语义对齐 TS index.ts 静态段。
+	webapp.Mount(mux)
 
 	// 认知辅后台任务组(#62):mailbox scheduler(msg.new/polls 订阅 →
 	// 唤醒/steer)、背景扫描、idle 调度、llm_calls_rollup 刷新——各自

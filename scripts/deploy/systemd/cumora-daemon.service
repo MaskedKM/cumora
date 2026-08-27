@@ -1,0 +1,17 @@
+# Cumora BYOA daemon(Go 单二进制,#69 切换日替换 ~/.config/systemd/user/cumora.service)。
+# CLI 面与 TS agent-cli 同构(agent computer --server …),daemon.env 原样沿用。
+[Unit]
+Description=Cumora BYOA daemon (Go)
+After=network-online.target cumora-go.service
+Wants=cumora-go.service
+
+[Service]
+Environment=CUMORA_SUPERVISED=1
+# 引擎凭据(codex → Claude_Relay_Service 的 ANTHROPIC_AUTH_TOKEN 等)
+EnvironmentFile=%h/.cumora/daemon.env
+ExecStart=%h/Code/cumora/apps/byoa-daemon/cumora agent computer --server http://localhost:5181
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

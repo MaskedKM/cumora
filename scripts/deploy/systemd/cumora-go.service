@@ -1,0 +1,20 @@
+# Cumora Go HTTP 服务(#69 切换日起的默认后端)。
+# 安装:scripts/deploy/install-units.sh → ~/.config/systemd/user/
+# 端口 5181 与 TS 回切单元互斥,二者只能起一个(runbook 编排)。
+[Unit]
+Description=Cumora Go HTTP server
+After=network-online.target cumora-sidecar.service
+Wants=cumora-sidecar.service
+
+[Service]
+# cwd=仓库根:webapp 静态面与 TS 同规解析(dist/、server/uploads/ 相对 cwd)
+WorkingDirectory=%h/Code/cumora
+EnvironmentFile=%h/Code/cumora/.env
+Environment=CUMORA_GO_LISTEN=127.0.0.1:5181
+Environment=CUMORA_GO_MIGRATIONS=%h/Code/cumora/apps/server-go/migrations
+ExecStart=%h/Code/cumora/apps/server-go/cumora-server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
