@@ -86,9 +86,7 @@ func compactMessages(rows []map[string]any) string {
 			body = "[system]"
 		}
 		body = collapseWhitespace(body)
-		if len(body) > 500 {
-			body = body[:500]
-		}
+		body = sliceUTF16(body, 500) // TS .slice(0,500) 按 UTF-16 码元
 		lines = append(lines, fmt.Sprintf("%s%s%s #%d %s%s: %s",
 			unread, reacted, convo, rowInt(m, "sequence"), selfMark, author, body))
 	}

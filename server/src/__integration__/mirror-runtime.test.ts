@@ -876,17 +876,19 @@ test('[mirror-runtime] /wake-stream: the stream STAYS OPEN after ready (no early
     const deadline = Date.now() + 1500
     for (;;) {
       const waitMS = sawReady ? Math.max(1, deadline - Date.now()) : 6000
+      // 看门狗旗:done 到底来自我们的超时(流仍开=通过)还是流的真 EOF。
+      // 不看旗而比 Date.now() < deadline 会与定时器在毫秒边界竞态
+      // (CI 实录差 1ms 误判"早关",#94 CI 修复)。
+      let watchdogFired = false
       const result = await Promise.race([
         reader.read(),
-        new Promise<{ done: true }>((resolve) => setTimeout(() => resolve({ done: true } as const), waitMS)),
+        new Promise<{ done: true }>((resolve) => setTimeout(() => { watchdogFired = true; resolve({ done: true } as const) }, waitMS)),
       ])
       if (result.done) {
         if (!sawReady) throw new Error('stream ended before the ready frame')
-        // 超时窗口耗尽而未 EOF = 流仍开。若真 EOF,done 会带着 value 缺失
-        // 提前到达——此处到达即说明 ready 后 1.5s 内被服务端关闭。
-        const endedEarly = Date.now() < deadline
-        assert.ok(!endedEarly, `server closed the stream right after ready (${Date.now()} < ${deadline})`)
-        return
+        if (watchdogFired) return // 超时窗耗尽而未 EOF = 流仍开,通过
+        // 真 EOF:done 带 value 缺失提前到达 = ready 后 1.5s 内被服务端关闭。
+        assert.fail(`server closed the stream right after ready (${Date.now()} < ${deadline})`)
       }
       buf += dec.decode(result.value, { stream: true })
       if (!sawReady && buf.includes('event: ready')) sawReady = true

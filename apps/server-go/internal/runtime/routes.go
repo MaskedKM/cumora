@@ -12,6 +12,8 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -86,19 +88,28 @@ func (s *Service) auth(next func(w http.ResponseWriter, r *http.Request, agentID
 }
 
 // readJSON:读体 → map;空/坏体给空 map(handler 自行判定必填字段)。
-func readJSON(w http.ResponseWriter, r *http.Request) map[string]any {
+// readJSON:TS express.json({limit:'34mb'}) 语义(#94)——坏体/超体 400
+// 'invalid JSON body'(此前吞成 {} 会让无必填字段端点静默 200 默认值);
+// EOF/空体沿用 {} 语义(TS 同样放行)。返回 (body, ok);ok=false 时
+// 响应已写完,调用方直返。
+func readJSON(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	body := map[string]any{}
 	if r.Body == nil {
-		return body
+		return body, true
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	// 上限对齐 TS 全局挂载(index.ts:117 express.json({limit:'34mb'}),
+	// 在 /runtime 挂载之前生效;mirror 测试的 4mb 只是 harness 同形,
+	// 不影响语义。评审 MINOR1:4mb 会把 /runtime/llm-calls 的大 extras
+	// 截成 400 丢台账——34mb 是 production 真语义。
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 34<<20))
 	if err := dec.Decode(&body); err != nil {
-		if err.Error() == "EOF" {
-			return map[string]any{}
+		if errors.Is(err, io.EOF) {
+			return map[string]any{}, true
 		}
-		return map[string]any{}
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return nil, false
 	}
-	return body
+	return body, true
 }
 
 func bodyStr(body map[string]any, key string) string {
@@ -139,25 +150,9 @@ func bodyStrSlice(body map[string]any, key string) []string {
 	return out
 }
 
-func sliceUTF16(s string, n int) string {
-	// TS String.slice 按 UTF-16 码元;对 BMP 外字符按 rune 近似(代理对
-	// 边界差异只影响多字节截断尾巴)。
-	if len(s) <= n {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= n/1 && len(string(runes)) <= n {
-		return string(runes)
-	}
-	out := []rune{}
-	for _, r := range runes {
-		if len(string(out))+len(string(r)) > n {
-			break
-		}
-		out = append(out, r)
-	}
-	return string(out)
-}
+// sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元 —— cli_read.go 的
+// utf16Slice 别名(同包双名,#94 合并;代理对计 2 码元)。
+func sliceUTF16(s string, n int) string { return utf16Slice(s, n) }
 
 /* ───────── wake-stream / cli ───────── */
 
@@ -174,7 +169,10 @@ func (s *Service) handleWakeStream(w http.ResponseWriter, r *http.Request, agent
 // 到这里;JWT 钉死身份——剥净调用方 --as 后注入 --as <sub>(防御纵深:
 // parseArgs 取最后一次出现,不剥就被冒充),再交 RunCli 分发。
 func (s *Service) handleCli(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	// TS 语义:argv 非数组才 400;数组里的非字符串元素被过滤而非拒收。
 	rawArgv, ok := body["argv"].([]any)
 	if !ok {
@@ -226,7 +224,10 @@ func (s *Service) handlePersona(w http.ResponseWriter, r *http.Request, agentID 
 }
 
 func (s *Service) handleConversationCompanyId(w http.ResponseWriter, r *http.Request, _ string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	conversationID := bodyStr(body, "conversationId")
 	if conversationID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "conversationId required")
@@ -425,7 +426,10 @@ func (s *Service) handleAgendaVerdict(w http.ResponseWriter, r *http.Request, ag
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"actionable": false})
 		return
 	}
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	focus := sliceUTF16(bodyStr(body, "focus"), 240)
 	reason := sliceUTF16(bodyStr(body, "reason"), 240)
 	verdict := AgendaVerdict{Actionable: bodyBool(body, "actionable"), Focus: focus, Reason: reason}
@@ -440,17 +444,30 @@ func (s *Service) handleAgendaVerdict(w http.ResponseWriter, r *http.Request, ag
 /* ───────── 读面(续) ───────── */
 
 func (s *Service) handleMemoryQuery(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
-	limits := map[string]int{}
-	if raw, ok := body["limits"].(map[string]any); ok {
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
+	// limits 逐键指针化(#94):TS `limits.semantic ?? 20`——缺键才补默认,
+	// 显式 0 原样透传(只留 pinned 集;??:null/undefined 触发默认,0 不)。
+	var semantic, recent, total *int
+	if raw, isMap := body["limits"].(map[string]any); isMap {
 		for k, v := range raw {
-			if f, ok := v.(float64); ok {
-				limits[k] = int(f)
+			if f, isNum := v.(float64); isNum {
+				n := int(f)
+				switch k {
+				case "semantic":
+					semantic = &n
+				case "recent":
+					recent = &n
+				case "total":
+					total = &n
+				}
 			}
 		}
 	}
 	rows, err := s.LoadMemory(r.Context(), agentID, bodyStr(body, "queryText"),
-		limits["semantic"], limits["recent"], limits["total"],
+		semantic, recent, total,
 		bodyStrSlice(body, "projectIds"), bodyStrSlice(body, "conversationIds"))
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -460,7 +477,10 @@ func (s *Service) handleMemoryQuery(w http.ResponseWriter, r *http.Request, agen
 }
 
 func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	ids := bodyStrSlice(body, "conversationIds")
 	if ids == nil {
 		ids = []string{}
@@ -492,7 +512,10 @@ func (s *Service) handleSkills(w http.ResponseWriter, r *http.Request, agentID s
 }
 
 func (s *Service) handleFaces(w http.ResponseWriter, r *http.Request, _ string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	ids := bodyStrSlice(body, "participantIds")
 	if ids == nil {
 		ids = []string{}
@@ -542,7 +565,10 @@ func (s *Service) handleRoster(w http.ResponseWriter, r *http.Request, agentID s
 /* ───────── 状态 + 在场 ───────── */
 
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	status := bodyStr(body, "status")
 	// TS 只查非空——任意字符串直写(列无 CHECK),DB 失败也吞成 ok。
 	if status == "" {
@@ -558,7 +584,10 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request, agentID s
 }
 
 func (s *Service) handleStatusHeartbeat(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	status := bodyStr(body, "status")
 	// TS 同款:只查非空;status 不匹配当前值时 UPDATE 零行,照样 ok。
 	if status == "" {
@@ -572,7 +601,10 @@ func (s *Service) handleStatusHeartbeat(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Service) handleTyping(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	conversationID := bodyStr(body, "conversationId")
 	if conversationID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "conversationId required")
@@ -585,7 +617,10 @@ func (s *Service) handleTyping(w http.ResponseWriter, r *http.Request, agentID s
 /* ───────── 观测面 ───────── */
 
 func (s *Service) handleCreateRun(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	trigger, _ := body["trigger"].(map[string]any)
 	var inputIDs []string
 	if raw, ok := body["inputMessageIds"].([]any); ok {
@@ -623,7 +658,10 @@ func (s *Service) handleCreateRun(w http.ResponseWriter, r *http.Request, agentI
 }
 
 func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	runID, kind, title := bodyStr(body, "runId"), bodyStr(body, "kind"), bodyStr(body, "title")
 	if runID == "" || kind == "" || title == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "runId, kind, title required")
@@ -673,7 +711,10 @@ func usageFromWire(v any) *TokenUsage {
 // 操作者自己机器上跑 triage,服务器看不到其用量,除非 daemon 报上来。
 // 身份来自 JWT;尽力而为(云侧 triage 在 classify 内联记,不走此路)。
 func (s *Service) handleRecordTriage(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	source := bodyStr(body, "source")
 	if source == "" {
 		source = "byoa-claude"
@@ -721,9 +762,7 @@ func normalizeDaemonVersion(v string) *string {
 	if t == "" {
 		return nil
 	}
-	if len(t) > 32 {
-		t = t[:32]
-	}
+	t = sliceUTF16(t, 32) // TS trim().slice(0,32) 按 UTF-16 码元
 	return &t
 }
 
@@ -731,7 +770,10 @@ func normalizeDaemonVersion(v string) *string {
 // CodexSession 每条助手消息(Claude)或每个 turn-completed(Codex)产
 // 一份 EngineHopReport,按 N 跳或 ~250ms 批量上送。每跳一行 llm_calls。
 func (s *Service) handleLlmCalls(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	source := bodyStr(body, "source")
 	switch source {
 	case "byoa-claude", "byoa-codex", "byoa-grok", "byoa-cursor", "byoa-zcode":
@@ -809,7 +851,10 @@ func (s *Service) handleRunHeartbeat(w http.ResponseWriter, r *http.Request, _ s
 }
 
 func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	status := bodyStr(body, "status")
 	// TS 只查非空(不枚举校验)——镜像同语义。
 	if status == "" {
@@ -847,8 +892,12 @@ func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ stri
 // busy:<agentId> 判定 steer(轮中注入)还是常规 wake(轮后拾取)。
 // agentId 来自 JWT,与所有端点同款防冒充。
 func (s *Service) handleBusyHeartbeat(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	ttl := 5.0
-	if f, ok := bodyFloat(readJSON(w, r), "ttlSec"); ok && f > 0 && f <= 300 {
+	if f, isNum := bodyFloat(body, "ttlSec"); isNum && f > 0 && f <= 300 {
 		ttl = f
 	}
 	s.RecordBusyHeartbeat(agentID, int(ttl))
@@ -867,7 +916,10 @@ func (s *Service) handleBusyClear(w http.ResponseWriter, _ *http.Request, agentI
 // 轮始而非"最近一次心跳")。cli.cmdReply 预检靠锚发现 compose 期间
 // 落地的同侪发帖,即便 agent 自己的 glance 已把 seen 基线推过去。
 func (s *Service) handleThinkingMark(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	ids := bodyStrSlice(body, "conversationIds")
 	ttl := 60.0
 	if f, ok := bodyFloat(body, "ttlSec"); ok && f > 0 && f <= 600 {
@@ -886,7 +938,11 @@ func (s *Service) handleThinkingMark(w http.ResponseWriter, r *http.Request, age
 }
 
 func (s *Service) handleThinkingUnmark(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	ids := bodyStrSlice(readJSON(w, r), "conversationIds")
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
+	ids := bodyStrSlice(body, "conversationIds")
 	s.UnmarkThinking(agentID, ids)
 	// 轮结束——锚一并清,下一轮拿新锚。
 	for _, cid := range ids {
@@ -907,7 +963,10 @@ func (s *Service) handleThinkingPeek(w http.ResponseWriter, r *http.Request, _ s
 /* ───────── worklog ───────── */
 
 func (s *Service) handleWorklogClaim(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	scopeKey, taskType, subject := bodyStr(body, "scopeKey"), bodyStr(body, "taskType"), bodyStr(body, "subject")
 	if scopeKey == "" || taskType == "" || subject == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "scopeKey, taskType, subject required")
@@ -931,7 +990,10 @@ func (s *Service) handleWorklogClaim(w http.ResponseWriter, r *http.Request, age
 }
 
 func (s *Service) handleWorklogRelease(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	scopeKey, taskType, subject := bodyStr(body, "scopeKey"), bodyStr(body, "taskType"), bodyStr(body, "subject")
 	if scopeKey == "" || taskType == "" || subject == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "scopeKey, taskType, subject required")
@@ -955,7 +1017,10 @@ func (s *Service) handleWorklogPeek(w http.ResponseWriter, r *http.Request, _ st
 // handleMarkRead:轮末告诉服务端哪些消息已经过轮中 steer 排水消费,
 // 下次 wake 的 loadInbox 不再浮出。agentId 取 JWT。
 func (s *Service) handleMarkRead(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	conversationID, upToMessageID := bodyStr(body, "conversationId"), bodyStr(body, "upToMessageId")
 	if conversationID == "" || upToMessageID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "conversationId and upToMessageId required")
@@ -971,7 +1036,10 @@ func (s *Service) handleMarkRead(w http.ResponseWriter, r *http.Request, agentID
 // 故障)。信任请求体的 agentId/companyId 会让任何有效 token 冒充他人
 // 跨租户发通知。目标会话须属 token 租户且本 agent 是成员。
 func (s *Service) handleNotices(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
-	body := readJSON(w, r)
+	body, ok := readJSON(w, r)
+	if !ok {
+		return
+	}
 	conversationID := bodyStr(body, "conversationId")
 	noticeKind := bodyStr(body, "noticeKind")
 	text := bodyStr(body, "text")

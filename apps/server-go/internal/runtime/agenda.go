@@ -142,7 +142,8 @@ func RenderAgendaForClassifier(agenda AgentAgenda, nowMS int64) string {
 			if c.AssigneeID != nil {
 				tag = "assigned"
 			}
-			lines = append(lines, fmt.Sprintf("- [%s] %q in %s / %s (id=%s, updated %s, %s)",
+			// TS `"${c.title}"` 手工引号,不转义(%q 会 Go 引号化)。
+			lines = append(lines, fmt.Sprintf(`- [%s] "%s" in %s / %s (id=%s, updated %s, %s)`,
 				tag, c.Title, c.BoardTitle, c.ColumnTitle, c.ID, c.UpdatedAt, relativeAge(c.UpdatedAt, nowMS)))
 		}
 	}
@@ -178,13 +179,9 @@ func RenderAgendaForClassifier(agenda AgentAgenda, nowMS int64) string {
 		for _, e := range agenda.Events {
 			prompt := ""
 			if e.AgentPrompt != nil && *e.AgentPrompt != "" {
-				p := *e.AgentPrompt
-				if len(p) > 140 {
-					p = p[:140]
-				}
-				prompt = " — prompt: " + p
+				prompt = " — prompt: " + sliceUTF16(*e.AgentPrompt, 140)
 			}
-			lines = append(lines, fmt.Sprintf("- %q at %s (%s)%s", e.Title, e.StartAt, relativeAge(e.StartAt, nowMS), prompt))
+			lines = append(lines, fmt.Sprintf(`- "%s" at %s (%s)%s`, e.Title, e.StartAt, relativeAge(e.StartAt, nowMS), prompt))
 		}
 	}
 	if len(stalls) > 0 {
@@ -533,11 +530,10 @@ func RenderAgendaBrief(agenda AgentAgenda, focus string) string {
 			}
 			lines = append(lines, fmt.Sprintf("- %s  [%s / %s]  %s  (%s)", c.ID, c.BoardTitle, c.ColumnTitle, c.Title, tag))
 			if c.Description != nil && *c.Description != "" {
-				d := collapseWhitespace(*c.Description)
-				if len(d) > 200 {
-					d = d[:200]
-				}
-				lines = append(lines, "    "+d)
+				// TS .replace(/\n/g, ' ').slice(0,200):只换行折叠(空白/制表保留),
+				// UTF-16 码元截断。
+				d := strings.ReplaceAll(*c.Description, "\n", " ")
+				lines = append(lines, "    "+sliceUTF16(d, 200))
 			}
 		}
 		lines = append(lines, "")
@@ -551,11 +547,7 @@ func RenderAgendaBrief(agenda AgentAgenda, focus string) string {
 		for _, e := range agenda.Events {
 			lines = append(lines, fmt.Sprintf("- %s  at %s  %s", e.ID, e.StartAt, e.Title))
 			if e.AgentPrompt != nil && *e.AgentPrompt != "" {
-				p := *e.AgentPrompt
-				if len(p) > 240 {
-					p = p[:240]
-				}
-				lines = append(lines, "    prompt: "+p)
+				lines = append(lines, "    prompt: "+sliceUTF16(*e.AgentPrompt, 240))
 			}
 		}
 	}
@@ -573,7 +565,7 @@ func RenderAgendaBrief(agenda AgentAgenda, focus string) string {
 			if st.Title != nil {
 				title = *st.Title
 			}
-			lines = append(lines, fmt.Sprintf("- %s [%s] %q — %s, %dm ago. Recent:", st.ConversationID, st.Kind, title, who, st.MinutesSilent))
+			lines = append(lines, fmt.Sprintf(`- %s [%s] "%s" — %s, %dm ago. Recent:`, st.ConversationID, st.Kind, title, who, st.MinutesSilent))
 			tail := st.RecentTail
 			if tail == "" {
 				tail = st.LastBody

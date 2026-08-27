@@ -242,15 +242,22 @@ type memoryQueryRow struct {
 // 无查询向量时退化为 pinned+近期。agent_workspace 存 memory/<kind>/<id>.md,
 // 结构字段在 meta JSONB,稠度向量在 embedding vector(1536)。
 func (s *Service) LoadMemory(ctx context.Context, agentID, queryText string,
-	semanticLimit, recentLimit, totalLimit int, projectIDs, convoScope []string) ([]map[string]any, error) {
-	if semanticLimit <= 0 {
-		semanticLimit = 20
+	semanticLimit, recentLimit, totalLimit *int, projectIDs, convoScope []string) ([]map[string]any, error) {
+	// TS limits.semantic ?? 20 语义(#94):nil = 补默认;显式 0 原样保留
+	// (pinned+0 语义/recent+0/总额 0 → 只 pinned;负值按 TS ?? 不触发的
+	// 原样透传——两侧同入 PG 的 "LIMIT must not be negative" 错误→500
+	// 路径,平价成立)。
+	sem := 20
+	if semanticLimit != nil {
+		sem = *semanticLimit
 	}
-	if recentLimit <= 0 {
-		recentLimit = 10
+	rec := 10
+	if recentLimit != nil {
+		rec = *recentLimit
 	}
-	if totalLimit <= 0 {
-		totalLimit = 40
+	tot := 40
+	if totalLimit != nil {
+		tot = *totalLimit
 	}
 	scope, err := s.ResolveMemoryScope(ctx, projectIDs, convoScope)
 	if err != nil {
@@ -270,7 +277,7 @@ func (s *Service) LoadMemory(ctx context.Context, agentID, queryText string,
 			 WHERE agent_id = $1 AND path LIKE 'memory/%'
 			   AND `+memoryScopeSQL("meta", "path", "$3")+`
 			 ORDER BY COALESCE((meta->>'pinned')::boolean, false) DESC, updated_at DESC
-			 LIMIT $2`, agentID, totalLimit, pqArray(scope))
+			 LIMIT $2`, agentID, tot, pqArray(scope))
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +333,7 @@ func (s *Service) LoadMemory(ctx context.Context, agentID, queryText string,
 		 WHERE rn = 1
 		 ORDER BY source_rank ASC, updated_at DESC
 		 LIMIT $5`,
-		agentID, *queryVec, semanticLimit, recentLimit, totalLimit, pqArray(scope))
+		agentID, *queryVec, sem, rec, tot, pqArray(scope))
 	if err != nil {
 		return nil, err
 	}
