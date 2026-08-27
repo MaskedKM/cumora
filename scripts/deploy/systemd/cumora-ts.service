@@ -1,0 +1,16 @@
+# Cumora TS HTTP 服务(#69 回切兜底:Go 观察期异常时 stop cumora-go → start 本单元)。
+# 平时保持 stopped;端口与 cumora-go 互斥。
+[Unit]
+Description=Cumora TS HTTP server (rollback)
+After=network-online.target cumora-sidecar.service
+Wants=cumora-sidecar.service
+
+[Service]
+WorkingDirectory=%h/Code/cumora
+EnvironmentFile=%h/Code/cumora/.env
+ExecStart=%h/.nvm/versions/node/v22.22.0/bin/node --import tsx server/src/index.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

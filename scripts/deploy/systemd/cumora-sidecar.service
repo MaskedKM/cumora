@@ -1,0 +1,17 @@
+# Cumora yjs-sidecar(文档协同;node/TS 存续,两栈共用)。
+[Unit]
+Description=Cumora yjs-sidecar (doc collab)
+After=network-online.target
+
+[Service]
+# cwd=仓库根使 --import tsx 能解析根 node_modules 里的 tsx
+WorkingDirectory=%h/Code/cumora
+EnvironmentFile=%h/Code/cumora/.env
+Environment=YJS_SIDECAR_PORT=5182
+# 切换日前由 runbook 生成并写入 .env(YJS_SIDECAR_TOKEN),两栈同源读取
+ExecStart=%h/.nvm/versions/node/v22.22.0/bin/node --import tsx apps/yjs-sidecar/src/main.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
