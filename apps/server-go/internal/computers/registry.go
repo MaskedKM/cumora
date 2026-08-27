@@ -39,6 +39,23 @@ func hashToken(token string) string {
 	return base64.URLEncoding.EncodeToString(sum[:])
 }
 
+// utf16Slice:JS slice(0,n) 按 UTF-16 码元(rune 截在代理对拆分上多算
+// 半码元;TS 语义的真身是码元计数)。daemonVersion/hostName 钳位用(#94)。
+func utf16Slice(s string, n int) string {
+	count := 0
+	for i, r := range s {
+		w := 1
+		if r >= 0x10000 {
+			w = 2
+		}
+		if count+w > n {
+			return s[:i]
+		}
+		count += w
+	}
+	return s
+}
+
 func randB64(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -125,10 +142,8 @@ func PairComputer(ctx context.Context, db *sql.DB, code string, hostName string,
 		}
 	}
 	enginesJSON, _ := json.Marshal(filtered)
-	v := version
-	if len([]rune(v)) > 32 {
-		v = string([]rune(v)[:32])
-	}
+	// TS 对应钳位按 UTF-16 码元(非 rune):代理对拆分语义一致。
+	v := utf16Slice(version, 32)
 	var versionArg, supervisedArg any
 	if v != "" {
 		versionArg = v
@@ -137,10 +152,7 @@ func PairComputer(ctx context.Context, db *sql.DB, code string, hostName string,
 		supervisedArg = *supervised
 	}
 	deviceToken := randB64(32)
-	reported := hostName
-	if runes := []rune(reported); len(runes) > 80 {
-		reported = string(runes[:80])
-	}
+	reported := utf16Slice(hostName, 80)
 	name := reported
 	if name == "" {
 		name = "My computer"

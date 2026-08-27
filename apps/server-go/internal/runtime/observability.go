@@ -234,9 +234,7 @@ func (s *Service) RecordTriage(agentID string, companyID *string, source, model 
 	var reasonStr any
 	if reason != nil {
 		r := *reason
-		if len(r) > 500 {
-			r = r[:500]
-		}
+		r = sliceUTF16(r, 500) // TS (reason ?? '').slice(0,500)
 		reasonStr = r
 	}
 	if _, err := s.DB.ExecContext(ctxBG, `
@@ -299,14 +297,15 @@ func (s *Service) RecordLlmCall(rec LlmCallRecord) {
 	var errStr any
 	if rec.Error != nil {
 		e := *rec.Error
-		if len(e) > 500 {
-			e = e[:500]
-		}
+		e = sliceUTF16(e, 500) // TS error.slice(0,500) 按 UTF-16 码元
 		errStr = e
 	}
+	// llm_calls.extras 原样存储(TS JSON.stringify verbatim,#94);
+	// clip 裁剪只服务于 observability 展示面,不触及台账。
 	var extras any
 	if rec.Extras != nil {
-		extras = jsonForDB(rec.Extras)
+		b, _ := json.Marshal(rec.Extras)
+		extras = string(b)
 	}
 	if _, err := s.DB.ExecContext(ctxBG, `
 		INSERT INTO llm_calls (

@@ -270,11 +270,8 @@ func NormalizeWorkSubject(subject string) string {
 	s := strings.ToLower(subject)
 	s = workSubjectSpace.ReplaceAllString(s, " ")
 	s = strings.TrimSpace(s)
-	// TS slice(0,80) 按 UTF-16 码元;此处按字节截断即可(80 字节 ≤ 80 码元,
-	// 越界差异只可能让两个超长主题不撞,方向保守)。
-	if len(s) > 80 {
-		s = s[:80]
-	}
+	// TS slice(0,80) 按 UTF-16 码元(长 CJK 主题不再过度相撞,#94)。
+	s = sliceUTF16(s, 80)
 	return s
 }
 
