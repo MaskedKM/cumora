@@ -402,7 +402,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	if systemPrompt.Valid {
 		styleHint = truncateRunesSimple(systemPrompt.String, 500)
 	}
-		roleStr := ""
+	roleStr := ""
 	if role.Valid {
 		roleStr = role.String
 	}
@@ -752,4 +752,3 @@ func (s *Service) cliCmdImage(ctx context.Context, parsed cliParsed) cliResult {
 		fmt.Sprintf("  cumora reply <convo_id> \"<body>\" --attach \"%s\" --attach-name \"%s\"", att.URL, att.Name),
 	}, "\n"))
 }
-

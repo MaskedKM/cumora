@@ -399,7 +399,7 @@ func (s *Service) cliDocCreate(ctx context.Context, parsed cliParsed, me, compan
 		for _, d := range dups {
 			if NormalizeWorkSubject(d.title) == normTitle {
 				s.RecordHold(me, docHoldScope, nil)
-				ageSec := (nowMS()-timeOf(d.createdAt).UnixMilli() + 500) / 1000
+				ageSec := (nowMS() - timeOf(d.createdAt).UnixMilli() + 500) / 1000
 				if ageSec < 1 {
 					ageSec = 1
 				}

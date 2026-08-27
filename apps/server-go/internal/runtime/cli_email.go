@@ -790,19 +790,19 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 		ccAddrs = append(ccAddrs, r.Addr)
 	}
 	return cliOK(fmt.Sprintf("sent%s · %s · thread %s", mockTag, persistedID, convoID), cliSideEffect{
-		"event":          "email.sent",
-		"command":        "email send",
-		"conversationId": convoID,
-		"messageId":      persistedID,
-		"authorId":       me,
-		"companyId":      companyID,
-		"subject":        subject,
-		"to":             toAddrs,
-		"cc":             ccAddrs,
+		"event":           "email.sent",
+		"command":         "email send",
+		"conversationId":  convoID,
+		"messageId":       persistedID,
+		"authorId":        me,
+		"companyId":       companyID,
+		"subject":         subject,
+		"to":              toAddrs,
+		"cc":              ccAddrs,
 		"attachmentCount": len(loaded),
 		"transportStatus": "sent",
-		"mock":           sendRes.Mock,
-		"visibleToUser":  true,
+		"mock":            sendRes.Mock,
+		"visibleToUser":   true,
 	})
 }
 
@@ -979,20 +979,20 @@ func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, co
 		mockTag = " (mock)"
 	}
 	return cliOK(fmt.Sprintf("replied%s · %s · thread %s", mockTag, persistedID, oConvo), cliSideEffect{
-		"event":             "email.sent",
-		"command":           "email reply",
-		"conversationId":    oConvo,
-		"messageId":         persistedID,
-		"authorId":          me,
-		"companyId":         companyID,
-		"replyToMessageId":  replyTo,
-		"subject":           subject,
-		"to":                toAddrs,
-		"cc":                ccCombined,
-		"attachmentCount":   len(loaded),
-		"transportStatus":   "sent",
-		"mock":              sendRes.Mock,
-		"visibleToUser":     true,
+		"event":            "email.sent",
+		"command":          "email reply",
+		"conversationId":   oConvo,
+		"messageId":        persistedID,
+		"authorId":         me,
+		"companyId":        companyID,
+		"replyToMessageId": replyTo,
+		"subject":          subject,
+		"to":               toAddrs,
+		"cc":               ccCombined,
+		"attachmentCount":  len(loaded),
+		"transportStatus":  "sent",
+		"mock":             sendRes.Mock,
+		"visibleToUser":    true,
 	})
 }
 
@@ -1014,4 +1014,3 @@ func (s *Service) cliCmdContacts(ctx context.Context, parsed cliParsed) cliResul
 	shimmed.positional = append([]string{"contacts"}, parsed.positional...)
 	return s.cliEmailContacts(ctx, shimmed, me, companyID, parsed.flagTruey("json"))
 }
-

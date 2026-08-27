@@ -299,16 +299,16 @@ func (s *Service) cliCmdMessages(ctx context.Context, parsed cliParsed) cliResul
 	}
 	defer rows.Close()
 	type msgRow struct {
-		ID              string         `json:"id"`
-		AuthorID        string         `json:"author_id"`
-		Kind            string         `json:"kind"`
-		Body            string         `json:"body"`
-		Sequence        int64          `json:"sequence"`
-		CreatedAt       cliISOTime     `json:"created_at"`
-		Attachment      cliAttachment  `json:"attachment"`
-		Poll            cliPoll        `json:"poll"`
-		QuotedMessageID *string        `json:"quoted_message_id"`
-		Quoted          *cliQuoted     `json:"quoted"`
+		ID              string        `json:"id"`
+		AuthorID        string        `json:"author_id"`
+		Kind            string        `json:"kind"`
+		Body            string        `json:"body"`
+		Sequence        int64         `json:"sequence"`
+		CreatedAt       cliISOTime    `json:"created_at"`
+		Attachment      cliAttachment `json:"attachment"`
+		Poll            cliPoll       `json:"poll"`
+		QuotedMessageID *string       `json:"quoted_message_id"`
+		Quoted          *cliQuoted    `json:"quoted"`
 	}
 	var listed []msgRow
 	for rows.Next() {
@@ -430,14 +430,14 @@ func (s *Service) cliCmdConvening(ctx context.Context, parsed cliParsed) cliResu
 	}
 	if parsed.flagTruey("json") {
 		js, e := cliJSONStringify(map[string]any{
-			"pulled_by_id":   pulledByID,
-			"pulled_at":      pulledAt,
-			"headline_lead":  headlineLead,
-			"headline_tail":  headlineTail,
-			"subhead":        subhead,
-			"who_and_why":    whoAndWhy,
-			"reasoning":      reasoning,
-			"status":         status,
+			"pulled_by_id":  pulledByID,
+			"pulled_at":     pulledAt,
+			"headline_lead": headlineLead,
+			"headline_tail": headlineTail,
+			"subhead":       subhead,
+			"who_and_why":   whoAndWhy,
+			"reasoning":     reasoning,
+			"status":        status,
 		})
 		if e != nil {
 			return cliErrThrow(e)

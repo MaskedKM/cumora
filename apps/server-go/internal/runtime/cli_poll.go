@@ -37,9 +37,9 @@ type cliPollCreated struct {
 
 // cliPollTally / cliPollUpdatedEvent:PollUpdatedEvent 形状。
 type cliPollTally struct {
-	OptionID  string
-	Count     int
-	VoterIDs  []string
+	OptionID string
+	Count    int
+	VoterIDs []string
 }
 
 type cliPollUpdatedEvent struct {

@@ -63,9 +63,9 @@ type cliSkillManifest struct {
 }
 
 const (
-	skillHubTimeout     = 10 * time.Second
-	skillMaxFiles       = 100
-	skillMaxFileBody    = 256 * 1024
+	skillHubTimeout  = 10 * time.Second
+	skillMaxFiles    = 100
+	skillMaxFileBody = 256 * 1024
 )
 
 var httpClientSkillHub = &http.Client{Timeout: skillHubTimeout}
@@ -332,11 +332,11 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		return cliOK(fmt.Sprintf(
 			"created skill %q at %s\n\nflesh it out: cumora ws edit %s \"<old>\" \"<new>\"\nadd scripts:  cumora ws write skills/%s/scripts/<file>.py \"<body>\"\nread it back: cumora skills read %s",
 			name, path, path, name, name), cliSideEffect{
-			"event":    "skill.created",
-			"command":  "skills create",
-			"agentId":  me,
+			"event":     "skill.created",
+			"command":   "skills create",
+			"agentId":   me,
 			"skillName": name,
-			"path":     path,
+			"path":      path,
 		})
 
 	case "delete":

@@ -7,9 +7,9 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wakebus"
 	"github.com/redis/go-redis/v9"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 )
 
 // Service:一个进程一份。DB 为 pg 池;Redis 客户端可能为 nil(单机无

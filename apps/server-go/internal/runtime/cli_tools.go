@@ -235,8 +235,8 @@ func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliPar
 		var errPayload any
 		if r.Error != "" {
 			errPayload = struct {
-				Error   string          `json:"error"`
-				Display cliToolDisplay  `json:"display"`
+				Error   string         `json:"error"`
+				Display cliToolDisplay `json:"display"`
 			}{r.Error, r.Display}
 		} else {
 			errPayload = struct {
@@ -282,13 +282,13 @@ func cliToolSideEffects(toolName string, output any, agentID string) []cliSideEf
 	switch toolName {
 	case "react":
 		return []cliSideEffect{{
-			"event":     "reaction.updated",
-			"command":   "react",
+			"event":         "reaction.updated",
+			"command":       "react",
 			"visibleToUser": true,
-			"actorId":   agentID,
-			"messageId": str("messageId"),
-			"emoji":     str("emoji"),
-			"action":    str("action"),
+			"actorId":       agentID,
+			"messageId":     str("messageId"),
+			"emoji":         str("emoji"),
+			"action":        str("action"),
 		}}
 	case "dm_with":
 		return []cliSideEffect{{
@@ -365,8 +365,8 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 	}
 	icon := "figma"
 	return cliToolResult{
-		OK:         len(colors) > 0,
-		Output:     struct {
+		OK: len(colors) > 0,
+		Output: struct {
 			Colors []string `json:"colors"`
 			Brief  string   `json:"brief"`
 		}{colors, brief},
@@ -755,9 +755,9 @@ func (s *Service) cliTReact(ctx context.Context, args map[string]any, agentID st
 	}
 	defer rows.Close()
 	type reaction struct {
-		Emoji  string   `json:"emoji"`
-		Count  int      `json:"count"`
-		Users  []string `json:"users"`
+		Emoji string   `json:"emoji"`
+		Count int      `json:"count"`
+		Users []string `json:"users"`
 	}
 	reactions := []reaction{}
 	for rows.Next() {

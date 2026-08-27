@@ -111,11 +111,11 @@ func (s *Service) cliParseMentions(ctx context.Context, companyID, text string) 
 
 func (s *Service) publishBoardCli(companyID, kind, boardID string, cardID, columnID, commentID *string, mentions []string, actorID string) {
 	payload := map[string]any{
-		"type":     "board.changed",
+		"type":      "board.changed",
 		"companyId": companyID,
-		"kind":     kind,
-		"boardId":  boardID,
-		"actorId":  actorID,
+		"kind":      kind,
+		"boardId":   boardID,
+		"actorId":   actorID,
 	}
 	if cardID != nil {
 		payload["cardId"] = *cardID
@@ -295,9 +295,9 @@ func (s *Service) cliBoardShow(ctx context.Context, parsed cliParsed, companyID 
 			CompanyID   string  `json:"company_id"`
 		}
 		type showObj struct {
-			Board   boardObj      `json:"board"`
-			Columns []cliColumn   `json:"columns"`
-			Cards   []cliCardRow  `json:"cards"`
+			Board   boardObj     `json:"board"`
+			Columns []cliColumn  `json:"columns"`
+			Cards   []cliCardRow `json:"cards"`
 		}
 		js, e := cliJSONStringify(showObj{
 			Board:   boardObj{bID, bTitle, bDesc, bCompany},

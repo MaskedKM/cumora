@@ -116,25 +116,25 @@ type cliShipInvariant struct {
 }
 
 type cliShipSquare struct {
-	ID            string          `json:"id"`
-	Title         string          `json:"title"`
-	Method        string          `json:"method"`
-	Required      bool            `json:"required"`
-	Status        string          `json:"status"`
-	OwnerID       *string         `json:"owner_id"`
-	VerifiedByID  *string         `json:"verified_by_id"`
-	Evidence      json.RawMessage `json:"evidence"`
-	Notes         *string         `json:"notes"`
+	ID           string          `json:"id"`
+	Title        string          `json:"title"`
+	Method       string          `json:"method"`
+	Required     bool            `json:"required"`
+	Status       string          `json:"status"`
+	OwnerID      *string         `json:"owner_id"`
+	VerifiedByID *string         `json:"verified_by_id"`
+	Evidence     json.RawMessage `json:"evidence"`
+	Notes        *string         `json:"notes"`
 }
 
 type cliShipRelease struct {
-	ID            string  `json:"id"`
-	Environment   string  `json:"environment"`
-	Status        string  `json:"status"`
-	Version       *string `json:"version"`
-	CommitSha     *string `json:"commit_sha"`
+	ID             string  `json:"id"`
+	Environment    string  `json:"environment"`
+	Status         string  `json:"status"`
+	Version        *string `json:"version"`
+	CommitSha      *string `json:"commit_sha"`
 	ReadbackStatus *string `json:"readback_status"`
-	ReadbackDueAt *string `json:"readback_due_at"`
+	ReadbackDueAt  *string `json:"readback_due_at"`
 }
 
 type cliShipFriction struct {
@@ -156,20 +156,20 @@ type cliShipRegression struct {
 }
 
 type cliShipShowSnapshot struct {
-	ID            string               `json:"id"`
-	Title         string               `json:"title"`
-	Problem       string               `json:"problem"`
+	ID             string              `json:"id"`
+	Title          string              `json:"title"`
+	Problem        string              `json:"problem"`
 	DesiredOutcome string              `json:"desired_outcome"`
-	Status        string               `json:"status"`
-	Priority      string               `json:"priority"`
-	RiskLevel     string               `json:"risk_level"`
-	ReleaseTarget *string              `json:"release_target"`
-	BuilderIDs    cliStrArr            `json:"builder_ids"`
-	Invariants    []cliShipInvariant   `json:"invariants"`
-	Squares       []cliShipSquare      `json:"squares"`
-	Releases      []cliShipRelease     `json:"releases"`
-	Friction      []cliShipFriction    `json:"friction"`
-	Regressions   []cliShipRegression  `json:"regressions"`
+	Status         string              `json:"status"`
+	Priority       string              `json:"priority"`
+	RiskLevel      string              `json:"risk_level"`
+	ReleaseTarget  *string             `json:"release_target"`
+	BuilderIDs     cliStrArr           `json:"builder_ids"`
+	Invariants     []cliShipInvariant  `json:"invariants"`
+	Squares        []cliShipSquare     `json:"squares"`
+	Releases       []cliShipRelease    `json:"releases"`
+	Friction       []cliShipFriction   `json:"friction"`
+	Regressions    []cliShipRegression `json:"regressions"`
 }
 
 func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID string) cliResult {

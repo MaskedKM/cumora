@@ -152,11 +152,11 @@ func (s *Service) cliCmdWhoami(ctx context.Context, parsed cliParsed) cliResult 
 		return cliErrThrow(err)
 	}
 	var p struct {
-		ID     string   `json:"id"`
-		Kind   string   `json:"kind"`
-		Name   string   `json:"name"`
-		Role   *string  `json:"role"`
-		Status string   `json:"status"`
+		ID     string    `json:"id"`
+		Kind   string    `json:"kind"`
+		Name   string    `json:"name"`
+		Role   *string   `json:"role"`
+		Status string    `json:"status"`
 		Bio    *string   `json:"bio"`
 		Tools  cliStrArr `json:"tools"`
 	}

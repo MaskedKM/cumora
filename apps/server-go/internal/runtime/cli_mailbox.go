@@ -456,8 +456,8 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 		}
 		if parsed.flagTruey("json") {
 			type jsonRow struct {
-				ID         string     `json:"id"`
-				Title      string     `json:"title"`
+				ID         string      `json:"id"`
+				Title      string      `json:"title"`
 				MutedUntil *cliISOTime `json:"muted_until"`
 			}
 			var jr []jsonRow

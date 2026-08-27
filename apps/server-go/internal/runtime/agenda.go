@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
 	"net/http"
-	"bytes"
 )
 
 func getenv(name string) string           { return os.Getenv(name) }
@@ -844,7 +844,7 @@ func coerceAgendaVerdictAny(a, focus, reason any) *AgendaParsedVerdict {
 	return &AgendaParsedVerdict{Actionable: actionable, Focus: jsStringClamp(focus, 240), Reason: jsStringClamp(reason, 240)}
 }
 
-// jsStringClamp:JS String(v ?? '') 语义 —— 数值/布尔转字符串,数组按
+// jsStringClamp:JS String(v ?? ”) 语义 —— 数值/布尔转字符串,数组按
 // JS 逗号连接,统一 UTF-16 钳长。
 func jsStringClamp(v any, max int) string {
 	switch t := v.(type) {

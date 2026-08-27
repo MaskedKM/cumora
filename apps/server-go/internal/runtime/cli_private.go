@@ -402,8 +402,8 @@ func (s *Service) cliCmdMemory(ctx context.Context, parsed cliParsed) cliResult 
 }
 
 type cliMemRow struct {
-	path string
-	meta map[string]any
+	path      string
+	meta      map[string]any
 	ID        string        `json:"id"`
 	Kind      string        `json:"kind"`
 	About     *string       `json:"about"`
@@ -928,11 +928,11 @@ func (s *Service) cliCmdLog(ctx context.Context, parsed cliParsed) cliResult {
 	}
 	defer rows.Close()
 	type row struct {
-		ID        string      `json:"id"`
-		Kind      string      `json:"kind"`
-		Body      string      `json:"body"`
-		Ref       cliRawJSON  `json:"ref"`
-		CreatedAt cliISOTime  `json:"created_at"`
+		ID        string     `json:"id"`
+		Kind      string     `json:"kind"`
+		Body      string     `json:"body"`
+		Ref       cliRawJSON `json:"ref"`
+		CreatedAt cliISOTime `json:"created_at"`
 	}
 	var all []row
 	for rows.Next() {
@@ -1179,13 +1179,13 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErr(errMsg)
 		}
 		return cliOK(fmt.Sprintf("wrote %s in %s (%d chars)", path, wsName, len(body)), cliSideEffect{
-			"event":      "team_workspace.file_written",
-			"command":    "workspace write",
-			"agentId":    me,
-			"companyId":  tenant,
+			"event":       "team_workspace.file_written",
+			"command":     "workspace write",
+			"agentId":     me,
+			"companyId":   tenant,
 			"workspaceId": wsResolvedID,
-			"path":       path,
-			"bodyLength": len(body),
+			"path":        path,
+			"bodyLength":  len(body),
 		})
 	}
 	return cliErr(usage)
@@ -1504,12 +1504,12 @@ func (s *Service) cliCmdTasks(ctx context.Context, parsed cliParsed) cliResult {
 		}
 		defer rows.Close()
 		type row struct {
-			ID        string      `json:"id"`
-			Title     string      `json:"title"`
-			Status    string      `json:"status"`
-			DueAt     *time.Time  `json:"due_at"`
-			CreatedAt cliISOTime  `json:"created_at"`
-			UpdatedAt cliISOTime  `json:"updated_at"`
+			ID        string     `json:"id"`
+			Title     string     `json:"title"`
+			Status    string     `json:"status"`
+			DueAt     *time.Time `json:"due_at"`
+			CreatedAt cliISOTime `json:"created_at"`
+			UpdatedAt cliISOTime `json:"updated_at"`
 		}
 		var all []row
 		for rows.Next() {

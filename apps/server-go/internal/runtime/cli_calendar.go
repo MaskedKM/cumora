@@ -21,11 +21,11 @@ func cliCalendarVisibilityClause(meIdx int) string {
 
 func (s *Service) publishCalendarCli(companyID, kind, eventID, actorID string) {
 	payload, err := jsonMarshalOrdered(map[string]any{
-		"type":    "calendar.changed",
+		"type":      "calendar.changed",
 		"companyId": companyID,
-		"kind":    kind,
-		"eventId": eventID,
-		"actorId": actorID,
+		"kind":      kind,
+		"eventId":   eventID,
+		"actorId":   actorID,
 	})
 	if err == nil {
 		_ = s.publishRaw("cumora:calendar.events", payload)
@@ -186,15 +186,15 @@ func (s *Service) cliCalendarList(ctx context.Context, parsed cliParsed, me, com
 	}
 	defer rows.Close()
 	type row struct {
-		ID                  string     `json:"id"`
-		Title               string     `json:"title"`
-		Kind                string     `json:"kind"`
-		Status              string     `json:"status"`
-		AssigneeID          *string    `json:"assignee_id"`
-		StartAt             cliISOTime `json:"start_at"`
-		Recurrence          cliRawJSON `json:"recurrence"`
-		TargetConversationID *string   `json:"target_conversation_id"`
-		IsPrivate           bool       `json:"is_private"`
+		ID                   string     `json:"id"`
+		Title                string     `json:"title"`
+		Kind                 string     `json:"kind"`
+		Status               string     `json:"status"`
+		AssigneeID           *string    `json:"assignee_id"`
+		StartAt              cliISOTime `json:"start_at"`
+		Recurrence           cliRawJSON `json:"recurrence"`
+		TargetConversationID *string    `json:"target_conversation_id"`
+		IsPrivate            bool       `json:"is_private"`
 	}
 	var list []row
 	for rows.Next() {
@@ -248,8 +248,8 @@ func parseRecurrenceBrief(raw cliRawJSON) string {
 		return "one-shot"
 	}
 	var rec struct {
-		Freq    string `json:"freq"`
-		Interval *int  `json:"interval"`
+		Freq     string `json:"freq"`
+		Interval *int   `json:"interval"`
 	}
 	if jsonUnmarshal(raw, &rec) != nil || rec.Freq == "" {
 		return "one-shot"
@@ -687,14 +687,14 @@ func (s *Service) cliCalendarDispatches(ctx context.Context, parsed cliParsed, c
 	}
 	defer rows.Close()
 	type row struct {
-		ID            string      `json:"id"`
-		EventID       string      `json:"event_id"`
-		ScheduledFor  cliISOTime  `json:"scheduled_for"`
-		DispatchedAt  *cliISOTime `json:"dispatched_at"`
-		Status        string      `json:"status"`
-		ConversationID *string    `json:"conversation_id"`
-		MessageID     *string     `json:"message_id"`
-		Error         *string     `json:"error"`
+		ID             string      `json:"id"`
+		EventID        string      `json:"event_id"`
+		ScheduledFor   cliISOTime  `json:"scheduled_for"`
+		DispatchedAt   *cliISOTime `json:"dispatched_at"`
+		Status         string      `json:"status"`
+		ConversationID *string     `json:"conversation_id"`
+		MessageID      *string     `json:"message_id"`
+		Error          *string     `json:"error"`
 	}
 	var all []row
 	for rows.Next() {

@@ -315,7 +315,7 @@ func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
 			InputDetails *struct {
 				CachedTokens int64 `json:"cached_tokens"`
 			} `json:"input_tokens_details"`
-			OutputTokens int64 `json:"output_tokens"`
+			OutputTokens  int64 `json:"output_tokens"`
 			OutputDetails *struct {
 				ReasoningTokens int64 `json:"reasoning_tokens"`
 			} `json:"output_tokens_details"`

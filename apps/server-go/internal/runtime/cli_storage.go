@@ -18,10 +18,10 @@ import (
 // agentAttachment:reply --attach* 家族落库的附件对象。Mime/Size/Key 仅
 // 在有值时出现(TS 字面量 undefined 键被 stringify 丢弃)。
 type agentAttachment struct {
-	URL  string `json:"url"`
+	URL  string  `json:"url"`
 	Key  *string `json:"key,omitempty"`
-	Name string `json:"name"`
-	Kind string `json:"kind"` // 'img' | 'file'
+	Name string  `json:"name"`
+	Kind string  `json:"kind"` // 'img' | 'file'
 	Mime *string `json:"mime,omitempty"`
 	Size *int64  `json:"size,omitempty"`
 }
