@@ -170,11 +170,32 @@ func (s *Service) handleWakeStream(w http.ResponseWriter, r *http.Request, agent
 	s.Bus.Attach(agentID, w, r.Context())
 }
 
-// handleCli:世界动作命令面(runCli)未随 #60 移植——见后续票。显式
-// 501 + 可识别错误,daemon 能区分"未迁移"与"瞬时故障"。
-func (s *Service) handleCli(w http.ResponseWriter, _ *http.Request, _ string, _ *string) {
-	httpx.WriteError(w, http.StatusNotImplemented,
-		"runtime /cli outlet not yet migrated to the Go server (tracked separately); all other /runtime routes are equivalent")
+// handleCli:世界动作命令面(#89)。daemon 的 cumora shim 把 argv POST
+// 到这里;JWT 钉死身份——剥净调用方 --as 后注入 --as <sub>(防御纵深:
+// parseArgs 取最后一次出现,不剥就被冒充),再交 RunCli 分发。
+func (s *Service) handleCli(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+	body := readJSON(w, r)
+	rawArgv, _ := body["argv"].([]any)
+	argv := make([]string, 0, len(rawArgv))
+	for _, a := range rawArgv {
+		str, ok := a.(string)
+		if !ok {
+			httpx.WriteError(w, http.StatusBadRequest, "argv (string[]) required")
+			return
+		}
+		argv = append(argv, str)
+	}
+	res := s.RunCli(r.Context(), cliBuildRuntimeArgv(agentID, argv))
+	sideEffects := res.sideEffects
+	if sideEffects == nil {
+		sideEffects = []cliSideEffect{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"text":        res.text,
+		"exitCode":    res.exitCode,
+		"ok":          res.ok,
+		"sideEffects": sideEffects,
+	})
 }
 
 /* ───────── 读面 ───────── */
