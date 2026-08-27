@@ -87,18 +87,24 @@ async function runIntegrationTests(mirrorBase) {
   })
 }
 
+// 终配(#68 实测):EMAIL_DOMAIN 必须 cumora.local(runner 默认,镜像
+// 断言按它铸地址);inbound 门要 HMAC secret;doc collab 需 sidecar。
 const SHARED_ENV = {
   DATABASE_URL: 'postgres://masked:cumora@localhost:5432/cumora_test',
   REDIS_URL: 'redis://127.0.0.1:6379',
   OPENAI_BASE_URL: 'http://127.0.0.1:18993/v1',
   OPENAI_API_KEY: 'test-key',
-  EMAIL_DOMAIN: 'cumora.test',
+  EMAIL_DOMAIN: 'cumora.local',
   SKILLHUB_URL: 'http://127.0.0.1:18993',
   RESEND_API_KEY: '',
   CUMORA_SECRETS_KEY: 'dev-secrets-key',
+  EMAIL_INBOUND_HMAC_SECRET: 'integration-test-secret',
   LANG: 'en_US.UTF-8',
   LC_ALL: 'en_US.UTF-8',
 }
+const SIDECAR_PORT = 5183
+const SIDECAR_TOKEN = 't'
+const SIDECAR_URL = `http://127.0.0.1:${SIDECAR_PORT}`
 
 async function main() {
   // 阶段顺序是竞态安全的关键:套件与常驻服务器共享 Redis——任何已订阅
@@ -113,10 +119,22 @@ async function main() {
   report.phases.push({ phase: 'pin-ts', exit: tsPhase.code })
   log(`pin-ts: exit=${tsPhase.code}${tsPhase.code !== 0 ? '\n' + tsPhase.tail.slice(-1500) : ''}`)
 
+  log('phase boot-sidecar: yjs-sidecar :5183 (doc collab 链路)')
+  const sidecar = spawnLogged('sidecar', [
+    process.execPath.includes('node') ? 'node' : 'node',
+    '--import', 'tsx', 'apps/yjs-sidecar/src/main.ts',
+  ], {
+    ...SHARED_ENV, YJS_SIDECAR_TOKEN: SIDECAR_TOKEN, YJS_SIDECAR_PORT: String(SIDECAR_PORT),
+  })
+  const sidecarUp = await waitForHttp(SIDECAR_URL, 20_000, '/')
+  report.phases.push({ phase: 'boot-sidecar', sidecarUp })
+  if (!sidecarUp) { report.verdict = 'BOOT-FAILED'; finish(1); return }
+
   log('phase boot-go: go :5190 (workers gated, scheduler = SUT)')
   const go = spawnLogged('go', ['./smoke-server'], {
     ...SHARED_ENV, CUMORA_GO_LISTEN: '127.0.0.1:5190', CUMORA_GO_FAKE_AUTH: '1',
     ENABLE_SCANNER: 'false', ENABLE_IDLE: 'false', LLM_ROLLUP_INTERVAL_MS: '0',
+    YJS_SIDECAR_URL: SIDECAR_URL, YJS_SIDECAR_TOKEN: SIDECAR_TOKEN,
   }, 'apps/server-go')
   const goUp = await waitForHttp('http://127.0.0.1:5190', 30_000, '/api/livez')
   report.phases.push({ phase: 'boot-go', goUp })
@@ -132,9 +150,11 @@ async function main() {
   const go2 = spawnLogged('go2', ['./smoke-server'], {
     ...SHARED_ENV, CUMORA_GO_LISTEN: '127.0.0.1:5190', CUMORA_GO_FAKE_AUTH: '1',
     ENABLE_SCANNER: 'false', ENABLE_IDLE: 'false', LLM_ROLLUP_INTERVAL_MS: '0',
+    YJS_SIDECAR_URL: SIDECAR_URL, YJS_SIDECAR_TOKEN: SIDECAR_TOKEN,
   }, 'apps/server-go')
   const ts = spawnLogged('ts', ['node', '--import', 'tsx', 'server/src/index.ts'], {
     ...SHARED_ENV, PORT: '5181',
+    YJS_SIDECAR_URL: SIDECAR_URL, YJS_SIDECAR_TOKEN: SIDECAR_TOKEN,
   })
   const proxy = spawnLogged('proxy', ['node', 'scripts/dual-backend/proxy.mjs'], {
     DUAL_TS: 'http://127.0.0.1:5181',
@@ -171,7 +191,7 @@ async function main() {
   report.phases.push({ phase: 'rollback-smoke', ok: rollbackOk })
   log(`rollback smoke: ${rollbackOk}`)
 
-  ts.child.kill('SIGTERM'); go2.child.kill('SIGTERM'); proxy.child.kill('SIGTERM')
+  ts.child.kill('SIGTERM'); go2.child.kill('SIGTERM'); proxy.child.kill('SIGTERM'); sidecar.child.kill('SIGTERM')
   const pinned = report.phases.filter((p) => typeof p.exit === 'number' && (p.phase.startsWith('pin-')))
   const suiteOk = pinned.length > 0 && pinned.every((p) => p.exit === 0)
   report.verdict = suiteOk && balanced && rollbackOk ? 'ALL-GREEN' : 'FAILED'

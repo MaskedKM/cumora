@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -29,6 +30,7 @@ func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
 	mux.HandleFunc("POST /api/agents/{id}/rehire", rehire(db))
 	mux.HandleFunc("PUT /api/agents/{id}/autonomy", putAutonomy(db))
 	mux.HandleFunc("GET /api/agents/autonomy", getAutonomy(db))
+	mux.HandleFunc("GET /api/participants", listParticipants(db))
 }
 
 func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
@@ -648,4 +650,89 @@ func randHex6() string {
 	b := make([]byte, 3)
 	_, _ = crand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+/* ───────── GET /participants(#68 补齐) ───────── */
+
+// listParticipants:过期 busy 状态回落 + 名册(含 agent 惰铸地址回显)。
+func listParticipants(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, ok := requireCompany(w, r, db)
+		if !ok {
+			return
+		}
+		_, _ = db.ExecContext(r.Context(), `
+			UPDATE participants
+			   SET status = 'avail', status_updated_at = NOW()
+			 WHERE company_id = $1
+			   AND kind = 'agent'
+			   AND departed_at IS NULL
+			   AND status IN ('thinking', 'working', 'waiting')
+			   AND status_updated_at < NOW() - ($2::int * INTERVAL '1 millisecond')`, tenant, 90_000)
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT p.id, p.kind, p.name, p.role, p.initial,
+			       p.avatar_bg, p.avatar_url,
+			       p.status, p.status_updated_at,
+			       p.bio, p.tools, p.system_prompt, p.model,
+			       p.computer_id, p.engine, p.fast_model,
+			       COALESCE(p.email, CASE WHEN p.kind = 'human' AND cm.user_id IS NOT NULL THEN u.email END),
+			       comp.slug, p.departed_at
+			  FROM participants p
+			  JOIN companies comp ON comp.id = p.company_id
+			  LEFT JOIN company_members cm ON cm.user_id = p.id AND cm.company_id = p.company_id
+			  LEFT JOIN users u ON u.id = cm.user_id
+			 WHERE p.company_id = $1
+			 ORDER BY p.kind DESC, p.name ASC`, tenant)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var id, kind, name, initial, avatarBg, status string
+			var role, avatarUrl, bio, systemPrompt, model sql.NullString
+			var tools []byte
+			var statusUpdatedAt time.Time
+			var computerID, engine, fastModel, emailCol, companySlug sql.NullString
+			var departedAt sql.NullTime
+			if err := rows.Scan(&id, &kind, &name, &role, &initial,
+				&avatarBg, &avatarUrl, &status, &statusUpdatedAt,
+				&bio, &tools, &systemPrompt, &model,
+				&computerID, &engine, &fastModel, &emailCol, &companySlug, &departedAt); err == nil {
+				var toolsAny any
+				_ = json.Unmarshal(tools, &toolsAny)
+				emailVal := any(nil)
+				if emailCol.Valid {
+					emailVal = emailCol.String
+				} else if kind == "agent" && companySlug.Valid {
+					emailVal = emailpkg.ComputeAgentAddress(id, companySlug.String)
+				}
+				out = append(out, map[string]any{
+					"id": id, "kind": kind, "name": name, "role": nullStr(role),
+					"initial": initial, "avatarBg": avatarBg, "avatarUrl": nullStr(avatarUrl),
+					"status": status, "statusUpdatedAt": statusUpdatedAt.UTC(),
+					"bio": nullStr(bio), "tools": toolsAny, "systemPrompt": nullStr(systemPrompt),
+					"model": nullStr(model), "computerId": nullStr(computerID),
+					"engine": nullStr(engine), "fastModel": nullStr(fastModel),
+					"email": emailVal, "departedAt": nullTimeUTC(departedAt),
+				})
+			}
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
+	}
+}
+
+func nullTimeUTC(nt sql.NullTime) any {
+	if !nt.Valid {
+		return nil
+	}
+	return nt.Time.UTC()
+}
+
+func nullStr(ns sql.NullString) any {
+	if !ns.Valid {
+		return nil
+	}
+	return ns.String
 }
