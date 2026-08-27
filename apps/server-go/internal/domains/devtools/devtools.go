@@ -25,8 +25,11 @@ type AvatarGen func(ctx context.Context, agentID, tenant string) (string, error)
 
 func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
 	mux.HandleFunc("GET /api/devtools/agent-workspace/file", workspaceFile(db))
+	mux.HandleFunc("GET /api/devtools/capabilities", capabilities(db))
+	mux.HandleFunc("GET /api/devtools/agent-workspace", workspaceIndex(db))
 	mux.HandleFunc("GET /api/agents/observability/runs/{id}/events", runEvents(db))
 	mux.HandleFunc("GET /api/peek/agent-chats/{id}/messages", peekAgentChat(db))
+	mux.HandleFunc("GET /api/peek/agent-chats", peekAgentChatsList(db))
 	mux.HandleFunc("POST /api/agents/{id}/avatar/generate", avatarGenerate(db, avatarGen))
 }
 
@@ -121,7 +124,7 @@ func workspaceFile(db *sql.DB) http.HandlerFunc {
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"path": path, "body": body, "size": size,
-			"lineCount": lineCount, "updatedAt": updatedAt.UTC(),
+			"lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
 		})
 	}
 }
@@ -169,7 +172,7 @@ func runEvents(db *sql.DB) http.HandlerFunc {
 			_ = json.Unmarshal(data, &dataAny)
 			out = append(out, map[string]any{
 				"id": id, "runId": runID2, "agentId": agentID, "kind": kind,
-				"level": level, "title": title, "data": dataAny, "createdAt": createdAt.UTC(),
+				"level": level, "title": title, "data": dataAny, "createdAt": httpx.ISOms(createdAt),
 			})
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)
@@ -234,7 +237,7 @@ func peekAgentChat(db *sql.DB) http.HandlerFunc {
 			out = append(out, map[string]any{
 				"id": msgID, "conversationId": convoID, "authorId": authorID,
 				"kind": kind, "body": body, "sequence": sequence, "tool": toolAny,
-				"createdAt": createdAt.UTC(),
+				"createdAt": httpx.ISOms(createdAt),
 			})
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)
@@ -267,4 +270,129 @@ func avatarGenerate(db *sql.DB, gen AvatarGen) http.HandlerFunc {
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"url": url})
 	}
+}
+
+/* ───────── capabilities + workspace 索引 + peek 列表(#68 补齐) ───────── */
+
+// capabilities:getDevtoolsState 的客户端通告(不 403——探测端点)。
+func capabilities(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, cid, role, ok := resolveRole(w, r, db)
+		if !ok {
+			return
+		}
+		_ = cid
+		localDev := os.Getenv("NODE_ENV") != "production"
+		h := r.Header.Get(devtoolsHeader)
+		requested := h == "1" || h == "true"
+		priv := privileged(role)
+		canEnable := localDev || priv
+		enabled := localDev || (requested && priv)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"enabled": enabled, "canEnable": canEnable, "localDev": localDev,
+			"productionDevMode": !localDev && requested && enabled, "role": role,
+		})
+	}
+}
+
+// workspaceIndex:agent 工作区文件索引(path/size/lineCount/updatedAt)。
+func workspaceIndex(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenant, ok := requireDevtools(w, r, db)
+		if !ok {
+			return
+		}
+		agentID := strings.TrimSpace(r.URL.Query().Get("agentId"))
+		if agentID == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "agentId required")
+			return
+		}
+		var one int
+		if err := db.QueryRowContext(r.Context(),
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' LIMIT 1`,
+			agentID, tenant).Scan(&one); err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT path, LENGTH(body)::int,
+			       (LENGTH(body) - LENGTH(REPLACE(body, E'\n', '')) + 1)::int,
+			       updated_at
+			  FROM agent_workspace
+			 WHERE agent_id = $1 AND company_id = $2
+			 ORDER BY path`, agentID, tenant)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var path string
+			var size, lineCount int
+			var updatedAt time.Time
+			if rows.Scan(&path, &size, &lineCount, &updatedAt) == nil {
+				out = append(out, map[string]any{
+					"path": path, "size": size, "lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
+				})
+			}
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
+	}
+}
+
+// peekAgentChatsList:owner-only 的 agent↔agent 会话观察列表。
+func peekAgentChatsList(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenant, ok := requireCompanyRole(w, r, db, true)
+		if !ok {
+			return
+		}
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT c.id, c.kind, c.title, c.members,
+			       (c.members->>0), (c.members->>1),
+			       c.topic, c.created_at, c.updated_at,
+			       (SELECT COUNT(*)::int FROM messages WHERE conversation_id = c.id)
+			  FROM conversations c
+			 WHERE c.company_id = $1
+			   AND jsonb_array_length(c.members) >= 2
+			   AND NOT EXISTS (
+			     SELECT 1 FROM jsonb_array_elements_text(c.members) m
+			       LEFT JOIN participants p ON p.id = m AND p.company_id = c.company_id
+			      WHERE p.kind IS DISTINCT FROM 'agent'
+			   )
+			 ORDER BY c.updated_at DESC
+			 LIMIT 50`, tenant)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var id, kind, title, agentA, agentB string
+			var members []byte
+			var topic sql.NullString
+			var createdAt, updatedAt time.Time
+			var msgCount int
+			if rows.Scan(&id, &kind, &title, &members, &agentA, &agentB, &topic, &createdAt, &updatedAt, &msgCount) == nil {
+				var membersAny any
+				_ = json.Unmarshal(members, &membersAny)
+				out = append(out, map[string]any{
+					"id": id, "kind": kind, "title": title, "members": membersAny,
+					"agentA": agentA, "agentB": agentB, "about": nullStrOf(topic),
+					"createdAt": httpx.ISOms(createdAt), "updatedAt": httpx.ISOms(updatedAt),
+					"msgCount": msgCount,
+				})
+			}
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
+	}
+}
+
+func nullStrOf(ns sql.NullString) any {
+	if !ns.Valid {
+		return nil
+	}
+	return ns.String
 }
