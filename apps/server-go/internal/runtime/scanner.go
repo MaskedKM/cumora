@@ -21,7 +21,14 @@ const scannerWindowHours = 24
 var scannerPrecedentMu sync.Mutex
 var scannerPrecedentScans = map[string]struct{}{}
 
-func scannerIntervalMS() int64 { return envIntOr("SCANNER_INTERVAL_MS", 90_000) }
+// envIntRaw 语义:SCANNER_INTERVAL_MS=0 原样生效(TS setInterval(fn,0)
+// 热循环怪癖按平价复刻,非数回落 90s 默认)。
+func scannerIntervalMS() int64 {
+	if n, ok := envIntRaw("SCANNER_INTERVAL_MS"); ok {
+		return n
+	}
+	return 90_000
+}
 
 type scanAgentRow struct {
 	id        string
@@ -236,7 +243,8 @@ func buildBackgroundScanBrief(agent scanAgentRow, roster []scanRosterRow, recent
 		renderActivitySummary(recent)
 }
 
-func (s *Service) recordScanWake(ctx context.Context, agent scanAgentRow, fingerprint string) {
+// 上抛错误:TS 的 await INSERT 在 per-agent try 内,失败即跳过唤醒。
+func (s *Service) recordScanWake(ctx context.Context, agent scanAgentRow, fingerprint string) error {
 	ref, _ := json.Marshal(map[string]string{
 		"source":      "background_scanner",
 		"capability":  "background.scan",
@@ -247,9 +255,7 @@ func (s *Service) recordScanWake(ctx context.Context, agent scanAgentRow, finger
 		VALUES ($1, $2, $3, 'note', $4, $5::jsonb)`,
 		"log-"+randHex12(), agent.id, agent.companyID,
 		"background scan wake queued for "+agent.name, string(ref))
-	if err != nil {
-		slog.Warn("[scanner] record wake failed", "agent", agent.id, "err", err)
-	}
+	return err
 }
 
 // RunBackgroundScans: 一轮扫描(导出供测试)。
@@ -282,8 +288,11 @@ func (s *Service) RunBackgroundScans(ctx context.Context) {
 			scannerPrecedentScans[fingerprint] = struct{}{}
 			scannerPrecedentMu.Unlock()
 
+			if err := s.recordScanWake(ctx, a, fingerprint); err != nil {
+				slog.Warn("[scanner] record wake failed", "agent", a.id, "err", err)
+				return
+			}
 			roster := s.loadScanRoster(ctx, a.companyID)
-			s.recordScanWake(ctx, a, fingerprint)
 			s.wakeOne(a.id, "background_scan", nil, nil, &WakeOpts{
 				BackgroundBrief: &BackgroundBrief{
 					Source: "background_scanner",
@@ -309,6 +318,11 @@ func (s *Service) StartScanner() (stop func()) {
 		return nil
 	}
 	interval := scannerIntervalMS()
+	// time.Ticker(0) 会 panic;TS setInterval(fn,0) 的热循环怪癖不复刻,
+	// 钳到 1ms(语义近似:极速循环由低优先级预算闸兜底)。
+	if interval <= 0 {
+		interval = 1
+	}
 	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	go func() {
 		for range ticker.C {

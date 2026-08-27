@@ -16,9 +16,21 @@ import (
 	"time"
 )
 
-func idleIntervalMS() int64 { return envIntOr("IDLE_INTERVAL_MS", 15*60_000) }
+// 间隔/阈值 env 用 envIntRaw:TS 语义 0=禁用(IDLE_INTERVAL_MS=0 关
+// 调度器)、IDLE_MIN_QUIET_MIN=0 原样生效——envIntOr 的 0→默认会吞掉
+// 这两个 kill-switch(PR #104 评审 MAJOR)。
+func idleIntervalMS() int64 {
+	if n, ok := envIntRaw("IDLE_INTERVAL_MS"); ok {
+		return n
+	}
+	return 15 * 60_000
+}
+
 func idleMinQuietMin() int64 {
-	return envIntOr("IDLE_MIN_QUIET_MIN", 25)
+	if n, ok := envIntRaw("IDLE_MIN_QUIET_MIN"); ok {
+		return n
+	}
+	return 25
 }
 
 type idleCandidate struct {
@@ -61,7 +73,9 @@ func (s *Service) pickIdleAgent(ctx context.Context, companyID string) *idleCand
 			return &c
 		}
 		// PG ::text 形态由 parseJSDate 家族消化(timestamptz 各漂移布局)。
-		if t, ok := parseJSDate(c.lastSpoke.String); ok && t.After(cutoff) {
+		// 不可解析 = TS 的 NaN < cutoff(恒 false)→ 该候选不算安静,跳过。
+		t, ok := parseJSDate(c.lastSpoke.String)
+		if !ok || t.After(cutoff) {
 			continue
 		}
 		return &c
@@ -70,16 +84,15 @@ func (s *Service) pickIdleAgent(ctx context.Context, companyID string) *idleCand
 }
 
 // recordIdleWake: agent_log 落一行 note(company_id 让租户索引直取)。
-func (s *Service) recordIdleWake(agent idleCandidate, ref map[string]any) {
+// 上抛错误:TS 的 await INSERT 在 per-tenant try 内,失败即跳过唤醒。
+func (s *Service) recordIdleWake(agent idleCandidate, ref map[string]any) error {
 	refJSON, _ := json.Marshal(ref)
 	_, err := s.DB.ExecContext(ctxBG, `
 		INSERT INTO agent_log (id, agent_id, company_id, kind, body, ref)
 		VALUES ($1, $2, $3, 'note', $4, $5::jsonb)`,
 		"log-"+randHex12(), agent.id, agent.companyID,
 		"idle wake queued for "+agent.name, string(refJSON))
-	if err != nil {
-		slog.Warn("[idle] record wake failed", "agent", agent.id, "err", err)
-	}
+	return err
 }
 
 func idleRef(agent idleCandidate, cards, events int, verdict string) map[string]any {
@@ -135,7 +148,10 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 
 			if len(agenda.Cards) == 0 && len(agenda.Events) == 0 {
 				// 无卡无槽位事件——保留原 heartbeat 行为(自发动静)。
-				s.recordIdleWake(*agent, idleRef(*agent, 0, 0, "empty"))
+				if err := s.recordIdleWake(*agent, idleRef(*agent, 0, 0, "empty")); err != nil {
+					slog.Warn("[idle] record wake failed", "agent", agent.id, "err", err)
+					return
+				}
 				s.wakeOne(agent.id, "idle", nil, nil, &WakeOpts{
 					IdleReason: "idle heartbeat after at least " + idleMinQuietString() + " quiet minute(s)",
 				})
@@ -158,7 +174,10 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 				if verdict.Reason == AgendaClassifierError {
 					verdictLabel = "classifier_error"
 				}
-				s.recordIdleWake(*agent, idleRef(*agent, len(agenda.Cards), len(agenda.Events), verdictLabel))
+				if err := s.recordIdleWake(*agent, idleRef(*agent, len(agenda.Cards), len(agenda.Events), verdictLabel)); err != nil {
+					slog.Warn("[idle] record wake failed", "agent", agent.id, "err", err)
+					return
+				}
 				// 健康分类器说 skip = 省脑;分类器 ERROR(网络/配额)不得
 				// 静默 agent——回落通用 idle 唤醒。
 				if verdictLabel == "classifier_error" {
@@ -174,7 +193,10 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 			if verdict.Focus != "" {
 				ref["agendaFocus"] = verdict.Focus
 			}
-			s.recordIdleWake(*agent, ref)
+			if err := s.recordIdleWake(*agent, ref); err != nil {
+				slog.Warn("[idle] record wake failed", "agent", agent.id, "err", err)
+				return
+			}
 			focus := verdict.Focus
 			if focus == "" {
 				focus = "Heartbeat agenda"

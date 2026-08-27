@@ -32,6 +32,11 @@ func TestShouldDeliverToMutedAgent(t *testing.T) {
 		{"mention followed by hyphen blocks", "group", "hey @ag-rob1-2 nope", nil, false},
 		{"substring id is not a mention", "group", "hey @ag-rob nope", nil, false},
 		{"mention without leading space after newline delivers", "group", "line1\n@ag-rob1 line2", nil, true},
+		{"mention at end of body delivers", "group", "hey @ag-rob1", nil, true},
+		{"non-ASCII char before mention is a valid boundary (İ)", "group", "\u0130@ag-rob1 look", nil, true},
+		{"non-ASCII char before mention is a valid boundary (K)", "group", "\u212a@ag-rob1 look", nil, true},
+		{"CJK char before mention is a valid boundary", "group", "你好@ag-rob1 看看", nil, true},
+		{"lowercase fold mention delivers", "group", "hey @ag-Rob1 look", nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

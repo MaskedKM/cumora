@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,21 @@ type WakeOpts struct {
 	IdleReason      string
 	BackgroundBrief *BackgroundBrief
 	PollBrief       map[string]any
+}
+
+// envIntRaw:符号感知的环境整数(0/-1 原样返回);缺键/非数 → ok=false。
+// 与 envIntOr(0→默认)相反——间隔类 env 的 TS 语义是"0=禁用",
+// 必须让 0 活着到达调用方的禁用分支。
+func envIntRaw(name string) (int64, bool) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 /* ───────── 低优先级合成唤醒预算(FUSE-cap 事故) ───────── */
@@ -134,7 +150,7 @@ func (s *Service) consumeSteerRateToken(agentID string) bool {
 var steerEnabledRe = regexp.MustCompile(`(?i)^(false|0|no|off)$`)
 
 func steerEnabled() bool {
-	return !steerEnabledRe.MatchString(strings.TrimSpace(getenv("STEER_ENABLED")))
+	return !steerEnabledRe.MatchString(getenv("STEER_ENABLED")) // TS 正则不 trim:带空格的 " false " = 启用
 }
 
 /* ───────── 唤醒核心 ───────── */
@@ -189,8 +205,11 @@ func (s *Service) wakeOne(agentID, reason string, conversationID *string, steer 
 					"authorName":     steer.AuthorName,
 					"body":           steer.Body,
 				}); err != nil {
+					// TS 语义:失败记日志,steer-ack typing 照发(部分故障下
+					// 人类仍要看到"正在输入"——内容在 DB,下一 wake 兜底)。
 					slog.Warn("[scheduler] deliverSteer failed", "agent", agentID, "err", err)
-				} else if steer.ConversationID != "" {
+				}
+				if steer.ConversationID != "" {
 					events.Typing(ctxBG, steer.CompanyID, steer.ConversationID, agentID, false)
 				}
 			}
@@ -217,24 +236,47 @@ func shouldDeliverToMutedAgent(agentID, conversationKind, body string, quotedAut
 	if quotedAuthorID != nil && *quotedAuthorID == agentID {
 		return true
 	}
-	lowerBody := strings.ToLower(body)
-	lowerID := strings.ToLower(agentID)
-	needle := "@" + lowerID
-	for from := 0; ; {
-		idx := strings.Index(lowerBody[from:], needle)
-		if idx < 0 {
-			return false
+	// 在原文上做 ASCII 大小写折叠匹配:strings.ToLower 的 Unicode 简单
+	// 映射会把 İ(U+0130)→i、K(U+212A)→k,把 TS 判为合法边界的非 ASCII
+	// 邻接字误折成词字节。原文字节 ≥0x80 一律非词(TS [^\w@] 对 CJK 同
+	// 判 true),折叠只对 <0x80 的 ASCII 字母做。
+	fold := func(b byte) byte {
+		if b >= 'A' && b <= 'Z' {
+			return b + 32
 		}
-		idx += from
-		beforeOK := idx == 0 || !isJSWordRune(lowerBody[idx-1]) && lowerBody[idx-1] != '@'
+		return b
+	}
+	needle := []byte("@" + agentID)
+	for i := range needle {
+		needle[i] = fold(needle[i])
+	}
+	for from := 0; from+len(needle) <= len(body); {
+		match := true
+		for i, nb := range needle {
+			if fold(body[from+i]) != nb {
+				match = false
+				break
+			}
+		}
+		if !match {
+			from++
+			continue
+		}
+		idx := from
+		// 前邻阻塞 = ASCII 词字节或 @;非 ASCII 字节(CJK/İ 等)一律
+		// 不阻塞(TS [^\w@] 同判);串首恒不阻塞。
+		blockedBefore := idx > 0 && body[idx-1] < 0x80 &&
+			(isJSWordRune(body[idx-1]) || body[idx-1] == '@')
 		after := idx + len(needle)
-		afterOK := after >= len(lowerBody) ||
-			(!isJSWordRune(lowerBody[after]) && lowerBody[after] != '-')
-		if beforeOK && afterOK {
+		// 后继阻塞 = ASCII 词字节或 -;串尾恒不阻塞。
+		blockedAfter := after < len(body) && body[after] < 0x80 &&
+			(isJSWordRune(body[after]) || body[after] == '-')
+		if !blockedBefore && !blockedAfter {
 			return true
 		}
 		from = idx + 1
 	}
+	return false
 }
 
 func isJSWordRune(b byte) bool {
@@ -515,9 +557,12 @@ var wakeFanoutSem chan struct{}
 
 func (s *Service) fanOutSem() chan struct{} {
 	wakeFanoutOnce.Do(func() {
-		n := int(envIntOr("WAKE_FANOUT_CONCURRENCY", 6))
-		if n <= 0 {
-			n = 6
+		n := 6
+		if v, ok := envIntRaw("WAKE_FANOUT_CONCURRENCY"); ok {
+			n = int(v)
+			if n <= 0 {
+				n = 1 // TS Semaphore 对 0/负钳 1(热循环护身)
+			}
 		}
 		wakeFanoutSem = make(chan struct{}, n)
 	})

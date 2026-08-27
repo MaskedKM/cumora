@@ -23,7 +23,13 @@ const rollupMaxBackfillHours = 95 * 24
 // 保留窗:更旧的桶定期清,rollup 随历史增长有界。
 const rollupRetentionHours = 95 * 24
 
-func rollupIntervalMS() int64 { return envIntOr("LLM_ROLLUP_INTERVAL_MS", 120_000) }
+// envIntRaw 语义:LLM_ROLLUP_INTERVAL_MS=0 = 禁用(TS 文档化 kill-switch)。
+func rollupIntervalMS() int64 {
+	if n, ok := envIntRaw("LLM_ROLLUP_INTERVAL_MS"); ok {
+		return n
+	}
+	return 120_000
+}
 
 // RefreshLlmRollup: 把 created_at 新于 sinceHours 的小时桶整块重算并
 // UPSERT;返回写入(插入或更新)的桶数。
@@ -89,10 +95,14 @@ func (s *Service) RunLlmRollupTick(ctx context.Context) (buckets int64, sinceHou
 		_, _ = conn.ExecContext(lockCtx, `SELECT pg_advisory_unlock($1)`, rollupLockKey)
 	}()
 	// 窗 = max(稳态, 距最新桶的间隙),封顶回填上限;NULL(空表)→ 全量回填。
+	// 扫描失败 = TS 的 throw → 本 tick 失败重试(不得静默全量回填)。
 	var gap sql.NullInt64
-	_ = conn.QueryRowContext(ctx, `
+	if err := conn.QueryRowContext(ctx, `
 		SELECT CEIL(EXTRACT(EPOCH FROM (NOW() - MAX(bucket_hour))) / 3600.0)::int AS gap_hours
-		  FROM llm_calls_rollup`).Scan(&gap)
+		  FROM llm_calls_rollup`).Scan(&gap); err != nil {
+		slog.Warn("[llm-rollup] gap scan failed — tick aborted", "err", err)
+		return 0, 0, false
+	}
 	sinceHours = rollupMaxBackfillHours
 	if gap.Valid {
 		gapHours := int(gap.Int64) + 1
@@ -126,6 +136,9 @@ func (s *Service) StartLlmRollupRefresher() {
 		slog.Info("[llm-rollup] disabled (LLM_ROLLUP_INTERVAL_MS=0)")
 		return
 	}
+	if rollupStop != nil {
+		return
+	}
 	slog.Info("[llm-rollup] starting", "interval_ms", interval)
 	tick := func() {
 		start := time.Now()
@@ -134,7 +147,15 @@ func (s *Service) StartLlmRollupRefresher() {
 			slog.Info("[llm-rollup] refreshed", "buckets", buckets, "ms", time.Since(start).Milliseconds())
 		}
 	}
-	go tick()
+	// 首轮即跑(新部署立刻回填);与周期 tick 同样的 panic 隔离。
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("[llm-rollup] first tick panicked", "recover", rec)
+			}
+		}()
+		tick()
+	}()
 	rollupStop = make(chan struct{})
 	go func(stop <-chan struct{}) {
 		ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
