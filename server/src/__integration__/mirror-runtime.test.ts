@@ -199,6 +199,30 @@ test('[mirror-runtime] /inbox surfaces unread rows with the InboxRow shape', asy
   assert.equal(again.body.rows.length, 1)
 })
 
+test('[mirror-runtime] /inbox (default) advances the seen boundary — probe never does', async () => {
+  // 真机 turn 的默认排水路径(#61 drill 轮 1 所依赖):daemon 的
+  // snapshotUnread 走无参 GET,服务端推进 freshness-preflight"已见"
+  // 边界 —— Redis cumora:seen:<agent>:<convo> 的单调 seq(短 TTL),是
+  // cumora reply 防重复碰撞预检的基线;与 conversation_reads 的 inbox
+  // 游标完全分离(共享状态即 a6e69aa 静默空转事故)。?probe=1 是
+  // "只看不喂"的探测口,永不推进(bram-a520 事故回归闸)。
+  const { agentId, companyId, token } = await seedAgent()
+  const humanId = await seedHuman(companyId)
+  const convo = await seedConversation(companyId, [agentId, humanId])
+  await convo.insertMessage(humanId, 'drain me')
+  const seenKey = `cumora:seen:${agentId}:${convo.convId}`
+  const probe = await call('/runtime/inbox?probe=1', { method: 'GET', token })
+  assert.equal(probe.body.rows.length, 1)
+  assert.equal(await redis.get(seenKey), null, 'probe never advances the boundary')
+  const drain = await call('/runtime/inbox', { method: 'GET', token })
+  assert.equal(drain.body.rows.length, 1)
+  assert.equal(await redis.get(seenKey), '1', 'default drain advanced the seen seq')
+  await convo.insertMessage(humanId, 'one more')
+  const drain2 = await call('/runtime/inbox', { method: 'GET', token })
+  assert.equal(drain2.body.rows.length, 2, 'inbox cursor is conversation_reads — untouched by the seen boundary')
+  assert.equal(await redis.get(seenKey), '2', 'monotonic — advances to the new max seq')
+})
+
 test('[mirror-runtime] /context marks unread/self and aggregates reactions', async () => {
   const { agentId, companyId, token } = await seedAgent()
   const humanId = await seedHuman(companyId)
