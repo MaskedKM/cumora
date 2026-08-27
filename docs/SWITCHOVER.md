@@ -77,6 +77,9 @@ systemctl --user start cumora-go.service     # 回到 Go,复跑观察清单 1–
 
 ## 切换后
 
+- 旧 TS daemon 单元(`cumora.service`,agent-cli)保持 **stopped** 且不
+  enable——与新 Go daemon 单元并存但绝不同启(双 daemon 会双领 run);
+  #70 退役时一并删除。
 - 观察期(默认 ≥48h 或用户点头)→ #70 TS 退役门禁;退役前 TS 单元
   与 agent-cli 保留原样,不做删除。
 - 挂起清尾(#68 遗留 F6/F7/F11/F16/F17 + #109 延后项)在观察期窗口内

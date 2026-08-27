@@ -7,7 +7,14 @@ Wants=cumora-go.service
 
 [Service]
 Environment=CUMORA_SUPERVISED=1
-# 引擎凭据(codex → Claude_Relay_Service 的 ANTHROPIC_AUTH_TOKEN 等)
+# PATH 钉扎(沿被替换的 TS cumora.service 原样;daemon 自装单元的
+# codegen 同样钉 PATH——见 byoa-daemon service.go):引擎发现纯靠
+# PATH,claude 只在 nvm bin、fresh-boot 用户管理器不带它,不钉即
+# 引擎缺失 → requireLocalEngine 退出 → Restart 循环。
+Environment=PATH=/home/masked/.npm/_npx/302120fbb92394c3/node_modules/.bin:/home/masked/node_modules/.bin:/home/node_modules/.bin:/node_modules/.bin:/home/masked/.nvm/versions/node/v22.22.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/home/masked/.local/bin:/home/masked/.local/kitty.app/bin:/home/masked/.local/android-sdk/platform-tools:/home/masked/.local/jdk-17.0.18+8/bin:/home/masked/.local/flutter/bin:/home/masked/.bun/bin:/home/masked/.nvm/versions/node/v22.22.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+# 引擎凭据(codex → Claude_Relay_Service 的 ANTHROPIC_AUTH_TOKEN 等)。
+# 注意 systemd 里 EnvironmentFile 会覆盖同名 Environment 键:未来 .env
+# 若添 PATH/CUMORA_GO_LISTEN 等会静默改写钉扎值,加键前先核对单元。
 EnvironmentFile=%h/.cumora/daemon.env
 ExecStart=%h/Code/cumora/apps/byoa-daemon/cumora agent computer --server http://localhost:5181
 Restart=always

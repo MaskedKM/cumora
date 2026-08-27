@@ -13,6 +13,8 @@
 package webapp
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,8 +43,14 @@ func Mount(mux *http.ServeMux) {
 				httpx.WriteError(w, http.StatusNotFound, "not found")
 				return
 			}
+			// TS 只挂 app.get('/'):开发形态仅根路径给信息 JSON,
+			// 其余 GET 落 404(Express 默认),不整站 200。
+			if r.URL.Path != "/" {
+				httpx.WriteError(w, http.StatusNotFound, "not found")
+				return
+			}
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{
-				"name": "cumora", "instance": os.Getenv("INSTANCE_ID"),
+				"name": "cumora", "instance": instanceID(),
 				"spa": "dev (served by vite)",
 			})
 		}
@@ -50,19 +58,32 @@ func Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/", serveRoot)
 }
 
+// instanceID:对齐 TS env.ts 的默认值形状 app-<rand5>(未设 INSTANCE_ID
+// 时逐进程随机;仅信息 JSON 展示,无消费方依赖具体值)。
+func instanceID() string {
+	if id := os.Getenv("INSTANCE_ID"); id != "" {
+		return id
+	}
+	b := make([]byte, 5)
+	_, _ = rand.Read(b)
+	return "app-" + hex.EncodeToString(b)[:5]
+}
+
 // serveUpload:/uploads/<name> 目录服务。路径安全:清洗后必须仍落在
 // uploadDir 内(防 ../ 逃逸);ServeFile 的内建防线之外多一道显式校验。
+// 缺文件走 fallthrough:false 语义直达 404;文案 "Not Found" 对齐 TS
+// 错误处理器(err.message),非 API 面通用的 "not found"。
 func serveUpload(uploadDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/uploads/")
 		full := filepath.Join(uploadDir, filepath.FromSlash(name))
 		if full != uploadDir && !strings.HasPrefix(full, uploadDir+string(filepath.Separator)) {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
+			httpx.WriteError(w, http.StatusNotFound, "Not Found")
 			return
 		}
 		fi, err := os.Stat(full)
 		if err != nil || fi.IsDir() {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
+			httpx.WriteError(w, http.StatusNotFound, "Not Found")
 			return
 		}
 		w.Header().Set("Cache-Control", "public, max-age=3600")
