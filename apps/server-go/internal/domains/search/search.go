@@ -173,7 +173,7 @@ func handler(db *sql.DB) http.HandlerFunc {
 						"id": id, "conversationId": convoID, "conversationTitle": convoTitle,
 						"conversationKind": convoKind, "authorId": authorID,
 						"authorName": nullStr(authorName), "body": nil,
-						"snippet": snippetOf(body, raw), "createdAt": createdAt.UTC(),
+						"snippet": snippetOf(body, raw), "createdAt": httpx.ISOms(createdAt),
 					})
 				}
 			}

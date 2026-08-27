@@ -118,11 +118,11 @@ func list(db *sql.DB) http.HandlerFunc {
 			row := map[string]any{
 				"id": id, "name": name,
 				"description": nullAny(description), "color": nullAny(color),
-				"status": status, "createdAt": createdAt.UTC(),
+				"status": status, "createdAt": httpx.ISOms(createdAt),
 				"conversationCount": convoCount,
 			}
 			if archivedAt.Valid {
-				row["archivedAt"] = archivedAt.Time.UTC()
+				row["archivedAt"] = httpx.ISOms(archivedAt.Time)
 			} else {
 				row["archivedAt"] = nil
 			}

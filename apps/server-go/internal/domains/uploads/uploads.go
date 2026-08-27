@@ -108,6 +108,15 @@ var mimePolicy = map[string]struct {
 	"text/plain":        {"file", "txt"},
 	"text/markdown":     {"file", "md"},
 	"text/csv":          {"file", "csv"},
+	// text/html 故意不收(同 TS 注:本地模式同源存储 = 存储型 XSS)。
+	"application/json":   {"file", "json"},
+	"application/x-yaml": {"file", "yml"},
+	"application/x-toml": {"file", "toml"},
+	// Audio / video —— 轻支持。
+	"audio/mpeg":      {"file", "mp3"},
+	"audio/wav":       {"file", "wav"},
+	"video/mp4":       {"file", "mp4"},
+	"video/quicktime": {"file", "mov"},
 }
 
 // capabilities:上传能力通告。allowedMimes 键序 = TS Object.keys 的
@@ -127,6 +136,8 @@ func capabilities(w http.ResponseWriter, _ *http.Request) {
 			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 			"application/zip", "application/x-tar", "application/gzip",
 			"text/plain", "text/markdown", "text/csv",
+			"application/json", "application/x-yaml", "application/x-toml",
+			"audio/mpeg", "audio/wav", "video/mp4", "video/quicktime",
 		},
 	})
 }

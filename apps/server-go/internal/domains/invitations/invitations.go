@@ -5,6 +5,7 @@ package invitations
 
 import (
 	"context"
+	"crypto/md5"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -111,6 +113,8 @@ func requireCompanyAdmin(w http.ResponseWriter, r *http.Request, db *sql.DB, com
 	return uid, true
 }
 
+// companyPlanTier:router.ts companyPlanTier 逐字——属主 users.tier,
+// 回退最早加入的 owner 角色成员的 tier(评审 F1:不得取全体成员最优)。
 func companyPlanTier(ctx context.Context, db *sql.DB, companyID string) string {
 	var tier sql.NullString
 	_ = db.QueryRowContext(ctx, `
@@ -121,8 +125,8 @@ func companyPlanTier(ctx context.Context, db *sql.DB, companyID string) string {
 		    SELECT u.tier
 		      FROM company_members cm
 		      JOIN users u ON u.id = cm.user_id
-		     WHERE cm.company_id = c.id AND u.tier IS NOT NULL
-		     ORDER BY CASE u.tier WHEN 'max' THEN 0 WHEN 'pro' THEN 1 ELSE 2 END
+		     WHERE cm.company_id = c.id AND cm.role = 'owner' AND u.tier IS NOT NULL
+		     ORDER BY cm.joined_at ASC
 		     LIMIT 1
 		  ) owner_member ON TRUE
 		 WHERE c.id = $1`, companyID).Scan(&tier)
@@ -218,8 +222,8 @@ func list(db *sql.DB) http.HandlerFunc {
 					"id": tokenHash, "email": nullTime2Any(email), "role": role,
 					"note":    nullTime2Any(note),
 					"maxUses": maxUses, "useCount": useCount,
-					"createdAt":      createdAt.UTC(),
-					"expiresAt":      expiresAt.UTC(),
+					"createdAt":      httpx.ISOms(createdAt),
+					"expiresAt":      httpx.ISOms(expiresAt),
 					"revokedAt":      nullTimeUTC(revokedAt),
 					"lastAcceptedAt": nullTimeUTC(lastAcceptedAt),
 					"lastAcceptedBy": nullTime2Any(lastAcceptedBy),
@@ -244,18 +248,17 @@ func nullTimeUTC(nt sql.NullTime) any {
 	if !nt.Valid {
 		return nil
 	}
-	return nt.Time.UTC()
+	return httpx.ISOms(nt.Time)
 }
 
 /* ───────── create ───────── */
 
+// validEmail:TS /^[^\s@]+@[^\s@]+\.[^\s@]+$/ —— 单 @ 且无空白,
+// 域部含点(评审 F10:旧手写版收 a@b.c@d)。
+var emailValidRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+
 func validEmail(s string) bool {
-	at := strings.IndexByte(s, '@')
-	if at <= 0 || at == len(s)-1 {
-		return false
-	}
-	dot := strings.LastIndexByte(s[at:], '.')
-	return dot > 1 && at+dot < len(s)-1
+	return emailValidRe.MatchString(s)
 }
 
 func create(db *sql.DB) http.HandlerFunc {
@@ -363,8 +366,12 @@ func create(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		noteDetail := any(nil)
+		if s, ok := note.(string); ok {
+			noteDetail = s
+		}
 		auditInvite(r.Context(), db, "invitation_create", me, companyID,
-			r.RemoteAddr, r.UserAgent(), map[string]any{"email": email, "role": role, "maxUses": maxUses})
+			r.RemoteAddr, r.UserAgent(), map[string]any{"email": email, "role": role, "maxUses": maxUses, "note": noteDetail})
 		// sendEmail 分支:#58 邮件域真发送;测试不启用(默认 false),按需
 		// 接 email 域后补——当前与 TS 在 sendEmail!=true 时的 emailDelivery
 		// null 形状一致。
@@ -372,7 +379,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			"id": tokenHash, "token": token, "url": buildInviteURL(token),
 			"email": email, "role": role, "note": note,
 			"maxUses": maxUses, "useCount": 0,
-			"createdAt": time.Now().UTC(), "expiresAt": expiresAt.UTC(),
+			"createdAt": httpx.ISOms(time.Now()), "expiresAt": httpx.ISOms(expiresAt),
 			"status": "active", "emailDelivery": nil,
 		})
 	}
@@ -422,11 +429,12 @@ func preview(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		invite, status := loadInvitation(r, db, token, viewerEmail)
-		var inviteAny any
-		if invite != nil {
-			inviteAny = invite
+		// not_found 不带 invitation 键(TS 形状;评审 F9)。
+		if invite == nil {
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status})
+			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status, "invitation": inviteAny})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status, "invitation": invite})
 	}
 }
 
@@ -459,7 +467,7 @@ func loadInvitation(r *http.Request, db *sql.DB, token, viewerEmail string) (map
 	}
 	base := map[string]any{
 		"role": role, "email": nullTime2Any(invEmail), "note": nullTime2Any(note),
-		"createdAt": createdAt.UTC(), "expiresAt": expiresAt.UTC(),
+		"createdAt": httpx.ISOms(createdAt), "expiresAt": httpx.ISOms(expiresAt),
 		"inviterName": nullTime2Any(inviterName),
 		"company":     map[string]any{"id": companyID, "name": companyName, "slug": companySlug},
 		"multiUse":    maxUses > 1,
@@ -611,8 +619,11 @@ func accept(db *sql.DB) http.HandlerFunc {
 		}
 		joinAllHands(r.Context(), db, companyID, me)
 		seedMemberDms(r.Context(), db, companyID, me)
+		var invitedBy sql.NullString
+		_ = db.QueryRowContext(r.Context(),
+			`SELECT invited_by FROM company_invitations WHERE token_hash = $1`, tokenHash).Scan(&invitedBy)
 		auditInvite(r.Context(), db, "invitation_accept", me, companyID,
-			r.RemoteAddr, r.UserAgent(), map[string]any{"role": role})
+			r.RemoteAddr, r.UserAgent(), map[string]any{"role": role, "invitedBy": nullTime2Any(invitedBy)})
 		writeAcceptOK(w, r, db, companyID, me, false)
 	}
 }
@@ -634,9 +645,10 @@ func writeAcceptOK(w http.ResponseWriter, r *http.Request, db *sql.DB, companyID
 	})
 }
 
+// gravatarURL:TS gravatarUrlForEmail = MD5(评审 F4;SHA-256 是走眼)。
 func gravatarURL(email string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
-	return "https://www.gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?d=identicon&s=256"
+	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return fmt.Sprintf("https://www.gravatar.com/avatar/%x?d=identicon&s=256", sum)
 }
 
 func firstRune(s string) string {
@@ -708,7 +720,7 @@ func conveneStart(db *sql.DB) http.HandlerFunc {
 		session := map[string]any{
 			"id": sessionID, "conversation_id": id,
 			"title": convoTitle + " · live", "flair": flair,
-			"started_by": me, "started_at": startedAt, "ended_at": nil, "state": "live",
+			"started_by": me, "started_at": httpx.ISOms(startedAt), "ended_at": nil, "state": "live",
 		}
 		var companyID sql.NullString
 		_ = db.QueryRowContext(r.Context(),
@@ -754,7 +766,7 @@ func conveneActive(db *sql.DB) http.HandlerFunc {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"id": sessionID, "conversation_id": id,
 			"title": title, "flair": flair, "started_by": startedBy,
-			"started_at": startedAt.UTC(), "ended_at": nullTimeUTC(endedAt), "state": state,
+			"started_at": httpx.ISOms(startedAt), "ended_at": nullTimeUTC(endedAt), "state": state,
 		})
 	}
 }
@@ -810,7 +822,7 @@ func conveneTranscript(db *sql.DB) http.HandlerFunc {
 				out = append(out, map[string]any{
 					"id": id, "sessionId": sessID, "authorId": authorID,
 					"kind": kind, "body": body, "sequence": sequence,
-					"decision": decisionAny, "createdAt": createdAt.UTC(),
+					"decision": decisionAny, "createdAt": httpx.ISOms(createdAt),
 				})
 			}
 		}

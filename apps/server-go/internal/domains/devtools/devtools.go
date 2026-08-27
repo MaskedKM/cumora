@@ -124,7 +124,7 @@ func workspaceFile(db *sql.DB) http.HandlerFunc {
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"path": path, "body": body, "size": size,
-			"lineCount": lineCount, "updatedAt": updatedAt.UTC(),
+			"lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
 		})
 	}
 }
@@ -172,7 +172,7 @@ func runEvents(db *sql.DB) http.HandlerFunc {
 			_ = json.Unmarshal(data, &dataAny)
 			out = append(out, map[string]any{
 				"id": id, "runId": runID2, "agentId": agentID, "kind": kind,
-				"level": level, "title": title, "data": dataAny, "createdAt": createdAt.UTC(),
+				"level": level, "title": title, "data": dataAny, "createdAt": httpx.ISOms(createdAt),
 			})
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)
@@ -237,7 +237,7 @@ func peekAgentChat(db *sql.DB) http.HandlerFunc {
 			out = append(out, map[string]any{
 				"id": msgID, "conversationId": convoID, "authorId": authorID,
 				"kind": kind, "body": body, "sequence": sequence, "tool": toolAny,
-				"createdAt": createdAt.UTC(),
+				"createdAt": httpx.ISOms(createdAt),
 			})
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)
@@ -333,7 +333,7 @@ func workspaceIndex(db *sql.DB) http.HandlerFunc {
 			var updatedAt time.Time
 			if rows.Scan(&path, &size, &lineCount, &updatedAt) == nil {
 				out = append(out, map[string]any{
-					"path": path, "size": size, "lineCount": lineCount, "updatedAt": updatedAt.UTC(),
+					"path": path, "size": size, "lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
 				})
 			}
 		}
@@ -381,7 +381,7 @@ func peekAgentChatsList(db *sql.DB) http.HandlerFunc {
 				out = append(out, map[string]any{
 					"id": id, "kind": kind, "title": title, "members": membersAny,
 					"agentA": agentA, "agentB": agentB, "about": nullStrOf(topic),
-					"createdAt": createdAt.UTC(), "updatedAt": updatedAt.UTC(),
+					"createdAt": httpx.ISOms(createdAt), "updatedAt": httpx.ISOms(updatedAt),
 					"msgCount": msgCount,
 				})
 			}

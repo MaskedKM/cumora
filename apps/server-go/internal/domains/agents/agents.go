@@ -18,6 +18,7 @@ import (
 
 	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"golang.org/x/text/unicode/norm"
 )
 
 // AvatarGen:创建后的 fire-and-forget 头像生成钩子(runtime 注入;nil 安全)。
@@ -187,9 +188,12 @@ func defaultAvatarBg(id string) string {
 
 var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
 var dashRunRe = regexp.MustCompile(`-{2,}`)
+var combiningRe = regexp.MustCompile(`\p{M}`)
 
+// slugifyAgentName:TS normalize('NFKD') + 组合记号剥离 + 小写(评审 F13:
+// 'Ágent' → 'agent',非 NFKD 会得 'gent')。
 func slugifyAgentName(name string) string {
-	lowered := strings.ToLower(name)
+	lowered := strings.ToLower(combiningRe.ReplaceAllString(norm.NFKD.String(name), ""))
 	slug := nonAlnumRe.ReplaceAllString(lowered, "-")
 	slug = strings.Trim(slug, "-")
 	slug = dashRunRe.ReplaceAllString(slug, "-")
@@ -201,6 +205,29 @@ func slugifyAgentName(name string) string {
 		slug = "agent"
 	}
 	return slug
+}
+
+// companyPlanTier:属主 tier,回退最早加入 owner 角色成员(评审 F2:
+// 与 invitations 域 F1 同源;不得取调用者或全体成员最优)。
+func companyPlanTier(ctx context.Context, db *sql.DB, companyID string) string {
+	var tier sql.NullString
+	_ = db.QueryRowContext(ctx, `
+		SELECT COALESCE(owner_user.tier, owner_member.tier, 'free')
+		  FROM companies c
+		  LEFT JOIN users owner_user ON owner_user.id = c.owner_user_id
+		  LEFT JOIN LATERAL (
+		    SELECT u.tier
+		      FROM company_members cm
+		      JOIN users u ON u.id = cm.user_id
+		     WHERE cm.company_id = c.id AND cm.role = 'owner' AND u.tier IS NOT NULL
+		     ORDER BY cm.joined_at ASC
+		     LIMIT 1
+		  ) owner_member ON TRUE
+		 WHERE c.id = $1`, companyID).Scan(&tier)
+	if tier.Valid {
+		return tier.String
+	}
+	return "free"
 }
 
 func tierAgents(t string) int {
@@ -261,10 +288,8 @@ func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 				"systemPrompt required (at least 10 chars — describe the agent's style)")
 			return
 		}
-		// tier 限(free=10/pro=20/max=50)。
-		var tier string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COALESCE(tier, 'free') FROM users WHERE id = $1`, uid).Scan(&tier)
+		// tier 限(free=10/pro=20/max=50);tier 属公司不属调用者(评审 F2)。
+		tier := companyPlanTier(r.Context(), db, tenant)
 		var agentCount int
 		_ = db.QueryRowContext(r.Context(),
 			`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
@@ -276,7 +301,8 @@ func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 		}
 		agentID, err := pickUniqueAgentID(r.Context(), db, *body.name)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			// 9 候选全撞(TS 落到 INSERT duplicate)→ 同 409 语义(评审 F14)。
+			httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
 			return
 		}
 		initial := ""
@@ -511,7 +537,7 @@ func offboard(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "departedAt": time.Now().UTC(),
+			"ok": true, "departedAt": httpx.ISOms(time.Now()),
 		})
 	}
 }
@@ -539,11 +565,8 @@ func rehire(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusConflict, "agent is not off-boarded")
 			return
 		}
-		// tier 限:rehire 同 create 的闸。
-		uid, _, _ := requireCompany(w, r, db)
-		var tier string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COALESCE(tier, 'free') FROM users WHERE id = $1`, uid).Scan(&tier)
+		// tier 限:rehire 同 create 的闸(tier 属公司,评审 F2)。
+		tier := companyPlanTier(r.Context(), db, tenant)
 		var agentCount int
 		_ = db.QueryRowContext(r.Context(),
 			`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
@@ -711,7 +734,7 @@ func listParticipants(db *sql.DB) http.HandlerFunc {
 				out = append(out, map[string]any{
 					"id": id, "kind": kind, "name": name, "role": nullStr(role),
 					"initial": initial, "avatarBg": avatarBg, "avatarUrl": nullStr(avatarUrl),
-					"status": status, "statusUpdatedAt": statusUpdatedAt.UTC(),
+					"status": status, "statusUpdatedAt": httpx.ISOms(statusUpdatedAt),
 					"bio": nullStr(bio), "tools": toolsAny, "systemPrompt": nullStr(systemPrompt),
 					"model": nullStr(model), "computerId": nullStr(computerID),
 					"engine": nullStr(engine), "fastModel": nullStr(fastModel),
@@ -727,7 +750,7 @@ func nullTimeUTC(nt sql.NullTime) any {
 	if !nt.Valid {
 		return nil
 	}
-	return nt.Time.UTC()
+	return httpx.ISOms(nt.Time)
 }
 
 func nullStr(ns sql.NullString) any {

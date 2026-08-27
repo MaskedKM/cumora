@@ -143,7 +143,7 @@ func (s *Service) handleObsRuns(w http.ResponseWriter, r *http.Request) {
 			"trigger": triggerAny, "inputMessageIds": inputAny,
 			"inboxCount": nullIntAny(inboxCount), "toolCallCount": nullIntAny(toolCount),
 			"tokenCount": nullIntAny(tokenCount), "fingerprint": nullStrAny(fingerprint),
-			"startedAt": startedAt.UTC(), "updatedAt": updatedAt.UTC(),
+			"startedAt": httpx.ISOms(startedAt), "updatedAt": httpx.ISOms(updatedAt),
 			"finishedAt": nullTimeAny(finishedAt), "durationMs": nullIntAny(durationMs),
 		})
 	}
@@ -393,7 +393,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 				"actionable": rr.actionable, "reason": nullStrAny(rr.reason),
 				"inputTokens": rr.inputTok, "cachedInputTokens": rr.cachedTok, "outputTokens": rr.outputTok,
 				"costUsd": cost, "costEstimated": est, "measured": rr.measured,
-				"estSavingUsd": estSaving, "createdAt": rr.createdAt.UTC(),
+				"estSavingUsd": estSaving, "createdAt": httpx.ISOms(rr.createdAt),
 			})
 		}
 	}
@@ -590,7 +590,7 @@ func nullTimeAny(nt sql.NullTime) any {
 	if !nt.Valid {
 		return nil
 	}
-	return nt.Time.UTC()
+	return httpx.ISOms(nt.Time)
 }
 
 func jsonUnmarshalToAny(b []byte, v *any) error {
