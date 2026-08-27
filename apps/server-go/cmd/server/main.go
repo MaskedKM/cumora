@@ -25,8 +25,10 @@ import (
 	domcomputers "github.com/MaskedKM/cumora/apps/server-go/internal/domains/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/conversations"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -118,6 +120,10 @@ func main() {
 	calendar.Mount(coreRouter, pool)
 	push.Mount(coreRouter, pool)
 	domcomputers.Mount(coreRouter, pool)
+	// 长尾路由(#77):uploads 面 + 开发者/观察面(devtools 文件读、run
+	// 事件、纯 agent 房偷看、admin 头像生成——头像钩子注入 runtime 面)。
+	uploads.Mount(coreRouter, pool)
+	devtools.Mount(coreRouter, pool, runtimeSvc.GenerateAgentAvatar)
 	computers.StartSweepWorker(ctxBoot, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。

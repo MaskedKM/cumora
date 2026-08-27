@@ -14,6 +14,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
 )
 
 // GetConversationCompanyId:会话 → 租户(inbox 空时归 run 用)。
@@ -183,6 +184,7 @@ func (s *Service) LoadInbox(ctx context.Context, agentID string) ([]map[string]a
 	if out == nil {
 		out = []map[string]any{}
 	}
+	freshenAttachmentURLs(out)
 	return out, nil
 }
 
@@ -391,11 +393,40 @@ func (s *Service) LoadContext(ctx context.Context, agentID string, conversationI
 	if out == nil {
 		out = []map[string]any{}
 	}
+	freshenAttachmentURLs(out)
 	return out, rows.Err()
 }
 
 // pqArray:text[] 参数(pgx v5 原生支持 []string,直接传即可)。
 func pqArray(xs []string) []string { return xs }
+
+// freshenAttachmentURLs:inproc-client 的 refreshAttachmentUrls 等价
+// (#94 延至此票的 storage 面)——从存量 key(或 /uploads/ 短 URL 反解)
+// 重算读 URL。本地模式 URL 稳定,几乎恒 no-op;R2 presign 部署下每个
+// 消费者拿到新 TTL 的签名。best-effort:任何失败保持存量 URL。
+func freshenAttachmentURLs(rows []map[string]any) {
+	for _, row := range rows {
+		att, ok := row["attachment"].(map[string]any)
+		if !ok {
+			continue
+		}
+		url, _ := att["url"].(string)
+		if url == "" {
+			continue
+		}
+		key, _ := att["key"].(string)
+		if key == "" {
+			// storageKeyFromPublicUrl 共享实现(#77 评审 MINOR2:含
+			// percent-decode/trim/前缀白名单,与 TS freshen 同源)。
+			key = storage.StorageKeyFromPublicUrl(url)
+		}
+		if key == "" {
+			continue
+		}
+		att["url"] = storage.PublicUrl(key)
+		att["key"] = key
+	}
+}
 
 // LoadClimate:该 agent 对人们的感受——按更新时间倒序取前 24。
 // climate 全局(不跟项目):跨群同一身份。
