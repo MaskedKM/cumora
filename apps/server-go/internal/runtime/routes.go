@@ -12,6 +12,8 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -86,20 +88,22 @@ func (s *Service) auth(next func(w http.ResponseWriter, r *http.Request, agentID
 }
 
 // readJSON:读体 → map;空/坏体给空 map(handler 自行判定必填字段)。
-// readJSON:TS express.json({limit:'4mb'}) 语义(#94)——坏体/超体
-// 不再吞成 {}(无必填字段的端点会静默 200 默认值),400 由 404 兜底
-// 的显式错误形状对齐 runtimeRouter 的 json 解析失败路径。上限按
-// runtime/server.ts 的 4mb(#89 挂载形态;TS 全局 34mb 属 /api 域)。
-// 返回 (body, ok);ok=false 时响应已写完,调用方直返。
-// (EOF 与空体沿用 {} 语义——TS express.json 对空体同样放行。)
+// readJSON:TS express.json({limit:'34mb'}) 语义(#94)——坏体/超体 400
+// 'invalid JSON body'(此前吞成 {} 会让无必填字段端点静默 200 默认值);
+// EOF/空体沿用 {} 语义(TS 同样放行)。返回 (body, ok);ok=false 时
+// 响应已写完,调用方直返。
 func readJSON(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	body := map[string]any{}
 	if r.Body == nil {
 		return body, true
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
+	// 上限对齐 TS 全局挂载(index.ts:117 express.json({limit:'34mb'}),
+	// 在 /runtime 挂载之前生效;mirror 测试的 4mb 只是 harness 同形,
+	// 不影响语义。评审 MINOR1:4mb 会把 /runtime/llm-calls 的大 extras
+	// 截成 400 丢台账——34mb 是 production 真语义。
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 34<<20))
 	if err := dec.Decode(&body); err != nil {
-		if err.Error() == "EOF" {
+		if errors.Is(err, io.EOF) {
 			return map[string]any{}, true
 		}
 		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
@@ -146,23 +150,9 @@ func bodyStrSlice(body map[string]any, key string) []string {
 	return out
 }
 
-// sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元(#94 与 cli_read.go 的
-// utf16Slice 同语义:码元计数,代理对计 2;旧实现的 rune 近似把 BMP 外
-// 字符计成 1,长 CJK/emoji 尾巴漂移)。
-func sliceUTF16(s string, n int) string {
-	count := 0
-	for i, r := range s {
-		w := 1
-		if r > 0xFFFF {
-			w = 2
-		}
-		if count+w > n {
-			return s[:i]
-		}
-		count += w
-	}
-	return s
-}
+// sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元 —— cli_read.go 的
+// utf16Slice 别名(同包双名,#94 合并;代理对计 2 码元)。
+func sliceUTF16(s string, n int) string { return utf16Slice(s, n) }
 
 /* ───────── wake-stream / cli ───────── */
 

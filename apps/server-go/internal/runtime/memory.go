@@ -245,7 +245,8 @@ func (s *Service) LoadMemory(ctx context.Context, agentID, queryText string,
 	semanticLimit, recentLimit, totalLimit *int, projectIDs, convoScope []string) ([]map[string]any, error) {
 	// TS limits.semantic ?? 20 语义(#94):nil = 补默认;显式 0 原样保留
 	// (pinned+0 语义/recent+0/总额 0 → 只 pinned;负值按 TS ?? 不触发的
-	// 原样透传——服务侧 LIMIT 负在 PG 合法且恒空集,与 TS 行为一致)。
+	// 原样透传——两侧同入 PG 的 "LIMIT must not be negative" 错误→500
+	// 路径,平价成立)。
 	sem := 20
 	if semanticLimit != nil {
 		sem = *semanticLimit
