@@ -20,6 +20,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
+	domagents "github.com/MaskedKM/cumora/apps/server-go/internal/domains/agents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/boards"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
 	domcomputers "github.com/MaskedKM/cumora/apps/server-go/internal/domains/computers"
@@ -28,6 +29,9 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
@@ -128,8 +132,16 @@ func main() {
 	// 长尾路由(#77):uploads 面 + 开发者/观察面(devtools 文件读、run
 	// 事件、纯 agent 房偷看、admin 头像生成——头像钩子注入 runtime 面)。
 	uploads.Mount(coreRouter, pool)
+	projects.Mount(coreRouter, pool)
+	search.Mount(coreRouter, pool)
+	domagents.Mount(coreRouter, pool, func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) })
 	devtools.Mount(coreRouter, pool, runtimeSvc.GenerateAgentAvatar)
 	computers.StartSweepWorker(ctxBoot, pool)
+
+	// 观察面(#68):runs/triage 经济学/llm-spend(runtime 包自有实现,
+	// 挂 coreRouter 吃 authMiddleware 链)。
+	runtimeSvc.MountObservabilityApi(coreRouter)
+	invitations.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
 	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)

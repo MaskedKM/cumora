@@ -6,6 +6,8 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -63,15 +65,19 @@ func loadEnvOverrides() {
 	if raw == "" {
 		return
 	}
-	var parsed map[string]struct {
-		InPer1M       *float64 `json:"inPer1M"`
-		CachedInPer1M *float64 `json:"cachedInPer1M"`
-		CacheWritePer *float64 `json:"cacheWritePer1M"`
-		OutPer1M      *float64 `json:"outPer1M"`
-	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		slog.Warn("[cost] CUMORA_MODEL_PRICES_JSON is not valid JSON — ignoring", "err", err)
+	// TS 经 Object.entries 按文档序遍历覆盖(priceTable 渲染序、重叠键
+	// 子串匹配的胜者都依赖它);Go map 迭代随机,须用解码器按出现序走。
+	// JSON.parse 语义:整份文档要么全收要么全弃;重复键后者覆盖前值、
+	// 位置保持首见。
+	dec := json.NewDecoder(strings.NewReader(raw))
+	open, err := dec.Token()
+	if err != nil || open != json.Delim('{') {
+		slog.Warn("[cost] CUMORA_MODEL_PRICES_JSON is not a JSON object — ignoring", "err", err)
 		return
+	}
+	type override = struct {
+		id    string
+		price ModelPrice
 	}
 	num := func(p *float64) float64 {
 		if p == nil {
@@ -79,13 +85,46 @@ func loadEnvOverrides() {
 		}
 		return *p
 	}
-	// 迭代序不影响结果:下方 priceFor 对 overrides 做与种子同型的
-	// 精确→子串匹配,id 唯一性由 JSON map 保证。
-	for id, p := range parsed {
-		envOverrides = append(envOverrides, struct {
-			id    string
-			price ModelPrice
-		}{id, ModelPrice{num(p.InPer1M), num(p.CachedInPer1M), num(p.CacheWritePer), num(p.OutPer1M), true}})
+	bail := func(err error) {
+		envOverrides = nil
+		slog.Warn("[cost] CUMORA_MODEL_PRICES_JSON is not valid JSON — ignoring", "err", err)
+	}
+	seen := map[string]int{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			bail(err)
+			return
+		}
+		key, _ := keyTok.(string)
+		var p struct {
+			InPer1M       *float64 `json:"inPer1M"`
+			CachedInPer1M *float64 `json:"cachedInPer1M"`
+			CacheWritePer *float64 `json:"cacheWritePer1M"`
+			OutPer1M      *float64 `json:"outPer1M"`
+		}
+		if err := dec.Decode(&p); err != nil {
+			bail(err)
+			return
+		}
+		entry := override{key, ModelPrice{num(p.InPer1M), num(p.CachedInPer1M), num(p.CacheWritePer), num(p.OutPer1M), true}}
+		if i, ok := seen[key]; ok {
+			envOverrides[i] = entry
+			continue
+		}
+		seen[key] = len(envOverrides)
+		envOverrides = append(envOverrides, entry)
+	}
+	if _, err := dec.Token(); err != nil { // 闭合 '}' 读不出 = 坏文档
+		bail(err)
+		return
+	}
+	if _, err := dec.Token(); err != io.EOF { // JSON.parse 不容尾随垃圾
+		if err == nil {
+			err = fmt.Errorf("trailing data after JSON object")
+		}
+		bail(err)
+		return
 	}
 }
 
