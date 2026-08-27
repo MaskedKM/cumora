@@ -110,7 +110,7 @@ func main() {
 	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
-	core.Mount(coreRouter, pool)
+	core.Mount(coreRouter, pool, rdb)
 	conversations.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
 	workspaces.Mount(coreRouter, pool)
