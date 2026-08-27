@@ -9,8 +9,10 @@ name: Go Release
 #   - 制品:每平台一个 tar.gz(cumora-server + cumora-daemon)+
 #     SHA256SUMS;daemon 的自更新只认自家 releases 的这套资产(下载、
 #     校验、原子自替换)。
-#   - 有意不在 ser8 自托管机跑:发布属重工件工作(pr.yml 的既定边界);
-#     公开仓的 GitHub-hosted runner 免费且无 fleet 压力。
+#   - 跑在 ser8 自托管 runner(golang:1.24-alpine 容器,同 pr.yml go job
+#     范式):GitHub-hosted 分钟数被账号 billing 锁拦,而自托管 job 派发
+#     不受影响(锁生效期间 ser8 的 Runner maintenance 照常跑绿)。发布
+#     低频,串行排队成本可接受;billing 解锁后可再评估切回 ubuntu-latest。
 
 on:
   push:
@@ -28,15 +30,31 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, ser8]
+    container:
+      image: golang:1.24-alpine
+    timeout-minutes: 20
     # tag 推送才真正发布;分支/手动触发的 paths 变更只做构建冒烟(不发布)。
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    env:
+      GOCACHE: /tmp/gocache
+      CGO_ENABLED: '0'
+      # 与 pr.yml go job 同因:容器 root 的 git 拒绝 runner 属主的 checkout
+      # ("dubious ownership")。二进制本就以 -trimpath 发布,无需 VCS 戳。
+      GOFLAGS: -buildvcs=false
     steps:
-      - uses: actions/checkout@v4
+      # 镜像自带 go,但缺 bash/git/gh,且必须在 checkout 之前装齐:
+      #   git  — checkout@v4 探测不到 git(≥2.18)会回退 REST tarball,
+      #          工作区就没有 .git,下面的谱系门会直接失败(ser8 上 pr.yml
+      #          go job 的日志实证过这条回退路径);
+      #   bash — runner 无 bash 时步骤回退 busybox sh,而下面各步用了
+      #          `[[ ]]`/pipefail 这些 bash 语义,装上后自动改用 bash;
+      #   gh   — 发布上传工具。
+      - name: Install tooling (git for checkout+lineage gate, bash for the shell steps, gh for upload)
+        shell: sh
+        run: apk add --no-cache bash git github-cli
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+      - uses: actions/checkout@v4
 
       - name: Resolve release version
         id: ver
@@ -116,3 +134,12 @@ jobs:
               --title "cumora v${VERSION}" --generate-notes --prerelease --notes-file /tmp/notes.md || \
               gh release upload "v${VERSION}" dist/*.tar.gz dist/SHA256SUMS --clobber
           fi
+
+      # Same ownership give-back as pr.yml's container jobs — this job's
+      # checkout also writes container-root-owned files into the shared
+      # workspace on the runner host.
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"

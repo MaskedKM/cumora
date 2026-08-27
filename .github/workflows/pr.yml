@@ -11,8 +11,11 @@
 # host-root-equivalent). pgvector is enabled via the repo's own pg client.
 #
 # Deliberate boundary: heavy artifact work (electron-builder, docker
-# image builds, releases) does NOT run on the self-hosted fleet; the go
-# job's compile is a check, not an artifact publish.
+# image builds) does NOT run on the self-hosted fleet; the go job's
+# compile is a check, not an artifact publish. (Go Release — the one
+# artifact publish that DOES run here — lives in go-release.yml, moved
+# onto ser8 in #67's follow-up because the account billing lock blocks
+# GitHub-hosted minutes while self-hosted dispatch keeps working.)
 #
 # Self-hosted on a public repo: never run code from fork PRs — both
 # jobs skip unless the PR head is this repo.
