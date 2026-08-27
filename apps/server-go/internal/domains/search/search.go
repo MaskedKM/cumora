@@ -169,11 +169,12 @@ func handler(db *sql.DB) http.HandlerFunc {
 				var authorName sql.NullString
 				var createdAt time.Time
 				if rows.Scan(&id, &convoID, &convoTitle, &convoKind, &authorID, &authorName, &body, &createdAt) == nil {
+					// TS 侧 body: undefined → res.json 省键;此处不得发 "body": null。
 					messages = append(messages, row{
 						"id": id, "conversationId": convoID, "conversationTitle": convoTitle,
 						"conversationKind": convoKind, "authorId": authorID,
-						"authorName": nullStr(authorName), "body": nil,
-						"snippet": snippetOf(body, raw), "createdAt": httpx.ISOms(createdAt),
+						"authorName": nullStr(authorName),
+						"snippet":    snippetOf(body, raw), "createdAt": httpx.ISOms(createdAt),
 					})
 				}
 			}
