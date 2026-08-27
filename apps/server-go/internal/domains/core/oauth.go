@@ -160,19 +160,20 @@ func oauthConsumeState(ctx context.Context, rdb *redis.Client, state string) (*o
 
 func oauthAuthorizeURL(p, state string) string {
 	cfg := oauthProviderConfig(p)
-	q := url.Values{
-		"client_id":     {cfg.clientID},
-		"redirect_uri":  {oauthRedirectURI(p)},
-		"response_type": {"code"},
-		"scope":         {cfg.scope},
-		"state":         {state},
+	// 与 fragment 同理:TS URLSearchParams 按插入序,google 的
+	// prompt/access_type 恒在尾 —— 手工拼不用 Values.Encode(字母序)。
+	pairs := [][2]string{
+		{"client_id", cfg.clientID},
+		{"redirect_uri", oauthRedirectURI(p)},
+		{"response_type", "code"},
+		{"scope", cfg.scope},
+		{"state", state},
 	}
 	if p == "google" {
-		// 恒 prompt=consent/select_account:杜绝绕过账号选择器的静默重登。
-		q.Set("prompt", "select_account")
-		q.Set("access_type", "online")
+		// 恒 prompt=select_account:杜绝绕过账号选择器的静默重登。
+		pairs = append(pairs, [2]string{"prompt", "select_account"}, [2]string{"access_type", "online"})
 	}
-	return cfg.authorizeURL + "?" + q.Encode()
+	return cfg.authorizeURL + "?" + oauthFrag(pairs...)
 }
 
 // ---- 换码 + 取档 ----
@@ -235,7 +236,9 @@ func oauthFetchJSON(ctx context.Context, u, accessToken string, hdr map[string]s
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("http %d", res.StatusCode)
+		// 裸状态码:调用方拼 "github user %w" → "github user 401",
+		// 对齐 TS `${p} user ${status}`(不带 http 前缀)。
+		return fmt.Errorf("%d", res.StatusCode)
 	}
 	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(out)
 }
@@ -443,7 +446,7 @@ func oauthFindOrCreate(ctx context.Context, db *sql.DB, p string, profile *oauth
 		`SELECT value FROM app_settings WHERE key = 'waitlist_enabled' LIMIT 1`).Scan(&waitlistOn)
 	if string(waitlistOn) == "true" && !oauthIsAllowlistedAdmin(profile.email) {
 		_ = tx.Rollback()
-		_, _ = db.ExecContext(ctx,
+		_, werr := db.ExecContext(ctx,
 			`INSERT INTO waitlist (id, provider, provider_id, email, display_name, avatar_url)
 			   VALUES ($1, $2, $3, $4, $5, NULLIF($6,''))
 			   ON CONFLICT (provider, provider_id) DO UPDATE
@@ -453,6 +456,9 @@ func oauthFindOrCreate(ctx context.Context, db *sql.DB, p string, profile *oauth
 			       requested_at = NOW(),
 			       status = CASE WHEN waitlist.status = 'rejected' THEN 'rejected' ELSE 'pending' END`,
 			"wl-"+oauthRandHex(12), p, profile.providerID, profile.email, profile.displayName, profile.avatarURL)
+		if werr != nil {
+			return nil, werr // TS:入列抛错冒泡 → 调用方 login_failed
+		}
 		return nil, &oauthWaitlistedError{profile.email, profile.displayName}
 	}
 
@@ -541,7 +547,8 @@ func oauthSlugSeed(local string) string {
 			prevDash = true
 		}
 	}
-	out := strings.Trim(b.String(), "-")
+	// TS 不 trim 首尾连字符("_foo_" → "-foo-"),仅截 30、空则 workspace。
+	out := b.String()
 	if len(out) > 30 {
 		out = out[:30]
 	}
@@ -667,7 +674,12 @@ func oauthHandleCallback(ctx context.Context, deps oauthDeps, provider, code str
 		}
 		var su *oauthSuspendedError
 		if errors.As(err, &su) {
-			oauthAudit(deps.db, "login_suspended", "", "", ip, ua, map[string]any{"provider": provider, "email": su.email, "reason": su.reason})
+			// TS detail 的 reason 为 null(无理由时),非空串。
+			var reason any
+			if su.reason != "" {
+				reason = su.reason
+			}
+			oauthAudit(deps.db, "login_suspended", "", "", ip, ua, map[string]any{"provider": provider, "email": su.email, "reason": reason})
 			base := oauthAuthDoneURL()
 			if returnURL != "" {
 				base = returnURL
@@ -758,13 +770,10 @@ func oauthCallback(deps oauthDeps) http.HandlerFunc {
 		ua := r.UserAgent()
 		claimed, err := oauthConsumeState(r.Context(), deps.rdb, state)
 		if err != nil {
-			// Redis 故障与业务错误同路:login_failed 审计 + #error=<msg>。
-			msg := err.Error()
-			if len(msg) > 120 {
-				msg = msg[:120]
-			}
-			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": msg})
-			http.Redirect(w, r, oauthErrorURL("", msg), http.StatusFound)
+			// Redis 故障与业务错误同路:login_failed 审计(全文)+ #error=<截断>。
+			full := err.Error()
+			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
+			http.Redirect(w, r, oauthErrorURL("", oauthCut120(full)), http.StatusFound)
 			return
 		}
 		if claimed == nil || claimed.Provider != provider {
@@ -784,14 +793,21 @@ func oauthCallback(deps oauthDeps) http.HandlerFunc {
 		}
 		target, err := oauthHandleCallback(r.Context(), deps, provider, code, returnURL, ip, ua, inv)
 		if err != nil {
-			msg := err.Error()
-			if len(msg) > 120 {
-				msg = msg[:120]
-			}
-			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": msg})
-			http.Redirect(w, r, oauthErrorURL(returnURL, msg), http.StatusFound)
+			// TS:审计存全文,仅 URL 截 120(UTF-16 码元;Go 以 rune 近似)。
+			full := err.Error()
+			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
+			http.Redirect(w, r, oauthErrorURL(returnURL, oauthCut120(full)), http.StatusFound)
 			return
 		}
 		http.Redirect(w, r, target, http.StatusFound)
 	}
+}
+
+// oauthCut120:重定向 URL 的错误文案截断 —— TS slice(0,120) 按 UTF-16
+// 码元,Go 以 rune 切近似(代理对边界不劈半个字符;审计侧不截)。
+func oauthCut120(s string) string {
+	if runes := []rune(s); len(runes) > 120 {
+		return string(runes[:120])
+	}
+	return s
 }
