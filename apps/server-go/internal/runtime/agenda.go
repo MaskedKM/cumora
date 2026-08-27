@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -815,9 +816,9 @@ func ParseAgendaVerdict(raw string) *AgendaParsedVerdict {
 		candidate = unfenced[first : last+1]
 	}
 	var parsed struct {
-		Actionable any    `json:"actionable"`
-		Focus      string `json:"focus"`
-		Reason     string `json:"reason"`
+		Actionable any `json:"actionable"`
+		Focus      any `json:"focus"`
+		Reason     any `json:"reason"`
 	}
 	if err := jsonUnmarshal([]byte(candidate), &parsed); err == nil {
 		return coerceAgendaVerdictAny(parsed.Actionable, parsed.Focus, parsed.Reason)
@@ -838,19 +839,37 @@ func ParseAgendaVerdict(raw string) *AgendaParsedVerdict {
 
 // coerceAgendaVerdictAny:JSON 成功路径的收窄 —— true/"true"/1 才算
 // actionable(模型答 "no" 之类的自然语言一律视为否),focus/reason 钳 240。
-func coerceAgendaVerdictAny(a any, focus, reason string) *AgendaParsedVerdict {
+func coerceAgendaVerdictAny(a, focus, reason any) *AgendaParsedVerdict {
 	actionable := a == true || a == "true" || a == float64(1)
-	coerce := func(v any) string {
-		switch t := v.(type) {
-		case string:
-			return sliceUTF16(t, 240)
-		case nil:
-			return ""
-		default:
-			return sliceUTF16(fmt.Sprint(t), 240)
+	return &AgendaParsedVerdict{Actionable: actionable, Focus: jsStringClamp(focus, 240), Reason: jsStringClamp(reason, 240)}
+}
+
+// jsStringClamp:JS String(v ?? '') 语义 —— 数值/布尔转字符串,数组按
+// JS 逗号连接,统一 UTF-16 钳长。
+func jsStringClamp(v any, max int) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return sliceUTF16(t, max)
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, e := range t {
+			if e == nil {
+				parts = append(parts, "")
+				continue
+			}
+			parts = append(parts, jsStringClamp(e, 1<<30))
 		}
+		return sliceUTF16(strings.Join(parts, ","), max)
+	case float64:
+		// JS Number→String:整数值不带小数点;Go %v 同形。
+		return sliceUTF16(strconv.FormatFloat(t, 'g', -1, 64), max)
+	case bool:
+		return sliceUTF16(strconv.FormatBool(t), max)
+	default:
+		return sliceUTF16(fmt.Sprint(t), max)
 	}
-	return &AgendaParsedVerdict{Actionable: actionable, Focus: coerce(focus), Reason: coerce(reason)}
 }
 
 // ClassifyAgendaActionable:remote 路由的云分类 —— 通用 cerebellum 适配器

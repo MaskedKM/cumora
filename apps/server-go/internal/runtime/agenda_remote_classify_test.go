@@ -29,6 +29,11 @@ func TestParseAgendaVerdict(t *testing.T) {
 		{"salvage-no-focus", `{actionable: true, tail`,
 			&AgendaParsedVerdict{Actionable: false, Focus: "", Reason: "malformed positive verdict without focus"}},
 		{"garbage", `no verdict here`, nil},
+		// TS coerceAgendaVerdict:数值 focus/reason 走 String() 收窄(不是拒收)。
+		{"numeric-fields", `{"actionable":true,"focus":123,"reason":456}`,
+			&AgendaParsedVerdict{Actionable: true, Focus: "123", Reason: "456"}},
+		{"bool-reason", `{"actionable":false,"focus":"","reason":true}`,
+			&AgendaParsedVerdict{Actionable: false, Focus: "", Reason: "true"}},
 	}
 	for _, c := range cases {
 		got := ParseAgendaVerdict(c.raw)

@@ -4,10 +4,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,31 +101,35 @@ type cliEmailContact struct {
 	HasRole       bool
 }
 
+// jsonStringNoEscape:编码字符串但不做 &<> 的 HTML 转义(外层
+// SetEscapeHTML(false) 不会解开内层 json.Marshal 的转义序列)。
+func jsonStringNoEscape(s string) []byte {
+	var buf bytes.Buffer
+	enc := newJSONEncoderNoEscape(&buf)
+	_ = enc.Encode(s)
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
 func (c cliEmailContact) MarshalJSON() ([]byte, error) {
 	var b strings.Builder
 	b.WriteString(`{"participantId":`)
 	if c.ParticipantID == nil {
 		b.WriteString("null")
 	} else {
-		pid, _ := json.Marshal(*c.ParticipantID)
-		b.Write(pid)
+		b.Write(jsonStringNoEscape(*c.ParticipantID))
 	}
-	name, _ := json.Marshal(c.Name)
-	addr, _ := json.Marshal(c.Address)
-	kind, _ := json.Marshal(c.Kind)
 	b.WriteString(`,"name":`)
-	b.Write(name)
+	b.Write(jsonStringNoEscape(c.Name))
 	b.WriteString(`,"address":`)
-	b.Write(addr)
+	b.Write(jsonStringNoEscape(c.Address))
 	b.WriteString(`,"kind":`)
-	b.Write(kind)
+	b.Write(jsonStringNoEscape(c.Kind))
 	if c.HasRole {
 		b.WriteString(`,"role":`)
 		if c.Role == nil {
 			b.WriteString("null")
 		} else {
-			role, _ := json.Marshal(*c.Role)
-			b.Write(role)
+			b.Write(jsonStringNoEscape(*c.Role))
 		}
 	}
 	b.WriteString("}")
@@ -522,7 +526,7 @@ func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, compan
 	if len(msgs) == 0 {
 		return cliOK(fmt.Sprintf("(thread %s has no email messages)", convoID))
 	}
-	lines := []string{fmt.Sprintf("thread %s  %q", convoID, title), ""}
+	lines := []string{fmt.Sprintf("thread %s  \"%s\"", convoID, title), ""}
 	for _, m := range msgs {
 		at := ""
 		if ts, ok := parseJSDate(m.CreatedAt); ok {

@@ -16,6 +16,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -211,7 +212,7 @@ type cliResponsesResult struct {
 	Usage      *TokenUsage
 }
 
-var novitaUnconfiguredWarned bool
+var novitaUnconfiguredWarned atomic.Bool
 
 // isNovitaModel / novitaPrefix 与 llm.ts withNovitaRouting 一致:模型名
 // novita/ 前缀选择 Novita;未配置 key 则降级走普通客户端(仅警告一次)。
@@ -244,8 +245,7 @@ func (s *Service) cliResponsesCreate(ctx context.Context, tenant string, args cl
 			body["response_format"] = map[string]any{"type": "json_object"}
 		}
 	} else {
-		if isNovitaModel(args.Model) && !novitaUnconfiguredWarned {
-			novitaUnconfiguredWarned = true
+		if isNovitaModel(args.Model) && novitaUnconfiguredWarned.CompareAndSwap(false, true) {
 			slog.Warn(`[llm] model requests Novita but NOVITA_API_KEY is unset — using the tenant's normal client instead`, "model", args.Model)
 		}
 		reqURL = baseURL + "/responses"

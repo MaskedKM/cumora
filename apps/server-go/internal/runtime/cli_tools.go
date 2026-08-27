@@ -232,10 +232,17 @@ func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliPar
 			}
 			return cliResult{ok: true, text: txt, exitCode: 0, sideEffects: sideEffects}
 		}
-		errPayload := struct {
-			Error   string         `json:"error"`
-			Display cliToolDisplay `json:"display"`
-		}{r.Error, r.Display}
+		var errPayload any
+		if r.Error != "" {
+			errPayload = struct {
+				Error   string          `json:"error"`
+				Display cliToolDisplay  `json:"display"`
+			}{r.Error, r.Display}
+		} else {
+			errPayload = struct {
+				Display cliToolDisplay `json:"display"`
+			}{r.Display}
+		}
 		txt, jerr := cliJSONStringify(errPayload)
 		if jerr != nil {
 			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
@@ -334,6 +341,7 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 		Input:           fmt.Sprintf("Design brief: %s\n\nReply with JSON only.", brief),
 		MaxOutputTokens: 800,
 		JSONMode:        true,
+		ReasoningEffort: "low",
 	})
 	if err != nil {
 		msg := err.Error()
@@ -609,7 +617,7 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 		if qerr == nil {
 			minsAgo := int(time.Since(cooldownAt).Minutes() + 0.5)
 			return "", fmt.Errorf(
-				"pull-group rate-limited: you (%s) already pulled %q %d minutes ago (id: %s). "+
+				"pull-group rate-limited: you (%s) already pulled \"%s\" %d minutes ago (id: %s). "+
 					"Cooldown is %dh for pulls that include a human. Send a message in that group, or @mention people in an existing conversation, instead of pulling a fresh one. "+
 					"(If you'd like a peer-only thread, pull a group with agent members only — those bypass the cooldown.)",
 				instigatorID, cooldownTitle, minsAgo, cooldownID, pullCooldownHours)

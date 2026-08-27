@@ -350,6 +350,7 @@ No prose, no explanation.`,
 			name, orNone(role), orNone(truncateRunesSimple(systemPrompt, 500))),
 		MaxOutputTokens: 200,
 		JSONMode:        true,
+		ReasoningEffort: "low",
 	})
 	if err != nil {
 		return hashFallback
