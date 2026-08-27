@@ -426,6 +426,8 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdClaim(ctx, parsed, "claim")
 	case "unclaim":
 		return s.cliCmdClaim(ctx, parsed, "unclaim")
+	case "doc":
+		return s.cliCmdDoc(ctx, parsed)
 	default:
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}

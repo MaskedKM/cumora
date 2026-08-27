@@ -9,6 +9,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wakebus"
 	"github.com/redis/go-redis/v9"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 )
 
 // Service:一个进程一份。DB 为 pg 池;Redis 客户端可能为 nil(单机无
@@ -18,6 +19,9 @@ type Service struct {
 	DB  *sql.DB
 	RDB redis.UniversalClient
 	Bus *wakebus.Bus
+	// Relay:Yjs sidecar 客户端(doc read/agent-edit 走它)。nil 时 doc
+	// 命令按 sidecar 不可用报错。
+	Relay *docrelay.Relay
 }
 
 func New(db *sql.DB, rdb redis.UniversalClient) *Service {
@@ -27,6 +31,9 @@ func New(db *sql.DB, rdb redis.UniversalClient) *Service {
 	}
 	return &Service{DB: db, RDB: rdb, Bus: bus}
 }
+
+// SetRelay:main 在 relay 构造后注入(避免构造环)。
+func (s *Service) SetRelay(r *docrelay.Relay) { s.Relay = r }
 
 // rdbOrNil:子功能取 Redis 客户端(nil = 降级路径)。
 func (s *Service) redis() redis.UniversalClient { return s.RDB }
