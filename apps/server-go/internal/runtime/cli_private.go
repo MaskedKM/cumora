@@ -510,7 +510,7 @@ func (s *Service) cliMemoryList(ctx context.Context, parsed cliParsed, me, expli
 		scoped = filtered
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(scoped)
+		js, e := cliJSONList(scoped)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -746,7 +746,7 @@ func (s *Service) cliCmdClimate(ctx context.Context, parsed cliParsed) cliResult
 			return cliErrThrow(err)
 		}
 		if parsed.flagTruey("json") {
-			js, e := cliJSONStringify(all)
+			js, e := cliJSONList(all)
 			if e != nil {
 				return cliErrThrow(e)
 			}
@@ -946,7 +946,7 @@ func (s *Service) cliCmdLog(ctx context.Context, parsed cliParsed) cliResult {
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -1133,7 +1133,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErrThrow(err)
 		}
 		if parsed.flagTruey("json") {
-			js, e := cliJSONStringify(all)
+			js, e := cliJSONList(all)
 			if e != nil {
 				return cliErrThrow(e)
 			}
@@ -1280,7 +1280,7 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 			return cliErrThrow(err)
 		}
 		if parsed.flagTruey("json") {
-			js, e := cliJSONStringify(all)
+			js, e := cliJSONList(all)
 			if e != nil {
 				return cliErrThrow(e)
 			}
@@ -1523,7 +1523,7 @@ func (s *Service) cliCmdTasks(ctx context.Context, parsed cliParsed) cliResult {
 			return cliErrThrow(err)
 		}
 		if parsed.flagTruey("json") {
-			js, e := cliJSONStringify(all)
+			js, e := cliJSONList(all)
 			if e != nil {
 				return cliErrThrow(e)
 			}

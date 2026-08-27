@@ -75,6 +75,14 @@ type eventRow struct {
 
 const eventScan = calendarSelect
 
+// EventRow / ScanEventRow:导出给 runtime /runtime/cli 的 run-now 复用
+// 同一个 dispatch 引擎(eventRow 本体保持包内)。
+type EventRow = eventRow
+
+func ScanEventRow(row interface{ Scan(...any) error }) (EventRow, bool) {
+	return scanEvent(row)
+}
+
 func scanEvent(row interface{ Scan(...any) error }) (eventRow, bool) {
 	var e eventRow
 	var rec []byte

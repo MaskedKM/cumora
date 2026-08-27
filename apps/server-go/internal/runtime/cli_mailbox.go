@@ -156,7 +156,7 @@ func (s *Service) cliCmdInbox(ctx context.Context, parsed cliParsed) cliResult {
 		if filtered == nil {
 			filtered = []cliInboxRow{}
 		}
-		js, e := cliJSONStringify(filtered)
+		js, e := cliJSONList(filtered)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -466,7 +466,7 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 				}
 				jr = append(jr, e)
 			}
-			js, e := cliJSONStringify(jr)
+			js, e := cliJSONList(jr)
 			if e != nil {
 				return cliErrThrow(e)
 			}

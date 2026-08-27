@@ -34,6 +34,15 @@ func cliJSONStringify(v any) (string, error) {
 	return s[:len(s)-1], nil // Encode 自带换行;JSON.stringify 不带尾换行
 }
 
+// cliJSONList:列表序列化 —— TS 的 rows 恒为数组(空查询给 [],不会是
+// null);Go nil slice 序列化成 null,在此归一。
+func cliJSONList[T any](xs []T) (string, error) {
+	if xs == nil {
+		xs = []T{}
+	}
+	return cliJSONStringify(xs)
+}
+
 // newJSONEncoderNoEscape:关掉 Go 缺省的 <>& HTML 转义(TS 不转义)。
 func newJSONEncoderNoEscape(w *bytes.Buffer) *json.Encoder {
 	enc := json.NewEncoder(w)
@@ -264,7 +273,7 @@ func (s *Service) cliCmdParticipants(ctx context.Context, parsed cliParsed) cliR
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -342,7 +351,7 @@ func (s *Service) cliCmdConversations(ctx context.Context, parsed cliParsed, kin
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -416,7 +425,7 @@ func (s *Service) cliCmdMembers(ctx context.Context, parsed cliParsed) cliResult
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(peeps)
+		js, e := cliJSONList(peeps)
 		if e != nil {
 			return cliErrThrow(e)
 		}

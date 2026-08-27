@@ -337,7 +337,7 @@ func (s *Service) cliCmdMessages(ctx context.Context, parsed cliParsed) cliResul
 		s.RecordSeen(me, id, inOrder[len(inOrder)-1].Sequence)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(inOrder)
+		js, e := cliJSONList(inOrder)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -562,7 +562,7 @@ func (s *Service) cliCmdSearch(ctx context.Context, parsed cliParsed) cliResult 
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -645,7 +645,7 @@ func (s *Service) cliCmdToolsLog(ctx context.Context, parsed cliParsed) cliResul
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
@@ -743,7 +743,7 @@ func (s *Service) cliCmdStatusList(ctx context.Context, parsed cliParsed) cliRes
 		return cliErrThrow(err)
 	}
 	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(all)
+		js, e := cliJSONList(all)
 		if e != nil {
 			return cliErrThrow(e)
 		}
