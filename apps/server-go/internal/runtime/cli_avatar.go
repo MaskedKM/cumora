@@ -384,6 +384,12 @@ func orNone(s string) string {
 // cliGenerateAndPersistAvatar:router.ts generateAndPersistAvatar —— 视觉
 // 签名确定性于 id+gender;image API → avatars/ 存储 → participants.
 // avatar_url → persona 缓存失效 → CH_STATUS 广播。失败抛错由命令层接。
+// GenerateAgentAvatar:admin 头像生成路由的注入面(domains/devtools 钩子;
+// boards 的 WakeMentioned 同款依赖倒置)。
+func (s *Service) GenerateAgentAvatar(ctx context.Context, agentID, tenant string) (string, error) {
+	return s.cliGenerateAndPersistAvatar(ctx, agentID, tenant)
+}
+
 func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tenant string) (string, error) {
 	var name string
 	var role sql.NullString
