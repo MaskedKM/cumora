@@ -35,6 +35,7 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/conversations/{id}/typing", typing(db))
 	mux.HandleFunc("POST /api/conversations/{id}/read", markRead(db))
 	mux.HandleFunc("GET /api/conversations/{id}/messages/{rootId}/replies", replies(db))
+	mux.HandleFunc("POST /api/messages/{id}/reactions", toggleReaction(db))
 }
 
 // memberCheck:会话存在+成员资格。非成员返回 404(baseline 的存在性
@@ -984,3 +985,153 @@ func arrayLiteral(items []string) string {
 }
 
 var _ = context.Background
+
+/* ───────── reactions(#68 补齐:POST /api/messages/{id}/reactions) ───────── */
+
+// toggleReaction:表情开关 + climate 信号(对 agent 消息的新增反应抬
+// affinity)+ cumora:reactions 广播。非成员与跨租户同走 404(存在性
+// 不透明策略)。
+func toggleReaction(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := httpx.RequireAuth(w, r)
+		if !ok {
+			return
+		}
+		tenant, ok := httpx.ResolveCompany(w, r, db, uid)
+		if !ok {
+			return
+		}
+		id := r.PathValue("id")
+		var body map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		var emojiRaw any
+		_ = json.Unmarshal(body["emoji"], &emojiRaw)
+		emoji := strings.TrimSpace(fmtString(emojiRaw))
+		if emoji == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "emoji required")
+			return
+		}
+		var convoID, authorID, membersJSON string
+		err := db.QueryRowContext(r.Context(), `
+			SELECT m.conversation_id, m.author_id, c.members::text
+			  FROM messages m
+			  JOIN conversations c ON c.id = m.conversation_id
+			 WHERE m.id = $1 AND c.company_id = $2 LIMIT 1`, id, tenant).
+			Scan(&convoID, &authorID, &membersJSON)
+		if err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		var members []string
+		_ = json.Unmarshal([]byte(membersJSON), &members)
+		isMember := false
+		for _, m := range members {
+			if m == uid {
+				isMember = true
+				break
+			}
+		}
+		if !isMember {
+			httpx.WriteError(w, http.StatusNotFound, "message not found")
+			return
+		}
+
+		var count int64
+		_ = db.QueryRowContext(r.Context(),
+			`SELECT COUNT(*) FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`,
+			id, uid, emoji).Scan(&count)
+		wasRemoval := count > 0
+		if wasRemoval {
+			_, _ = db.ExecContext(r.Context(),
+				`DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`,
+				id, uid, emoji)
+		} else {
+			_, _ = db.ExecContext(r.Context(),
+				`INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+				id, uid, emoji)
+		}
+		if !wasRemoval {
+			bumpClimate(r.Context(), db, authorID, uid, 0.05, 0.02, "received "+emoji+" from "+uid)
+		}
+
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT emoji, COUNT(*)::int AS count, to_json(array_agg(user_id ORDER BY user_id))::text AS users
+			  FROM message_reactions WHERE message_id = $1
+			 GROUP BY emoji ORDER BY count DESC, emoji ASC`, id)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer rows.Close()
+		agg := []map[string]any{}
+		for rows.Next() {
+			var em string
+			var cnt int
+			var usersJSON string
+			if err := rows.Scan(&em, &cnt, &usersJSON); err != nil {
+				continue
+			}
+			var users []string
+			_ = json.Unmarshal([]byte(usersJSON), &users)
+			agg = append(agg, map[string]any{"emoji": em, "count": cnt, "users": users})
+		}
+		_ = events.PublishRaw(r.Context(), "cumora:reactions", mustJSON(map[string]any{
+			"type":           "message.reactions",
+			"conversationId": convoID,
+			"companyId":      tenant,
+			"messageId":      id,
+			"reactions":      agg,
+		}))
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"reactions": agg})
+	}
+}
+
+// bumpClimate:agents/climate.ts bumpClimate 的 Go 等价(仅 agent 作者
+// 落行;±1 夹紧;失败仅告警——climate 是信号不是不变量)。
+func bumpClimate(ctx context.Context, db *sql.DB, agentID, aboutID string, affinity, trust float64, note string) {
+	if agentID == "" || aboutID == "" || agentID == aboutID {
+		return
+	}
+	if affinity == 0 && trust == 0 {
+		return
+	}
+	var kind string
+	if err := db.QueryRowContext(ctx, `SELECT kind FROM participants WHERE id = $1 LIMIT 1`, agentID).Scan(&kind); err != nil || kind != "agent" {
+		return
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO agent_climate (agent_id, about_id, affinity, trust, last_note, updated_at)
+		VALUES ($1, $2,
+		        GREATEST(-1, LEAST(1, $3::real)),
+		        GREATEST(-1, LEAST(1, $4::real)),
+		        $5, NOW())
+		ON CONFLICT (agent_id, about_id) DO UPDATE
+		   SET affinity = GREATEST(-1, LEAST(1, agent_climate.affinity + $3::real)),
+		       trust    = GREATEST(-1, LEAST(1, agent_climate.trust    + $4::real)),
+		       last_note = COALESCE($5, agent_climate.last_note),
+		       updated_at = NOW()`,
+		agentID, aboutID, clampF(affinity), clampF(trust), note)
+	if err != nil {
+		slog.Warn("[climate] bump failed", "err", err)
+	}
+}
+
+func clampF(v float64) float64 {
+	if v > 1 {
+		return 1
+	}
+	if v < -1 {
+		return -1
+	}
+	return v
+}
+
+func fmtString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
