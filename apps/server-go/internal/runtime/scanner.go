@@ -318,9 +318,8 @@ func (s *Service) StartScanner() (stop func()) {
 		return nil
 	}
 	interval := scannerIntervalMS()
-	// time.Ticker(0) 会 panic;钳 1ms = Node setInterval 对 <1 的钳制
-	// 语义本身(并非"不复刻怪癖",评审注记)。唤醒仍由 20/min 低优先级
-	// 预算 + 指纹去重封顶。
+	// time.Ticker(0) 会 panic;TS setInterval(fn,0) 的热循环怪癖不复刻,
+	// 钳到 1ms(语义近似:极速循环由低优先级预算闸兜底)。
 	if interval <= 0 {
 		interval = 1
 	}
