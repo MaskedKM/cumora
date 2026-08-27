@@ -398,6 +398,24 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdInvite(ctx, parsed)
 	case "kick":
 		return s.cliCmdKick(ctx, parsed)
+	case "topic":
+		return s.cliCmdTopicRead(ctx, parsed)
+	case "topic-set":
+		return s.cliCmdTopicSet(ctx, parsed)
+	case "rename":
+		return s.cliCmdRename(ctx, parsed)
+	case "memory":
+		return s.cliCmdMemory(ctx, parsed)
+	case "climate":
+		return s.cliCmdClimate(ctx, parsed)
+	case "log":
+		return s.cliCmdLog(ctx, parsed)
+	case "workspace":
+		return s.cliCmdTeamWorkspace(ctx, parsed)
+	case "ws":
+		return s.cliCmdWorkspace(ctx, parsed)
+	case "tasks":
+		return s.cliCmdTasks(ctx, parsed)
 	default:
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}
