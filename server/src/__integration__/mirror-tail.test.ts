@@ -317,7 +317,9 @@ test('[mirror-tail] computers pair→heartbeat→DELETE 与 assign/runtime-token
   assert.equal(hb.status, 200)
   const beat1 = await pool.query<{ last: string | null }>(
     `SELECT last_seen_at::text AS last FROM computers WHERE id = $1`, [computerId])
-  assert.ok(beat0.rows[0].last === null || beat1.rows[0].last >= beat0.rows[0].last)
+  const before = beat0.rows[0]?.last ?? null
+  const after = beat1.rows[0]?.last ?? null
+  assert.ok(before === null || after !== null && after >= before)
 
   // assign:agent → computer。
   const agentId = `ag-tail-${randomUUID().slice(0, 6)}`
