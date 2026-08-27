@@ -418,6 +418,14 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdTasks(ctx, parsed)
 	case "calendar":
 		return s.cliCmdCalendar(ctx, parsed)
+	case "kanban":
+		return s.cliCmdBoard(ctx, parsed)
+	case "card":
+		return s.cliCmdCard(ctx, parsed)
+	case "claim":
+		return s.cliCmdClaim(ctx, parsed, "claim")
+	case "unclaim":
+		return s.cliCmdClaim(ctx, parsed, "unclaim")
 	default:
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}
