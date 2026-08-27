@@ -59,12 +59,18 @@ func me(db *sql.DB) http.HandlerFunc {
 
 // ---- app_settings 读写 ----
 
-func getSettingBool(db *sql.DB, key string) bool {
+// getSettingBool:缺行=false 缺省;查询错误上抛(TS throw → 500,
+// 绝不用假缺省值 200 糊弄——管理员会把假值存回去)。
+func getSettingBool(db *sql.DB, key string) (bool, error) {
 	var v []byte
-	if db.QueryRow(`SELECT value FROM app_settings WHERE key = $1`, key).Scan(&v) != nil {
-		return false
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = $1`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return false, nil
 	}
-	return string(v) == "true"
+	if err != nil {
+		return false, err
+	}
+	return string(v) == "true", nil
 }
 
 func setSettingJSON(w http.ResponseWriter, r *http.Request, db *sql.DB, key, valJSON, updatedBy string) bool {
@@ -148,7 +154,9 @@ func decryptApiKey(stored string) string {
 	return string(out)
 }
 
-// apiKeyStatus:管理员可见的唯一读取形状(ADR 0001/issue #22)。
+// apiKeyStatus:管理员可见的唯一读取形状(ADR 0001/issue #22)。查询
+// 错误按未配置呈现(TS:任何读失败 → configured false,不 500——
+// decryptApiKey 的 null-on-failure 语义延伸到行读取)。
 func apiKeyStatus(db *sql.DB) (configured bool, suffix any) {
 	var stored []byte
 	if db.QueryRow(`SELECT value FROM app_settings WHERE key = 'cerebellum_api_key' LIMIT 1`).Scan(&stored) != nil {
@@ -175,12 +183,14 @@ type cerebellumPlain struct {
 	route, localEngine, provider, baseURL, model string
 }
 
-func cerebellumRead(db *sql.DB) cerebellumPlain {
+// cerebellumRead:读侧归一(route 门/localEngine 非空缺省/baseUrl 去
+// 尾斜杠)逐字对齐 cerebellum-settings.ts;查询错误上抛。
+func cerebellumRead(db *sql.DB) (cerebellumPlain, error) {
 	out := cerebellumPlain{route: "remote", localEngine: "claude"}
 	rows, err := db.Query(`SELECT key, value FROM app_settings WHERE key = ANY($1::text[])`,
 		[]string{"cerebellum_route", "cerebellum_local_engine", "cerebellum_provider", "cerebellum_base_url", "cerebellum_model"})
 	if err != nil {
-		return out
+		return out, err
 	}
 	defer rows.Close()
 	m := map[string]string{}
@@ -203,15 +213,29 @@ func cerebellumRead(db *sql.DB) cerebellumPlain {
 	out.provider = m["cerebellum_provider"]
 	out.baseURL = strings.TrimRight(m["cerebellum_base_url"], "/")
 	out.model = m["cerebellum_model"]
-	return out
+	return out, nil
 }
 
 func buildSettingsResponse(w http.ResponseWriter, db *sql.DB) {
-	c := cerebellumRead(db)
+	c, err := cerebellumRead(db)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	waitlist, err := getSettingBool(db, "waitlist_enabled")
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	signups, err := getSettingBool(db, "signups_paused")
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	configured, suffix := apiKeyStatus(db)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"waitlist_enabled":              getSettingBool(db, "waitlist_enabled"),
-		"signups_paused":                getSettingBool(db, "signups_paused"),
+		"waitlist_enabled":              waitlist,
+		"signups_paused":                signups,
 		"cerebellum_route":              c.route,
 		"cerebellum_local_engine":       c.localEngine,
 		"cerebellum_provider":           c.provider,
@@ -233,72 +257,96 @@ func settingsGet(db *sql.DB) http.HandlerFunc {
 
 // settingsPut:类型门部分更新(对齐 admin-router.ts 113–137):
 // 布尔开关仅认 boolean;route 仅认 remote|byoa;其余字段仅认 string;
+// **JSON null 一律忽略**(TS typeof 门语义;null 直通 Go unmarshal 会
+// 被当零值放行,cerebellum_api_key:null 曾静默删密钥);
 // cerebellum_api_key 是 string 即触发写(空串=显式清除,缺键=不动);
+// 加密失败(CUMORA_SECRETS_KEY 缺)→ 500 绝不装成功;
 // 全空更新集 → 400 'no settings to update'。
 func settingsPut(db *sql.DB) http.HandlerFunc {
-	upsert := func(w http.ResponseWriter, r *http.Request, db *sql.DB, key, valJSON, uid string) bool {
-		return setSettingJSON(w, r, db, key, valJSON, uid)
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, ok := requireAdmin(w, r, db)
 		if !ok {
 			return
 		}
-		var body map[string]json.RawMessage
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		// 空体按 {} 处理(TS express.json 语义)→ 落到 400 no settings;
+		// 坏 JSON 才 400 invalid JSON body。
+		body := map[string]json.RawMessage{}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil && err != io.EOF {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		hasUpdate := false
-		strField := func(key, settingsKey string) {
+		// TS 的门是 typeof(布尔/字符串);JSON null 在 Go unmarshal 里
+		// 无错也不置值,会把 null 当 false/"" 放行 —— 须显式拒 null
+		// (否则 cerebellum_api_key:null 会静默删掉已存密钥)。
+		isNull := func(raw json.RawMessage) bool { return string(raw) == "null" }
+		strOf := func(key string) (string, bool) {
 			raw, present := body[key]
-			if !present {
-				return
+			if !present || isNull(raw) {
+				return "", false
 			}
 			var s string
 			if json.Unmarshal(raw, &s) != nil {
+				return "", false
+			}
+			return s, true
+		}
+		boolOf := func(key string) (bool, bool) {
+			raw, present := body[key]
+			if !present || isNull(raw) {
+				return false, false
+			}
+			var b bool
+			if json.Unmarshal(raw, &b) != nil {
+				return false, false
+			}
+			return b, true
+		}
+		failed := false
+		upsert := func(key, valJSON string) {
+			if failed {
 				return
 			}
+			if !setSettingJSON(w, r, db, key, valJSON, uid) {
+				failed = true
+			}
+		}
+		hasUpdate := false
+		if b, ok := boolOf("waitlist_enabled"); ok {
 			hasUpdate = true
-			if settingsKey != "" {
-				_ = upsert(w, r, db, settingsKey, mustJSON(s), uid)
+			upsert("waitlist_enabled", mustJSON(b))
+		}
+		if b, ok := boolOf("signups_paused"); ok {
+			hasUpdate = true
+			upsert("signups_paused", mustJSON(b))
+		}
+		if s, ok := strOf("cerebellum_route"); ok && (s == "remote" || s == "byoa") {
+			hasUpdate = true
+			upsert("cerebellum_route", mustJSON(s))
+		}
+		for _, k := range []string{"cerebellum_local_engine", "cerebellum_provider", "cerebellum_base_url", "cerebellum_model"} {
+			if s, ok := strOf(k); ok {
+				hasUpdate = true
+				upsert(k, mustJSON(s))
 			}
 		}
-		if raw, present := body["waitlist_enabled"]; present {
-			var b bool
-			if json.Unmarshal(raw, &b) == nil {
-				hasUpdate = true
-				_ = upsert(w, r, db, "waitlist_enabled", mustJSON(b), uid)
-			}
-		}
-		if raw, present := body["signups_paused"]; present {
-			var b bool
-			if json.Unmarshal(raw, &b) == nil {
-				hasUpdate = true
-				_ = upsert(w, r, db, "signups_paused", mustJSON(b), uid)
-			}
-		}
-		if raw, present := body["cerebellum_route"]; present {
-			var s string
-			if json.Unmarshal(raw, &s) == nil && (s == "remote" || s == "byoa") {
-				hasUpdate = true
-				_ = upsert(w, r, db, "cerebellum_route", mustJSON(s), uid)
-			}
-		}
-		strField("cerebellum_local_engine", "cerebellum_local_engine")
-		strField("cerebellum_provider", "cerebellum_provider")
-		strField("cerebellum_base_url", "cerebellum_base_url")
-		strField("cerebellum_model", "cerebellum_model")
-		if raw, present := body["cerebellum_api_key"]; present {
-			var s string
-			if json.Unmarshal(raw, &s) == nil {
-				hasUpdate = true
-				if s == "" {
-					_, _ = db.ExecContext(r.Context(), `DELETE FROM app_settings WHERE key = 'cerebellum_api_key'`)
-				} else if enc, ok := encryptApiKey(s); ok {
-					_ = upsert(w, r, db, "cerebellum_api_key", mustJSON(enc), uid)
+		if s, ok := strOf("cerebellum_api_key"); ok {
+			hasUpdate = true
+			switch {
+			case s == "":
+				_, _ = db.ExecContext(r.Context(), `DELETE FROM app_settings WHERE key = 'cerebellum_api_key'`)
+			default:
+				// 加密失败 = 服务器缺 CUMORA_SECRETS_KEY(TS:throw → 500),
+				// 绝不能装作成功。
+				enc, encOK := encryptApiKey(s)
+				if !encOK {
+					httpx.WriteError(w, http.StatusInternalServerError, "CUMORA_SECRETS_KEY is not configured on the server")
+					return
 				}
+				upsert("cerebellum_api_key", mustJSON(enc))
 			}
+		}
+		if failed {
+			return // upsert 已写 500
 		}
 		if !hasUpdate {
 			httpx.WriteError(w, http.StatusBadRequest, "no settings to update")
@@ -322,7 +370,7 @@ func engines(db *sql.DB) http.HandlerFunc {
 		rows, err := db.QueryContext(r.Context(),
 			`SELECT available_engines FROM computers WHERE status = 'online' AND revoked_at IS NULL`)
 		if err != nil {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"engines": []string{}})
+			httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		defer rows.Close()

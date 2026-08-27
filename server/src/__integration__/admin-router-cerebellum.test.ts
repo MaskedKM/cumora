@@ -188,6 +188,31 @@ test('[mirror] PUT with an empty cerebellum_api_key clears a previously-saved ke
   })
 })
 
+test('[mirror] PUT with JSON null fields ignores them (typeof gate) and preserves the API key', async () => {
+  const { userId } = await seedAdmin()
+  await withClient(userId, async (c) => {
+    await c.put('/admin/settings', { cerebellum_api_key: 'sk-null-guard-1234' })
+    const r = await c.put('/admin/settings', {
+      cerebellum_api_key: null,
+      waitlist_enabled: null,
+      signups_paused: null,
+      cerebellum_route: null,
+      cerebellum_local_engine: null,
+      cerebellum_provider: null,
+      cerebellum_base_url: null,
+      cerebellum_model: null,
+    })
+    assert.equal(r.status, 400)
+    assert.equal((r.body as { error: string }).error, 'no settings to update')
+    const g = await c.get('/admin/settings')
+    const body = g.body as Record<string, unknown>
+    assert.equal(body.cerebellum_api_key_configured, true)
+    assert.equal(body.cerebellum_api_key_suffix, '1234')
+    assert.equal(body.waitlist_enabled, false)
+    assert.equal(body.cerebellum_provider, '')
+  })
+})
+
 test('[mirror] GET /api/admin/computers/available-engines is 403 for a non-admin user', async () => {
   const { userId } = await seedNonAdmin()
   await withClient(userId, async (c) => {
