@@ -527,7 +527,7 @@ export function ObservabilityPage() {
         />
       </section>
 
-      {/* By daemon version — correlate spend / cache behaviour with agent-cli
+      {/* By daemon version — correlate spend / cache behaviour with daemon
           releases. When a new version regresses token usage, the per-version
           rollup makes the bad bucket light up. NULL daemon_version rows
           (cloud agent-turn etc.) are excluded server-side; this card is for

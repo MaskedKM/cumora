@@ -651,7 +651,7 @@ export const en = {
   'adminobs.topSpendersTitle': 'Top spenders',
   'adminobs.topSpendersSub': 'By agent · top 20 over the window',
   'adminobs.daemonTitle': 'By daemon version',
-  'adminobs.daemonSub': 'Spend × cache behaviour per agent-cli release · drill into a row to see its calls',
+  'adminobs.daemonSub': 'Spend × cache behaviour per daemon release · drill into a row to see its calls',
   'adminobs.heroSpendPrefix': '{unit} · last {days}d',
   'adminobs.heroSubUsd': '{in} input · {out} output',
   'adminobs.heroSubTokens': '{in} in · {cached} cached · {out} out',
