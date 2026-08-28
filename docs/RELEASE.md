@@ -21,8 +21,8 @@ npm run electron:build:linux   # 或 :mac / :win
 The desktop app connects to the **self-hosted Go server** baked at build
 time (#127): `.env.production` 的 `VITE_CUMORA_API_BASE`(默认
 `http://127.0.0.1:5181`,即本机 systemd 单元的监听地址)。打包后仍可
-经 localStorage `cumora.serverUrl` 运行时改指(Settings/AuthScreen 已
-暴露),三层解析见 `apps/web/src/api/client.ts`。
+经 localStorage `cumora.serverUrl` 运行时改指(AuthScreen 的 API
+server 入口已暴露此项),三层解析见 `apps/web/src/api/client.ts`。
 
 It does **not** deploy the API server. Backend deploys are an explicit,
 separately approved action (`godocker build` + `systemctl restart`,见
