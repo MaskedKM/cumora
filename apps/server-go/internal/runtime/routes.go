@@ -306,7 +306,7 @@ func (s *Service) gatherClaimsByConvo(inbox []map[string]any) map[string][]Workl
 // inbox+context),但不跑模型:返回空箱判定或 {instructions,input}。
 // daemon 在其本地小脑上跑——判断永不离开操作者的机器,不花云配额。
 // 无正则做决定:可行动性/模式全由小模型判。
-func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
 	ctx := r.Context()
 	persona, err := s.GetPersona(ctx, agentID)
 	if err != nil {
@@ -343,7 +343,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 		}})
 		return
 	}
-	contextRows, err := s.LoadContext(ctx, agentID, convoIDs)
+	contextRows, err := s.LoadContext(ctx, agentID, companyID, convoIDs)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -476,7 +476,7 @@ func (s *Service) handleMemoryQuery(w http.ResponseWriter, r *http.Request, agen
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
 }
 
-func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID string, companyID *string) {
 	body, ok := readJSON(w, r)
 	if !ok {
 		return
@@ -485,7 +485,13 @@ func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID 
 	if ids == nil {
 		ids = []string{}
 	}
-	rows, err := s.LoadContext(r.Context(), agentID, ids)
+	// #130:放大闸门——每 id = 25 行 × (quoted 子查询 + reactions 聚合 +
+	// human_last_read 相关子查询),无上限一把大数组就能打爆连接池。
+	if len(ids) > 50 {
+		httpx.WriteError(w, http.StatusBadRequest, "conversationIds: max 50 per request")
+		return
+	}
+	rows, err := s.LoadContext(r.Context(), agentID, companyID, ids)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
