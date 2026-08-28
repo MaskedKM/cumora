@@ -96,14 +96,6 @@ func (s *Service) cliClosePoll(ctx context.Context, messageID, companyID string,
 	return &mapped, nil
 }
 
-func (s *Service) cliBuildPollUpdatedEvent(ctx context.Context, messageID string, actorID *string) (cliPollUpdatedEvent, error) {
-	event, perr := polls.BuildUpdatedEvent(ctx, s.DB, messageID, actorID)
-	if perr != nil {
-		return cliPollUpdatedEvent{}, &cliPollError{perr.Msg}
-	}
-	return eventFromEngine(event), nil
-}
-
 /* ───────────── CLI 命令面 ───────────── */
 
 func (s *Service) cliCmdPoll(ctx context.Context, parsed cliParsed) cliResult {

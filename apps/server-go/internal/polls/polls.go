@@ -375,7 +375,7 @@ func BuildUpdatedEvent(ctx context.Context, db *sql.DB, messageID string, actorI
 		return UpdatedEvent{}, errf(500, "tally query failed")
 	}
 	defer rows.Close()
-	var tallies []Tally
+	tallies := []Tally{}
 	for rows.Next() {
 		var t Tally
 		var voterIDs []byte
@@ -423,9 +423,9 @@ func Sweep(ctx context.Context, db *sql.DB) int {
 	rows.Close()
 	closed := 0
 	for _, t := range all {
-		if _, perr := ClosePoll(ctx, db, CloseArgs{
+		if event, perr := ClosePoll(ctx, db, CloseArgs{
 			MessageID: t.id, CompanyID: t.companyID, ActorID: nil, Reason: "expired",
-		}); perr == nil {
+		}); perr == nil && event != nil { // TS: if (event) closed += 1 —— 幂等路径不计
 			closed++
 		}
 	}

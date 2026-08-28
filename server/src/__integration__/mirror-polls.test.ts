@@ -114,6 +114,41 @@ test('[mirror-polls] create validation: empty question / bad mode / too few opti
   assert.equal(body.error, 'conversationId required')
 })
 
+test('[mirror-polls] create edge semantics: expiresInMinutes, case-insensitive dedupe, caps', async () => {
+  const convo = await seedConvo([USER])
+  // expiresInMinutes(number)→expiresAt;非 number 忽略(无过期)。
+  const timedRes = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...authHeaders },
+    body: JSON.stringify({ conversationId: convo, question: 'timed?', options: ['a', 'b'], expiresInMinutes: 30 }),
+  })
+  assert.equal(timedRes.status, 201)
+  const timedJson = await timedRes.json() as { poll: PollPayload }
+  assert.ok(timedJson.poll.expiresAt, 'number expiresInMinutes sets expiresAt')
+  // 大小写不敏感去重:Pizza/pizza 同键只留首见。
+  const dedupe = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...authHeaders },
+    body: JSON.stringify({ conversationId: convo, question: 'dedupe?', options: ['Pizza', 'pizza', 'Sushi'] }),
+  })
+  const dedupeJson = await dedupe.json() as { poll: PollPayload }
+  assert.equal(dedupeJson.poll.options.length, 2)
+  assert.equal(dedupeJson.poll.options[0].text, 'Pizza')
+  // 长度上限:280 题目/120 选项。
+  const longQ = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...authHeaders },
+    body: JSON.stringify({ conversationId: convo, question: 'q'.repeat(281), options: ['a', 'b'] }),
+  })
+  assert.equal(longQ.status, 400)
+  const longO = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...authHeaders },
+    body: JSON.stringify({ conversationId: convo, question: 'ok?', options: ['x'.repeat(121), 'b'] }),
+  })
+  assert.equal(longO.status, 400)
+})
+
 test('[mirror-polls] create membership gates: cross-tenant 404 & non-member 404 (opaque)', async () => {
   const convo = await seedConvo([USER, PEER])
   // 跨租户:convo 不存在。
@@ -168,7 +203,20 @@ test('[mirror-polls] vote replaces prior picks; tally carries sorted voter ids',
     }).then((r) => r.status)
   assert.equal(await sv([sOpt[0].id, sOpt[1].id]), 400)
   assert.equal(await sv(['opt-bogus']), 400)
-  assert.equal(await sv([]), 200)
+  // 撤票(唯一投票者→tallies 必须是 [] 而非 null;TS 恒数组):
+  // 独立建一枚单人会话的票,避免本用例 peer 的票干扰该断言。
+  const solo = await createPoll(await seedConvo([USER]), { options: ['x', 'y'] })
+  const soloOpt = (solo.json as { poll: PollPayload }).poll.options[0].id
+  const soloVote = (ids: string[]) => fetch(`${baseUrl}/api/polls/${solo.json.messageId}/vote`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-company-id': COMPANY, ...authHeaders },
+    body: JSON.stringify({ optionIds: ids }),
+  })
+  assert.equal((await soloVote([soloOpt])).status, 200)
+  const retracted = await soloVote([])
+  assert.equal(retracted.status, 200)
+  const retractBody = await retracted.json() as { tallies: unknown[] }
+  assert.deepEqual(retractBody.tallies, [])
 })
 
 test('[mirror-polls] close: author-only 403, idempotent closed:false, post-close vote 409', async () => {
@@ -207,7 +255,7 @@ test('[mirror-polls] close: author-only 403, idempotent closed:false, post-close
   assert.equal(voted.status, 409)
 })
 
-test('[mirror-polls] expired poll is swept by the engine (Sweep closes with reason=expired)', async () => {
+test('[mirror-polls] open expired-looking poll stays votable until the sweeper closes it (castVote ignores expiresAt, TS-parity)', async () => {
   const convo = await seedConvo([USER])
   // 直接造一枚已过期的开放投票(引擎建票不便回溯时钟;Sweep 的输入形状一致)。
   const payload = {

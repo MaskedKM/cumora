@@ -128,13 +128,20 @@ func main() {
 		go func() {
 			tickSweep := time.NewTicker(time.Duration(pollSweepInterval) * time.Millisecond)
 			defer tickSweep.Stop()
-			for range tickSweep.C {
-				if n := pollsengine.Sweep(ctxBoot, pool); n > 0 {
-					slog.Info("[polls] sweeper closed expired polls", "count", n)
+			for {
+				select {
+				case <-ctxBoot.Done():
+					return
+				case <-tickSweep.C:
+					if n := pollsengine.Sweep(ctxBoot, pool); n > 0 {
+						slog.Info("[polls] sweeper closed expired polls", "count", n)
+					}
 				}
 			}
 		}()
 		slog.Info("[polls] expiration sweeper running", "interval_ms", pollSweepInterval)
+	} else {
+		slog.Info("[polls] expiration sweeper disabled (POLL_SWEEP_INTERVAL_MS=0)")
 	}
 
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)

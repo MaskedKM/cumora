@@ -80,7 +80,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		var options []string
 		if arr, ok := keyAny("options").([]any); ok {
 			for _, o := range arr {
-				options = append(options, httpx.JSToString(o))
+				options = append(options, httpx.JSStringOrNullish(o))
 			}
 		}
 		mode := "single"
@@ -126,7 +126,7 @@ func vote(db *sql.DB) http.HandlerFunc {
 		var optionIDs []string
 		for _, x := range arr {
 			// String(x ?? '') 后滤空(TS .map(String).filter(Boolean))。
-			if s := httpx.JSToString(x); s != "" {
+			if s := httpx.JSStringOrNullish(x); s != "" {
 				optionIDs = append(optionIDs, s)
 			}
 		}
