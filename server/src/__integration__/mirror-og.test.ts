@@ -6,7 +6,11 @@
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { lookup as dnsLookupCb } from 'node:dns'
+import { promisify } from 'node:util'
 import { teardownAll, MIRROR_BASE } from './_helpers.js'
+
+const dnsLookup = promisify(dnsLookupCb)
 
 const baseUrl = MIRROR_BASE
 
@@ -51,7 +55,17 @@ test('[mirror-og] SSRF: localhost / .local / private IP literals → 403', async
 })
 
 test('[mirror-og] unresolvable host → 400 dns lookup failed', async () => {
-  const r = await getOg('http://this-domain-really-does-not-exist-xyz.invalid/')
-  assert.equal(r.status, 400)
-  assert.equal(r.json.error, 'dns lookup failed')
+  const host = 'this-domain-really-does-not-exist-xyz.invalid'
+  const r = await getOg(`http://${host}/`)
+  // 自建 CI 的 DNS 可能被劫持/走 fake-ip(一切域名都"解析得动"):
+  // 本进程先探测同一主机名 —— 真 NXDOMAIN 环境才断言 400;解析成功
+  // 的环境里服务端无从分辨,接受空卡负缓存(200)或私网拦截(403)。
+  let resolvable = true
+  try { await dnsLookup(host) } catch { resolvable = false }
+  if (!resolvable) {
+    assert.equal(r.status, 400)
+    assert.equal(r.json.error, 'dns lookup failed')
+  } else {
+    assert.ok(r.status === 200 || r.status === 403, `hijacked-DNS env expected 200/403, got ${r.status}`)
+  }
 })
