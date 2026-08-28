@@ -30,6 +30,10 @@ func TestJSToString(t *testing.T) {
 		{"tenth", 0.1, "0.1"},
 		{"third shortest round-trip", 1.0 / 3.0, "0.3333333333333333"},
 		{"beyond 2^53 rounds", float64(9007199254740993), "9007199254740992"},
+		// F-01(评审):(2^53, 1e21) 内精确展开长于最短表示的整数——
+		// 必须按最短往返取整,与 JS String() 一致(node 实测)。
+		{"19-digit snowflake rounds", float64(1234567890123456789), "1234567890123456800"},
+		{"21-digit minus one rounds", float64(999999999999999868928), "999999999999999900000"},
 		{"object", map[string]any{}, "[object Object]"},
 		{"empty array", []any{}, ""},
 		{"array", []any{float64(1), float64(2)}, "1,2"},

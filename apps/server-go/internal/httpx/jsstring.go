@@ -47,8 +47,8 @@ func JSToString(v any) string {
 
 // jsNumberToString 按 ECMAScript Number::toString(10):
 //   - |x| < 1e-6 或 ≥ 1e21 用指数式(指数无前导零,1e-7、1e+21);
-//   - 其间整数印满位(1e20 → "100000000000000000000");
-//   - 小数用最短往返小数式(0.1 → "0.1"、1/3 → "0.3333333333333333")。
+//   - 其间用最短往返定点式(1e20 → "100000000000000000000"、
+//     1/3 → "0.3333333333333333";(2^53,1e21) 整数经最短往返取整)。
 //
 // JSON 数字经 encoding/json 一律 float64,无 NaN/Infinity 面。
 func jsNumberToString(x float64) string {
@@ -71,9 +71,9 @@ func jsNumberToString(x float64) string {
 		}
 		return mant + "e" + sign + exp
 	}
-	if x == math.Trunc(x) {
-		return strconv.FormatFloat(x, 'f', 0, 64)
-	}
+	// F-01(评审):整段窗口统一最短往返定点——(2^53, 1e21) 内的整数
+	// 必须经最短往返取整(1234567890123456789 → "1234567890123456800"),
+	// 按精确值展开会偏离 JS String()。
 	return strconv.FormatFloat(x, 'f', -1, 64)
 }
 

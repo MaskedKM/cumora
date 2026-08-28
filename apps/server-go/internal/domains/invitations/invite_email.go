@@ -208,7 +208,9 @@ func roleWord(role string) string {
 }
 
 func sendInvitationEmail(ctx context.Context, db *sql.DB, a invitationEmailArgs) invitationEmailDelivery {
-	domain := os.Getenv("EMAIL_DOMAIN")
+	// F-06(评审):门与 From 都走 env 归一化域(小写+剥首尾点,与 TS
+	// env.EMAIL_DOMAIN 同义)——raw 值 "." 时 TS 会 skip、这里也须 skip。
+	domain := email.RootDomain()
 	if domain == "" {
 		return invitationEmailDelivery{Attempted: false, OK: false, Error: nil, Skipped: "no_email_config"}
 	}
