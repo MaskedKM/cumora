@@ -143,21 +143,6 @@
       "output": "release",
       "buildResources": "build"
     },
-    "publish": [
-      {
-        "provider": "generic",
-        "url": "https://updates.cumora.ai",
-        "channel": "latest",
-        "useMultipleRangeRequest": false
-      },
-      {
-        "provider": "github",
-        "owner": "yetone",
-        "repo": "cumora-releases",
-        "releaseType": "release",
-        "publishAutoUpdate": true
-      }
-    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build/icons/icon.icns",

@@ -460,7 +460,7 @@ function SignInToAccept({ token }: { token: string }) {
     if (isElectron && window.cumora?.auth) {
       const origin = (typeof localStorage !== 'undefined' && localStorage.getItem('cumora.serverUrl'))
         || (import.meta.env.VITE_CUMORA_API_BASE as string | undefined)
-        || 'https://api.cumora.ai'
+        || 'http://127.0.0.1:5181' // #127: self-hosted default, never the upstream cloud
       const inv = encodeURIComponent(token)
       // Arm a single-use nonce (anti session-fixation — see AuthScreen). The
       // nonce rides the return URL's query and must match on the inbound token.

@@ -21,14 +21,15 @@ import { WindowDragStrip } from './WindowDragStrip'
 import { translate, useLocaleStore, useT, type MessageKey } from '@/lib/i18n'
 
 interface ServerPreset { label: string; origin: string }
+// #127: fork ships no upstream cloud — the one preset is the self-hosted
+// default baked into .env.production; anything else goes through the
+// custom input below.
 const PRESETS: ServerPreset[] = [
-  { label: 'Production',  origin: 'https://api.cumora.ai' },
-  { label: 'Local Dev',   origin: 'http://localhost:5181' },
+  { label: 'Self-hosted', origin: 'http://127.0.0.1:5181' },
 ]
 // i18n: parallel lookup so the PRESETS shape stays upstream-mergeable.
 const PRESET_LABEL_KEY: Record<string, MessageKey> = {
-  'Production': 'auth.presetProduction',
-  'Local Dev': 'auth.presetLocalDev',
+  'Self-hosted': 'auth.presetSelfHosted',
 }
 
 export function AuthScreen() {
@@ -105,7 +106,7 @@ export function AuthScreen() {
       // getServerOrigin() is '' in dev (relative, for the Vite proxy) —
       // use the pairing origin so local dev opens the local server instead
       // of falling through to production.
-      const origin = getPairingServerOrigin() || 'https://api.cumora.ai'
+      const origin = getPairingServerOrigin() || 'http://127.0.0.1:5181'
       // Arm a single-use nonce and thread it through the return URL. The server
       // round-trips it back onto /auth/done, the loopback page carries it into
       // the cumora:// deep link, and main accepts the token only if the nonce
@@ -131,7 +132,7 @@ export function AuthScreen() {
       // redirect to a custom URL scheme.
       // See the Electron branch above — same reasoning for preferring the
       // pairing origin over getServerOrigin() in dev.
-      const origin = getPairingServerOrigin() || 'https://api.cumora.ai'
+      const origin = getPairingServerOrigin() || 'http://127.0.0.1:5181'
       const ret = encodeURIComponent('cumora://auth')
       void (async () => {
         try {

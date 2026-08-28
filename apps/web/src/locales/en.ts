@@ -1795,6 +1795,5 @@ export const en = {
   'download.forWindows': 'Download for Windows',
   'download.forLinux': 'Download for Linux',
   'download.generic': 'Download Cumora',
-  'auth.presetProduction': 'Production',
-  'auth.presetLocalDev': 'Local Dev',
+  'auth.presetSelfHosted': 'Self-hosted',
 } as const
