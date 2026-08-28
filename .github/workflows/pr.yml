@@ -236,6 +236,10 @@ jobs:
           # contract-check.sh (#48 guard) regenerates and diffs against
           # HEAD; with no checkout there is no HEAD — synthesize one from
           # the pristine tarball so "committed state" == branch head content.
+          # safe.directory bootstrap first: the workspace root is the host
+          # runner user's bind mount, and container-root git refuses repos
+          # owned by another uid (same dance checkout/contract-check do).
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git init -q -b main
           git add -A
           git -c user.email=cumora-ci@example.com -c user.name=cumora-ci \
