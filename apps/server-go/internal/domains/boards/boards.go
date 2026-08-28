@@ -220,17 +220,13 @@ func create(db *sql.DB) http.HandlerFunc {
 		_ = json.Unmarshal(raw["title"], &titleRaw)
 		_ = json.Unmarshal(raw["description"], &descRaw)
 		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
-		if runes := []rune(title); len(runes) > 200 {
-			title = string(runes[:200])
-		}
+		title = httpx.UTF16Cap(title, 200)
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
 		description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
-		if runes := []rune(description); len(runes) > 4000 {
-			description = string(runes[:4000])
-		}
+		description = httpx.UTF16Cap(description, 4000)
 		boardID := "board-" + authn.NewToken()[:12]
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
@@ -359,17 +355,13 @@ func update(db *sql.DB) http.HandlerFunc {
 		args := []any{}
 		if body.Title != nil {
 			t := strings.TrimSpace(*body.Title)
-			if runes := []rune(t); len(runes) > 200 {
-				t = string(runes[:200])
-			}
+			t = httpx.UTF16Cap(t, 200)
 			args = append(args, t)
 			sets = append(sets, fmt.Sprintf("title = $%d", len(args)))
 		}
 		if body.Description != nil {
 			d := strings.TrimSpace(*body.Description)
-			if runes := []rune(d); len(runes) > 4000 {
-				d = string(runes[:4000])
-			}
+			d = httpx.UTF16Cap(d, 4000)
 			var dv any
 			if d != "" {
 				dv = d
@@ -493,9 +485,7 @@ func addColumn(db *sql.DB) http.HandlerFunc {
 		var titleRaw any
 		_ = json.Unmarshal(raw["title"], &titleRaw)
 		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
-		if runes := []rune(title); len(runes) > 100 {
-			title = string(runes[:100])
-		}
+		title = httpx.UTF16Cap(title, 100)
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
@@ -535,9 +525,7 @@ func updateColumn(db *sql.DB) http.HandlerFunc {
 		args := []any{}
 		if body.Title != nil {
 			t := strings.TrimSpace(*body.Title)
-			if runes := []rune(t); len(runes) > 100 {
-				t = string(runes[:100])
-			}
+			t = httpx.UTF16Cap(t, 100)
 			args = append(args, t)
 			sets = append(sets, fmt.Sprintf("title = $%d", len(args)))
 		}
@@ -606,9 +594,7 @@ func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 		}
 		titleRaw, descRaw, colRaw, assigneeRaw := keyAny("title"), keyAny("description"), keyAny("columnId"), keyAny("assigneeId")
 		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
-		if runes := []rune(title); len(runes) > 200 {
-			title = string(runes[:200])
-		}
+		title = httpx.UTF16Cap(title, 200)
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
@@ -619,9 +605,7 @@ func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			return
 		}
 		description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
-		if runes := []rune(description); len(runes) > 8000 {
-			description = string(runes[:8000])
-		}
+		description = httpx.UTF16Cap(description, 8000)
 		var colExists bool
 		_ = db.QueryRowContext(r.Context(),
 			`SELECT 1 FROM board_columns WHERE id = $1 AND board_id = $2 LIMIT 1`, columnID, boardID).Scan(&colExists)
@@ -692,9 +676,7 @@ func updateCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			var t string
 			_ = json.Unmarshal(v, &t)
 			nextTitle = strings.TrimSpace(t)
-			if runes := []rune(nextTitle); len(runes) > 200 {
-				nextTitle = string(runes[:200])
-			}
+			nextTitle = httpx.UTF16Cap(nextTitle, 200)
 			args = append(args, nextTitle)
 			sets = append(sets, fmt.Sprintf("title = $%d", len(args)))
 		}
@@ -702,9 +684,7 @@ func updateCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			var d string
 			_ = json.Unmarshal(v, &d)
 			nextDesc = strings.TrimSpace(d)
-			if runes := []rune(nextDesc); len(runes) > 8000 {
-				nextDesc = string(runes[:8000])
-			}
+			nextDesc = httpx.UTF16Cap(nextDesc, 8000)
 			args = append(args, nextDesc)
 			sets = append(sets, fmt.Sprintf("description = $%d", len(args)))
 		}
@@ -870,9 +850,7 @@ func addComment(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		text := strings.TrimSpace(body.Body)
-		if runes := []rune(text); len(runes) > 8000 {
-			text = string(runes[:8000])
-		}
+		text = httpx.UTF16Cap(text, 8000)
 		if text == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "body required")
 			return

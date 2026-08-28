@@ -111,21 +111,10 @@ func utf16Len(s string) int {
 	return n
 }
 
-// utf16Cap:按 UTF-16 码元截断(TS slice 语义;边界裂代理保整字,
-// 与 TS 差半个字符,极端边缘)。
+// utf16Cap:按 UTF-16 码元截断 —— canonical 实现已收敛到
+// httpx.UTF16Cap(#118 统一),此处保留导出名做委托。
 func Utf16Cap(s string, max int) string {
-	n := 0
-	for i, r := range s {
-		units := 1
-		if r > 0xFFFF {
-			units = 2
-		}
-		if n+units > max {
-			return s[:i]
-		}
-		n += units
-	}
-	return s
+	return httpx.UTF16Cap(s, max)
 }
 
 // FormatAddress 对齐 formatAddress:有名则 "Name" <addr>(含会混淆解析器的

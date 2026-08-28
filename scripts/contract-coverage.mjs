@@ -19,18 +19,11 @@ function* goFiles(dir) {
 
 const METHOD_PATH = /Handle(?:Func)?\(\s*"(GET|POST|PUT|PATCH|DELETE) ([^"]+)"/g
 
-// 待实现豁免(#117 missed-routes):规范已登记、TS 已实现、Go 尚未移植
-// 的路由。实现一条删一条;表外新增缺路由仍会红。
+// 待实现豁免(#117 missed-routes):**已清零**——#121–#123(polls/og/
+// autonomy+apple)、#124(admin 治理+观测 9 条,PR #165)、#125(shipping
+// 16 条,PR #160)全部移植合入,规范与实现全对账。新缺路由直接红,
+// 不再有豁免通道。
 const PENDING_IMPLEMENTATION = new Set([
-  'GET /api/admin/observability/llm',
-  'GET /api/admin/observability/llm/calls',
-  'GET /api/admin/stats',
-  'GET /api/admin/users',
-  'GET /api/admin/users/:x',
-  'PATCH /api/admin/users/:x',
-  'GET /api/admin/waitlist',
-  'POST /api/admin/waitlist/:x/approve',
-  'POST /api/admin/waitlist/:x/reject',
 ])
 const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
 

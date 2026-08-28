@@ -311,14 +311,16 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body struct {
-			Name string `json:"name"`
+		// TS router.ts:962 `String(req.body?.name ?? '').trim().slice(0, 80)`
+		// —— 逐键解码 + JSStringOrNullish 强转(#118:struct 解码会把
+		// 非串值整包丢弃,name:123 曾直接落 400);slice 按 UTF-16 码元。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		var nameRaw any
+		if v, ok := raw["name"]; ok {
+			_ = json.Unmarshal(v, &nameRaw)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		name := strings.TrimSpace(body.Name)
-		if runes := []rune(name); len(runes) > 80 {
-			name = string(runes[:80])
-		}
+		name := httpx.UTF16Cap(strings.TrimSpace(httpx.JSStringOrNullish(nameRaw)), 80)
 		if name == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "name required")
 			return

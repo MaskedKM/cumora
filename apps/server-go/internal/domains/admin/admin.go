@@ -1,11 +1,11 @@
-// Package admin —— /api/admin 面(#112):requireAdmin 门(users.is_admin,
-// 401 'authentication required' / 403 'admin only')+ settings 读写(两个
-// 开关 + 六个 Cerebellum Route 字段;API key AES-256-GCM 落库、只回
-// {configured, suffix} 永不回明文,ADR 0001)+ /me 门探 + 在线 computer
-// 引擎并集。逐段对齐 server/src/api/admin-router.ts + cerebellum-settings.ts
-// + admin.ts(requireAdmin/getSettings/setSetting);users/waitlist/stats/
-// observability-llm 子面留待完整化票(本部署单管理员,settings+engines
-// 为配对页与路由开关的刚需)。
+// Package admin —— /api/admin 面(#112 门+settings;#124 完整化):requireAdmin
+// 门(users.is_admin,401 'authentication required' / 403 'admin only')+
+// settings 读写(两个开关 + 六个 Cerebellum Route 字段;API key
+// AES-256-GCM 落库、只回 {configured, suffix} 永不回明文,ADR 0001)+
+// /me 门探 + 在线 computer 引擎并集 + users/waitlist/stats 治理子面
+// (governance.go,审批入伙机器在 core/waitlist_approve.go)+ LLM 观测
+// 面(llm_ledger.go,对齐 llm-ledger.ts 六聚合)。逐段对齐
+// server/src/api/admin-router.ts + cerebellum-settings.ts + admin.ts。
 package admin
 
 import (
@@ -30,6 +30,16 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /api/admin/settings", settingsGet(db))
 	mux.HandleFunc("PUT /api/admin/settings", settingsPut(db))
 	mux.HandleFunc("GET /api/admin/computers/available-engines", engines(db))
+	// #124 治理+观测子面(观测台 14 个前端文件在消费)。
+	mux.HandleFunc("GET /api/admin/users", usersList(db))
+	mux.HandleFunc("GET /api/admin/users/{id}", userGet(db))
+	mux.HandleFunc("PATCH /api/admin/users/{id}", userPatch(db))
+	mux.HandleFunc("GET /api/admin/waitlist", waitlistList(db))
+	mux.HandleFunc("POST /api/admin/waitlist/{id}/approve", waitlistApprove(db))
+	mux.HandleFunc("POST /api/admin/waitlist/{id}/reject", waitlistReject(db))
+	mux.HandleFunc("GET /api/admin/stats", stats(db))
+	mux.HandleFunc("GET /api/admin/observability/llm", llmObservability(db))
+	mux.HandleFunc("GET /api/admin/observability/llm/calls", llmCalls(db))
 }
 
 // requireAdmin:门语义逐字对齐 admin.ts(401 匿名 / 403 非管理员)。
