@@ -100,7 +100,10 @@ function killAll() {
       } else {
         c.kill('SIGTERM')
       }
-    } catch { /* already gone */ }
+    } catch {
+      // 组信号失手(如组已被回收)时退回单杀,绝不静默漏杀。
+      try { c.kill('SIGTERM') } catch { /* already gone */ }
+    }
   }
 }
 function bail(msg, code = 1) {
@@ -141,7 +144,13 @@ const mockLLM = createServer((req, res) => {
 
 /* ───────── helpers ───────── */
 function spawnChild(name, cmd, args, opts = {}) {
-  const c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+  // 非 win32 detach 自成进程组组长 —— killAll 的 kill(-pid) 整组信号
+  // 才能命中(否则 -pid 非法 PGID → ESRCH 被吞,子进程全部漏杀)。
+  const c = spawn(cmd, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+    ...opts,
+  })
   children.push(c)
   let tail = ''
   const keep = (d) => { tail = (tail + d.toString()).slice(-4000) }
