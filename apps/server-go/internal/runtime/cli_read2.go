@@ -517,6 +517,19 @@ func (s *Service) cliCmdSearch(ctx context.Context, parsed cliParsed) cliResult 
 		return cliErr("usage: search <query> [--in <convo_id>] [--limit N]")
 	}
 	query := parsed.positional[0]
+	// 租户隔离(#129):与 HTTP search 同形——本 agent 公司 + 成员会话内
+	// 搜;裸 ILIKE 全库扫既把别租户正文回给发起者,又是最大单点负载。
+	me, err := cliResolveAs(parsed)
+	if err != nil {
+		return cliErrThrow(err)
+	}
+	companyID, err := s.cliAgentCompany(ctx, me)
+	if err != nil {
+		return cliErrThrow(err)
+	}
+	if companyID == "" {
+		return cliErr("cannot resolve company for " + me)
+	}
 	inConvo := ""
 	if v, ok := parsed.flags["in"]; ok {
 		inConvo = fmt.Sprint(v)
@@ -525,18 +538,21 @@ func (s *Service) cliCmdSearch(ctx context.Context, parsed cliParsed) cliResult 
 	if err != nil {
 		return cliErrThrow(err)
 	}
-	args := []any{"%" + query + "%"}
+	args := []any{"%" + query + "%", companyID, me}
 	whereExtra := ""
 	if inConvo != "" {
 		args = append(args, inConvo)
-		whereExtra = `AND m.conversation_id = $2`
+		whereExtra = `AND m.conversation_id = $4`
 	}
 	args = append(args, limit)
 	limitParam := fmt.Sprintf("$%d", len(args))
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT m.id, m.conversation_id, m.author_id, m.body, m.created_at, m.attachment
 		   FROM messages m
-		  WHERE m.body ILIKE $1 `+whereExtra+`
+		   JOIN conversations c ON c.id = m.conversation_id
+		  WHERE m.body ILIKE $1
+		    AND c.company_id = $2
+		    AND c.members @> to_jsonb(ARRAY[$3::text]) `+whereExtra+`
 		  ORDER BY m.created_at DESC LIMIT `+limitParam, args...)
 	if err != nil {
 		return cliErrThrow(err)
