@@ -1,0 +1,13 @@
+{
+  "name": "@cumora/yjs-sidecar",
+  "private": true,
+  "version": "0.2.2",
+  "type": "module",
+  "description": "Yjs collaborative-documents sidecar (doc collab; the one TS service kept after the Go migration — self-contained since #142, no server/src imports)",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test --test-force-exit \"src/**/*.test.ts\""
+  }
+}
