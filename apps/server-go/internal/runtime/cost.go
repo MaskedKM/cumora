@@ -128,6 +128,9 @@ func loadEnvOverrides() {
 	}
 }
 
+// PriceFor:admin 观察面跨包复用(rollup 的 savableUsd 需要裸价差)。
+func PriceFor(model string) ModelPrice { return priceFor(model) }
+
 // priceFor:env 覆盖(精确)→ 种子精确 → 种子族子串 → 兜底。
 // 双向包含匹配:完整 id "claude-sonnet-4-6" 含种子键 "claude-sonnet",
 // 裸分层 id "haiku" 被种子键 "claude-haiku" 包含——只查一个方向会错价。

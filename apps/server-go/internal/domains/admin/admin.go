@@ -30,6 +30,16 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /api/admin/settings", settingsGet(db))
 	mux.HandleFunc("PUT /api/admin/settings", settingsPut(db))
 	mux.HandleFunc("GET /api/admin/computers/available-engines", engines(db))
+	// #124 子面:用户管理 / 等待名单 / 快速计数 / LLM 观察面。
+	mux.HandleFunc("GET /api/admin/users", usersList(db))
+	mux.HandleFunc("GET /api/admin/users/{id}", userGet(db))
+	mux.HandleFunc("PATCH /api/admin/users/{id}", userPatch(db))
+	mux.HandleFunc("GET /api/admin/waitlist", waitlistList(db))
+	mux.HandleFunc("POST /api/admin/waitlist/{id}/approve", waitlistApprove(db))
+	mux.HandleFunc("POST /api/admin/waitlist/{id}/reject", waitlistReject(db))
+	mux.HandleFunc("GET /api/admin/stats", stats(db))
+	mux.HandleFunc("GET /api/admin/observability/llm", llmObservability(db))
+	mux.HandleFunc("GET /api/admin/observability/llm/calls", llmCallsDrilldown(db))
 }
 
 // requireAdmin:门语义逐字对齐 admin.ts(401 匿名 / 403 非管理员)。

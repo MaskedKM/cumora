@@ -22,15 +22,6 @@ const METHOD_PATH = /Handle(?:Func)?\(\s*"(GET|POST|PUT|PATCH|DELETE) ([^"]+)"/g
 // 待实现豁免(#117 missed-routes):规范已登记、TS 已实现、Go 尚未移植
 // 的路由。实现一条删一条;表外新增缺路由仍会红。
 const PENDING_IMPLEMENTATION = new Set([
-  'GET /api/admin/observability/llm',
-  'GET /api/admin/observability/llm/calls',
-  'GET /api/admin/stats',
-  'GET /api/admin/users',
-  'GET /api/admin/users/:x',
-  'PATCH /api/admin/users/:x',
-  'GET /api/admin/waitlist',
-  'POST /api/admin/waitlist/:x/approve',
-  'POST /api/admin/waitlist/:x/reject',
   'GET /api/agents/:x/autonomy',
   'PUT /api/agents/:x/autonomy',
   'POST /api/auth/apple/native',
