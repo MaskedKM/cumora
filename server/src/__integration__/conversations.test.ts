@@ -109,7 +109,7 @@ test('[mirror] #118 coercion: sendMessage String(body) + clientId gate + createG
     body: JSON.stringify({ title: emojiTitle, members: [OTHER_USER_ID] }),
   })
   assert.equal(g.status, 201)
-  const gBody = await g.json()
+  const gBody = await g.json() as { id: string; projectId: unknown }
   const { rows: convRows } = await pool.query(
     `SELECT title, project_id FROM conversations WHERE id = $1`, [gBody.id])
   assert.equal(convRows[0].project_id, null)
@@ -122,7 +122,7 @@ test('[mirror] #118 coercion: sendMessage String(body) + clientId gate + createG
     method: 'POST', headers: H, body: JSON.stringify({ body: 123 }),
   })
   assert.equal(send.status, 202)
-  const sendBody = await send.json()
+  const sendBody = await send.json() as { id: string }
   const { rows: msgRows } = await pool.query(`SELECT body FROM messages WHERE id = $1`, [sendBody.id])
   assert.equal(msgRows[0].body, '123')
 
@@ -132,6 +132,6 @@ test('[mirror] #118 coercion: sendMessage String(body) + clientId gate + createG
       method: 'POST', headers: H, body: JSON.stringify({ body: 'x', clientId }),
     })
     assert.equal(bad.status, 400)
-    assert.equal((await bad.json()).error, 'invalid clientId')
+    assert.equal(((await bad.json()) as { error: string }).error, 'invalid clientId')
   }
 })
