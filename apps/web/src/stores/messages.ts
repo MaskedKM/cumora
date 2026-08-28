@@ -110,9 +110,8 @@ function scheduleTypingExpiry(conversationId: string, agentId: string): void {
 
 /** Re-derive every reaction's `mine` flag from `users` + the local user id.
  *  The server no longer computes `mine` because the same reactions array is
- *  reused over WS broadcasts where "I" is recipient-specific — see
- *  server/src/api/router.ts and server/src/agents/tools.ts for the
- *  matching server-side rationale. Anonymous (no meId) means mine=false. */
+ *  reused over WS broadcasts where "I" is recipient-specific. Anonymous
+ *  (no meId) means mine=false. */
 function deriveMineForReactions<R extends { users?: string[] | null }>(
   reactions: R[] | null | undefined,
 ): Array<R & { mine: boolean }> | undefined {

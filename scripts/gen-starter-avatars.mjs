@@ -22,7 +22,7 @@
  *
  * Run once, commit the four PNGs:
  *
- *   node scripts-gen-starter-avatars.mjs
+ *   node scripts/gen-starter-avatars.mjs
  *
  * Re-run only if the prompt logic or starter roster intentionally
  * changes. Don't re-run on autopilot — these images are meant to be

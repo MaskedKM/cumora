@@ -654,7 +654,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'adminobs.topSpendersTitle': '花费 Top 榜',
   'adminobs.topSpendersSub': '按智能体统计 · 窗口期内前 20 名',
   'adminobs.daemonTitle': '按 daemon 版本',
-  'adminobs.daemonSub': '每个 agent-cli 版本的花费与缓存表现 · 可点击行查看详细调用',
+  'adminobs.daemonSub': '每个 daemon 版本的花费与缓存表现 · 可点击行查看详细调用',
   'adminobs.heroSpendPrefix': '{unit} · 最近 {days}d',
   'adminobs.heroSubUsd': '{in} 输入 · {out} 输出',
   'adminobs.heroSubTokens': '{in} 输入 · {cached} 命中缓存 · {out} 输出',
@@ -1068,7 +1068,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'cli.methodNpx': 'npx（发布版）',
   'cli.methodLocal': '本地构建',
   'cli.methodNpxHint': '运行 npm 发布版',
-  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 dist/cli.js',
+  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 byoa-daemon 二进制',
   // ─── onboarding（首次配对计算机）─────────────────────────────────────
 
   'onboard.title': '设置你的计算机',
