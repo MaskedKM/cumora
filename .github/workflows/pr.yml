@@ -227,6 +227,9 @@ jobs:
         run: npm run typecheck
       - name: tsc (server)
         run: npm run server:typecheck
+      # #142:sidecar 是 workspace 成员,首次纳入 tsc 面(此前仅 tsx 直跑)。
+      - name: tsc (yjs-sidecar)
+        run: npm run sidecar:typecheck
       # pgvector must be enabled before the Go 服 boots(baseline 含
       # vector 列)。单库(非片)面:本 job 的 DATABASE_URL 兜底目标。
       - name: Enable pgvector extension

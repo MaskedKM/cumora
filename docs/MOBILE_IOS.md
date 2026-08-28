@@ -21,7 +21,11 @@ machine with Xcode 15+ and Ruby/CocoaPods installed.
   is the phone itself, so a mobile package must either rebuild with
   `.env.production` pointed at your server's LAN/origin address, or
   override at runtime via localStorage `cumora.serverUrl`
-  (AuthScreen → API server).
+  (AuthScreen → API server). iOS ATS caveat: App Transport Security
+  blocks plain `http://192.168.x.x:5181` LAN origins
+  (`NSAllowsArbitraryLoads=false`, no exceptions in `ios/App/App/Info.plist`) —
+  serve the API over HTTPS, or add an ATS exception
+  (`NSAllowsLocalNetworking` / exception domain) for local-network use.
 
 ## One-time setup
 

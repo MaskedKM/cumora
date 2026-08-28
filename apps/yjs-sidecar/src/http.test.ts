@@ -8,12 +8,12 @@ import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 
 // env 模块在 import 时捕获 YJS_SIDECAR_TOKEN —— 必须在首个静态导入
-// server/env 前设好(ESM import 提升),故全部 server 侧模块走动态导入。
+// infra/env 前设好(ESM import 提升),故 infra 模块走动态导入。
 process.env.YJS_SIDECAR_TOKEN = process.env.YJS_SIDECAR_TOKEN ?? 'test-sidecar-token'
 
-const { pool } = await import('../../../server/src/db/pool.js')
-const { env } = await import('../../../server/src/env.js')
-const { redis, sub } = await import('../../../server/src/redis.js')
+const { pool } = await import('./infra/pool.js')
+const { env } = await import('./infra/env.js')
+const { redis, sub } = await import('./infra/redis.js')
 const { startSidecarHttp } = await import('./http.js')
 
 const COMPANY = 'c-sidecar-test'
@@ -29,7 +29,7 @@ async function call(path: string, body: unknown): Promise<{ status: number; json
   return { status: res.status, json: await res.json().catch(() => null) }
 }
 
-let closeHttp: () => Promise<void>
+let closeHttp: () => void
 
 before(async () => {
   closeHttp = await startSidecarHttp(5199)
@@ -41,7 +41,7 @@ before(async () => {
 })
 
 after(async () => {
-  await closeHttp()
+  closeHttp()
   await pool.query(`DELETE FROM documents WHERE id = $1`, [DOC_ID])
   await pool.end()
   sub.disconnect()

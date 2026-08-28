@@ -1,14 +1,15 @@
 /**
  * Yjs 协同文档 sidecar 入口(#50 · ADR 0004)。
  *
- * rooms/markdown 自 server/src/documents 原样平移(仅改 infra 导入路径);
- * 本进程独占 Y.Doc 房间与持久化,server 的 WS 桥经 127.0.0.1 内表面转发
- * (见 http.ts 的协议注释)。Redis CH_DOC_UPDATE/AWARENESS 仍是跨实例
- * 扇出通道——server 侧 relay 订阅同通道把事件推回各 WS 客户端。
+ * rooms/markdown 自 server/src/documents 原样平移;infra(#142)已内联自持
+ * (src/infra/),不再穿透引用 server/src。本进程独占 Y.Doc 房间与持久化,
+ * server 的 WS 桥经 127.0.0.1 内表面转发(见 http.ts 的协议注释)。
+ * Redis CH_DOC_UPDATE/AWARENESS 仍是跨实例扇出通道——server 侧 relay
+ * 订阅同通道把事件推回各 WS 客户端。
  */
 import 'dotenv/config'
-import { env } from '../../../server/src/env.js'
-import { pool } from '../../../server/src/db/pool.js'
+import { env } from './infra/env.js'
+import { pool } from './infra/pool.js'
 import { bootDocumentBus } from './rooms.js'
 import { startSidecarHttp } from './http.js'
 
