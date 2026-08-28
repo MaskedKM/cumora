@@ -12,7 +12,6 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { ensureSchemaOnce, resetAllTables, teardownAll, MIRROR_BASE } from './_helpers.js'
 import { signAgentToken } from '../agents/runtime/jwt.js'
@@ -20,30 +19,12 @@ import { pool } from '../db/pool.js'
 import { redis } from '../redis.js'
 import { CH_MESSAGE_NEW, CH_POLLS } from '../redis.js'
 
-let server: Server | null = null
 let baseUrl = ''
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
+  baseUrl = MIRROR_BASE
   await ensureSchemaOnce()
-  if (MIRROR_BASE) {
-    baseUrl = MIRROR_BASE
-    return
-  }
-  const expressMod = await import('express')
-  const express = expressMod.default
-  const { runtimeRouter } = await import('../agents/runtime/server.js')
-  const { startScheduler } = await import('../agents/scheduler.js')
-  const app = express()
-  app.use(express.json({ limit: '4mb' }))
-  app.use('/runtime', runtimeRouter)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server!.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
-  startScheduler()
 })
 
 beforeEach(async () => {
@@ -51,7 +32,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server ?? undefined)
+  await teardownAll()
 })
 
 /* ── 种子与工具(与 mirror-runtime 同形,文件内自持) ───────────── */

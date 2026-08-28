@@ -17,9 +17,9 @@ concurrency:
 
 jobs:
   typecheck:
-    # Direct pushes to main bypass pr.yml entirely — and a plain
-    # `tsx server/src/index.ts` boot doesn't run `tsc` against server
-    # sources ahead of time. Without this gate, a commit that adds
+    # (#70 注:本工作流当前 disabled_manually;文案随 TS 退役更新。)
+    # Direct pushes to main bypass pr.yml entirely — typecheck gates the
+    # harness + web sources against drift (TS 运行时已退役). Without this gate, a commit that adds
     # `import { foo } from '../bar'` but forgets to stage the matching
     # `export function foo` in bar.ts looks green until the server
     # crashloops on first start. Fail-fast HERE instead.

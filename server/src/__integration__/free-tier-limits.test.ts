@@ -4,26 +4,18 @@
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { createServer, type Server } from 'node:http'
 import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, teardownAll,
+  ensureSchemaOnce, resetAllTables, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
 
 const FREE_USER_ID = 'u-free-limit'
-let server: Server
-let baseUrl = ''
+const baseUrl = MIRROR_BASE
+const authHeaders = { 'x-test-user': FREE_USER_ID }
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  const app = await buildApiTestApp(FREE_USER_ID)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -31,7 +23,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll()
 })
 
 async function seedUser(userId: string, tier: 'free' | 'pro' | 'max' = 'free'): Promise<void> {
@@ -101,7 +93,7 @@ test('[integration] free users cannot create a fourth company', async () => {
 
   const res = await fetch(`${baseUrl}/api/companies`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...authHeaders, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Fourth Company' }),
   })
   const body = await res.json() as { error?: string }
@@ -117,8 +109,11 @@ test('[integration] free users cannot accept an invite into a fourth company', a
   await seedCompanyWithOwner('co-target', 'u-target-owner', 'pro')
   const token = await seedInvitation('co-target', 'u-target-owner')
 
+  // MIRROR 形态:accept 虽是代币端点,但限额按"接受的用户"计——
+  // 旧 in-process 形态由盖章中间件定身份,这里以 x-test-user 显式化。
   const res = await fetch(`${baseUrl}/api/invitations/${encodeURIComponent(token)}/accept`, {
     method: 'POST',
+    headers: { ...authHeaders },
   })
   const body = await res.json() as { error?: string }
 
@@ -132,7 +127,7 @@ test('[integration] free workspaces cannot create an eleventh active agent', asy
 
   const res = await fetch(`${baseUrl}/api/agents`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': 'co-agent-limit' },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': 'co-agent-limit' },
     body: JSON.stringify({
       id: 'eleventh-agent',
       name: 'Eleventh Agent',
@@ -157,6 +152,7 @@ test('[integration] free workspaces cannot accept a sixth human member', async (
 
   const res = await fetch(`${baseUrl}/api/invitations/${encodeURIComponent(token)}/accept`, {
     method: 'POST',
+    headers: { ...authHeaders },
   })
   const body = await res.json() as { error?: string }
 

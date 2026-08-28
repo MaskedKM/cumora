@@ -78,3 +78,15 @@ runtime and dependency pains).
   (electron/, ios/, android/) keep building off the web bundle.
 - Cloud-side workers `r2-gate` is deleted with the cloud path (files are
   served from local disk); `email-gate` (Cloudflare Worker) is kept.
+
+## 退役落地(#70,2026-08-28 勾销)
+
+- ✅ TS server/daemon/agent-cli 全套删除(git 留档);`bin/cumora` npm 壳
+  随之退役——"leave it in place" 窗口以用户提前点头终结。
+- ✅ 验收镜像转 MIRROR-only:harness 保留件(pool/redis/env 裁/jwt/
+  email 种子切片)+ runner 自建 Go 服当 SUT;59 文件单测随 TS 运行时
+  退役,镜像套件 25 文件继续作为 Go 面的验收基准。
+- ✅ 回退语义从"TS 回切床"改为"上一 commit 的 Go 二进制重建重启"。
+- ⚠️ 勾销时发现 #117:一组 TS 已实现而 Go 未移植的 HTTP 路由
+  (polls/og/apple-native/autonomy/shipping/admin 子面)自切换日起
+  404——契约守卫换 Go 腿后以豁免表显式记账,逐票补齐。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// #70 TS 退役注:sub2api/getTrackedLlmClient 调用面随 TS 运行时删除;本守卫现只覆盖残余 TS 面。Go 侧 llm_calls 台账接线由 Go 域测试把关。
 /**
  * guard-llm-tracked — keeps the universal `llm_calls` ledger HONEST.
  *

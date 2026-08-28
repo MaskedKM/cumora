@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// #70 TS 退役注:TS 运行时(原主扫描面)已删;本守卫现只覆盖残余 TS 面(sidecar/workers/harness)。Go 侧的模型门(enforceModelPolicy 等价)由代码评审与 Go 测试把关。
+// #70:agent-cli 退役;TS LLM 调用面只剩 sidecar/workers/测试 harness
 /**
  * guard-big-brain — P0 tripwire for Cumora's bottom line:
  *
@@ -26,7 +28,7 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
-const SCAN_DIRS = ['server/src', 'agent-cli/src']
+const SCAN_DIRS = ['server/src', 'apps/yjs-sidecar/src', 'workers']
 const SKIP = /(__tests__|\.test\.ts$|\.d\.ts$)/
 
 // Files where a given big-brain signature is LEGITIMATELY allowed. Editing these

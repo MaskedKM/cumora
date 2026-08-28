@@ -14,26 +14,17 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import {
-  buildTestApp, ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
-  signInboundPayload, teardownAll,
+  ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
+  signInboundPayload, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
 
-let server: Server
-let baseUrl = ''
+const baseUrl = MIRROR_BASE
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  const app = await buildTestApp()
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -41,7 +32,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll()
 })
 
 /** Wrap a POST helper so each test stays a one-liner. */
@@ -179,7 +170,7 @@ test('[integration] inbound SES boomerang is deduplicated against the outbound r
   // the bug the user observed in production. Verify the heuristic catches
   // it: same from/to/subject within 10 minutes ⇒ inbound returns
   // deduplicated and writes NO new row.
-  const { findOrCreateEmailConversation, persistEmailMessage, mintMessageId } = await import('../email.js')
+  const { findOrCreateEmailConversation, persistEmailMessage, mintMessageId } = await import('./_email-seeds.js')
   const { companyId, agentId, agentEmail } = await seedCompanyWithAgent()
   const fromAddrFull = `yetone <user-x@${process.env.EMAIL_DOMAIN}>`
 
@@ -233,7 +224,7 @@ test('[integration] inbound reply threads back to the original outbound conversa
   // must look it up against email_messages.smtp_message_id and reuse the
   // same conversation rather than spawning a new one. Bug version split
   // every reply into a fresh thread.
-  const { findOrCreateEmailConversation, persistEmailMessage, mintMessageId } = await import('../email.js')
+  const { findOrCreateEmailConversation, persistEmailMessage, mintMessageId } = await import('./_email-seeds.js')
   const { companyId, agentId, agentEmail } = await seedCompanyWithAgent()
 
   // 1. Seed the outbound row as if the user just composed + sent.

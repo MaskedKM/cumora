@@ -21,7 +21,7 @@ Please include:
 
 - The type of issue (e.g. auth bypass, injection, XSS, privilege escalation).
 - The affected component and file(s) — server API, agent runtime, the BYOA
-  daemon (`agent-cli`), the Electron desktop shell, the Cloudflare workers, or
+  daemon (`apps/byoa-daemon`), the Electron desktop shell, the Cloudflare workers, or
   the web client.
 - Step-by-step reproduction, and a proof-of-concept if you have one.
 - The impact you believe it has (what an attacker gains).

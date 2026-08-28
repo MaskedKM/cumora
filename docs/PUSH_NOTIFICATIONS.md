@@ -128,7 +128,7 @@ like APNs.
 
 ## End-to-end test
 
-1. `npm run server:dev` — server logs `[push] APNs credentials not
+1. (Go 服)#70 起本地起服见 README「Run locally」;`journalctl --user -u cumora-go` 看 `[push] APNs credentials not
    configured` once if env vars are absent; otherwise nothing on the
    happy path.
 2. `npm run mobile:ios:run` — launches the app in the simulator. iOS

@@ -2,7 +2,7 @@
  * 验收 · 文档协同链路(#55):Go server /ws 网关 → yjs-sidecar → Redis 扇出
  * → 回到各 WS 客户端。两客户端实时同步是本域验收重心。
  *
- * 仅在 CUMORA_MIRROR_BASE 指向 Go 候选时运行(协同是 Go 域的验收面;
+ * #70 起套件 MIRROR-only:CUMORA_MIRROR_BASE 由 runner 必供(协同是 Go 域的验收面;
  * TS 基线的协同由 apps/yjs-sidecar 自带的 rooms/relay 测试覆盖)。
  * 候选进程启动(手工或脚本):
  *   sidecar: DATABASE_URL=<test> REDIS_URL=<redis> YJS_SIDECAR_TOKEN=t \
@@ -34,7 +34,7 @@ async function seedCompanyAndUser(): Promise<void> {
 
 await ensureSchemaOnce()
 
-test('doc collab over Go gateway (skipped unless MIRROR_BASE)', { skip: !MIRROR_BASE }, async () => {
+test('doc collab over Go gateway', async () => {
   const mirror = startMirror(USER, COMPANY)
   const call = mirror.call
   try {

@@ -1,53 +1,67 @@
-// 契约覆盖率守卫:从 Express 源码提取路由表,与 openapi.yaml 的 paths 对账。
+// 契约覆盖率守卫:从 Go 源码提取路由表,与 openapi.yaml 的 paths 对账。
 // 任何一端漂移(新路由未进规范 / 规范里的路由已删)即失败。
-import { readFileSync } from 'node:fs'
+// #70 TS 退役:提取腿从 TS Express 源换到 apps/server-go 的
+// mux.HandleFunc("METHOD /path") 注册(158+ 条,注册即路径,无挂载
+// 哨兵面;"/" 根兜底不带方法前缀,天然不入表)。
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
-const ROUTERS = [
-  ['/api', 'server/src/api/router.ts', /\bapi\./],
-  ['/webhooks/email', 'server/src/api/inbound-email.ts', /\binboundEmailRouter\./],
-  ['/api/admin', 'server/src/api/admin-router.ts', /\badminRouter\./],
-  ['/api/shipping', 'server/src/api/shipping-router.ts', /\brouter\./],
-  ['/api/workspaces', 'server/src/api/workspaces-router.ts', /\brouter\./],
-  ['/runtime', 'server/src/agents/runtime/server.ts', /\bruntimeRouter\./],
-]
-const METHOD = /\.(get|post|put|patch|delete)\(\s*'([^']+)'/
-const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
+const GO_ROOT = 'apps/server-go'
 
-// 挂载哨兵:扫 index.ts 与主 router 的 app.use/api.use 挂载点,任何挂在
-// 未登记前缀上的子路由都会让守卫失败(防"路由在但守卫看不见")。
-const MOUNT = /(?:app|api)\.use\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)/g
-const MOUNTED_PREFIXES = new Set()
-for (const f of ['server/src/index.ts', 'server/src/api/router.ts']) {
-  const text = readFileSync(f, 'utf8')
-  for (const m of text.matchAll(MOUNT)) {
-    if (!/router|Router/.test(m[2])) continue
-    MOUNTED_PREFIXES.add(m[1])
+function* goFiles(dir) {
+  for (const name of readdirSync(dir)) {
+    if (name.endsWith('_test.go')) continue
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) yield* goFiles(p)
+    else if (name.endsWith('.go')) yield p
   }
 }
-// 相对挂载点:api 内挂 /admin|/shipping|/workspaces(= /api/*),index 挂 /runtime。
-// 语义注意:哨兵按变量名含 router|Router 过滤挂载,子路由若以不含
-// router 字样的变量名挂载会逃过哨兵(但逃不过 ROUTERS 覆盖率对账)。
-const KNOWN = new Set([
-  '/api', '/webhooks/email',
-  '/admin', '/shipping', '/workspaces', '/runtime',
+
+const METHOD_PATH = /Handle(?:Func)?\(\s*"(GET|POST|PUT|PATCH|DELETE) ([^"]+)"/g
+
+// 待实现豁免(#117 missed-routes):规范已登记、TS 已实现、Go 尚未移植
+// 的路由。实现一条删一条;表外新增缺路由仍会红。
+const PENDING_IMPLEMENTATION = new Set([
+  'GET /api/admin/observability/llm',
+  'GET /api/admin/observability/llm/calls',
+  'GET /api/admin/stats',
+  'GET /api/admin/users',
+  'GET /api/admin/users/:x',
+  'PATCH /api/admin/users/:x',
+  'GET /api/admin/waitlist',
+  'POST /api/admin/waitlist/:x/approve',
+  'POST /api/admin/waitlist/:x/reject',
+  'GET /api/agents/:x/autonomy',
+  'PUT /api/agents/:x/autonomy',
+  'POST /api/auth/apple/native',
+  'POST /api/polls',
+  'POST /api/polls/:x/vote',
+  'POST /api/polls/:x/close',
+  'GET /api/shipping/overview',
+  'GET /api/shipping/features/:x',
+  'POST /api/shipping/features',
+  'PATCH /api/shipping/features/:x',
+  'POST /api/shipping/features/:x/invariants',
+  'PATCH /api/shipping/features/:x/invariants/:x',
+  'POST /api/shipping/features/:x/regressions',
+  'PATCH /api/shipping/features/:x/regressions/:x',
+  'POST /api/shipping/features/:x/releases',
+  'POST /api/shipping/features/:x/releases/:x/action',
+  'POST /api/shipping/features/:x/transition',
+  'POST /api/shipping/features/:x/verifications',
+  'PATCH /api/shipping/features/:x/verifications/:x',
+  'GET /api/shipping/friction',
+  'POST /api/shipping/friction',
+  'PATCH /api/shipping/friction/:x',
+  'GET /api/og',
 ])
-const rogue = [...MOUNTED_PREFIXES].filter((x) => !KNOWN.has(x))
-if (rogue.length) {
-  console.error('[contract] 发现未登记的挂载点(进 ROUTERS 或登记豁免):\n' + rogue.map((x) => '  ' + x).join('\n'))
-  process.exit(1)
-}
+const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
 
 const src = new Set()
-for (const [prefix, file, owner] of ROUTERS) {
-  const lines = readFileSync(file, 'utf8').split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (!owner.test(line)) continue
-    const m = line.match(METHOD)
-    if (!m) continue
-    // route registration lines are short; header checks / comments don't carry (method)('path')
-    const path = m[2] === '/' ? '' : m[2]
-    src.add(`${m[1].toUpperCase()} ${norm(prefix + path)}`)
+for (const f of goFiles(GO_ROOT)) {
+  const text = readFileSync(f, 'utf8')
+  for (const m of text.matchAll(METHOD_PATH)) {
+    src.add(`${m[1]} ${norm(m[2])}`)
   }
 }
 
@@ -64,7 +78,12 @@ for (const m of yaml.matchAll(/^ {2}(\/\S+):$/gm)) {
 }
 
 const missing = [...src].filter((x) => !spec.has(x)).sort()
-const extra = [...spec].filter((x) => !src.has(x)).sort()
+const extra = [...spec].filter((x) => !src.has(x) && !PENDING_IMPLEMENTATION.has(x)).sort()
+const staleExempt = [...PENDING_IMPLEMENTATION].filter((x) => !spec.has(x)).sort()
+if (staleExempt.length) {
+  console.error('[contract] 豁免表里的路由已不在规范(实现后请删豁免):\n' + staleExempt.map((x) => '  ' + x).join('\n'))
+  process.exit(1)
+}
 if (missing.length || extra.length) {
   if (missing.length) console.error('[contract] 源码有而规范缺:\n' + missing.map((x) => '  ' + x).join('\n'))
   if (extra.length) console.error('[contract] 规范有而源码无:\n' + extra.map((x) => '  ' + x).join('\n'))

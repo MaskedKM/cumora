@@ -69,3 +69,6 @@ vite.config.d.ts
 server/k8s/*.prod.yaml
 docs/HANDOFF.md
 android/app/google-services.json
+
+# integration runner 的临时 Go 服二进制(server/run-integration-tests.mjs)
+apps/server-go/.integration-server-bin

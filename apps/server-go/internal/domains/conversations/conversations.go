@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
@@ -825,6 +826,42 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "clientId too long (max 80 chars)")
 			return
 		}
+		// email 会话升格(#70 补线):聊天式回复代发真邮件——原语在
+		// email.ReplyInEmailConversation(email.ts replyInEmailConversation
+		// 的 Go 等价),TS router 在此分支代调;漏接则聊天框打字只落
+		// kind='text' 行,外部收件人永远看不见。人类路径 autoSubmitted
+		// 留 false(agent 走 CLI 路径自置 true)。
+		var convKind string
+		_ = db.QueryRowContext(r.Context(),
+			`SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&convKind)
+		if convKind == "email" {
+			if body.Body == "" { // TS `!body`:仅空串拒;纯空白照发
+				httpx.WriteError(w, http.StatusBadRequest,
+					"email replies require a body (attachments-only sends not supported here yet)")
+				return
+			}
+			result, err := emailpkg.ReplyInEmailConversation(r.Context(), db, emailpkg.ReplyArgs{
+				ConversationID: convID, CompanyID: companyID, AuthorID: uid, Body: body.Body,
+			})
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			status := http.StatusBadGateway
+			if result.TransportStatus == "sent" {
+				status = http.StatusAccepted
+			}
+			var errAny any
+			if result.Error != "" {
+				errAny = result.Error
+			}
+			httpx.WriteJSON(w, status, map[string]any{
+				"id": result.MessageID, "sequence": result.Sequence,
+				"transportStatus": result.TransportStatus, "mock": result.Mock,
+				"error": errAny,
+			})
+			return
+		}
 		// attachment 形状对齐 baseline:要求 url+name 为字符串;kind 非白名单
 		// 强转 'img'(从不拒绝)——见 router.ts readAttachment 的 coerce 语义。
 		var attachmentJSON any
@@ -881,13 +918,34 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		id := "m-" + authn.NewToken()[:12]
-		if _, err := db.ExecContext(r.Context(), `
+		// clientId 幂等(#70 补线):同 (会话,作者,clientId) 重发/并发
+		// 双投,经部分唯一索引 ON CONFLICT DO NOTHING + 回查取原行——
+		// TS router 同款;裸 INSERT 会在重试时撞索引 500。
+		var persistedID string
+		var persistedSeq int
+		err := db.QueryRowContext(r.Context(), `
 			INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence, quoted_message_id, client_id, attachment)
-			VALUES ($1, $2, $3, $4, 'text', $5, $6, $7, NULLIF($8,''), $9)`,
-			id, convID, companyID, uid, body.Body, sequence, quoted, body.ClientID, attachmentJSON); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+			VALUES ($1, $2, $3, $4, 'text', $5, $6, $7, NULLIF($8,''), $9)
+			ON CONFLICT (conversation_id, author_id, client_id) WHERE client_id IS NOT NULL
+			DO NOTHING
+			RETURNING id, sequence`,
+			id, convID, companyID, uid, body.Body, sequence, quoted, body.ClientID, attachmentJSON).Scan(&persistedID, &persistedSeq)
+		if err != nil {
+			// DO NOTHING 落空(零行)= 撞唯一索引:回查既有行(并发双投
+			// 时另一请求已落);其余才是真错。复用路径照 TS 短路——不
+			// bump updated_at、不重播 message.new、不重推(lost-ACK 重试
+			// 不产生第二次副作用)。
+			if !(err == sql.ErrNoRows && body.ClientID != "" &&
+				db.QueryRowContext(r.Context(),
+					`SELECT id, sequence FROM messages WHERE conversation_id = $1 AND author_id = $2 AND client_id = $3`,
+					convID, uid, body.ClientID).Scan(&persistedID, &persistedSeq) == nil) {
+				httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+				return
+			}
+			httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": persistedID, "sequence": persistedSeq})
 			return
 		}
+		id, sequence = persistedID, persistedSeq
 		_, _ = db.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID)
 		broadcastMsg := map[string]any{
 			"id": id, "conversationId": convID, "authorId": uid,

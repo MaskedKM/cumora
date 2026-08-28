@@ -9,11 +9,10 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll } from './_helpers.js'
+import { ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE } from './_helpers.js'
 import { pool } from '../db/pool.js'
 
 const OWNER = 'ws-owner' // COMPANY owner (privileged)
@@ -23,33 +22,29 @@ const OUTSIDER = 'ws-outsider' // member of COMPANY_B only
 const COMPANY = 'c-ws-a'
 const COMPANY_B = 'c-ws-b'
 
-let ownerServer: Server
-let ownerBase: string
-let memberServer: Server
-let memberBase: string
-let outsiderServer: Server
-let outsiderBase: string
 let tmpRoot: string
 let boundDir: string
 
+/* #70 MIRROR-only:三身份原是三个盖章 app;现统一为 fetchAs(user, …)
+ * 的 x-test-user 头选择(三个 *_base 常量保留仅作历史标记,值同)。 */
+const ownerBase = MIRROR_BASE
+const memberBase = MIRROR_BASE
+const outsiderBase = MIRROR_BASE
+
 const jsonHeaders = (company: string) => ({ 'x-company-id': company, 'content-type': 'application/json' })
 
-async function startApp(userId: string): Promise<[Server, string]> {
-  const app = await buildApiTestApp(userId)
-  const server = createServer(app)
-  await new Promise<void>((resolve) => server.listen(0, () => resolve()))
-  const { port } = server.address() as { port: number }
-  return [server, `http://127.0.0.1:${port}`]
+async function fetchAs(user: string, url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, { ...init, headers: { 'x-test-user': user, ...(init?.headers ?? {}) } })
 }
 
 async function createWorkspace(opts?: {
-  base?: string
+  user?: string
   company?: string
   folderPath?: string
   name?: string
 }): Promise<Response> {
-  const base = opts?.base ?? ownerBase
-  return fetch(`${base}/api/workspaces`, {
+  const user = opts?.user ?? OWNER
+  return fetchAs(user, `${MIRROR_BASE}/api/workspaces`, {
     method: 'POST',
     headers: jsonHeaders(opts?.company ?? COMPANY),
     body: JSON.stringify({ name: opts?.name ?? 'Team files', folderPath: opts?.folderPath ?? boundDir }),
@@ -57,7 +52,7 @@ async function createWorkspace(opts?: {
 }
 
 async function createWorkspaceJson(opts?: {
-  base?: string
+  user?: string
   company?: string
   folderPath?: string
   name?: string
@@ -68,7 +63,7 @@ async function createWorkspaceJson(opts?: {
 }
 
 async function addMember(workspaceId: string, participantId: string): Promise<Response> {
-  return fetch(`${ownerBase}/api/workspaces/${workspaceId}/members`, {
+  return fetchAs(OWNER, `${ownerBase}/api/workspaces/${workspaceId}/members`, {
     method: 'POST',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ participantId }),
@@ -78,10 +73,8 @@ async function addMember(workspaceId: string, participantId: string): Promise<Re
 const q = (p: string) => `?path=${encodeURIComponent(p)}`
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  ;[ownerServer, ownerBase] = await startApp(OWNER)
-  ;[memberServer, memberBase] = await startApp(MEMBER)
-  ;[outsiderServer, outsiderBase] = await startApp(OUTSIDER)
   tmpRoot = await mkdtemp(join(tmpdir(), 'cumora-ws-'))
 })
 
@@ -111,10 +104,7 @@ beforeEach(async () => {
 
 after(async () => {
   await rm(tmpRoot, { recursive: true, force: true }).catch(() => {})
-  await Promise.all(
-    [memberServer, outsiderServer].map((s) => new Promise<void>((resolve) => s.close(() => resolve()))),
-  )
-  await teardownAll(ownerServer)
+  await teardownAll()
 })
 
 test('owner creates a workspace bound to a real folder and becomes its first explicit member', async () => {
@@ -162,16 +152,16 @@ test('a folder can be bound by at most one workspace — same company, alternate
   const altSpelling = await createWorkspace({ folderPath: join(boundDir, '.') })
   assert.equal(altSpelling.status, 409)
 
-  const otherCompany = await createWorkspace({ base: outsiderBase, company: COMPANY_B, name: 'B wants it too' })
+  const otherCompany = await createWorkspace({ user: OUTSIDER, company: COMPANY_B, name: 'B wants it too' })
   assert.equal(otherCompany.status, 409)
 })
 
 test('only owner/admin can create workspaces and manage members', async () => {
-  const memberCreate = await createWorkspace({ base: memberBase })
+  const memberCreate = await createWorkspace({ user: MEMBER })
   assert.equal(memberCreate.status, 403)
 
   const { id } = await createWorkspaceJson()
-  const memberAdd = await fetch(`${memberBase}/api/workspaces/${id}/members`, {
+  const memberAdd = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/members`, {
     method: 'POST',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ participantId: MEMBER }),
@@ -185,7 +175,7 @@ test('explicit members can be humans or agents and are listed with their source'
   assert.equal((await addMember(id, MEMBER)).status, 201)
   assert.equal((await addMember(id, AGENT)).status, 201)
 
-  const detailRes = await fetch(`${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+  const detailRes = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   assert.equal(detailRes.status, 200)
   const detail = (await detailRes.json()) as {
     members: Array<{ participantId: string; source: string; kind: string }>
@@ -207,7 +197,7 @@ test('in-scope member lists, reads and writes files — content verified on disk
   const { id } = await createWorkspaceJson()
   await addMember(id, MEMBER)
 
-  const put = await fetch(`${memberBase}/api/workspaces/${id}/file${q('notes/hello.txt')}`, {
+  const put = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('notes/hello.txt')}`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ body: 'hi workspace' }),
@@ -217,7 +207,7 @@ test('in-scope member lists, reads and writes files — content verified on disk
   const onDisk = await readFile(join(boundDir, 'notes', 'hello.txt'), 'utf8')
   assert.equal(onDisk, 'hi workspace')
 
-  const read = await fetch(`${memberBase}/api/workspaces/${id}/file${q('notes/hello.txt')}`, {
+  const read = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('notes/hello.txt')}`, {
     headers: jsonHeaders(COMPANY),
   })
   assert.equal(read.status, 200)
@@ -225,18 +215,18 @@ test('in-scope member lists, reads and writes files — content verified on disk
   assert.equal(file.body, 'hi workspace')
   assert.equal(file.path, 'notes/hello.txt')
 
-  const listNested = await fetch(`${memberBase}/api/workspaces/${id}/files${q('notes')}`, {
+  const listNested = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files${q('notes')}`, {
     headers: jsonHeaders(COMPANY),
   })
   const nested = (await listNested.json()) as { entries: Array<{ name: string }> }
   assert.ok(nested.entries.some((e: { name: string }) => e.name === 'hello.txt'))
 
-  const listRoot = await fetch(`${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })
+  const listRoot = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })
   const root = (await listRoot.json()) as { entries: Array<{ name: string }> }
   assert.ok(root.entries.some((e: { name: string }) => e.name === 'notes'))
 
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/file${q('missing.txt')}`, { headers: jsonHeaders(COMPANY) }))
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('missing.txt')}`, { headers: jsonHeaders(COMPANY) }))
       .status,
     404,
   )
@@ -245,22 +235,22 @@ test('in-scope member lists, reads and writes files — content verified on disk
 test('company members outside the scope are denied file operations; other companies see nothing', async () => {
   const { id } = await createWorkspaceJson()
 
-  const list = await fetch(`${memberBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
+  const list = await fetchAs(MEMBER, `${memberBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
   assert.equal(list.status, 200)
   assert.ok(((await list.json()) as Array<{ id: string }>).some((r) => r.id === id)) // visible, just not accessible
 
-  const detailRes = await fetch(`${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+  const detailRes = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   assert.equal(detailRes.status, 200)
   const detailJson = (await detailRes.json()) as Record<string, unknown>
   assert.equal('folderPath' in detailJson, false)
 
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status,
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status,
     403,
   )
   assert.equal(
     (
-      await fetch(`${memberBase}/api/workspaces/${id}/file${q('x.txt')}`, {
+      await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('x.txt')}`, {
         method: 'PUT',
         headers: jsonHeaders(COMPANY),
         body: JSON.stringify({ body: 'nope' }),
@@ -269,10 +259,10 @@ test('company members outside the scope are denied file operations; other compan
     403,
   )
 
-  assert.equal((await fetch(`${outsiderBase}/api/workspaces`, { headers: jsonHeaders(COMPANY_B) })).status, 200)
-  assert.equal((await fetch(`${outsiderBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY_B) })).status, 404)
+  assert.equal((await fetchAs(OUTSIDER, `${outsiderBase}/api/workspaces`, { headers: jsonHeaders(COMPANY_B) })).status, 200)
+  assert.equal((await fetchAs(OUTSIDER, `${outsiderBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY_B) })).status, 404)
   assert.equal(
-    (await fetch(`${outsiderBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
+    (await fetchAs(OUTSIDER, `${outsiderBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
     404,
   )
 })
@@ -281,25 +271,25 @@ test('removing an explicit member revokes access; removing twice 404s', async ()
   const { id } = await createWorkspaceJson()
   await addMember(id, MEMBER)
 
-  const put = await fetch(`${memberBase}/api/workspaces/${id}/file${q('a.txt')}`, {
+  const put = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('a.txt')}`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ body: 'still member' }),
   })
   assert.equal(put.status, 200)
 
-  const remove = await fetch(`${ownerBase}/api/workspaces/${id}/members/${MEMBER}`, {
+  const remove = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/members/${MEMBER}`, {
     method: 'DELETE',
     headers: jsonHeaders(COMPANY),
   })
   assert.equal(remove.status, 200)
 
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/file${q('a.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('a.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
     403,
   )
 
-  const removeAgain = await fetch(`${ownerBase}/api/workspaces/${id}/members/${MEMBER}`, {
+  const removeAgain = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/members/${MEMBER}`, {
     method: 'DELETE',
     headers: jsonHeaders(COMPANY),
   })
@@ -311,14 +301,14 @@ test('paths that escape the workspace folder are rejected', async () => {
   await addMember(id, MEMBER)
 
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/file${q('../../etc/passwd')}`, {
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('../../etc/passwd')}`, {
       headers: jsonHeaders(COMPANY),
     })).status,
     400,
   )
   assert.equal(
     (
-      await fetch(`${memberBase}/api/workspaces/${id}/file${q('../evil.txt')}`, {
+      await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('../evil.txt')}`, {
         method: 'PUT',
         headers: jsonHeaders(COMPANY),
         body: JSON.stringify({ body: 'escape' }),
@@ -327,7 +317,7 @@ test('paths that escape the workspace folder are rejected', async () => {
     400,
   )
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/files${q('..')}`, { headers: jsonHeaders(COMPANY) })).status,
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files${q('..')}`, { headers: jsonHeaders(COMPANY) })).status,
     400,
   )
 })
@@ -336,11 +326,11 @@ test('folderPath is exposed only to owner/admin in the workspace detail', async 
   const { id } = await createWorkspaceJson()
   await addMember(id, MEMBER)
 
-  const ownerRes = await fetch(`${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+  const ownerRes = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   const ownerJson = (await ownerRes.json()) as { folderPath?: string }
   assert.equal(ownerJson.folderPath, boundDir)
 
-  const memberRes = await fetch(`${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+  const memberRes = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   const memberJson = (await memberRes.json()) as Record<string, unknown>
   assert.equal('folderPath' in memberJson, false)
 })
@@ -348,7 +338,7 @@ test('folderPath is exposed only to owner/admin in the workspace detail', async 
 test('reads beyond the 2 MB cap are refused with 413', async () => {
   const { id } = await createWorkspaceJson()
   await writeFile(join(boundDir, 'big.txt'), 'a'.repeat(3 * 1024 * 1024), 'utf8')
-  const res = await fetch(`${ownerBase}/api/workspaces/${id}/file${q('big.txt')}`, { headers: jsonHeaders(COMPANY) })
+  const res = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/file${q('big.txt')}`, { headers: jsonHeaders(COMPANY) })
   assert.equal(res.status, 413)
 })
 
@@ -358,7 +348,7 @@ test('a symlink inside the folder pointing outside is refused', async () => {
   await writeFile(secret, 'server secret', 'utf8')
   await symlink(secret, join(boundDir, 'leak.txt'))
   assert.equal(
-    (await fetch(`${ownerBase}/api/workspaces/${id}/file${q('leak.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
+    (await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/file${q('leak.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
     400,
   )
 })
@@ -407,18 +397,18 @@ async function associate(
   workspaceId: string,
   kind: string,
   targetId: string,
-  base: string = ownerBase,
+  user: string = OWNER,
   company: string = COMPANY,
 ): Promise<Response> {
-  return fetch(`${base}/api/workspaces/${workspaceId}/associations`, {
+  return fetchAs(user, `${MIRROR_BASE}/api/workspaces/${workspaceId}/associations`, {
     method: 'POST',
     headers: jsonHeaders(company),
     body: JSON.stringify({ kind, targetId }),
   })
 }
 
-async function writeAs(workspaceId: string, path: string, base: string): Promise<number> {
-  const res = await fetch(`${base}/api/workspaces/${workspaceId}/file${q(path)}`, {
+async function writeAs(workspaceId: string, path: string, user: string): Promise<number> {
+  const res = await fetchAs(user, `${MIRROR_BASE}/api/workspaces/${workspaceId}/file${q(path)}`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ body: 'x' }),
@@ -426,11 +416,11 @@ async function writeAs(workspaceId: string, path: string, base: string): Promise
   return res.status
 }
 
-async function detailJson(workspaceId: string, base: string = ownerBase): Promise<{
+async function detailJson(workspaceId: string, user: string = OWNER): Promise<{
   members: Array<{ participantId: string; source: string }>
   associations: Array<{ kind: string; targetId: string }>
 }> {
-  const res = await fetch(`${base}/api/workspaces/${workspaceId}`, { headers: jsonHeaders(COMPANY) })
+  const res = await fetchAs(user, `${MIRROR_BASE}/api/workspaces/${workspaceId}`, { headers: jsonHeaders(COMPANY) })
   return (await res.json()) as {
     members: Array<{ participantId: string; source: string }>
     associations: Array<{ kind: string; targetId: string }>
@@ -442,7 +432,7 @@ test('project association: conversation members become implicit members and the 
   const { id } = await createWorkspaceJson()
   assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
 
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // implicit via the project's conversation
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // implicit via the project's conversation
 
   const detail = await detailJson(id)
   const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
@@ -452,7 +442,7 @@ test('project association: conversation members become implicit members and the 
   assert.deepEqual(detail.associations.map((a) => `${a.kind}:${a.targetId}`), ['project:p-ws'])
 
   await pool.query(`UPDATE conversations SET members = '["AGENT"]'::jsonb WHERE id = 'cv-ws'`)
-  assert.equal(await writeAs(id, 'b.txt', memberBase), 403) // left the conversation → out of scope
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 403) // left the conversation → out of scope
 })
 
 test('board card association: assignee + mentions are implicit, the creator is not, and reassignment follows', async () => {
@@ -460,34 +450,34 @@ test('board card association: assignee + mentions are implicit, the creator is n
   const { id } = await createWorkspaceJson()
   assert.equal((await associate(id, 'board_card', 'card-ws')).status, 201)
 
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 403) // creator deliberately not a participant
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 403) // creator deliberately not a participant
 
   await pool.query(`UPDATE board_cards SET assignee_id = $1 WHERE id = 'card-ws'`, [MEMBER])
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // assignee path
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // assignee path
 
   await pool.query(`UPDATE board_cards SET assignee_id = NULL, mentions = $1::jsonb WHERE id = 'card-ws'`, [
     JSON.stringify([MEMBER]),
   ])
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // mentions path
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // mentions path
 
   await pool.query(`UPDATE board_cards SET mentions = '[]'::jsonb WHERE id = 'card-ws'`)
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 403) // no longer assignee or mentioned
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 403) // no longer assignee or mentioned
 })
 
 test('document association: creator + collaborators implicit; collaborator edits via API and access follows', async () => {
   await seedDocument('doc-ws', OWNER, [AGENT])
   await seedDocument('doc-ws2', MEMBER, [])
   const { id } = await createWorkspaceJson()
-  assert.equal((await associate(id, 'document', 'doc-ws', memberBase)).status, 201) // any member may associate docs
-  assert.equal((await associate(id, 'document', 'doc-ws2', ownerBase)).status, 201)
+  assert.equal((await associate(id, 'document', 'doc-ws', MEMBER)).status, 201) // any member may associate docs
+  assert.equal((await associate(id, 'document', 'doc-ws2', OWNER)).status, 201)
 
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200) // creator of doc-ws2
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // creator of doc-ws2
 
   const before = await detailJson(id)
   assert.equal(new Map(before.members.map((m) => [m.participantId, m.source])).get(AGENT), 'implicit')
 
   // collaborator editing: non-creator member refused, creator may edit
-  const forbidden = await fetch(`${memberBase}/api/documents/doc-ws/collaborators`, {
+  const forbidden = await fetchAs(MEMBER, `${memberBase}/api/documents/doc-ws/collaborators`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ participantIds: [MEMBER] }),
@@ -495,7 +485,7 @@ test('document association: creator + collaborators implicit; collaborator edits
   assert.equal(forbidden.status, 403)
   assert.equal(
     (
-      await fetch(`${ownerBase}/api/documents/doc-ws/collaborators`, {
+      await fetchAs(OWNER, `${ownerBase}/api/documents/doc-ws/collaborators`, {
         method: 'PUT',
         headers: jsonHeaders(COMPANY),
         body: JSON.stringify({ participantIds: ['nope'] }),
@@ -503,7 +493,7 @@ test('document association: creator + collaborators implicit; collaborator edits
     ).status,
     400,
   )
-  const edit = await fetch(`${ownerBase}/api/documents/doc-ws/collaborators`, {
+  const edit = await fetchAs(OWNER, `${ownerBase}/api/documents/doc-ws/collaborators`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ participantIds: [] }),
@@ -522,19 +512,19 @@ test('association lifecycle: kind whitelist, unknown target, duplicate, delete r
   assert.equal((await associate(id, 'project', 'nope')).status, 404)
   assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
   assert.equal((await associate(id, 'project', 'p-ws')).status, 409)
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
-  const del = await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+  const del = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
     method: 'DELETE',
     headers: jsonHeaders(COMPANY),
   })
   assert.equal(del.status, 200)
-  assert.equal(await writeAs(id, 'b.txt', memberBase), 403)
-  assert.equal(await writeAs(id, 'c.txt', ownerBase), 200) // explicit members unaffected by association churn
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 403)
+  assert.equal(await writeAs(id, 'c.txt', OWNER), 200) // explicit members unaffected by association churn
   assert.deepEqual((await detailJson(id)).associations, [])
   assert.equal(
     (
-      await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+      await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
         method: 'DELETE',
         headers: jsonHeaders(COMPANY),
       })
@@ -549,15 +539,15 @@ test('association rights: project and board_card need owner/admin, document does
   await seedDocument('doc-ws', OWNER, [])
   const { id } = await createWorkspaceJson()
 
-  assert.equal((await associate(id, 'project', 'p-ws', memberBase)).status, 403)
-  assert.equal((await associate(id, 'board_card', 'card-ws', memberBase)).status, 403)
-  assert.equal((await associate(id, 'document', 'doc-ws', memberBase)).status, 201)
+  assert.equal((await associate(id, 'project', 'p-ws', MEMBER)).status, 403)
+  assert.equal((await associate(id, 'board_card', 'card-ws', MEMBER)).status, 403)
+  assert.equal((await associate(id, 'document', 'doc-ws', MEMBER)).status, 201)
 })
 
 test('cross-company isolation: associations only see same-company targets', async () => {
   await seedProjectWithConversation([MEMBER])
   const dirB = await mkdtemp(join(tmpRoot, 'bound-b-'))
-  const bCreate = await createWorkspace({ base: outsiderBase, company: COMPANY_B, folderPath: dirB })
+  const bCreate = await createWorkspace({ user: OUTSIDER, company: COMPANY_B, folderPath: dirB })
   assert.equal(bCreate.status, 201)
   const bId = ((await bCreate.json()) as { id: string }).id
   await pool.query(
@@ -565,7 +555,7 @@ test('cross-company isolation: associations only see same-company targets', asyn
     [COMPANY_B],
   )
 
-  assert.equal((await associate(bId, 'project', 'p-ws', outsiderBase, COMPANY_B)).status, 404) // A's project invisible to B
+  assert.equal((await associate(bId, 'project', 'p-ws', OUTSIDER, COMPANY_B)).status, 404) // A's project invisible to B
   const { id } = await createWorkspaceJson()
   assert.equal((await associate(id, 'project', 'p-b')).status, 404) // B's project invisible to A
   assert.equal((await associate(id, 'project', 'p-ws')).status, 201) // same-company works
@@ -573,8 +563,8 @@ test('cross-company isolation: associations only see same-company targets', asyn
 
 // ---------- Default workspace (#30) ----------
 
-async function defaultWorkspaceId(base: string = ownerBase): Promise<string> {
-  const res = await fetch(`${base}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
+async function defaultWorkspaceId(user: string = OWNER): Promise<string> {
+  const res = await fetchAs(user, `${MIRROR_BASE}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
   const rows = (await res.json()) as Array<{ id: string; isDefault: boolean }>
   return (rows.find((r) => r.isDefault) as { id: string }).id
 }
@@ -582,7 +572,7 @@ async function defaultWorkspaceId(base: string = ownerBase): Promise<string> {
 test('every team gets exactly one default workspace, self-healing on repeat listing', async () => {
   const firstId = await defaultWorkspaceId()
   assert.match(firstId, /^ws-default-/)
-  const again = await fetch(`${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
+  const again = await fetchAs(OWNER, `${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })
   const rows = (await again.json()) as Array<{ id: string; isDefault: boolean }>
   const defaults = rows.filter((r) => r.isDefault)
   assert.equal(defaults.length, 1)
@@ -591,16 +581,16 @@ test('every team gets exactly one default workspace, self-healing on repeat list
 
 test('default workspace: whole team reads and writes without being added; scope follows company membership', async () => {
   const defId = await defaultWorkspaceId()
-  assert.equal(await writeAs(defId, 'a.txt', memberBase), 200) // never explicitly added
+  assert.equal(await writeAs(defId, 'a.txt', MEMBER), 200) // never explicitly added
 
-  const read = await fetch(`${memberBase}/api/workspaces/${defId}/file${q('a.txt')}`, {
+  const read = await fetchAs(MEMBER, `${memberBase}/api/workspaces/${defId}/file${q('a.txt')}`, {
     headers: jsonHeaders(COMPANY),
   })
   assert.equal(read.status, 200)
   assert.equal(((await read.json()) as { body: string }).body, 'x')
 
   const detail = (await (
-    await fetch(`${ownerBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY) })
+    await fetchAs(OWNER, `${ownerBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY) })
   ).json()) as { folderPath: string; members: Array<{ participantId: string; source: string }> }
   assert.ok(detail.folderPath.includes('workspaces')) // product-managed folder
   const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
@@ -609,37 +599,37 @@ test('default workspace: whole team reads and writes without being added; scope 
   assert.equal(sources.get(OWNER), 'implicit') // the whole team, not an explicit list
 
   await pool.query(`DELETE FROM company_members WHERE company_id = $1 AND user_id = $2`, [COMPANY, MEMBER])
-  assert.equal(await writeAs(defId, 'b.txt', memberBase), 403) // out of the team
+  assert.equal(await writeAs(defId, 'b.txt', MEMBER), 403) // out of the team
   await pool.query(
     `INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`,
     [COMPANY, MEMBER],
   )
-  assert.equal(await writeAs(defId, 'b.txt', memberBase), 200) // back in
+  assert.equal(await writeAs(defId, 'b.txt', MEMBER), 200) // back in
 })
 
 test('cross-company: another company cannot reach a team default workspace by its deterministic id', async () => {
   const defId = await defaultWorkspaceId()
   assert.equal(
-    (await fetch(`${outsiderBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY_B) })).status,
+    (await fetchAs(OUTSIDER, `${outsiderBase}/api/workspaces/${defId}`, { headers: jsonHeaders(COMPANY_B) })).status,
     404,
   )
   assert.equal(
-    (await fetch(`${outsiderBase}/api/workspaces/${defId}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
+    (await fetchAs(OUTSIDER, `${outsiderBase}/api/workspaces/${defId}/files`, { headers: jsonHeaders(COMPANY_B) })).status,
     404,
   )
 })
 
 // ---------- Safe unbind (#34) ----------
 
-async function unbind(workspaceId: string, base: string = ownerBase): Promise<Response> {
-  return fetch(`${base}/api/workspaces/${workspaceId}/unbind`, { method: 'POST', headers: jsonHeaders(COMPANY) })
+async function unbind(workspaceId: string, user: string = OWNER): Promise<Response> {
+  return fetchAs(user, `${MIRROR_BASE}/api/workspaces/${workspaceId}/unbind`, { method: 'POST', headers: jsonHeaders(COMPANY) })
 }
 
 test('safe unbind: files untouched, all access refused, associations visible as inert history', async () => {
   await writeFile(join(boundDir, 'keep.txt'), 'precious', 'utf8')
   const { id } = await createWorkspaceJson()
   await addMember(id, MEMBER)
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
   assert.equal((await unbind(id)).status, 200)
 
@@ -648,20 +638,20 @@ test('safe unbind: files untouched, all access refused, associations visible as 
   assert.equal(await readFile(join(boundDir, 'a.txt'), 'utf8'), 'x')
 
   // All access refused (410) for every file surface
-  assert.equal(await writeAs(id, 'b.txt', memberBase), 410)
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 410)
   assert.equal(
-    (await fetch(`${memberBase}/api/workspaces/${id}/file${q('keep.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
+    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('keep.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
     410,
   )
-  assert.equal((await fetch(`${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status, 410)
+  assert.equal((await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status, 410)
 
   // Hidden from the list; the detail shows the unbound state
-  const list = (await (await fetch(`${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })).json()) as Array<{
+  const list = (await (await fetchAs(OWNER, `${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })).json()) as Array<{
     id: string
   }>
   assert.ok(!list.some((r) => r.id === id))
   const detail = (await (
-    await fetch(`${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
+    await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
   ).json()) as { unboundAt: string; unboundBy: string }
   assert.ok(detail.unboundAt)
   assert.equal(detail.unboundBy, OWNER)
@@ -675,16 +665,16 @@ test('implicit access via associations ends at unbind; association create is 410
   await seedProjectWithConversation([MEMBER])
   const { id } = await createWorkspaceJson()
   assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
-  assert.equal(await writeAs(id, 'a.txt', memberBase), 200)
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
   assert.equal((await unbind(id)).status, 200)
-  assert.equal(await writeAs(id, 'b.txt', memberBase), 410) // implicit membership inert
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 410) // implicit membership inert
   assert.equal((await detailJson(id)).associations.length, 1) // still visible as history
   assert.equal((await associate(id, 'board_card', 'nope')).status, 410) // guard precedes target lookup
   // the audit record cannot be silently rewritten post-unbind
   assert.equal(
     (
-      await fetch(`${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+      await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
         method: 'DELETE',
         headers: jsonHeaders(COMPANY),
       })
@@ -698,5 +688,5 @@ test('implicit access via associations ends at unbind; association create is 410
 
 test('only owner/admin can unbind', async () => {
   const { id } = await createWorkspaceJson()
-  assert.equal((await unbind(id, memberBase)).status, 403)
+  assert.equal((await unbind(id, MEMBER)).status, 403)
 })

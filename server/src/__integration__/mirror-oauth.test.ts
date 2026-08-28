@@ -64,6 +64,10 @@ async function startAndGrabState(query = ''): Promise<{ status: number; location
 }
 
 before(async () => {
+  // #70 MIRROR-only:OAuth 配置 env 由 runner 在起 Go 服时注入(见
+  // run-integration-tests.mjs 的 GITHUB_CLIENT_ID/CUMORA_OAUTH_GITHUB_BASE/
+  // CUMORA_AUTH_RETURN_ALLOWLIST);本进程内的同名 env 只剩文档意义,
+  // 留着以保持常量与 runner 一致的可读对照。
   process.env.GITHUB_CLIENT_ID = 'stub-id'
   process.env.GITHUB_CLIENT_SECRET = 'stub-secret'
   process.env.CUMORA_OAUTH_GITHUB_BASE = STUB_BASE

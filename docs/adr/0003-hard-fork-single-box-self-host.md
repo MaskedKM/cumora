@@ -40,3 +40,9 @@ comes due all at once and the outcome would be the same fork anyway).
 - Deleting the cloud pod path means `cloud` computers are no longer a
   supported `Computer` form; BYOA (`local`/`vps`) is the only supported
   execution tier.
+
+## 退役勾销(#70,2026-08-28)
+
+- ✅ 硬分叉清单里的 TS-only 依赖面随 #70 落地删除(migrate/契约守卫
+  TS 腿/publish.yml agent-cli 流);契约事实源仍是 packages/contract/
+  openapi.yaml,提取腿已换 Go `HandleFunc` 注册。
