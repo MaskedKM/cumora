@@ -233,6 +233,13 @@ jobs:
             "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
           tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
+          # contract-check.sh (#48 guard) regenerates and diffs against
+          # HEAD; with no checkout there is no HEAD — synthesize one from
+          # the pristine tarball so "committed state" == branch head content.
+          git init -q -b main
+          git add -A
+          git -c user.email=cumora-ci@example.com -c user.name=cumora-ci \
+            commit -qm "tarball baseline"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
