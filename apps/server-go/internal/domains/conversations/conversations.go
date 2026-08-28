@@ -149,11 +149,12 @@ func setTitle(db *sql.DB) http.HandlerFunc {
 		if _, ok := memberGate(w, r, db, uid, companyID, convID); !ok {
 			return
 		}
-		var body struct {
-			Title string `json:"title"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		title := strings.TrimSpace(body.Title)
+		// F16:TS setTitle 是 String(x ?? '') 强转,struct 解码丢非串体。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		var titleRaw any
+		_ = json.Unmarshal(raw["title"], &titleRaw)
+		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
 		if runes := []rune(title); len(runes) > 80 {
 			title = string(runes[:80])
 		}
@@ -164,7 +165,7 @@ func setTitle(db *sql.DB) http.HandlerFunc {
 		var kind string
 		_ = db.QueryRowContext(r.Context(), `SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&kind)
 		if kind != "group" {
-			httpx.WriteError(w, http.StatusBadRequest, "only group conversations can be renamed")
+			httpx.WriteError(w, http.StatusBadRequest, "only group chats can be renamed")
 			return
 		}
 		if _, err := db.ExecContext(r.Context(),
@@ -507,14 +508,22 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body struct {
-			Title     string   `json:"title"`
-			Topic     string   `json:"topic"`
-			ProjectID string   `json:"projectId"`
-			Members   []string `json:"members"`
+		// F16:TS create 各键是 String(x ?? '')/truthy 门强转,struct 解码在
+		// 非串值上会整包丢弃 → 改逐键解码。members 对齐 TS:非数组忽略,
+		// 数组内只收 string(其余元素跳过)。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		keyAny := func(k string) (any, bool) {
+			v, has := raw[k]
+			if !has {
+				return nil, false
+			}
+			var a any
+			_ = json.Unmarshal(v, &a)
+			return a, true
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		title := strings.TrimSpace(body.Title)
+		titleRaw, _ := keyAny("title")
+		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
 		if runes := []rune(title); len(runes) > 80 {
 			title = string(runes[:80])
 		}
@@ -522,12 +531,34 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
+		var topic any
+		if tRaw, has := keyAny("topic"); has && httpx.JSTruthy(tRaw) {
+			t := strings.TrimSpace(httpx.JSToString(tRaw))
+			if runes := []rune(t); len(runes) > 200 {
+				t = string(runes[:200])
+			}
+			if t != "" {
+				topic = t
+			}
+		}
+		var projectIDStr string
+		if pRaw, has := keyAny("projectId"); has && httpx.JSTruthy(pRaw) {
+			projectIDStr = strings.TrimSpace(httpx.JSToString(pRaw))
+		}
 		seen := map[string]bool{uid: true}
 		members := []string{}
-		for _, m := range body.Members {
-			if m = strings.TrimSpace(m); m != "" && !seen[m] {
-				seen[m] = true
-				members = append(members, m)
+		if mRaw, has := keyAny("members"); has {
+			var arr []any
+			if b, err := json.Marshal(mRaw); err == nil && json.Unmarshal(b, &arr) == nil {
+				for _, m := range arr {
+					if s, isStr := m.(string); isStr {
+						s = strings.TrimSpace(s)
+						if s != "" && !seen[s] {
+							seen[s] = true
+							members = append(members, s)
+						}
+					}
+				}
 			}
 		}
 		if !seen[uid] || !contains(members, uid) {
@@ -561,22 +592,22 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var projectID any
-		if body.ProjectID != "" {
+		if projectIDStr != "" {
 			var exists bool
 			_ = db.QueryRowContext(r.Context(),
-				`SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`, body.ProjectID, companyID).Scan(&exists)
+				`SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`, projectIDStr, companyID).Scan(&exists)
 			if !exists {
 				httpx.WriteError(w, http.StatusBadRequest, "unknown project")
 				return
 			}
-			projectID = body.ProjectID
+			projectID = projectIDStr
 		}
 		id := "g-" + authn.NewToken()[:8]
 		membersJSON, _ := json.Marshal(members)
 		if _, err := db.ExecContext(r.Context(), `
 			INSERT INTO conversations (id, kind, title, topic, members, pinned, company_id, project_id)
-			VALUES ($1, 'group', $2, NULLIF($3,''), $4::jsonb, FALSE, $5, $6)`,
-			id, title, body.Topic, membersJSON, companyID, projectID); err != nil {
+			VALUES ($1, 'group', $2, $3, $4::jsonb, FALSE, $5, $6)`,
+			id, title, topic, membersJSON, companyID, projectID); err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 			return
 		}
@@ -1006,7 +1037,7 @@ func toggleReaction(db *sql.DB) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		var emojiRaw any
 		_ = json.Unmarshal(body["emoji"], &emojiRaw)
-		emoji := strings.TrimSpace(fmtString(emojiRaw))
+		emoji := strings.TrimSpace(httpx.JSStringOrNullish(emojiRaw))
 		if emoji == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "emoji required")
 			return
@@ -1124,11 +1155,6 @@ func clampF(v float64) float64 {
 		return -1
 	}
 	return v
-}
-
-func fmtString(v any) string {
-	s, _ := v.(string)
-	return s
 }
 
 func mustJSON(v any) []byte {

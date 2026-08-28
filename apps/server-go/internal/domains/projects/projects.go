@@ -149,13 +149,13 @@ func create(db *sql.DB) http.HandlerFunc {
 		nameRaw, _ := bodyAny(body, "name")
 		descRaw, _ := bodyAny(body, "description")
 		colorRaw, hasColor := bodyAny(body, "color")
-		name := utf16Cap(strings.TrimSpace(fmtString(nameRaw)), 80)
-		description := utf16Cap(fmtString(descRaw), 1000)
+		// F16:TS create 是 String(x ?? '') 强转(非 typeof 门),color 另有
+		// JS truthy 前置(0/""/null→null,对象/数组恒真)。
+		name := utf16Cap(strings.TrimSpace(httpx.JSStringOrNullish(nameRaw)), 80)
+		description := utf16Cap(httpx.JSStringOrNullish(descRaw), 1000)
 		var color any
-		if hasColor && colorRaw != nil {
-			if s, isStr := colorRaw.(string); isStr {
-				color = utf16Cap(s, 200)
-			}
+		if hasColor && httpx.JSTruthy(colorRaw) {
+			color = utf16Cap(httpx.JSToString(colorRaw), 200)
 		}
 		if name == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "name required")
@@ -327,11 +327,6 @@ func attach(db *sql.DB) http.HandlerFunc {
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "projectId": projectID})
 	}
-}
-
-func fmtString(v any) string {
-	s, _ := v.(string)
-	return s
 }
 
 func randHex10() string {

@@ -18,6 +18,7 @@ import (
 
 	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -349,7 +350,7 @@ func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 			}
 			return
 		}
-		joinAllHands(r.Context(), db, tenant, agentID)
+		onboard.JoinAllHands(r.Context(), db, tenant, agentID)
 		seedIdentitySoul(r.Context(), db, tenant, agentID, *body.name, role, bio, *body.systemPrompt)
 		autoCreateDirect(r.Context(), db, uid, tenant, agentID, *body.name)
 		if avatarGen != nil {
@@ -357,37 +358,6 @@ func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 		}
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": agentID})
 	}
-}
-
-func joinAllHands(ctx context.Context, db *sql.DB, companyID, participantID string) {
-	var convID sql.NullString
-	if err := db.QueryRowContext(ctx,
-		`SELECT all_hands_conversation_id FROM companies WHERE id = $1`, companyID).Scan(&convID); err != nil || !convID.Valid {
-		return
-	}
-	res, err := db.ExecContext(ctx, `
-		UPDATE conversations
-		   SET members = members || to_jsonb(ARRAY[$2::text]), updated_at = NOW()
-		 WHERE id = $1 AND NOT (members @> to_jsonb(ARRAY[$2::text]))`, convID.String, participantID)
-	if err != nil {
-		return
-	}
-	if ra, _ := res.RowsAffected(); ra == 0 {
-		return
-	}
-	var seq int
-	if err := db.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence)
-		VALUES ($1, 2)
-		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-		RETURNING next_sequence - 1`, convID.String).Scan(&seq); err != nil {
-		seq = 1
-	}
-	body, _ := json.Marshal(map[string]string{"kind": "joined", "participantId": participantID})
-	_, _ = db.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
-		VALUES ($1, $2, $3, 'system', $4, $5, $6)`,
-		"m-"+randUUID(), convID.String, participantID, string(body), seq, companyID)
 }
 
 func seedIdentitySoul(ctx context.Context, db *sql.DB, tenant, agentID, name, role, bio, systemPrompt string) {
@@ -660,14 +630,6 @@ func getAutonomy(db *sql.DB) http.HandlerFunc {
 }
 
 /* ───────── 小助手 ───────── */
-
-func randUUID() string {
-	b := make([]byte, 16)
-	_, _ = crand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
 
 func randHex6() string {
 	b := make([]byte, 3)

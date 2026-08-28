@@ -5,7 +5,6 @@
 package core
 
 import (
-	"context"
 	"crypto/md5"
 	"database/sql"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -378,7 +378,7 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 				INSERT INTO participants (id, kind, name, initial, avatar_bg, avatar_url, status, company_id)
 				VALUES ($1, 'human', $2, $3, '#FF8870', $4, 'avail', $5)
 				ON CONFLICT (id, company_id) DO NOTHING`, uid, dn, initial, avatar, id)
-			joinAllHands(r.Context(), db, id, uid)
+			onboard.JoinAllHands(r.Context(), db, id, uid)
 			auditIP, auditUA := r.RemoteAddr, r.UserAgent()
 			auditDetail := fmt.Sprintf(`{"name":%s,"slug":%s}`, jsonString(name), jsonString(slug))
 			go db.Exec(`INSERT INTO audit_events (user_id, company_id, kind, ip, user_agent, detail)
@@ -407,22 +407,6 @@ func tierCompanies(t string) int {
 func gravatarURL(email string) string {
 	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(email))))
 	return fmt.Sprintf("https://www.gravatar.com/avatar/%x?d=identicon&s=256", sum)
-}
-
-// joinAllHands 对齐 onboardCompany.joinAllHands:no-op 语义——组未建
-// (all_hands_conversation_id NULL)时什么都不做(组由 onboardStarterAgents
-// Phase 3 一次性创建并回填指针);已建则按指针追加成员(带 @> 守卫防重复)。
-func joinAllHands(ctx context.Context, db *sql.DB, companyID, participantID string) {
-	var convID sql.NullString
-	if err := db.QueryRowContext(ctx,
-		`SELECT all_hands_conversation_id FROM companies WHERE id = $1`, companyID).Scan(&convID); err != nil || !convID.Valid {
-		return // no group yet → nothing to join(baseline 语义)
-	}
-	_, _ = db.ExecContext(ctx, `
-		UPDATE conversations
-		   SET members = members || $2::jsonb
-		 WHERE id = $1 AND NOT members @> $2::jsonb`,
-		convID.String, fmt.Sprintf(`[%q]`, participantID))
 }
 
 // slugify 对齐 baseline:[^a-z0-9]+ 运行折叠为单个 -,去首尾 -,截 40,
