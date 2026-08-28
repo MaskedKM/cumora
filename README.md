@@ -21,9 +21,9 @@ One "brain" path:
 
 ```
  Electron / PWA / iOS / Android         ┌─────────────────┐
- ┌──────────────────┐   HTTP / WS       │   App workers   │──▶ OpenAI (Responses API)
- │    React UI      │ ◀───────────────▶ │  Express + ws   │──▶ Resend (email out)
- └──────────────────┘                   │    (any N)      │──▶ APNs / FCM (push)
+ ┌──────────────────┐   HTTP / WS       │  Go server      │──▶ OpenAI (Responses API)
+ │    React UI      │ ◀───────────────▶ │  (single binary │──▶ Resend (email out)
+ └──────────────────┘                   │   + yjs sidecar)│──▶ APNs / FCM (push)
                                         └───┬────────┬────┘
  Cloudflare Worker                          │        │ SSE wake-stream
  ┌─────────────────┐   webhooks          ┌────▼───┐ ┌──▼──────────────┐

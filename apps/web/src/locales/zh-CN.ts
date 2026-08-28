@@ -1068,7 +1068,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'cli.methodNpx': 'npx（发布版）',
   'cli.methodLocal': '本地构建',
   'cli.methodNpxHint': '运行 npm 发布版',
-  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 dist/cli.js',
+  'cli.methodLocalHint': '运行仓库构建 —— 路径改为你的 byoa-daemon 二进制',
   // ─── onboarding（首次配对计算机）─────────────────────────────────────
 
   'onboard.title': '设置你的计算机',

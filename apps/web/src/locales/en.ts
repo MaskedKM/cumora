@@ -1066,7 +1066,7 @@ export const en = {
   'cli.methodNpx': 'npx (published)',
   'cli.methodLocal': 'Local build',
   'cli.methodNpxHint': 'runs the published npm package',
-  'cli.methodLocalHint': 'runs a repo build — edit the path to your dist/cli.js',
+  'cli.methodLocalHint': 'runs a repo build — path to your byoa-daemon binary',
   // ─── onboarding (first-run computer pairing) ─────────────────────
 
   'onboard.title': 'Set up your computer',

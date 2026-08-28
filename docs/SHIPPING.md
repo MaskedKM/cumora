@@ -69,11 +69,10 @@ the mute point without replaying the old backlog.
 
 ## Release operations
 
-Backend deployment is intentionally separate from desktop tagging. See
-[RELEASE.md](./RELEASE.md) for protected production approval, digest-pinned GKE
-rollout, authenticated smoke, automatic rollback, and scheduled readback.
-
-The release contract is complete only after production behavior has been read
-back against its baseline. A green build or successful rollout is an
+Backend deployment is intentionally separate from desktop builds. The
+self-hosted Go server deploys via the local systemd units (see
+docs/SWITCHOVER.md and scripts/deploy/systemd/): rebuild the binary
+(`godocker build`), `systemctl --user restart cumora-go`, then read back
+production behavior against its baseline — a green build is an
 intermediate signal, not the terminal state.
 

@@ -3,8 +3,9 @@
  *
  *   "Of every sub2api token the platform spent this month, where did it go?"
  *
- * Source of truth is the universal `llm_calls` ledger (server/src/agents/
- * llm-ledger.ts); this page is a presentation layer over four shapes the
+ * Source of truth is the universal `llm_calls` ledger (Go side:
+ * internal/runtime/observability_api.go); this page is a presentation layer
+ * over four shapes the
  * /api/admin/observability/llm endpoint returns in one round-trip:
  *
  *   - summary     — hero KPIs (total $, total calls, top burner purpose,
