@@ -145,7 +145,7 @@ func HelpText() string {
 		"  cumora agent computer --pair <code> [--server <url>]   pair this machine\n" +
 		"  cumora agent computer [--server <url>]                 start the daemon\n\n" +
 		"Options:\n" +
-		"  --server <url>   target Cumora server (default: CUMORA_SERVER_URL or https://api.cumora.ai)\n" +
+		"  --server <url>   target Cumora server (default: CUMORA_SERVER_URL or http://127.0.0.1:5181)\n" +
 		"  --engine <id>    preferred engine for pairing (claude / codex / grok / cursor)\n" +
 		"  --install-service   install + start the background supervisor (binary-path unit)\n" +
 		"  --uninstall-service remove the background supervisor\n" +
@@ -228,12 +228,13 @@ func joinStrings(xs []string, sep string) string {
 	return out
 }
 
-// defaultServerURL:CUMORA_SERVER_URL 或官方云。
+// defaultServerURL:CUMORA_SERVER_URL 或自托管本机默认(#154:fork 无
+// 官方云,兜底上游只会把裸跑的 daemon 钉到别人服务器上)。
 func defaultServerURL() string {
 	if u := os.Getenv("CUMORA_SERVER_URL"); u != "" {
 		return u
 	}
-	return "https://api.cumora.ai"
+	return "http://127.0.0.1:5181"
 }
 
 /* ───────── doctor / status ───────── */

@@ -15,9 +15,13 @@ machine with Xcode 15+ and Ruby/CocoaPods installed.
   `capacitor.config.ts`. Plugins wired through `apps/web/src/lib/native.ts`:
   status bar, splash screen, keyboard, app (back button), haptics.
 - **Backend**: same API as the desktop app — the committed
-  `.env.production` sets `VITE_CUMORA_API_BASE=https://api.cumora.ai`,
-  so the bundled WKWebView talks to prod. Point it at your own
-  deployment when self-hosting.
+  `.env.production` bakes `VITE_CUMORA_API_BASE=http://127.0.0.1:5181`
+  (#127: this fork's default is the self-hosted server on the build
+  machine). Note for mobile builds specifically: `127.0.0.1` on a phone
+  is the phone itself, so a mobile package must either rebuild with
+  `.env.production` pointed at your server's LAN/origin address, or
+  override at runtime via localStorage `cumora.serverUrl`
+  (AuthScreen → API server).
 
 ## One-time setup
 

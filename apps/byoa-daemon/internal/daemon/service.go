@@ -62,8 +62,8 @@ func installService(serverURL string) error {
 	if err != nil {
 		return fmt.Errorf("pair this computer first: cumora agent computer --pair <code>")
 	}
-	// server 解析链与 TS 同:显式 --server > 配对配置里的 serverUrl >
-	// 官方云——裸 --install-service 不得把自托管机器钉到 api.cumora.ai。
+	// server 解析链:显式 --server > 配对配置里的 serverUrl > 本机默认
+	// (#154 起兜底 http://127.0.0.1:5181,fork 无官方云)。
 	if serverURL == "" {
 		serverURL = cfg.ServerURL
 	}
