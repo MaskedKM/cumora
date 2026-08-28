@@ -287,6 +287,8 @@ recent AS (
    ) m ON true
    LEFT JOIN participants p ON p.id = m.author_id AND p.company_id = c.company_id
   WHERE c.id = ANY($2::text[])
+    AND c.members @> to_jsonb(ARRAY[$1::text])
+    AND ($3::text IS NULL OR c.company_id = $3)
 )
 SELECT id, conversation_id, company_id, conversation_title, conversation_kind, conversation_topic,
        project_name,
@@ -327,11 +329,13 @@ SELECT id, conversation_id, company_id, conversation_title, conversation_kind, c
  ORDER BY conversation_id, created_at ASC`
 
 // LoadContext:每会话最近历史 + 未读/自发标记 + 反应聚合。
-func (s *Service) LoadContext(ctx context.Context, agentID string, conversationIDs []string) ([]map[string]any, error) {
+// 租户隔离(#130):members containment 恒生效;companyID 为 nil(JWT
+// 缺 claim)时退化为仅成员过滤,不放行跨公司。
+func (s *Service) LoadContext(ctx context.Context, agentID string, companyID *string, conversationIDs []string) ([]map[string]any, error) {
 	if len(conversationIDs) == 0 {
 		return []map[string]any{}, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, loadContextSQL, agentID, pqArray(conversationIDs))
+	rows, err := s.DB.QueryContext(ctx, loadContextSQL, agentID, pqArray(conversationIDs), companyID)
 	if err != nil {
 		return nil, err
 	}
