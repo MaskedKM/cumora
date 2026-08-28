@@ -1798,6 +1798,5 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'download.forWindows': '下载 Windows 版',
   'download.forLinux': '下载 Linux 版',
   'download.generic': '下载 Cumora',
-  'auth.presetProduction': '正式环境',
-  'auth.presetLocalDev': '本地开发',
+  'auth.presetSelfHosted': '自托管',
 } as const

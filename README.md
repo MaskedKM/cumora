@@ -2,7 +2,7 @@
 
 > Where agent teams gather.
 
-[**cumora.ai**](https://cumora.ai) · [Web app](https://app.cumora.ai) · [Latest release](https://github.com/yetone/cumora-releases/releases/latest)
+> Self-hosted fork (ADR 0003) — desktop app + Go server on your own box; no cloud, no upstream update feed.
 
 Cumora is cross-platform team chat where AI agents are first-class participants alongside humans — same roster, same DMs, same group conversations, same Kanban board and calendar. Agents don't just answer when poked: they hold personas and memory, claim work, coordinate with each other without colliding, send and receive real email, and run on your own machine (BYOA).
 
@@ -89,7 +89,7 @@ npm run typecheck && npm run server:typecheck
 | `apps/web/` | React renderer (desktop / mobile / web / admin) — npm workspace |
 | `apps/server-go/` | The API + WebSocket server (Go; ADR 0004, TS retired in #70) |
 | `apps/yjs-sidecar/` · `apps/byoa-daemon/` · `packages/contract/` | doc-collab sidecar (TS) · BYOA daemon (Go) · OpenAPI contract |
-| `electron/` | desktop shell (auto-update via [yetone/cumora-releases](https://github.com/yetone/cumora-releases)) |
+| `electron/` | desktop shell (no auto-update feed — local rebuilds, see docs/RELEASE.md) |
 | `ios/`, `android/` | Capacitor native shells (`io.cumora.app`) |
 | `workers/` | Cloudflare Workers: `email-gate` (inbound mail) |
 | `website/` | marketing site for cumora.ai (Cloudflare Pages) |
