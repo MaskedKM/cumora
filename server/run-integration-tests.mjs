@@ -21,8 +21,9 @@
  * forcing every developer to maintain a test DB.
  */
 import { spawn } from 'node:child_process'
+import { readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 // Load the developer's .env so RESEND_API_KEY / EMAIL_DOMAIN /
 // INTEGRATION_DATABASE_URL set there are visible to our gating checks
 // before we spawn the test child. The test child also imports
@@ -80,16 +81,37 @@ if (!process.env.EMAIL_INBOUND_HMAC_SECRET) process.env.EMAIL_INBOUND_HMAC_SECRE
 // Forward to node --import tsx --test against the integration suite.
 // tsx handles TypeScript; node:test handles the test runner.
 const here = dirname(fileURLToPath(import.meta.url))
-const pattern = join(here, 'src/__integration__/*.test.ts')
-// --test-concurrency=1 serializes test FILES. Default is N-cpu which
-// causes deadlocks here: every file's beforeEach TRUNCATEs the same
-// tables on the shared test DB; two TRUNCATE CASCADE statements running
-// concurrently against overlapping tables deadlock at the catalog-lock
-// level. We're not trying to optimize wall-time for this suite, so
-// serializing is the right trade.
+const dir = join(here, 'src/__integration__')
+
+// Sharding (#115): INTEGRATION_SHARD="N/M" runs only the files whose
+// sorted index mod M equals N-1 — a deterministic even split, stable
+// across runs. Each shard still serializes its own test FILES
+// (--test-concurrency=1: concurrent TRUNCATEs against a shared DB
+// deadlock at the catalog-lock level); CI removes the shared-DB
+// constraint by giving every shard its own Postgres database AND its
+// own Redis instance — pub/sub is instance-wide, so separate Redis DB
+// indexes would still cross-talk between shards.
+const shardRaw = process.env.INTEGRATION_SHARD ?? '1/1'
+const shardMatch = /^([1-9]\d*)\/([1-9]\d*)$/.exec(shardRaw)
+if (!shardMatch || Number(shardMatch[1]) > Number(shardMatch[2])) {
+  console.error(`[integration] bad INTEGRATION_SHARD: ${shardRaw} (expected "N/M" with 1 ≤ N ≤ M)`)
+  process.exit(2)
+}
+const [shardN, shardM] = [Number(shardMatch[1]), Number(shardMatch[2])]
+const files = readdirSync(dir)
+  .filter((f) => f.endsWith('.test.ts'))
+  .sort()
+  .filter((_, i) => i % shardM === shardN - 1)
+  .map((f) => join(dir, f))
+if (files.length === 0) {
+  console.error(`[integration] shard ${shardN}/${shardM} got zero files — refusing to run (miscount?)`)
+  process.exit(2)
+}
+console.log(`[integration] shard ${shardN}/${shardM}: ${files.length} file(s) — ${files.map((f) => basename(f)).join(', ')}`)
+
 const child = spawn(
   'node',
-  ['--import', 'tsx', '--test', '--test-concurrency=1', pattern],
+  ['--import', 'tsx', '--test', '--test-concurrency=1', ...files],
   { stdio: 'inherit', env: process.env },
 )
 child.on('exit', (code) => process.exit(code ?? 1))

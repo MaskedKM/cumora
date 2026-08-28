@@ -3,12 +3,31 @@
 #
 # Runs on the ser8 self-hosted fleet (labels: self-hosted,linux,ser8).
 # The two runner slots share one 4-core/4GB cgroup, so this workflow is
-# THREE jobs — quick (guards + lint + typecheck, node:24 container),
-# go (gofmt + vet + build of apps/server-go, golang:1.24 container),
-# tests (unit + integration, node:24 container + service containers) —
-# matching the fleet's parallelism. ALL jobs run in containers: PR code
-# never executes as the host runner user (runner is docker-group =
-# host-root-equivalent). pgvector is enabled via the repo's own pg client.
+# TWO jobs — go (gofmt + vet + build, golang:1.24-alpine container) and
+# checks (guards + lint + typecheck + unit + integration, node:24
+# container + service containers) — matching the fleet's parallelism.
+# (checks used to be two jobs, quick + tests; they merged in #115's CI
+# speedup: one less checkout + npm ci, and 2 jobs fill 2 slots exactly.)
+#
+# Speed plumbing (#115, measured against a 49-minute baseline run):
+#   - Egress through the host's Mihomo (allow-lan on *:7890, reached via
+#     host-gateway). The ser8↔GitHub git link runs ~100KB/s and truncates
+#     (early-EOF); through the proxy, checkout drops from ~4min to seconds.
+#   - Persistent host caches bind-mounted from /var/lib/cumora-ci-cache
+#     (Go build/mod + npm) — container layers die with the job, these
+#     survive across runs. Monitored by runner-maintenance.yml.
+#   - Integration suite split into 3 shards, each with its own Postgres
+#     database and its own Redis instance (pub/sub is instance-wide;
+#     Redis DB indexes would still cross-talk). Shards stay internally
+#     serial (--test-concurrency=1 — concurrent TRUNCATEs on a shared
+#     DB deadlock at the catalog-lock level).
+#   - checkout steps carry timeout-minutes: 3 — a hung fetch fails in
+#     3 minutes (rerun the run) instead of hanging ~15min into a
+#     concurrency cancel.
+#
+# ALL jobs run in containers: PR code never executes as the host runner
+# user (runner is docker-group = host-root-equivalent). pgvector is
+# enabled via the repo's own pg client.
 #
 # Deliberate boundary: heavy artifact work (electron-builder, docker
 # image builds) does NOT run on the self-hosted fleet; the go job's
@@ -36,47 +55,6 @@ permissions:
   contents: read
 
 jobs:
-  quick:
-    name: Quick (guards + lint + typecheck)
-    runs-on: [self-hosted, linux, ser8]
-    container:
-      image: node:24-bookworm
-    timeout-minutes: 15
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
-    env:
-      # CI never runs Electron — skip its ~100MB binary postinstall.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-    steps:
-      - uses: actions/checkout@v4
-      # P0 tripwire: the BIG (brain) model may ONLY do real, heavy tasks.
-      # Static scan runs BEFORE npm ci — no install, no deps — so a
-      # broken dependency tree can never mask the tripwire (the image
-      # ships node already).
-      - name: Big-brain guard (P0)
-        run: node scripts/guard-big-brain.mjs
-      # P1 tripwire: every sub2api callsite must go through
-      # getTrackedLlmClient() so the llm_calls ledger captures the spend.
-      - name: LLM-tracked guard (P1)
-        run: node scripts/guard-llm-tracked.mjs
-      - run: npm ci
-      - name: Contract drift guard (routes ↔ openapi ↔ generated TS)
-        run: npm run contract:check
-      - name: Lint (Biome)
-        run: npm run lint
-      # `npm run typecheck` delegates to the apps/web workspace (root has
-      # no tsconfig since the monorepo move); server keeps its own config.
-      - name: tsc (client)
-        run: npm run typecheck
-      - name: tsc (server)
-        run: npm run server:typecheck
-      # Container runs as root but shares the workspace with the host
-      # runner user — give ownership back (see the tests job's note).
-      - name: Restore workspace ownership for the host runner
-        if: always()
-        run: |
-          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
-          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
-
   go:
     name: Go (gofmt + vet + build)
     runs-on: [self-hosted, linux, ser8]
@@ -84,10 +62,23 @@ jobs:
     # bookworm on the runner, and vet/build don't need a C toolchain.
     container:
       image: golang:1.24-alpine
+      # Egress via the host's Mihomo (see header) — git/go module fetches
+      # only; the proxy host itself never proxies.
+      options: --add-host=host.docker.internal:host-gateway
+      # Persistent build caches on the runner host — survive the job's
+      # container (the old /tmp/gocache died with every run: cold compile
+      # each time, ~1m50s of the job).
+      volumes:
+        - /var/lib/cumora-ci-cache/gocache:/go/cache
+        - /var/lib/cumora-ci-cache/gomodcache:/go/modcache
     timeout-minutes: 10
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
-      GOCACHE: /tmp/gocache
+      HTTPS_PROXY: http://host.docker.internal:7890
+      HTTP_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal
+      GOCACHE: /go/cache
+      GOMODCACHE: /go/modcache
       CGO_ENABLED: '0'
       # `go build` embeds VCS info by default; container-root git refuses the
       # runner-owned checkout ("dubious ownership", exit 128) whenever this
@@ -95,7 +86,11 @@ jobs:
       # binary is never shipped — no VCS stamping needed.
       GOFLAGS: -buildvcs=false
     steps:
+      # 3-minute ceiling: a hung fetch (ser8↔GitHub link truncation) fails
+      # fast here instead of hanging ~15min into a concurrency cancel —
+      # rerun the failed run per the ops playbook.
       - uses: actions/checkout@v4
+        timeout-minutes: 3
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
       - name: vet + build (server)
@@ -104,7 +99,7 @@ jobs:
       # vet + build + 协议级 stub-server 测试(stub 全进程内,无外部服务)。
       - name: vet + test (byoa-daemon)
         run: cd apps/byoa-daemon && go vet ./... && go test ./... -count=1
-      # Same ownership give-back as the other jobs — this job's checkout also
+      # Same ownership give-back as the other job — this job's checkout also
       # writes container-root-owned files into the shared workspace.
       - name: Restore workspace ownership for the host runner
         if: always()
@@ -112,18 +107,23 @@ jobs:
           WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
           chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
 
-  tests:
-    name: Unit + integration
+  checks:
+    name: Checks (guards + lint + typecheck + unit + integration)
     # The whole job runs IN a container on the runner's Docker. Services
     # share the job network and are reached by service name (postgres,
-    # redis) — no host ports are published, so concurrent PRs (two runner
-    # slots) and any services already on the host can never collide on
-    # 5432/6379. node:24-bookworm ships node + git (the codex engine
-    # tests init a git repo in the agent home).
+    # redis/redis2/redis3) — no host ports are published, so concurrent
+    # PRs (two runner slots) and any services already on the host can
+    # never collide on 5432/6379. node:24-bookworm ships node + git (the
+    # codex engine tests init a git repo in the agent home). Three Redis
+    # instances: pub/sub is instance-wide, so the three integration
+    # shards each get their own instead of sharing DB indexes.
     runs-on: [self-hosted, linux, ser8]
     container:
       image: node:24-bookworm
-    timeout-minutes: 30
+      options: --add-host=host.docker.internal:host-gateway
+      volumes:
+        - /var/lib/cumora-ci-cache/npmcache:/npm/cache
+    timeout-minutes: 25
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     services:
       postgres:
@@ -144,7 +144,30 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis2:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis3:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
+      # Egress via the host's Mihomo (see header). Service names stay off
+      # the proxy path (pg/redis clients don't proxy anyway — belt and
+      # braces).
+      HTTPS_PROXY: http://host.docker.internal:7890
+      HTTP_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
+      npm_config_cache: /npm/cache
+      # Unit tests + non-sharded runs point here (shard steps override
+      # INTEGRATION_DATABASE_URL/REDIS_URL per shard).
       # Service hostnames resolve on the job's docker network.
       INTEGRATION_DATABASE_URL: postgres://cumora:cumora@postgres:5432/cumora_test
       DATABASE_URL: postgres://cumora:cumora@postgres:5432/cumora_test
@@ -162,12 +185,33 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 3
+      # P0 tripwire: the BIG (brain) model may ONLY do real, heavy tasks.
+      # Static scan runs BEFORE npm ci — no install, no deps — so a
+      # broken dependency tree can never mask the tripwire (the image
+      # ships node already).
+      - name: Big-brain guard (P0)
+        run: node scripts/guard-big-brain.mjs
+      # P1 tripwire: every sub2api callsite must go through
+      # getTrackedLlmClient() so the llm_calls ledger captures the spend.
+      - name: LLM-tracked guard (P1)
+        run: node scripts/guard-llm-tracked.mjs
       - run: npm ci
       # `npm test` runs workers/**/*.test.ts too, and the email-gate
       # worker has its own dependencies (postal-mime) that the root
       # install doesn't pull in.
       - name: Install Email Worker dependencies
         run: npm ci --prefix workers/email-gate
+      - name: Contract drift guard (routes ↔ openapi ↔ generated TS)
+        run: npm run contract:check
+      - name: Lint (Biome)
+        run: npm run lint
+      # `npm run typecheck` delegates to the apps/web workspace (root has
+      # no tsconfig since the monorepo move); server keeps its own config.
+      - name: tsc (client)
+        run: npm run typecheck
+      - name: tsc (server)
+        run: npm run server:typecheck
       # Some unit tests read app_settings (e.g. the agenda classifier's
       # cerebellum-route lookup), so the suite needs the schema present —
       # locally that's the dev DB; in CI we migrate the service DB first.
@@ -182,11 +226,56 @@ jobs:
         run: npm run migrate
       - name: Unit tests
         run: npm test --silent
-      - name: Integration tests
-        run: npm run test:integration
+      # Integration shards: 3 databases on the shared postgres service
+      # (service containers pre-create only POSTGRES_DB) + pgvector +
+      # schema each. Unit tests above already used cumora_test, shards
+      # take cumora_test1..3 — no overlap, so all four datasets coexist.
+      - name: Create + migrate shard databases (cumora_test1..3)
+        run: |
+          set -e
+          node -e "const {Client}=require('pg');(async()=>{
+            const c=new Client({connectionString:process.env.DATABASE_URL});
+            await c.connect();
+            for (const db of ['cumora_test1','cumora_test2','cumora_test3']) {
+              const r=await c.query('SELECT 1 FROM pg_database WHERE datname=$1',[db]);
+              if (r.rowCount===0) await c.query('CREATE DATABASE '+db);
+            }
+            await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
+          for db in cumora_test1 cumora_test2 cumora_test3; do
+            export PGURL="postgres://cumora:cumora@postgres:5432/$db"
+            node -e "const {Client}=require('pg');(async()=>{
+              const c=new Client({connectionString:process.env.PGURL});
+              await c.connect(); await c.query('CREATE EXTENSION IF NOT EXISTS vector');
+              await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
+            DATABASE_URL="$PGURL" npm run migrate
+          done
+      # One shard per database + Redis instance (pub/sub is instance-wide
+      # — separate Redis DB indexes would still cross-talk). Shards run
+      # in parallel; each stays internally serial via
+      # --test-concurrency=1 (run-integration-tests.mjs). tee keeps
+      # per-shard logs distinct and live; the [shardN] prefix keeps the
+      # interleaved step output readable.
+      - name: Integration tests (3 shards, own DB + Redis each)
+        run: |
+          set -e -o pipefail
+          run_shard() {
+            i="$1"; redis_name="$2"
+            INTEGRATION_SHARD="$i/3" \
+            INTEGRATION_DATABASE_URL="postgres://cumora:cumora@postgres:5432/cumora_test$i" \
+            REDIS_URL="redis://$redis_name:6379" \
+            npm run test:integration 2>&1 | sed "s/^/[shard$i] /" | tee "/tmp/shard$i.log"
+          }
+          run_shard 1 redis  & p1=$!
+          run_shard 2 redis2 & p2=$!
+          run_shard 3 redis3 & p3=$!
+          rc=0
+          wait "$p1" || rc=1
+          wait "$p2" || rc=1
+          wait "$p3" || rc=1
+          exit $rc
       # The container runs as root but shares the workspace with the host
-      # runner user — give ownership back so the next host job (quick)
-      # can clean the workspace. Without this, root-owned files from the
+      # runner user — give ownership back so the next host job (go) can
+      # clean the workspace. Without this, root-owned files from the
       # container break the host job's checkout with EACCES.
       - name: Restore workspace ownership for the host runner
         if: always()
