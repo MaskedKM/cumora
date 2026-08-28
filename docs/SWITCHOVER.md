@@ -1,5 +1,9 @@
 # 切换日 runbook:全量切 Go 与回切(#69)
 
+> **#70 退役更新(2026-08-28)**:TS 回切床已拆除(见文末「退役后」)。
+> 以下涉及 cumora-ts 的段落保留为切换日历史记录;现行回退=回退到
+> 上一 commit 的 Go 二进制重建重启,数据不动。
+
 > 形态(与用户确认):**直切 systemd**。Go 三件套直立,TS 留 stopped
 > 回切单元,sidecar 两栈共用。生产为单机自托管 dev 形态
 > (`NODE_ENV=development`、前端 :5180 走 Vite、RESEND 空=邮件静默、
@@ -70,7 +74,7 @@ systemctl --user start cumora-go.service     # 回到 Go,复跑观察清单 1–
 真实回切同此(数据不动,Postgres/Redis 无需操作);两栈任意时刻
 起其一即可恢复服务。
 
-## 事故处置
+## 事故处置(切换日历史——cumora-ts 已随 #70 卸载,现行回退见文末「退役后」)
 
 - Go 崩溃循环:`systemctl --user stop cumora-go && systemctl --user start cumora-ts`,留 journalctl 取证后处理。
 - daemon 不领卡:查 `journalctl --user -u cumora-daemon`、`REDIS PUBSUB CHANNELS`(cumora:wake:* 订阅在),必要时回切 daemon 亦可(TS agent-cli 仍在)。
@@ -84,3 +88,20 @@ systemctl --user start cumora-go.service     # 回到 Go,复跑观察清单 1–
   与 agent-cli 保留原样,不做删除。
 - 挂起清尾(#68 遗留 F6/F7/F11/F16/F17 + #109 延后项)在观察期窗口内
   按 #90 先例轻量清尾。
+
+## 退役后(#70,2026-08-28)
+
+用户提前点头跳过观察期,TS 全套退役:
+
+- **仓库**:server/src 运行时删除(保留 `__integration__` MIRROR-only
+  套件 + harness 四件:db/pool、redis、env(裁)、agents/runtime/jwt、
+  email 种子切片);`agent-cli/`、`bin/cumora`、`scripts/dual-backend/`
+  删除;CI tests job 换 golang:1.24-bookworm + setup-node(runner 自建
+  Go 服当 SUT);契约守卫提取腿换 Go `HandleFunc`(#117 豁免表)。
+- **生产机**:卸载 `cumora-ts.service`;旧 `cumora.service`(TS daemon,
+  agent-cli)disable + 删;daemon.env 保留(byoa-daemon 仍用)。
+- **现行回退**:checkout 上一 commit → `godocker.sh build` 重建二进制 →
+  `systemctl --user restart cumora-go`。Postgres/Redis 数据不动。
+  TS 栈如需考古,git 历史完整留档(本 runbook 的切换日段落即其用法)。
+- **已知缺口**:#117(missed-routes:polls/og/apple-native/autonomy/
+  shipping/admin 子面)——切换日起即 404 的面,与退役无关,逐票补齐。

@@ -6,7 +6,7 @@ import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { pool } from '../db/pool.js'
 import {
-  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror, MIRROR_BASE,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
 } from './_helpers.js'
 
 const USER = 'u-mirror-conv'
@@ -123,13 +123,7 @@ test('[mirror] convene: restart supersedes prior live session', async () => {
   assert.equal(active.json.state, 'live')
 })
 
-test('[mirror] convene: TTL sweep reaps zombie live sessions (F6, Go hygiene)', async (t) => {
-  if (!MIRROR_BASE) {
-    // TS 形态靠 orchestrate 自然收尾,无清扫面——本用例只钉 Go 侧
-    // (无编排,会话须由清扫兜底)。
-    t.skip('Go-side sweep has no TS counterpart')
-    return
-  }
+test('[mirror] convene: TTL sweep reaps zombie live sessions (F6)', async () => {
   const agentA = await seedAgent('a-conv-ttl')
   const conv = await call('/conversations', {
     method: 'POST',

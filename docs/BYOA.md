@@ -385,17 +385,18 @@ npm package **`cumora`**:
 npx cumora@latest agent computer --pair <code> [--server <url>]
 ```
 
-- `agent-cli/` builds `dist/cli.js` — a single self-contained ESM file
-  (~140KB, zero runtime dependencies) that esbuild-bundles the daemon
-  source from `server/src/agents/computer/` — one source of truth, no
-  separate copy. The repo's root `package.json` stays `private`; only
-  this thin package is published.
+- (#67/#70)The daemon now ships as the Go binary from
+  `apps/byoa-daemon/` — self-update via the server's Releases feed. The
+  legacy TS shim (`agent-cli/`, esbuild-bundled from
+  `server/src/agents/computer/`) retired with the TS server; `npx
+  cumora@latest` keeps working for the last published version, new
+  installs use the release binary.
 - `--install-service` installs the daemon as a supervised service
   (launchd `io.cumora.daemon` on macOS, `systemd --user` on Linux) so it
   survives reboots and — on macOS — runs in the GUI domain where the
   engine's keychain-backed login actually works.
 - `--doctor` probes the big/small models and the wake path end-to-end.
-- In-repo dev uses `./bin/cumora agent computer …` (tsx) — the same
+- (#70 退役注)In-repo 的 TS 壳已删;daemon 走 Releases 二进制(自更新),安装向导同形——原
   code, unbundled.
 
 ---

@@ -51,6 +51,20 @@ tags:
 security:
   - sessionBearer: []
 paths:
+  /uploads:
+    get:
+      summary: Local-mode upload file serving (#69 webapp)
+      responses:
+        '200':
+          description: File bytes (Content-Type per object; nosniff; non-preview bitmaps attachment)
+        '404':
+          description: Missing key
+  /ws:
+    get:
+      summary: WebSocket gateway (chat/ws bus)
+      responses:
+        '101':
+          description: Switching Protocols
   /webhooks/email/inbound:
     post:
       tags: [core]
@@ -99,29 +113,6 @@ paths:
       summary: OG 图(二进制,非 JSON)
       responses:
         '200': { description: image/png }
-  /api/public/signup-config:
-    get:
-      tags: [core]
-      operationId: signupConfig
-      security: []
-      summary: 公开注册配置(waitlist 开关等)
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-  /api/metrics:
-    get:
-      tags: [core]
-      operationId: metrics
-      security: []
-      summary: Prometheus 指标(?token= 门控)
-      responses:
-        '200': { description: text/plain }
-        '404': { description: 未配置 token }
   /api/auth/start/{provider}:
     get:
       tags: [core]

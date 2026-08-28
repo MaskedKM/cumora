@@ -2,7 +2,8 @@
  * Integration tests for the Cerebellum Route surface added to
  * `GET/PUT /api/admin/settings` plus the new
  * `GET /api/admin/computers/available-engines` endpoint (ticket #22;
- * #112 起 Go 侧双跑:TS 形态自组 app,MIRROR 形态打 Go 候选)。
+ * #70 起 MIRROR-only:全部请求打向 run-integration-tests.mjs 自建的
+ * Go 服)。
  *
  * requireAdmin's real `users.is_admin` check is exercised for real (not
  * mocked) so the 403 gate is covered on both backends. Each test needs its
@@ -11,16 +12,15 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import {
-  ensureSchemaOnce, resetAllTables, seedUserMembership, buildApiTestApp, teardownAll, startMirror,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
 
-const MIRROR_BASE = process.env.CUMORA_MIRROR_BASE ?? ''
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
 })
 
@@ -39,39 +39,17 @@ type Client = {
   put: (p: string, b: unknown) => Promise<{ status: number; body: any }>
 }
 
-/** 每用例独立身份:TS 形态起独占 listening server,MIRROR 形态直用
- * 候选基座(fake-auth 盖章随 user 走)。路径不带 /api 前缀。 */
+/** 每用例独立身份:fake-auth 盖章(x-test-user)随 user 走,路径不带 /api 前缀。 */
 async function withClient<T>(userId: string, fn: (c: Client) => Promise<T>): Promise<T> {
-  if (MIRROR_BASE) {
-    const m = startMirror(userId, 'c-admin-probe')
-    try {
-      const wrap = (r: { status: number; json: any }) => ({ status: r.status, body: r.json })
-      return await fn({
-        get: async (p) => wrap(await m.call(p)),
-        put: async (p, b) => wrap(await m.call(p, { method: 'PUT', body: JSON.stringify(b) })),
-      })
-    } finally {
-      await m.close()
-    }
-  }
-  const app = await buildApiTestApp(userId)
-  const server: Server = createServer(app)
-  const baseUrl = await new Promise<string>((resolve) => {
-    server.listen(0, () => {
-      const addr = server.address()
-      resolve(addr && typeof addr === 'object' ? `http://127.0.0.1:${addr.port}` : '')
-    })
-  })
+  const m = startMirror(userId, 'c-admin-probe')
   try {
-    const wrap = async (res: Response) => ({ status: res.status, body: await res.json().catch(() => null) })
+    const wrap = (r: { status: number; json: any }) => ({ status: r.status, body: r.json })
     return await fn({
-      get: async (p) => wrap(await fetch(`${baseUrl}/api${p}`)),
-      put: async (p, b) => wrap(await fetch(`${baseUrl}/api${p}`, {
-        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b),
-      })),
+      get: async (p) => wrap(await m.call(p)),
+      put: async (p, b) => wrap(await m.call(p, { method: 'PUT', body: JSON.stringify(b) })),
     })
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await m.close()
   }
 }
 

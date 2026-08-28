@@ -119,16 +119,20 @@ jobs:
     # share the job network and are reached by service name (postgres,
     # redis/redis2/redis3) — no host ports are published, so concurrent
     # PRs (two runner slots) and any services already on the host can
-    # never collide on 5432/6379. node:24-bookworm ships node + git (the
-    # codex engine tests init a git repo in the agent home). Three Redis
-    # instances: pub/sub is instance-wide, so the three integration
-    # shards each get their own instead of sharing DB indexes.
+    # never collide on 5432/6379. Three Redis instances: pub/sub is
+    # instance-wide, so the three integration shards each get their own
+    # instead of sharing DB indexes.
+    # #70 TS 退役:integration runner 自建 Go 服当 SUT——容器从
+    # node:24 换 golang:1.24-bookworm(node 由 setup-node 叠 24),并挂
+    # 与 go job 同源的持久 Go 缓存(SUT 构建不再每 run 冷编)。
     runs-on: [self-hosted, linux, ser8]
     container:
-      image: node:24-bookworm
+      image: golang:1.24-bookworm
       options: --add-host=host.docker.internal:host-gateway
       volumes:
         - /var/lib/cumora-ci-cache/npmcache:/npm/cache
+        - /var/lib/cumora-ci-cache/gocache:/go/cache
+        - /var/lib/cumora-ci-cache/gomodcache:/go/modcache
     timeout-minutes: 25
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     services:
@@ -175,6 +179,8 @@ jobs:
       http_proxy: http://host.docker.internal:7890
       no_proxy: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
       npm_config_cache: /npm/cache
+      GOCACHE: /go/cache
+      GOMODCACHE: /go/modcache
       # Unit tests + non-sharded runs point here (shard steps override
       # INTEGRATION_DATABASE_URL/REDIS_URL per shard).
       # Service hostnames resolve on the job's docker network.
@@ -195,15 +201,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
       # P0 tripwire: the BIG (brain) model may ONLY do real, heavy tasks.
       # Static scan runs BEFORE npm ci — no install, no deps — so a
       # broken dependency tree can never mask the tripwire (the image
       # ships node already).
-      - name: Big-brain guard (P0)
+      - name: Big-brain guard (P0, residual TS surface)
         run: node scripts/guard-big-brain.mjs
       # P1 tripwire: every sub2api callsite must go through
       # getTrackedLlmClient() so the llm_calls ledger captures the spend.
-      - name: LLM-tracked guard (P1)
+      - name: LLM-tracked guard (P1, residual TS surface)
         run: node scripts/guard-llm-tracked.mjs
       - run: npm ci
       # `npm test` runs workers/**/*.test.ts too, and the email-gate
@@ -221,18 +232,19 @@ jobs:
         run: npm run typecheck
       - name: tsc (server)
         run: npm run server:typecheck
-      # Some unit tests read app_settings (e.g. the agenda classifier's
-      # cerebellum-route lookup), so the suite needs the schema present —
-      # locally that's the dev DB; in CI we migrate the service DB first.
-      # pgvector must be enabled BEFORE migrate (vector columns).
+      # pgvector must be enabled before the Go 服 boots(baseline 含
+      # vector 列)。单库(非片)面:本 job 的 DATABASE_URL 兜底目标。
       - name: Enable pgvector extension
         run: >-
           node -e "const {Client}=require('pg');(async()=>{
           const c=new Client({connectionString:process.env.DATABASE_URL});
           await c.connect(); await c.query('CREATE EXTENSION IF NOT EXISTS vector');
           await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
-      - name: Migrate test schema
-        run: npm run migrate
+      # #70:TS 迁移器退役。unit 面(yjs-sidecar http 单测读 documents)
+      # 仍需 schema——经 cmd/migrate(Go 迁移,同 SUT 启动语义)引导;
+      # 各 integration 片的库则由片内 Go 服启动时自行应用。
+      - name: Bootstrap unit-test schema
+        run: cd apps/server-go && go run ./cmd/migrate
       - name: Unit tests
         run: npm test --silent
       # Integration shards: 3 databases on the shared postgres service
@@ -261,15 +273,18 @@ jobs:
               await c.end();
             }
           })().catch(e=>{console.error(e);process.exit(1)})'
-          for db in cumora_test1 cumora_test2 cumora_test3; do
-            DATABASE_URL="postgres://cumora:cumora@postgres:5432/$db" npm run migrate
-          done
+          # schema:各片的 Go 服(run-integration-tests.mjs)启动时应用
       # One shard per database + Redis instance (pub/sub is instance-wide
       # — separate Redis DB indexes would still cross-talk). Shards run
       # in parallel; each stays internally serial via
-      # --test-concurrency=1 (run-integration-tests.mjs). sed -u keeps
-      # the [shardN] prefixes unbuffered so the interleaved step output
-      # stays live and readable.
+      # --test-concurrency=1 (run-integration-tests.mjs). SUT 二进制先
+      # 建一次,三片经 INTEGRATION_GO_BIN 复用(不竞抢构建)。sed -u
+      # keeps the [shardN] prefixes unbuffered so the interleaved step
+      # output stays live and readable.
+      - name: Build integration SUT binary
+        env:
+          GOFLAGS: -buildvcs=false
+        run: cd apps/server-go && go build -o .integration-server-bin ./cmd/server
       - name: Integration tests (3 shards, own DB + Redis each)
         shell: bash
         run: |
@@ -279,6 +294,7 @@ jobs:
             INTEGRATION_SHARD="$i/3" \
             INTEGRATION_DATABASE_URL="postgres://cumora:cumora@postgres:5432/cumora_test$i" \
             REDIS_URL="redis://$redis_name:6379" \
+            INTEGRATION_GO_BIN="$GITHUB_WORKSPACE/apps/server-go/.integration-server-bin" \
             npm run test:integration 2>&1 | sed -u "s/^/[shard$i] /"
           }
           run_shard 1 redis  & p1=$!

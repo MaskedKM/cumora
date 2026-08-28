@@ -14,28 +14,19 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
-import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
-  seedUserMembership, teardownAll,
+import { ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
+  seedUserMembership, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
-import { findOrCreateEmailConversation, persistEmailMessage } from '../email.js'
+import { findOrCreateEmailConversation, persistEmailMessage } from './_email-seeds.js'
 
 const ME_USER_ID = 'u-test-html'
-let server: Server
-let baseUrl = ''
+const baseUrl = MIRROR_BASE
+const authHeaders = { 'x-test-user': ME_USER_ID }
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  const app = await buildApiTestApp(ME_USER_ID)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -43,7 +34,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll()
 })
 
 /** Seed: company + me as a member + one email row with given html body,
@@ -69,7 +60,7 @@ async function seedEmailWithHtml(html: string | null): Promise<{ messageId: stri
 }
 
 async function fetchHtml(messageId: string, companyId?: string): Promise<Response> {
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...authHeaders }
   if (companyId) headers['x-company-id'] = companyId
   return fetch(`${baseUrl}/api/email/${encodeURIComponent(messageId)}/html`, { headers })
 }

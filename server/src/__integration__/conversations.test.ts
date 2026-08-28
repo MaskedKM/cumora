@@ -4,30 +4,25 @@
  * Direct conversation rows are shared by both participants, so the stored
  * `conversations.title` can only ever be correct for one viewer. The API must
  * return a viewer-specific title based on the other member instead.
+ *
+ * #70 TS 退役:请求面打向 MIRROR Go 服(x-test-user 伪造 auth 等价旧
+ * in-process 盖章;x-company-id 原本就显式带)。
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
 
 const ME_USER_ID = 'u-me'
 const OTHER_USER_ID = 'u-ada'
-let server: Server
-let baseUrl = ''
+const baseUrl = MIRROR_BASE
+const authHeaders = { 'x-test-user': ME_USER_ID }
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  const app = await buildApiTestApp(ME_USER_ID)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -35,7 +30,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll()
 })
 
 async function seedHumanDirectWithSelfStoredTitle(): Promise<{ companyId: string; conversationId: string }> {
@@ -66,7 +61,7 @@ test('[integration] GET /conversations returns the other member as a direct titl
   const { companyId, conversationId } = await seedHumanDirectWithSelfStoredTitle()
 
   const res = await fetch(`${baseUrl}/api/conversations`, {
-    headers: { 'x-company-id': companyId },
+    headers: { ...authHeaders, 'x-company-id': companyId },
   })
   assert.equal(res.status, 200)
   const rows = await res.json() as Array<{ id: string; title: string }>
@@ -79,7 +74,7 @@ test('[integration] GET /search uses the same perspective-specific direct title'
   const { companyId, conversationId } = await seedHumanDirectWithSelfStoredTitle()
 
   const res = await fetch(`${baseUrl}/api/search?q=${encodeURIComponent('Ada')}`, {
-    headers: { 'x-company-id': companyId },
+    headers: { ...authHeaders, 'x-company-id': companyId },
   })
   assert.equal(res.status, 200)
   const body = await res.json() as { rooms: Array<{ id: string; title: string }> }

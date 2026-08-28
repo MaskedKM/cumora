@@ -12,28 +12,19 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
-import {
-  buildApiTestApp, ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
-  seedUserMembership, teardownAll,
+import { ensureSchemaOnce, resetAllTables, seedCompanyWithAgent,
+  seedUserMembership, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
-import { findOrCreateEmailConversation, persistEmailMessage } from '../email.js'
+import { findOrCreateEmailConversation, persistEmailMessage } from './_email-seeds.js'
 
 const ME_USER_ID = 'u-test-promote'
-let server: Server
-let baseUrl = ''
+const baseUrl = MIRROR_BASE
+const authHeaders = { 'x-test-user': ME_USER_ID }
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
   await ensureSchemaOnce()
-  const app = await buildApiTestApp(ME_USER_ID)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -41,7 +32,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server)
+  await teardownAll()
 })
 
 /** Stand up an email conversation with one inbound row from an external
@@ -70,7 +61,7 @@ test('[integration] POST /conversations/:id/messages in an email convo auto-prom
   const { conversationId, companyId } = await seedEmailConvoWithInbound()
   const res = await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': companyId },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': companyId },
     body: JSON.stringify({ body: 'going great — full status attached below.' }),
   })
   assert.equal(res.status, 202)
@@ -103,7 +94,7 @@ test('[integration] HTTP reply targets the external sender, not self', async () 
   const { conversationId, companyId } = await seedEmailConvoWithInbound()
   const res = await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': companyId },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': companyId },
     body: JSON.stringify({ body: 'reply body' }),
   })
   assert.equal(res.status, 202)
@@ -122,7 +113,7 @@ test('[integration] empty body in an email convo POST is rejected with 400', asy
   const { conversationId, companyId } = await seedEmailConvoWithInbound()
   const res = await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': companyId },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': companyId },
     body: JSON.stringify({ body: '' }),
   })
   assert.equal(res.status, 400)
@@ -135,7 +126,7 @@ test('[integration] reply continues the thread when the latest row is our own ou
   // OUR OWN outbound (parent.from = self), get an empty TO list, and
   // throw "no remaining recipients". The reply should instead continue
   // the thread to the same recipients we just addressed.
-  const { findOrCreateEmailConversation, persistEmailMessage } = await import('../email.js')
+  const { findOrCreateEmailConversation, persistEmailMessage } = await import('./_email-seeds.js')
   const { companyId, agentId, agentEmail } = await seedCompanyWithAgent()
   await seedUserMembership(ME_USER_ID, companyId)
 
@@ -158,7 +149,7 @@ test('[integration] reply continues the thread when the latest row is our own ou
   // Now post a follow-up via the chat input. Should NOT 500.
   const res = await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(conv.conversationId)}/messages`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': companyId },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': companyId },
     body: JSON.stringify({ body: '?' }),
   })
   assert.equal(res.status, 202, `follow-up to own thread must succeed; got ${res.status}`)
@@ -174,77 +165,9 @@ test('[integration] reply continues the thread when the latest row is our own ou
     `follow-up TO should preserve the parent's recipients, got: ${JSON.stringify(rows[0].to_addrs)}`)
 })
 
-test('[integration] cumora reply CLI on an email convo auto-promotes via sendViaProvider mock', async () => {
-  // Mirror of the HTTP-side auto-promote test, but exercising the
-  // `runCli` entrypoint that the agent's `bash` tool actually shells
-  // into. Pre-fix this used to silently write a kind='text' row and
-  // the external recipient never saw the reply — same bug class as
-  // the chat-side regression, different code path.
-  const { runCli } = await import('../agents/cli.js')
-  const { conversationId, agentId } = await seedEmailConvoWithInbound()
-
-  const res = await runCli(['--as', agentId, 'reply', conversationId, 'taking a look now'])
-  assert.equal(res.ok, true, `runCli failed: ${res.text}`)
-  assert.match(res.text, /replied via email/, 'CLI reports the email auto-promote path')
-  assert.match(res.text, /\(mock\)/, 'mock mode in default integration env')
-  assert.equal(res.sideEffects?.[0]?.event, 'message.posted')
-  assert.equal(res.sideEffects?.[0]?.command, 'reply')
-  assert.equal(res.sideEffects?.[0]?.medium, 'email')
-
-  // An outbound email_messages row was written for the agent.
-  const { rows: outbound } = await pool.query<{ direction: string; transport_status: string; body: string; auto_submitted: boolean | null }>(
-    `SELECT em.direction, em.transport_status, m.body, em.auto_submitted
-       FROM email_messages em
-       JOIN messages m ON m.id = em.message_id
-      WHERE em.conversation_id = $1 AND m.author_id = $2
-      ORDER BY em.created_at DESC`,
-    [conversationId, agentId],
-  )
-  assert.equal(outbound.length, 1, 'exactly one outbound row for the agent')
-  assert.equal(outbound[0].direction, 'out')
-  assert.equal(outbound[0].transport_status, 'sent')
-  assert.equal(outbound[0].body, 'taking a look now')
-  // CLI path stamps autoSubmitted=true → RFC 3834 Auto-Submitted header.
-  assert.equal(outbound[0].auto_submitted, true, 'agent CLI replies are auto-submitted=true')
-
-  // The corresponding messages-table row was written as kind='email' (not 'text').
-  const { rows: msgRows } = await pool.query<{ kind: string }>(
-    `SELECT kind FROM messages WHERE conversation_id = $1 AND author_id = $2`,
-    [conversationId, agentId],
-  )
-  assert.equal(msgRows.length, 1)
-  assert.equal(msgRows[0].kind, 'email', 'messages row mirrors the email shape, not a plain text row')
-})
-
-test('[integration] cumora reply CLI on a non-email convo writes a plain text row (no auto-promote)', async () => {
-  // Mirror of the HTTP-side regression test. A direct chat reply
-  // through the CLI must NOT accidentally trigger the email path.
-  const { runCli } = await import('../agents/cli.js')
-  const { companyId, agentId } = await seedCompanyWithAgent()
-  await seedUserMembership(ME_USER_ID, companyId)
-  const convId = `direct-cli-${Date.now()}`
-  await pool.query(
-    `INSERT INTO conversations (id, kind, title, members, company_id, topic)
-       VALUES ($1, 'direct', $2, $3::jsonb, $4, $5)`,
-    [convId, ME_USER_ID, JSON.stringify([ME_USER_ID, agentId]), companyId, 'direct'],
-  )
-
-  const res = await runCli(['--as', agentId, 'reply', convId, 'plain chat reply'])
-  assert.equal(res.ok, true, `runCli failed: ${res.text}`)
-  assert.doesNotMatch(res.text, /email/i, 'CLI must NOT report an email path on a direct convo')
-
-  const { rows: emailRows } = await pool.query(
-    `SELECT 1 FROM email_messages WHERE conversation_id = $1`, [convId],
-  )
-  assert.equal(emailRows.length, 0, 'no email_messages row for a direct-kind convo')
-  const { rows: msgRows } = await pool.query<{ kind: string; body: string }>(
-    `SELECT kind, body FROM messages WHERE conversation_id = $1 AND author_id = $2`,
-    [convId, agentId],
-  )
-  assert.equal(msgRows.length, 1)
-  assert.equal(msgRows[0].kind, 'text')
-  assert.equal(msgRows[0].body, 'plain chat reply')
-})
+// (TS agent-CLI 入口的两条 auto-promote 用例随 #70 运行时退役删除;HTTP 面
+// auto-promote 用例保留。Go 侧 /runtime/cli 的 reply-in-email-convo 路径
+// (cli_reply.go,autoSubmitted=true 分支)暂无直测——补盖缺口挂在 #118。)
 
 test('[integration] non-email conversation POST still writes a kind=text row (regression)', async () => {
   // Auto-promote must NOT fire on group/direct/whisper conversations —
@@ -261,7 +184,7 @@ test('[integration] non-email conversation POST still writes a kind=text row (re
   )
   const res = await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(convId)}/messages`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-company-id': companyId },
+    headers: { ...authHeaders, 'content-type': 'application/json', 'x-company-id': companyId },
     body: JSON.stringify({ body: 'just a chat message' }),
   })
   assert.equal(res.status, 202)

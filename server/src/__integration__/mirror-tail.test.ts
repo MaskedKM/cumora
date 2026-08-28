@@ -25,73 +25,13 @@ const memberMirror = startMirror(USER, COMPANY)
 const MEMBER_USER = `u-tailm-${randomUUID().slice(0, 6)}`
 const memberOnlyMirror = startMirror(MEMBER_USER, COMPANY)
 
-let dualBase = ''
-let dualServer: import('node:http').Server | null = null
-let mockLLM: import('node:http').Server | null = null
+let dualBase = '' // = MIRROR_BASE(#70 MIRROR-only)
 
-// 1×1 透明 PNG(cli_mocks.py 同款)。
-const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
+  dualBase = MIRROR_BASE // Go 服同时挂 /api 与 /runtime(LLM 桩由 runner 统一供)
   await ensureSchemaOnce()
-  // CI 无外部 mock:文件内桩接管 TS 侧的性别分类与图像生成。
-  // (MIRROR 形态该桩闲置——头像路径由 Go 进程自己的 env 指向其桩。)
-  const http = await import('node:http')
-  mockLLM = http.createServer((req, res) => {
-    const chunks: Buffer[] = []
-    req.on('data', (c) => chunks.push(c))
-    req.on('end', () => {
-      if (req.url?.endsWith('/responses')) {
-        res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({
-          id: 'resp-mock', object: 'response', status: 'completed',
-          output: [{ type: 'message', content: [{ type: 'output_text', text: 'feminine' }] }],
-        }))
-        return
-      }
-      if (req.url?.endsWith('/images/generations')) {
-        res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }))
-        return
-      }
-      res.statusCode = 404
-      res.end('{}')
-    })
-  })
-  await new Promise<void>((resolve) => mockLLM!.listen(0, '127.0.0.1', resolve))
-  const mockAddr = mockLLM!.address()
-  if (mockAddr && typeof mockAddr === 'object') {
-    // OpenAI SDK 在 client 构造时读 OPENAI_BASE_URL——本文件进程内
-    // 首次 LLM 调用发生在头像用例,时序安全。
-    process.env.OPENAI_BASE_URL = `http://127.0.0.1:${mockAddr.port}/v1`
-  }
-  if (MIRROR_BASE) {
-    dualBase = MIRROR_BASE // Go 候选本就同时挂 /api 与 /runtime
-    return
-  }
-  // freshen 用例需要 /runtime 面 —— 自组 /api+/runtime 双挂进程
-  // (mirror-boards-wake 同款;fake auth 盖章给 /api 面)。
-  const expressMod = await import('express')
-  const express = expressMod.default
-  const { runtimeRouter } = await import('../agents/runtime/server.js')
-  const app = express()
-  app.use(express.json({ limit: '34mb' }))
-  app.use((req, _res, next) => {
-    ;(req as unknown as { authUserId: string }).authUserId = USER
-    next()
-  })
-  const { api } = await import('../api/router.js')
-  app.use('/api', api)
-  app.use('/runtime', runtimeRouter)
-  const { createServer } = await import('node:http')
-  dualServer = createServer(app)
-  await new Promise<void>((resolve) => {
-    dualServer!.listen(0, () => {
-      const a = dualServer!.address()
-      if (a && typeof a === 'object') dualBase = `http://127.0.0.1:${a.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -102,12 +42,6 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  if (mockLLM?.listening) {
-    await new Promise<void>((resolve) => mockLLM!.close(() => resolve()))
-  }
-  if (dualServer?.listening) {
-    await new Promise<void>((resolve) => dualServer!.close(() => resolve()))
-  }
   await teardownAll()
   await memberOnlyMirror.close()
   await memberMirror.close()

@@ -14,35 +14,18 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { ensureSchemaOnce, resetAllTables, teardownAll, MIRROR_BASE } from './_helpers.js'
 import { signAgentToken } from '../agents/runtime/jwt.js'
 import { pool } from '../db/pool.js'
 import { redis } from '../redis.js'
 
-let server: Server | null = null
 let baseUrl = ''
 
 before(async () => {
+  if (!MIRROR_BASE) throw new Error('CUMORA_MIRROR_BASE not set — run via npm run test:integration')
+  baseUrl = MIRROR_BASE
   await ensureSchemaOnce()
-  if (MIRROR_BASE) {
-    baseUrl = MIRROR_BASE
-    return
-  }
-  const expressMod = await import('express')
-  const express = expressMod.default
-  const { runtimeRouter } = await import('../agents/runtime/server.js')
-  const app = express()
-  app.use(express.json({ limit: '4mb' }))
-  app.use('/runtime', runtimeRouter)
-  await new Promise<void>((resolve) => {
-    server = createServer(app).listen(0, () => {
-      const addr = server!.address()
-      if (addr && typeof addr === 'object') baseUrl = `http://127.0.0.1:${addr.port}`
-      resolve()
-    })
-  })
 })
 
 beforeEach(async () => {
@@ -50,7 +33,7 @@ beforeEach(async () => {
 })
 
 after(async () => {
-  await teardownAll(server ?? undefined)
+  await teardownAll()
 })
 
 async function call(
@@ -398,8 +381,24 @@ async function seedAgendaCard(agentId: string, companyId: string): Promise<strin
   return cardId
 }
 
+/* #70:cerebellum-settings.ts 运行时已删——直接以 SQL 落 app_settings
+ * (与原 setCerebellumSettings 同键同值形状;Go 服逐字段门控)。 */
+async function setCerebellumSettingsTest(vals: { route: string; localEngine: string }, updatedBy = 'test') {
+  const pairs: Array<[string, unknown]> = [
+    ['cerebellum_route', vals.route],
+    ['cerebellum_local_engine', vals.localEngine],
+  ]
+  for (const [key, value] of pairs) {
+    await pool.query(
+      `INSERT INTO app_settings (key, value, updated_at, updated_by)
+         VALUES ($1, $2::jsonb, NOW(), $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+      [key, JSON.stringify(value), updatedBy],
+    )
+  }
+}
+
 test('[mirror-runtime] GET /agenda byoa-routed → classifier payload, never a synchronous verdict', async () => {
-  const { setCerebellumSettings } = await import('../cerebellum-settings.js')
   const { agentId, companyId, token } = await seedAgent()
   await seedAgendaCard(agentId, companyId)
   const computerId = `comp-${randomUUID().slice(0, 8)}`
@@ -408,7 +407,7 @@ test('[mirror-runtime] GET /agenda byoa-routed → classifier payload, never a s
     [computerId, companyId],
   )
   await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
-  await setCerebellumSettings({ route: 'byoa', localEngine: 'claude' }, 'test')
+  await setCerebellumSettingsTest({ route: 'byoa', localEngine: 'claude' })
   try {
     const r = await call('/runtime/agenda', { method: 'GET', token })
     assert.equal(r.status, 200)
@@ -419,7 +418,7 @@ test('[mirror-runtime] GET /agenda byoa-routed → classifier payload, never a s
     assert.equal(r.body.agenda.cards.length, 1)
     assert.equal(r.body.agenda.cards[0].title, 'Ship it')
   } finally {
-    await setCerebellumSettings({ route: 'remote', localEngine: 'claude' }, 'test')
+    await setCerebellumSettingsTest({ route: 'remote', localEngine: 'claude' })
   }
 })
 

@@ -2,11 +2,16 @@
  * Helpers shared by integration tests. Imported by every *.test.ts in
  * this directory.
  *
+ * #70 TS 退役后本套件是 MIRROR-only:全部请求打向一个外部 Go 服务
+ * (CUMORA_MIRROR_BASE,由 server/run-integration-tests.mjs 自建自起),
+ * 本文件只保留种行(TRUNCATE/seed)与请求面(call)——不再有 in-process
+ * TS app 形态。schema 由 Go 服启动迁移(0001_baseline.sql)保证。
+ *
  * Lifecycle: each test file is a separate `node:test` invocation, so the
  * module-load side effects in env.ts / pool.ts / redis.ts run once per
- * file. The runner (server/run-integration-tests.mjs) has already
- * swapped DATABASE_URL to INTEGRATION_DATABASE_URL before spawning, so
- * the pool here lands on the test DB.
+ * file. The runner has already swapped DATABASE_URL to
+ * INTEGRATION_DATABASE_URL before spawning, so the pool here lands on
+ * the test DB.
  *
  * Isolation strategy: TRUNCATE between tests rather than transaction
  * rollback. Rollback would break SKIP LOCKED tests (the retry worker
@@ -14,16 +19,36 @@
  * subsume).
  */
 import { createHmac, randomUUID } from 'node:crypto'
-import { ensureSchema } from '../db/migrate.js'
 import { pool } from '../db/pool.js'
 import { env } from '../env.js'
 
+/** 双跑时代留下的形态开关,如今是硬前提:没有 Go 服就没有 SUT。
+ *  缺失时在 startMirror() 抛出可诊断错误(而非模块加载即炸,那会让
+ *  --test 的文件级聚合输出变成一片红 import 错)。 */
+export const MIRROR_BASE = process.env.CUMORA_MIRROR_BASE ?? ''
+
 let schemaReady: Promise<void> | null = null
 
-/** Run the schema migrator exactly once per test process. Idempotent —
- *  ensureSchema is itself `IF NOT EXISTS` throughout. */
+/** 等待 Go 服的 schema 就位(其启动时应用 0001_baseline.sql)。幂等;
+ *  最多等 15s——直接单跑某个测试文件而忘了先起 Go 服时,这里给出
+ *  可诊断的报错而不是一串 relation does not exist。 */
 export function ensureSchemaOnce(): Promise<void> {
-  if (!schemaReady) schemaReady = ensureSchema()
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline) {
+        const { rows } = await pool.query<{ ok: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'companies') AS ok`,
+        ).catch(() => ({ rows: [{ ok: false }] }))
+        if (rows[0]?.ok) return
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      throw new Error(
+        'test schema not present after 15s — boot the Go server first ' +
+        '(server/run-integration-tests.mjs does this for you; it applies 0001_baseline.sql on boot)',
+      )
+    })()
+  }
   return schemaReady
 }
 
@@ -81,7 +106,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'app_settings',
 ]
 
-/** Wipe every test table. Call from beforeEach. The check at the top
+/** Wipe every test tables. Call from beforeEach. The check at the top
  *  refuses to run if DATABASE_URL doesn't include the substring "test"
  *  — last line of defense against a misconfigured runner pointing at a
  *  real DB. */
@@ -96,8 +121,8 @@ export async function resetAllTables(): Promise<void> {
 }
 
 /** Compute the HMAC signature the inbound webhook expects. Mirrors the
- *  cloudflare worker's `hmacHex` exactly so a test payload looks like
- *  it came off the wire. */
+ *  cloudflare worker's `hmacHex` exactly so a test payload looks like it
+ *  came off the wire. */
 export function signInboundPayload(body: string): string {
   const secret = env.EMAIL_INBOUND_HMAC_SECRET
   if (!secret) throw new Error('EMAIL_INBOUND_HMAC_SECRET not set in test env')
@@ -120,7 +145,6 @@ export async function seedCompanyWithAgent(opts?: {
      ON CONFLICT DO NOTHING`,
     [companyId, `Test ${companyId}`, companyId, 'test-owner'],
   )
-  // participants composite PK is (id, company_id) — see migrate.ts.
   await pool.query(
     `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status, email)
      VALUES ($1, $2, 'agent', $3, 'tester', $4, '#abcdef', 'avail', $5)
@@ -128,51 +152,6 @@ export async function seedCompanyWithAgent(opts?: {
     [agentId, companyId, `Agent ${agentId}`, agentId.slice(0, 1).toUpperCase(), agentEmail],
   )
   return { companyId, agentId, agentEmail }
-}
-
-/** Build a minimum-viable Express app that mounts only the routes under
- *  test. Avoids booting the full server (auth middleware, schedulers,
- *  etc.) — slow, more failure modes. */
-export async function buildTestApp(): Promise<import('express').Express> {
-  const expressMod = await import('express')
-  const express = expressMod.default
-  const app = express()
-  const { inboundEmailRouter } = await import('../api/inbound-email.js')
-  // Match the production mount path: index.ts mounts inboundEmailRouter
-  // at /webhooks/email — see server/src/index.ts.
-  app.use('/webhooks/email', inboundEmailRouter)
-  return app
-}
-
-/** 验收镜像的统一请求面(#49)。
- *
- * 双跑前提:设 CUMORA_MIRROR_BASE 即把整套镜像指向 Go 候选——但目标必须
- * 共享同一测试 Postgres 与 Redis(beforeEach 仍经 TS pool 种行/TRUNCATE);
- * 请求只带 content-type+x-company-id,无 Authorization——伪造 auth 在本
- * 进程 app 内盖章,候选实现需在 dev 模式复刻同一约定或配令牌注入;
- * 401 路径在此形态下不可测(盖章中间件从不拒绝)。 */
-export const MIRROR_BASE = process.env.CUMORA_MIRROR_BASE ?? ''
-
-/** Full /api router + 伪造 auth 中间件:把每个请求盖章为给定 userId。
- * requireAuth() 只读该字段,handler 无从分辨——代价是 401 路径不可测。 */
-export async function buildApiTestApp(userId: string): Promise<import('express').Express> {
-  const expressMod = await import('express')
-  const express = expressMod.default
-  const app = express()
-  // 入站邮件门先于通用 JSON 解析挂载(raw body HMAC 捕获依赖其自带
-  // parser 的 verify;对齐 index.ts 的挂载顺序)。
-  const { inboundEmailRouter } = await import('../api/inbound-email.js')
-  app.use('/webhooks/email', inboundEmailRouter)
-  app.use(express.json({ limit: '34mb' }))
-  // Fake auth middleware: stamp authUserId from the test's choice. Real
-  // requireAuth() just reads this field, so handlers can't distinguish.
-  app.use((req, _res, next) => {
-    (req as unknown as { authUserId: string }).authUserId = userId
-    next()
-  })
-  const { api } = await import('../api/router.js')
-  app.use('/api', api)
-  return app
 }
 
 /** Insert a user + company_members row so requireCompany resolves to the
@@ -200,8 +179,7 @@ export async function seedUserMembership(userId: string, companyId: string, opts
   )
   // Mirror what production onboarding does: a human is also a participant
   // in the company. We leave participants.email NULL so ensureParticipantAddress
-  // lazy-mints `<userId>.<slug>@<EMAIL_DOMAIN>` on first access (matches
-  // the production code path).
+  // lazy-mints `<userId>.<slug>@<EMAIL_DOMAIN>` (matches the production path).
   await pool.query(
     `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status)
      VALUES ($1, $2, 'human', $3, 'owner', $4, '#abcdef', 'avail')
@@ -229,48 +207,39 @@ export async function teardownAll(server?: import('node:http').Server): Promise<
   } catch { /* ignore */ }
 }
 
-/** 镜像测试的公共脚手架:起 in-process app(或让位于 MIRROR_BASE)、
- * 提供带 x-company-id 的 call()、beforeEach 种公司行。 */
+/** 镜像测试的公共请求面(#49,MIRROR-only 化于 #70)。
+ *
+ *  前提:CUMORA_MIRROR_BASE 指向一个与测试共享同一 Postgres/Redis 的
+ *  Go 服务(CUMORA_GO_FAKE_AUTH=1 起动,信任 x-test-user 头——等价于
+ *  旧 in-process 形态的伪造 auth 盖章)。beforeEach 仍经 TS pool 种行/
+ *  TRUNCATE;请求带 content-type+x-company-id+x-test-user。401 路径
+ *  不可测(fake-auth 从不拒绝)——这是有意的形态取舍。 */
 export function startMirror(user: string, company: string): {
   call: (path: string, init?: RequestInit) => Promise<{ status: number; json: any }>
   baseUrl: () => string
-  /** after() 里必调:关掉 in-process server(MIRROR_BASE 形态下为 no-op)。 */
+  /** 兼容旧签名:MIRROR-only 形态下无事可关(harness 不再起 server)。 */
   close: () => Promise<void>
 } {
-  let base = ''
-  let server: import('node:http').Server | null = null
-  const ready = (async () => {
-    const app = await buildApiTestApp(user)
-    if (MIRROR_BASE) { base = MIRROR_BASE; return }
-    const { createServer } = await import('node:http')
-    server = createServer(app)
-    await new Promise<void>((resolve) => {
-      server!.listen(0, () => {
-        const a = server!.address()
-        if (a && typeof a === 'object') base = `http://127.0.0.1:${a.port}`
-        resolve()
-      })
-    })
-  })()
+  if (!MIRROR_BASE) {
+    throw new Error(
+      'CUMORA_MIRROR_BASE is not set — the mirror suite is MIRROR-only since the TS retirement. ' +
+      'Run via `npm run test:integration` (server/run-integration-tests.mjs boots the Go server for you).',
+    )
+  }
   return {
-    baseUrl: () => base,
+    baseUrl: () => MIRROR_BASE,
     call: (path: string, init?: RequestInit) => (async () => {
-      await ready
-      // MIRROR 形态:候选 Go 进程须以 CUMORA_GO_FAKE_AUTH=1 启动并信任
-      // x-test-user(等价本进程的伪造 auth 盖章);TS in-process 形态下
-      // 该头无人消费,带上无害。
-      const authHeaders: Record<string, string> = MIRROR_BASE ? { 'x-test-user': user } : {}
-      const res = await fetch(`${base}/api${path}`, {
+      const res = await fetch(`${MIRROR_BASE}/api${path}`, {
         ...init,
-        headers: { 'content-type': 'application/json', 'x-company-id': company, ...authHeaders, ...(init?.headers ?? {}) },
+        headers: {
+          'content-type': 'application/json',
+          'x-company-id': company,
+          'x-test-user': user,
+          ...(init?.headers ?? {}),
+        },
       })
       return { status: res.status, json: await res.json().catch(() => null) }
     })(),
-    close: async () => {
-      await ready
-      if (server?.listening) {
-        await new Promise<void>((resolve) => server!.close(() => resolve()))
-      }
-    },
+    close: async () => { /* no in-process server since the TS retirement */ },
   }
 }
