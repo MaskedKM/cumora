@@ -160,7 +160,7 @@ func uploadBase64(db *sql.DB) http.HandlerFunc {
 		}
 		var body map[string]json.RawMessage
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		name := utf16Cap(strings.TrimSpace(bodyString(body, "name")), 200)
+		name := httpx.UTF16Cap(strings.TrimSpace(bodyString(body, "name")), 200)
 		mime := strings.ToLower(strings.TrimSpace(bodyString(body, "mime")))
 		dataBase64 := bodyString(body, "dataBase64")
 		if name == "" || mime == "" || dataBase64 == "" {
@@ -209,20 +209,4 @@ func randHex32() string {
 	b := make([]byte, 16)
 	_, _ = crand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// utf16Cap:TS .slice(0,n) 按 UTF-16 码元。
-func utf16Cap(s string, n int) string {
-	count := 0
-	for i, r := range s {
-		w := 1
-		if r > 0xFFFF {
-			w = 2
-		}
-		if count+w > n {
-			return s[:i]
-		}
-		count += w
-	}
-	return s
 }

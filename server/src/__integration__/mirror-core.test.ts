@@ -68,6 +68,16 @@ test('[mirror] companies CRUD-ish: list + create', async () => {
   assert.equal(created.status, 201)
   assert.ok(created.json.id)
   assert.ok(created.json.slug)
+  // #118:非串 name 走 String(x ?? '') 强转(TS router.ts:962),struct
+  // 解码曾把整包丢弃落 400;80 上限按 UTF-16 码元(emoji 记 2)。
+  // free 档 3 司封顶,先提 max 再多建。
+  await pool.query(`UPDATE users SET tier = 'max' WHERE id = $1`, [USER])
+  const coerced = await call('/companies', { method: 'POST', body: JSON.stringify({ name: 123 }) })
+  assert.equal(coerced.status, 201)
+  assert.equal(coerced.json.name, '123')
+  const emoji = await call('/companies', { method: 'POST', body: JSON.stringify({ name: '😀'.repeat(45) }) })
+  assert.equal(emoji.status, 201)
+  assert.equal([...emoji.json.name].length, 40, '90 UTF-16 units → cap 80 → 40 runes')
 })
 
 test('[mirror] invitations: create → preview → accept → list → revoke', async () => {

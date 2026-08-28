@@ -82,3 +82,56 @@ test('[integration] GET /search uses the same perspective-specific direct title'
 
   assert.equal(direct?.title, 'Ada')
 })
+
+test('[mirror] #118 coercion: sendMessage String(body) + clientId gate + createGroup F-03', async () => {
+  const companyId = 'c-coerce'
+  await pool.query(
+    `INSERT INTO companies (id, name, slug, owner_user_id)
+     VALUES ($1, 'Coerce Co', 'coerce-co', $2)`,
+    [companyId, ME_USER_ID],
+  )
+  await seedUserMembership(ME_USER_ID, companyId, { email: 'me-coerce@test.local', displayName: 'Me' })
+  await seedUserMembership(OTHER_USER_ID, companyId, { email: 'ada-coerce@test.local', displayName: 'Ada' })
+  const H = { ...authHeaders, 'x-company-id': companyId, 'content-type': 'application/json' }
+
+  // createGroup F-03:projectId truthy-but-trims-empty 落 ''(不再悄悄抬
+  // NULL 装成功)——与 TS 同炸:749863e router.ts:2752 就是把 '' 发给
+  // INSERT,撞 conversations_project_id_fkey → 500。
+  const emojiTitle = '😀'.repeat(45) // 90 UTF-16 码元 → 截 80 → 40 字
+  const gBad = await fetch(`${baseUrl}/api/conversations`, {
+    method: 'POST', headers: H,
+    body: JSON.stringify({ title: emojiTitle, members: [OTHER_USER_ID], projectId: '   ' }),
+  })
+  assert.equal(gBad.status, 500, 'F-03: empty-string projectId hits the projects FK, same as TS')
+
+  const g = await fetch(`${baseUrl}/api/conversations`, {
+    method: 'POST', headers: H,
+    body: JSON.stringify({ title: emojiTitle, members: [OTHER_USER_ID] }),
+  })
+  assert.equal(g.status, 201)
+  const gBody = await g.json() as { id: string; projectId: unknown }
+  const { rows: convRows } = await pool.query(
+    `SELECT title, project_id FROM conversations WHERE id = $1`, [gBody.id])
+  assert.equal(convRows[0].project_id, null)
+  assert.equal([...convRows[0].title].length, 40)
+  assert.equal(gBody.projectId, null)
+
+  // sendMessage:body 123 → "123"(TS String(x ?? '').trim(),#118 主体;
+  // struct 解码曾整包丢弃落 'body required')。
+  const send = await fetch(`${baseUrl}/api/conversations/${gBody.id}/messages`, {
+    method: 'POST', headers: H, body: JSON.stringify({ body: 123 }),
+  })
+  assert.equal(send.status, 202)
+  const sendBody = await send.json() as { id: string }
+  const { rows: msgRows } = await pool.query(`SELECT body FROM messages WHERE id = $1`, [sendBody.id])
+  assert.equal(msgRows[0].body, '123')
+
+  // clientId 空/超长/非串 → 400 'invalid clientId'(TS router.ts 3295 门)。
+  for (const clientId of ['', 'x'.repeat(81), 42]) {
+    const bad = await fetch(`${baseUrl}/api/conversations/${gBody.id}/messages`, {
+      method: 'POST', headers: H, body: JSON.stringify({ body: 'x', clientId }),
+    })
+    assert.equal(bad.status, 400)
+    assert.equal(((await bad.json()) as { error: string }).error, 'invalid clientId')
+  }
+})

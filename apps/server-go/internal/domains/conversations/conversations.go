@@ -143,10 +143,7 @@ func setTopic(db *sql.DB) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		var topic any
 		if body.Topic != nil {
-			t := strings.TrimSpace(*body.Topic)
-			if runes := []rune(t); len(runes) > 200 {
-				t = string(runes[:200])
-			}
+			t := httpx.UTF16Cap(strings.TrimSpace(*body.Topic), 200)
 			if t == "" {
 				topic = nil
 			} else {
@@ -178,9 +175,7 @@ func setTitle(db *sql.DB) http.HandlerFunc {
 		var titleRaw any
 		_ = json.Unmarshal(raw["title"], &titleRaw)
 		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
-		if runes := []rune(title); len(runes) > 80 {
-			title = string(runes[:80])
-		}
+		title = httpx.UTF16Cap(title, 80)
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
@@ -546,27 +541,27 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 			return a, true
 		}
 		titleRaw, _ := keyAny("title")
-		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
-		if runes := []rune(title); len(runes) > 80 {
-			title = string(runes[:80])
-		}
+		title := httpx.UTF16Cap(strings.TrimSpace(httpx.JSStringOrNullish(titleRaw)), 80)
 		if title == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
 		var topic any
 		if tRaw, has := keyAny("topic"); has && httpx.JSTruthy(tRaw) {
-			t := strings.TrimSpace(httpx.JSToString(tRaw))
-			if runes := []rune(t); len(runes) > 200 {
-				t = string(runes[:200])
-			}
+			t := httpx.UTF16Cap(strings.TrimSpace(httpx.JSToString(tRaw)), 200)
 			if t != "" {
 				topic = t
 			}
 		}
+		// F-03:TS `projectId ? String(p).trim() : null` —— truthy 门后 trim
+		// 出的空串以 '' 入库(bug 兼容,不抬成 NULL),仅非空才校验存在。
+		// 校验顺序保持 TS 基线:成员校验在前、项目存在性在后(双错请求
+		// 同报 unknown participant,评审 P3)。
+		var projectID any
 		var projectIDStr string
 		if pRaw, has := keyAny("projectId"); has && httpx.JSTruthy(pRaw) {
 			projectIDStr = strings.TrimSpace(httpx.JSToString(pRaw))
+			projectID = projectIDStr
 		}
 		seen := map[string]bool{uid: true}
 		members := []string{}
@@ -614,7 +609,6 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown participant(s): %s", strings.Join(missing, ", ")))
 			return
 		}
-		var projectID any
 		if projectIDStr != "" {
 			var exists bool
 			_ = db.QueryRowContext(r.Context(),
@@ -623,7 +617,6 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 				httpx.WriteError(w, http.StatusBadRequest, "unknown project")
 				return
 			}
-			projectID = projectIDStr
 		}
 		id := "g-" + authn.NewToken()[:8]
 		membersJSON, _ := json.Marshal(members)
@@ -837,16 +830,44 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, code, msg)
 			return
 		}
+		// 逐键解码(#118):TS router.ts:3263 `String(req.body?.body ?? '')
+		// .trim()` —— struct 解码会把非串值(123/true/[])整包丢弃,与 TS
+		// 强转分叉;quotedMessageId 仅认字符串;clientId 门 = TS 3295:
+		// 非 null 须为非空 ≤80 字符串,否则 400 'invalid clientId'(长度
+		// 按 UTF-16 计,clientId 是 ASCII token,字节计等价)。
 		var body struct {
-			Body            string          `json:"body"`
-			Attachment      json.RawMessage `json:"attachment"`
-			QuotedMessageID string          `json:"quotedMessageId"`
-			ClientID        string          `json:"clientId"`
+			Body            string
+			Attachment      json.RawMessage
+			QuotedMessageID string
+			ClientID        string
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if len(body.ClientID) > 80 {
-			httpx.WriteError(w, http.StatusBadRequest, "clientId too long (max 80 chars)")
-			return
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		rawOf := func(k string) any {
+			v, ok := raw[k]
+			if !ok {
+				return nil
+			}
+			var a any
+			_ = json.Unmarshal(v, &a)
+			return a
+		}
+		body.Body = strings.TrimSpace(httpx.JSStringOrNullish(rawOf("body")))
+		if v, ok := raw["attachment"]; ok {
+			body.Attachment = v
+		}
+		if s, isStr := rawOf("quotedMessageId").(string); isStr {
+			body.QuotedMessageID = s
+		}
+		if v, ok := raw["clientId"]; ok && string(v) != "null" {
+			var s string
+			// TS 上限按 UTF-16 码元计;此处按字节 —— clientId 由客户端生成
+			// 的 ASCII token,字节=码元,非 ASCII 形态只会更严不更宽。
+			if json.Unmarshal(v, &s) != nil || s == "" || len(s) > 80 {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid clientId")
+				return
+			}
+			body.ClientID = s
 		}
 		// email 会话升格(#70 补线):聊天式回复代发真邮件——原语在
 		// email.ReplyInEmailConversation(email.ts replyInEmailConversation
@@ -857,7 +878,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		_ = db.QueryRowContext(r.Context(),
 			`SELECT kind FROM conversations WHERE id = $1`, convID).Scan(&convKind)
 		if convKind == "email" {
-			if body.Body == "" { // TS `!body`:仅空串拒;纯空白照发
+			if body.Body == "" { // TS body 先 trim:空白串同样拒
 				httpx.WriteError(w, http.StatusBadRequest,
 					"email replies require a body (attachments-only sends not supported here yet)")
 				return
