@@ -74,11 +74,14 @@ jobs:
     timeout-minutes: 10
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
-      HTTPS_PROXY: http://host.docker.internal:7890
+      # Egress via the host's Mihomo (see header). Lowercase-only on
+      # purpose: GitHub rejects env maps that define both cases of one
+      # name, and libcurl only honors lowercase http_proxy for http://
+      # URLs — lowercase alone covers git (libcurl), npm and go for both
+      # schemes. Service names stay off the proxy path (pg/redis clients
+      # don't proxy anyway — belt and braces).
       https_proxy: http://host.docker.internal:7890
-      HTTP_PROXY: http://host.docker.internal:7890
       http_proxy: http://host.docker.internal:7890
-      NO_PROXY: localhost,127.0.0.1,host.docker.internal
       no_proxy: localhost,127.0.0.1,host.docker.internal
       GOCACHE: /go/cache
       GOMODCACHE: /go/modcache
@@ -162,16 +165,14 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # Egress via the host's Mihomo (see header). Lowercase twins matter:
-      # libcurl only honors lowercase http_proxy for http:// URLs (all
-      # current egress is https, this future-proofs it). Service names
-      # stay off the proxy path (pg/redis clients don't proxy anyway —
-      # belt and braces).
-      HTTPS_PROXY: http://host.docker.internal:7890
+      # Egress via the host's Mihomo (see header). Lowercase-only on
+      # purpose: GitHub rejects env maps that define both cases of one
+      # name, and libcurl only honors lowercase http_proxy for http://
+      # URLs — lowercase alone covers git (libcurl), npm and go for both
+      # schemes. Service names stay off the proxy path (pg/redis clients
+      # don't proxy anyway — belt and braces).
       https_proxy: http://host.docker.internal:7890
-      HTTP_PROXY: http://host.docker.internal:7890
       http_proxy: http://host.docker.internal:7890
-      NO_PROXY: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
       no_proxy: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
       npm_config_cache: /npm/cache
       # Unit tests + non-sharded runs point here (shard steps override
