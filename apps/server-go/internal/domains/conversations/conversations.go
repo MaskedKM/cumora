@@ -555,19 +555,13 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 		}
 		// F-03:TS `projectId ? String(p).trim() : null` —— truthy 门后 trim
 		// 出的空串以 '' 入库(bug 兼容,不抬成 NULL),仅非空才校验存在。
+		// 校验顺序保持 TS 基线:成员校验在前、项目存在性在后(双错请求
+		// 同报 unknown participant,评审 P3)。
 		var projectID any
+		var projectIDStr string
 		if pRaw, has := keyAny("projectId"); has && httpx.JSTruthy(pRaw) {
-			s := strings.TrimSpace(httpx.JSToString(pRaw))
-			if s != "" {
-				var exists bool
-				_ = db.QueryRowContext(r.Context(),
-					`SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`, s, companyID).Scan(&exists)
-				if !exists {
-					httpx.WriteError(w, http.StatusBadRequest, "unknown project")
-					return
-				}
-			}
-			projectID = s
+			projectIDStr = strings.TrimSpace(httpx.JSToString(pRaw))
+			projectID = projectIDStr
 		}
 		seen := map[string]bool{uid: true}
 		members := []string{}
@@ -614,6 +608,15 @@ func createGroup(db *sql.DB) http.HandlerFunc {
 		if len(missing) > 0 {
 			httpx.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown participant(s): %s", strings.Join(missing, ", ")))
 			return
+		}
+		if projectIDStr != "" {
+			var exists bool
+			_ = db.QueryRowContext(r.Context(),
+				`SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`, projectIDStr, companyID).Scan(&exists)
+			if !exists {
+				httpx.WriteError(w, http.StatusBadRequest, "unknown project")
+				return
+			}
 		}
 		id := "g-" + authn.NewToken()[:8]
 		membersJSON, _ := json.Marshal(members)
@@ -858,6 +861,8 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		}
 		if v, ok := raw["clientId"]; ok && string(v) != "null" {
 			var s string
+			// TS 上限按 UTF-16 码元计;此处按字节 —— clientId 由客户端生成
+			// 的 ASCII token,字节=码元,非 ASCII 形态只会更严不更宽。
 			if json.Unmarshal(v, &s) != nil || s == "" || len(s) > 80 {
 				httpx.WriteError(w, http.StatusBadRequest, "invalid clientId")
 				return
