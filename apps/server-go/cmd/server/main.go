@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,12 +32,14 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
+	pollsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	pollsengine "github.com/MaskedKM/cumora/apps/server-go/internal/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/runtime"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/webapp"
@@ -113,6 +116,34 @@ func main() {
 	runtimeSvc.StartIdleScheduler()
 	runtimeSvc.StartLlmRollupRefresher()
 
+	// 投票过期清扫器(#121):POLL_SWEEP_INTERVAL_MS(默认 60s;0=禁用,
+	// 须透传——envInt 的 0→fallback 会吞掉 kill-switch,#62 教训)。
+	pollSweepInterval := int64(60_000)
+	if raw := strings.TrimSpace(os.Getenv("POLL_SWEEP_INTERVAL_MS")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			pollSweepInterval = v
+		}
+	}
+	if pollSweepInterval > 0 {
+		go func() {
+			tickSweep := time.NewTicker(time.Duration(pollSweepInterval) * time.Millisecond)
+			defer tickSweep.Stop()
+			for {
+				select {
+				case <-ctxBoot.Done():
+					return
+				case <-tickSweep.C:
+					if n := pollsengine.Sweep(ctxBoot, pool); n > 0 {
+						slog.Info("[polls] sweeper closed expired polls", "count", n)
+					}
+				}
+			}
+		}()
+		slog.Info("[polls] expiration sweeper running", "interval_ms", pollSweepInterval)
+	} else {
+		slog.Info("[polls] expiration sweeper disabled (POLL_SWEEP_INTERVAL_MS=0)")
+	}
+
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)
 	email.StartRetryWorker(ctxBoot, pool, envInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
 	email.StartGcWorker(ctxBoot, pool, envInt("EMAIL_GC_INTERVAL_MS", 24*60*60_000))
@@ -122,6 +153,8 @@ func main() {
 	coreRouter := http.NewServeMux()
 	core.Mount(coreRouter, pool, rdb)
 	conversations.Mount(coreRouter, pool)
+	// 投票 HTTP 面(#121):引擎 internal/polls 与 runtime CLI 同源。
+	pollsdomain.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)

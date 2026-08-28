@@ -1,7 +1,6 @@
-// runtime 包 polls 面 —— polls.ts 的共享核心(createPoll/castVote/
-// closePoll)+ cli.ts 的 cmdPoll(create/vote/close/show)。poll 存在
-// messages.poll(jsonb),票在 poll_votes;主键 (message_id, voter,
-// option_id) 防重复投同一项,DELETE+INSERT 事务内换票。
+// cli_poll —— agent CLI 的 poll 命令面(#89)。引擎已固化到
+// internal/polls(#121,HTTP/CLI/清扫器三路共用);本文件只做参数整理、
+// 输出格式化与本地类型(pollPayload 等,cli_read2 读路径共用)的桥接。
 package runtime
 
 import (
@@ -11,31 +10,20 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/polls"
 )
 
-const (
-	pollMaxOptions    = 10
-	pollMinOptions    = 2
-	pollMaxQuestion   = 280
-	pollMaxOptionText = 120
-)
-
-// cliPollError:PollError 等价(消息原样透传给 CLI)。
 type cliPollError struct{ msg string }
 
 func (e *cliPollError) Error() string { return e.msg }
 
-// cliPollCreated:createPoll 的返回。
 type cliPollCreated struct {
 	MessageID string
 	Sequence  int
 	Poll      pollPayload
 }
 
-// cliPollTally / cliPollUpdatedEvent:PollUpdatedEvent 形状。
 type cliPollTally struct {
 	OptionID string
 	Count    int
@@ -51,286 +39,61 @@ type cliPollUpdatedEvent struct {
 	ActorID        *string
 }
 
+// ── 引擎桥接(pollPayload 与 polls.Payload 字段一一对应,读路径共用本地类型)──
+
+func payloadFromEngine(p polls.Payload) pollPayload {
+	out := pollPayload{Question: p.Question, Mode: p.Mode, ExpiresAt: p.ExpiresAt, ClosedAt: p.ClosedAt, ClosedReason: p.ClosedReason}
+	for _, o := range p.Options {
+		out.Options = append(out.Options, cliPollOption{ID: o.ID, Text: o.Text})
+	}
+	return out
+}
+
+func eventFromEngine(e polls.UpdatedEvent) cliPollUpdatedEvent {
+	out := cliPollUpdatedEvent{
+		ConversationID: e.ConversationID, CompanyID: e.CompanyID, MessageID: e.MessageID,
+		Poll: payloadFromEngine(e.Poll), ActorID: e.ActorID,
+	}
+	for _, t := range e.Tallies {
+		out.Tallies = append(out.Tallies, cliPollTally{OptionID: t.OptionID, Count: t.Count, VoterIDs: t.VoterIDs})
+	}
+	return out
+}
+
 func (s *Service) cliCreatePoll(ctx context.Context, conversationID, companyID, authorID, question, mode string, options []string, expiresInMinutes *float64) (cliPollCreated, error) {
-	fail := func(format string, a ...any) (cliPollCreated, error) {
-		return cliPollCreated{}, &cliPollError{fmt.Sprintf(format, a...)}
-	}
-	question = strings.TrimSpace(question)
-	if question == "" {
-		return fail("question is required")
-	}
-	if len(question) > pollMaxQuestion {
-		return fail("question too long (max %d chars)", pollMaxQuestion)
-	}
-	if mode != "single" && mode != "multi" {
-		return fail(`mode must be "single" or "multi"`)
-	}
-	cleaned := []cliPollOption{}
-	seen := map[string]bool{}
-	for _, raw := range options {
-		text := strings.TrimSpace(fmt.Sprintf("%v", raw))
-		if text == "" {
-			continue
-		}
-		if len(text) > pollMaxOptionText {
-			return fail("option too long (max %d chars)", pollMaxOptionText)
-		}
-		key := strings.ToLower(text)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		cleaned = append(cleaned, cliPollOption{ID: "opt-" + jsUUID()[:8], Text: text})
-		if len(cleaned) >= pollMaxOptions {
-			break
-		}
-	}
-	if len(cleaned) < pollMinOptions {
-		return fail("need at least %d distinct options", pollMinOptions)
-	}
-	var expiresAt *string
-	if expiresInMinutes != nil && *expiresInMinutes > 0 {
-		ms := int64(*expiresInMinutes) * 60_000
-		expires := httpx.ISOms(time.Now().Add(time.Duration(ms) * time.Millisecond))
-		expiresAt = &expires
-	}
-	payload := pollPayload{Question: question, Mode: mode, Options: cleaned, ExpiresAt: expiresAt, ClosedAt: nil, ClosedReason: nil}
-
-	var members cliStrArr
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT members FROM conversations WHERE id = $1 AND company_id = $2`,
-		conversationID, companyID).Scan(&members)
-	if err != nil {
-		return fail("conversation not found")
-	}
-	if !containsString(members, authorID) {
-		return fail("not a member of this conversation")
-	}
-
-	var sequence int
-	err = s.DB.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence)
-		VALUES ($1, 2)
-		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-		RETURNING next_sequence - 1 AS seq`, conversationID).Scan(&sequence)
-	if err != nil {
-		sequence = 1
-	}
-	messageID := "m-" + jsUUID()
-	body := "📊 " + question
-	payloadJSON, _ := json.Marshal(payload)
-	if _, err := s.DB.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, poll, company_id)
-		VALUES ($1,$2,$3,'poll',$4,$5,$6::jsonb,$7)`,
-		messageID, conversationID, authorID, body, sequence, string(payloadJSON), companyID); err != nil {
-		return cliPollCreated{}, err
-	}
-	_, _ = s.DB.ExecContext(ctx, `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, conversationID)
-
-	// 与文本消息同通道广播;携带结构化 payload + 空 tallies,渲染端才能
-	// 直接出 PollBubble。
-	pollCopy := payload
-	eventsPublishMessageNew(ctx, &companyID, conversationID, map[string]any{
-		"id":             messageID,
-		"conversationId": conversationID,
-		"authorId":       authorID,
-		"kind":           "poll",
-		"body":           body,
-		"sequence":       sequence,
-		"at":             isoNowMs(),
-		"poll":           pollCopy,
-		"pollTallies":    []any{},
+	created, perr := polls.Create(ctx, s.DB, polls.CreateArgs{
+		ConversationID: conversationID, CompanyID: companyID, AuthorID: authorID,
+		Question: question, Mode: mode, Options: options, ExpiresInMinutes: expiresInMinutes,
 	})
-	return cliPollCreated{MessageID: messageID, Sequence: sequence, Poll: payload}, nil
+	if perr != nil {
+		return cliPollCreated{}, &cliPollError{perr.Msg}
+	}
+	return cliPollCreated{MessageID: created.MessageID, Sequence: created.Sequence, Poll: payloadFromEngine(created.Poll)}, nil
 }
 
 func (s *Service) cliCastVote(ctx context.Context, messageID, companyID, voterParticipantID, voterKind string, optionIDs []string) (cliPollUpdatedEvent, error) {
-	fail := func(format string, a ...any) (cliPollUpdatedEvent, error) {
-		return cliPollUpdatedEvent{}, &cliPollError{fmt.Sprintf(format, a...)}
+	event, perr := polls.CastVote(ctx, s.DB, polls.CastVoteArgs{
+		MessageID: messageID, CompanyID: companyID, VoterParticipant: voterParticipantID,
+		VoterKind: voterKind, OptionIDs: optionIDs,
+	})
+	if perr != nil {
+		return cliPollUpdatedEvent{}, &cliPollError{perr.Msg}
 	}
-	requested := []string{}
-	reqSeen := map[string]bool{}
-	for _, o := range optionIDs {
-		if o == "" || reqSeen[o] {
-			continue
-		}
-		reqSeen[o] = true
-		requested = append(requested, o)
-	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return cliPollUpdatedEvent{}, err
-	}
-	defer tx.Rollback()
-	var pollJSON []byte
-	var convoID, rowCompany string
-	err = tx.QueryRowContext(ctx, `
-		SELECT poll, conversation_id, company_id
-		  FROM messages
-		 WHERE id = $1 AND company_id = $2 AND kind = 'poll'
-		 FOR UPDATE`, messageID, companyID).Scan(&pollJSON, &convoID, &rowCompany)
-	if err != nil || pollJSON == nil {
-		return fail("poll not found")
-	}
-	var poll pollPayload
-	if err := json.Unmarshal(pollJSON, &poll); err != nil {
-		return fail("poll not found")
-	}
-	if poll.ClosedAt != nil {
-		return fail("poll is closed")
-	}
-	var members cliStrArr
-	if tx.QueryRowContext(ctx, `SELECT members FROM conversations WHERE id = $1`, convoID).Scan(&members) != nil {
-		members = nil
-	}
-	if !containsString(members, voterParticipantID) {
-		return fail("not a member of this conversation")
-	}
-	if poll.Mode == "single" && len(requested) > 1 {
-		return fail("single-choice poll accepts at most one option")
-	}
-	validIDs := map[string]bool{}
-	for _, o := range poll.Options {
-		validIDs[o.ID] = true
-	}
-	for _, optID := range requested {
-		if !validIDs[optID] {
-			return fail("unknown option: %s", optID)
-		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM poll_votes WHERE message_id = $1 AND voter_participant_id = $2`,
-		messageID, voterParticipantID); err != nil {
-		return cliPollUpdatedEvent{}, err
-	}
-	for _, optID := range requested {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO poll_votes (message_id, voter_participant_id, voter_kind, option_id, company_id)
-			VALUES ($1,$2,$3,$4,$5)`, messageID, voterParticipantID, voterKind, optID, companyID); err != nil {
-			return cliPollUpdatedEvent{}, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return cliPollUpdatedEvent{}, err
-	}
-	event, err := s.cliBuildPollUpdatedEvent(ctx, messageID, &voterParticipantID)
-	if err != nil {
-		return cliPollUpdatedEvent{}, err
-	}
-	s.cliPublishPollUpdated(event)
-	return event, nil
+	return eventFromEngine(event), nil
 }
 
 func (s *Service) cliClosePoll(ctx context.Context, messageID, companyID string, actorID *string, reason string) (*cliPollUpdatedEvent, error) {
-	fail := func(format string, a ...any) (*cliPollUpdatedEvent, error) {
-		return nil, &cliPollError{fmt.Sprintf(format, a...)}
+	event, perr := polls.ClosePoll(ctx, s.DB, polls.CloseArgs{
+		MessageID: messageID, CompanyID: companyID, ActorID: actorID, Reason: reason,
+	})
+	if perr != nil {
+		return nil, &cliPollError{perr.Msg}
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var pollJSON []byte
-	var authorID string
-	err = tx.QueryRowContext(ctx, `
-		SELECT poll, author_id FROM messages
-		 WHERE id = $1 AND company_id = $2 AND kind = 'poll'
-		 FOR UPDATE`, messageID, companyID).Scan(&pollJSON, &authorID)
-	if err != nil || pollJSON == nil {
-		return fail("poll not found")
-	}
-	var poll pollPayload
-	if err := json.Unmarshal(pollJSON, &poll); err != nil {
-		return fail("poll not found")
-	}
-	if poll.ClosedAt != nil {
-		// 幂等关闭:不再广播。
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
+	if event == nil {
 		return nil, nil
 	}
-	if reason == "manual" && (actorID == nil || *actorID != authorID) {
-		return fail("only the poll author can close this poll")
-	}
-	closedAt := isoNowMs()
-	poll.ClosedAt = &closedAt
-	poll.ClosedReason = &reason
-	closedJSON, _ := json.Marshal(poll)
-	if _, err := tx.ExecContext(ctx, `UPDATE messages SET poll = $2::jsonb WHERE id = $1`,
-		messageID, string(closedJSON)); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	event, err := s.cliBuildPollUpdatedEvent(ctx, messageID, actorID)
-	if err != nil {
-		return nil, err
-	}
-	s.cliPublishPollUpdated(event)
-	return &event, nil
-}
-
-func (s *Service) cliBuildPollUpdatedEvent(ctx context.Context, messageID string, actorID *string) (cliPollUpdatedEvent, error) {
-	var convoID, rowCompany string
-	var pollJSON []byte
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT conversation_id, company_id, poll FROM messages WHERE id = $1`, messageID).
-		Scan(&convoID, &rowCompany, &pollJSON)
-	if err != nil || pollJSON == nil {
-		return cliPollUpdatedEvent{}, &cliPollError{"poll vanished mid-update"}
-	}
-	var poll pollPayload
-	if err := json.Unmarshal(pollJSON, &poll); err != nil {
-		return cliPollUpdatedEvent{}, &cliPollError{"poll vanished mid-update"}
-	}
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT option_id, COUNT(*)::int AS cnt,
-		       to_json(array_agg(voter_participant_id ORDER BY voter_participant_id)) AS voter_ids
-		  FROM poll_votes WHERE message_id = $1 GROUP BY option_id`, messageID)
-	if err != nil {
-		return cliPollUpdatedEvent{}, err
-	}
-	defer rows.Close()
-	tallies := []cliPollTally{}
-	for rows.Next() {
-		var t cliPollTally
-		var voters cliStrArr
-		if rows.Scan(&t.OptionID, &t.Count, &voters) != nil {
-			continue
-		}
-		t.VoterIDs = voters
-		tallies = append(tallies, t)
-	}
-	return cliPollUpdatedEvent{
-		ConversationID: convoID,
-		CompanyID:      rowCompany,
-		MessageID:      messageID,
-		Poll:           poll,
-		Tallies:        tallies,
-		ActorID:        actorID,
-	}, rows.Err()
-}
-
-func (s *Service) cliPublishPollUpdated(e cliPollUpdatedEvent) {
-	actor := any(nil)
-	if e.ActorID != nil {
-		actor = *e.ActorID
-	}
-	payload := map[string]any{
-		"type":           "poll.updated",
-		"conversationId": e.ConversationID,
-		"companyId":      e.CompanyID,
-		"messageId":      e.MessageID,
-		"poll":           e.Poll,
-		"tallies":        e.Tallies,
-		"actorId":        actor,
-	}
-	if actor == nil {
-		delete(payload, "actorId")
-	}
-	_ = s.publishRaw("cumora:polls", mustJSON(payload))
+	mapped := eventFromEngine(*event)
+	return &mapped, nil
 }
 
 /* ───────────── CLI 命令面 ───────────── */
