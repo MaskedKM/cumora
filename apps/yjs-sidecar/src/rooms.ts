@@ -15,14 +15,14 @@
  * twice is a no-op.
  */
 import * as Y from 'yjs'
-import { pool } from '../../../server/src/db/pool.js'
+import { pool } from './infra/pool.js'
 import {
   redis, sub, publish,
   CH_DOC_UPDATE, CH_DOC_AWARENESS,
   type DocUpdateEvent, type DocAwarenessEvent,
-} from '../../../server/src/redis.js'
-import { env } from '../../../server/src/env.js'
-import { normalizeStorageKey, signedUrlExpiresSoon, storage, storageKeyFromPublicUrl } from '../../../server/src/storage.js'
+} from './infra/redis.js'
+import { env } from './infra/env.js'
+import { normalizeStorageKey, signedUrlExpiresSoon, storage, storageKeyFromPublicUrl } from './infra/storage.js'
 import {
   type AgentImagePlacement,
   type AgentImageDeleteMatch,

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 )
@@ -41,6 +42,20 @@ func Authn(db *sql.DB) func(http.Handler) http.Handler {
 					r = r.WithContext(context.WithValue(r.Context(), ctxUserID, uid))
 				}
 			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// WriteDeadline:#136 非流式面的写期限兜底——对响应设绝对写期限,
+// 挂起客户端(TCP 零窗口)不再无限占用 handler。只挂 /api 链:SSE
+// (/runtime/wake-stream)与 WS(/ws)是长响应,绝不进本链;全局
+// http.Server.WriteTimeout 同理保持 0。handler 可用
+// http.NewResponseController 再顺延;底层不支持时静默降级。
+func WriteDeadline(d time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d))
 			next.ServeHTTP(w, r)
 		})
 	}
