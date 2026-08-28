@@ -21,6 +21,11 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 )
 
+// pushFanoutBudget:#136 推送扇出总预算——收件人/标题/作者查询 + 单轮
+// 并发推送(单端点 15s 客户端超时)的硬上限,挂起端点不再无限连坐
+// goroutine 与池连接。
+const pushFanoutBudget = 60 * time.Second
+
 func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /api/conversations", list(db))
 	mux.HandleFunc("POST /api/conversations", createGroup(db))
@@ -970,7 +975,9 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 					slog.Warn("push fanout panicked", "err", rec)
 				}
 			}()
-			ctx := context.Background()
+			// #136:扇出预算见 pushFanoutBudget;defer cancel 随 goroutine 退出。
+			ctx, cancel := context.WithTimeout(context.Background(), pushFanoutBudget)
+			defer cancel()
 			recipients := push.ComputeMessageRecipients(ctx, db, convID, uid)
 			if len(recipients) == 0 {
 				return

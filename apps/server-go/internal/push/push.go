@@ -175,6 +175,11 @@ var apnsClient = &http.Client{
 	Timeout:   15 * time.Second,
 }
 
+// #136:FCM 出站(令牌兑换 + 发送)禁止走无超时 http.DefaultClient——
+// 挂起端点会连坐扇出 goroutine 与池连接;对齐 APNs 侧 15s。var 以便
+// 测试注入短超时/替身端点。
+var fcmClient = &http.Client{Timeout: 15 * time.Second}
+
 type apnsResult struct {
 	ok     bool
 	status int
@@ -284,11 +289,13 @@ func fcmOn() bool {
 }
 
 const (
-	fcmTokenURL   = "https://oauth2.googleapis.com/token"
-	fcmScope      = "https://www.googleapis.com/auth/firebase.messaging"
-	fcmTokenTTL   = 50 * time.Minute
-	fcmSendURLFmt = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
+	fcmTokenURL = "https://oauth2.googleapis.com/token"
+	fcmScope    = "https://www.googleapis.com/auth/firebase.messaging"
+	fcmTokenTTL = 50 * time.Minute
 )
+
+// fcmSendURLFmt:var 以便测试指向替身端点(#136)。
+var fcmSendURLFmt = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
 
 var (
 	fcmTokenMu   sync.Mutex
@@ -323,7 +330,12 @@ func getFcmAccessToken(acct *serviceAccount) (string, bool) {
 	assertion := signingInput + "." + b64url(sig)
 	form := "grant_type=" + url.QueryEscape("urn:ietf:params:oauth:grant-type:jwt-bearer") +
 		"&assertion=" + url.QueryEscape(assertion)
-	res, err := http.Post(fcmTokenURL, "application/x-www-form-urlencoded", strings.NewReader(form))
+	req, err := http.NewRequest(http.MethodPost, fcmTokenURL, strings.NewReader(form))
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	res, err := fcmClient.Do(req)
 	if err != nil || res.StatusCode >= 300 {
 		if res != nil {
 			res.Body.Close()
@@ -409,7 +421,7 @@ func sendOneFcm(token string, payload Payload) fcmResult {
 	}
 	req.Header.Set("authorization", "Bearer "+access)
 	req.Header.Set("content-type", "application/json")
-	res, err := http.DefaultClient.Do(req)
+	res, err := fcmClient.Do(req)
 	if err != nil {
 		return fcmResult{reason: "fetch-error"}
 	}
