@@ -3,6 +3,9 @@
  * 协议契约(subscribe → update → 状态收敛 → read-text → agent-edit)。
  * 运行环境与 server 单测一致(DATABASE_URL/REDIS_URL + 测试库)。
  */
+// dotenv:#142 后 sidecar 不再经 server/src/env 间接吃根 .env,裸跑
+// `npm test` 时由这里显式加载(CI 由 runner 直接注 env,不受影响)。
+import 'dotenv/config'
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'

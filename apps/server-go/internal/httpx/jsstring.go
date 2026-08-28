@@ -102,3 +102,21 @@ func JSTruthy(v any) bool {
 		return true
 	}
 }
+
+// UTF16Cap 复刻 JS s.slice(0, n):按 UTF-16 码元截断,边界裂代理保整字
+// (与 TS 差半个字符,极端边缘)。此前各域 rune 截断会把 emoji 当 1 记
+// (#118 F-04 统一);agents/uploads/email 的私有拷贝收敛到此。
+func UTF16Cap(s string, max int) string {
+	n := 0
+	for i, r := range s {
+		units := 1
+		if r > 0xFFFF {
+			units = 2
+		}
+		if n+units > max {
+			return s[:i]
+		}
+		n += units
+	}
+	return s
+}

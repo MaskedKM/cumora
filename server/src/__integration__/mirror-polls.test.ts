@@ -7,7 +7,7 @@
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror, MIRROR_BASE,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE,
 } from './_helpers.js'
 import { pool } from '../db/pool.js'
 

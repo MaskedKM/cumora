@@ -104,7 +104,7 @@ func decodeAgentBody(r *http.Request) agentBody {
 	b.systemPrompt = str("systemPrompt")
 	b.bio = str("bio")
 	if s := str("initial"); s != nil {
-		t := utf16Cap(strings.TrimSpace(*s), 2)
+		t := httpx.UTF16Cap(strings.TrimSpace(*s), 2)
 		b.initial = &t
 	}
 	if s := str("avatarBg"); s != nil {
@@ -158,21 +158,6 @@ func decodeAgentBody(r *http.Request) agentBody {
 	return b
 }
 
-func utf16Cap(s string, n int) string {
-	count := 0
-	for i, r := range s {
-		w := 1
-		if r > 0xFFFF {
-			w = 2
-		}
-		if count+w > n {
-			return s[:i]
-		}
-		count += w
-	}
-	return s
-}
-
 /* ───────── create ───────── */
 
 var avatarPalette = []string{
@@ -200,9 +185,9 @@ func slugifyAgentName(name string) string {
 	slug := nonAlnumRe.ReplaceAllString(lowered, "-")
 	slug = strings.Trim(slug, "-")
 	slug = dashRunRe.ReplaceAllString(slug, "-")
-	slug = utf16Cap(slug, 24)
+	slug = httpx.UTF16Cap(slug, 24)
 	if !regexp.MustCompile(`^[a-z]`).MatchString(slug) {
-		slug = utf16Cap("a-"+slug, 24)
+		slug = httpx.UTF16Cap("a-"+slug, 24)
 	}
 	if slug == "" {
 		slug = "agent"
