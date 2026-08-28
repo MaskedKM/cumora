@@ -72,10 +72,11 @@ const DEV_API_TARGET = import.meta.env.DEV
 /** Resolve the API base. Three layers, highest priority first:
  *    1. localStorage['cumora.serverUrl'] — runtime override, settable
  *       from the dev console: `localStorage.setItem('cumora.serverUrl',
- *       'https://api.cumora.ai')`. Lets a packaged build switch between
- *       prod and a custom endpoint without rebuilding.
- *    2. import.meta.env.VITE_CUMORA_API_BASE — baked at build time,
- *       e.g. .env.production points it at https://api.cumora.ai.
+ *       'http://192.168.1.10:5181')`. Lets a packaged build switch
+ *       endpoints without rebuilding (e.g. server on another LAN box).
+ *    2. import.meta.env.VITE_CUMORA_API_BASE — baked at build time;
+ *       .env.production points it at the self-hosted server
+ *       (http://127.0.0.1:5181 by default).
  *    3. '' — falls back to relative URLs, which work in Vite dev (the
  *       proxy rewrites /api → CUMORA_DEV_API_TARGET) and in any same-
  *       origin static deploy.

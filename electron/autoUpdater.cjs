@@ -2,10 +2,18 @@
 /**
  * Cumora auto-update — ported from alma's auto-updater.ts.
  *
- * Pulls the latest-mac.yml / latest.yml / latest-linux.yml from the
- * `generic` publish provider configured in package.json (updates.cumora.ai,
- * R2-backed), with the GitHub Release as a fallback feed if the generic
- * one ever 404s. The flow:
+ * Fork note (#128): this fork ships WITHOUT a `publish` provider in
+ * package.json, so electron-builder writes no app-update.yml into the
+ * packaged resources, `hasUpdateConfig()` returns false, and every entry
+ * point below reports 'unsupported' — no update check ever fires, and
+ * the app can never be pulled onto an upstream build. Desktop updates
+ * are local rebuilds (`npm run electron:build:<platform>`, see
+ * docs/RELEASE.md). The machinery stays intact for a future self-hosted
+ * feed: configure a `generic` publish provider pointing at your own
+ * static host and everything below works unchanged (a dev-app-update.yml
+ * at repo root also still works for testing the flow in dev).
+ *
+ * When a feed IS configured, the flow:
  *
  *   1. Boot the main window, schedule an initial check 3s later.
  *   2. Periodic check every 30 minutes.
