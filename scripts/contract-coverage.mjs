@@ -34,22 +34,6 @@ const PENDING_IMPLEMENTATION = new Set([
   'GET /api/agents/:x/autonomy',
   'PUT /api/agents/:x/autonomy',
   'POST /api/auth/apple/native',
-  'GET /api/shipping/overview',
-  'GET /api/shipping/features/:x',
-  'POST /api/shipping/features',
-  'PATCH /api/shipping/features/:x',
-  'POST /api/shipping/features/:x/invariants',
-  'PATCH /api/shipping/features/:x/invariants/:x',
-  'POST /api/shipping/features/:x/regressions',
-  'PATCH /api/shipping/features/:x/regressions/:x',
-  'POST /api/shipping/features/:x/releases',
-  'POST /api/shipping/features/:x/releases/:x/action',
-  'POST /api/shipping/features/:x/transition',
-  'POST /api/shipping/features/:x/verifications',
-  'PATCH /api/shipping/features/:x/verifications/:x',
-  'GET /api/shipping/friction',
-  'POST /api/shipping/friction',
-  'PATCH /api/shipping/friction/:x',
 ])
 const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
 

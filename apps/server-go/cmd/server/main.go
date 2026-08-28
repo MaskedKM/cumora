@@ -36,6 +36,7 @@ import (
 	pollsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
+	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
@@ -181,6 +182,9 @@ func main() {
 	// 挂 coreRouter 吃 authMiddleware 链)。
 	runtimeSvc.MountObservabilityApi(coreRouter)
 	invitations.Mount(coreRouter, pool)
+	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
+	// 回读/回归/摩擦,16 路由。
+	shipping.Mount(coreRouter, pool)
 	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
 	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
 	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
