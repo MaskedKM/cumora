@@ -116,7 +116,7 @@ jobs:
         timeout-minutes: 5
         run: |
           apk add -q --no-cache curl
-          curl -fsSL -o /tmp/repo.tar.gz \
+          curl -fsSL --connect-timeout 20 --retry 2 -o /tmp/repo.tar.gz \
             "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
           tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
@@ -229,7 +229,7 @@ jobs:
       - name: Download source (tarball, git-free)
         timeout-minutes: 5
         run: |
-          curl -fsSL -o /tmp/repo.tar.gz \
+          curl -fsSL --connect-timeout 20 --retry 2 -o /tmp/repo.tar.gz \
             "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
           tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
