@@ -274,7 +274,7 @@ func assertParticipants(ctx context.Context, db *sql.DB, companyID string, ids [
 		`SELECT id FROM participants WHERE company_id = $1 AND id = ANY($2::text[]) AND departed_at IS NULL`,
 		companyID, pqTextArray(ids))
 	if err != nil {
-		return fail(http.StatusInternalServerError, err.Error())
+		return fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	defer rows.Close()
 	found := map[string]bool{}
@@ -401,27 +401,27 @@ func detailFeature(ctx context.Context, db *sql.DB, companyID, featureID string)
 	}
 	invariants, err := detailInvariants(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	verifications, err := detailVerifications(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	releases, err := detailReleases(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	frictions, err := detailFrictions(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	regressions, err := detailRegressions(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	events, err := detailEvents(ctx, db, featureID)
 	if err != nil {
-		return nil, fail(http.StatusInternalServerError, err.Error())
+		return nil, fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	return map[string]any{
 		"id": id, "title": title, "problem": problem, "desiredOutcome": desiredOutcome,

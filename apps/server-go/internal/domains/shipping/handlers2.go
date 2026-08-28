@@ -672,7 +672,7 @@ func releaseApprove(r *http.Request, tx *sql.Tx, feature *shipFeatureCore, relea
 	}
 	if _, err := tx.ExecContext(r.Context(),
 		`UPDATE shipping_releases SET status='approved', approved_by=$1, updated_at=NOW() WHERE id=$2`, actor, releaseID); err != nil {
-		return fail(http.StatusInternalServerError, err.Error())
+		return fail(http.StatusInternalServerError, "%s", err.Error())
 	}
 	return nil
 }
