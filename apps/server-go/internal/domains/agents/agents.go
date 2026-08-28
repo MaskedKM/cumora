@@ -1,6 +1,6 @@
 // domains/agents —— agent CRUD(#68 补齐):create(全链种子)/update/
-// offboard/rehire/autonomy 双端点。行为对齐 router.ts 2236–2660 与
-// onboardCompany.ts joinAllHands。
+// offboard/rehire/autonomy 三端点(#123 补 GET 单读)。行为对齐
+// router.ts 2236–2660、4712–4760 与 onboardCompany.ts joinAllHands。
 package agents
 
 import (
@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -30,6 +31,7 @@ func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
 	mux.HandleFunc("PUT /api/agents/{id}", update(db))
 	mux.HandleFunc("DELETE /api/agents/{id}", offboard(db))
 	mux.HandleFunc("POST /api/agents/{id}/rehire", rehire(db))
+	mux.HandleFunc("GET /api/agents/{id}/autonomy", getAutonomyOne(db))
 	mux.HandleFunc("PUT /api/agents/{id}/autonomy", putAutonomy(db))
 	mux.HandleFunc("GET /api/agents/autonomy", getAutonomy(db))
 	mux.HandleFunc("GET /api/participants", listParticipants(db))
@@ -557,6 +559,42 @@ func rehire(db *sql.DB) http.HandlerFunc {
 }
 
 /* ───────── autonomy ───────── */
+
+// getAutonomyOne:TS rows[0] ?? 默认门 —— 已存行原样回,未见行回
+// threshold 0.6 起步(未见 ≠ 错误,前端首访即拿默认值)。
+func getAutonomyOne(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, tenant, ok := requireCompany(w, r, db)
+		if !ok {
+			return
+		}
+		var one int
+		if err := db.QueryRowContext(r.Context(),
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+			r.PathValue("id"), tenant).Scan(&one); err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+			return
+		}
+		var threshold float64
+		var pulled, led, dissolved int
+		err := db.QueryRowContext(r.Context(), `
+			SELECT threshold, pulled, led, dissolved FROM agent_autonomy
+			 WHERE user_id = $1 AND agent_id = $2`, uid, r.PathValue("id")).
+			Scan(&threshold, &pulled, &led, &dissolved)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err != nil {
+			threshold = 0.6
+			pulled, led, dissolved = 0, 0, 0
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"userId": uid, "agentId": r.PathValue("id"), "threshold": threshold,
+			"pulled": pulled, "led": led, "dissolved": dissolved,
+		})
+	}
+}
 
 func putAutonomy(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
