@@ -56,7 +56,7 @@ permissions:
 
 jobs:
   go:
-    name: Go (gofmt + vet + build)
+    name: Go (gofmt + vet + build + test)
     runs-on: [self-hosted, linux, ser8]
     # Pure-Go module (pgx only, no cgo) — alpine is half the on-disk size of
     # bookworm on the runner, and vet/build don't need a C toolchain.
