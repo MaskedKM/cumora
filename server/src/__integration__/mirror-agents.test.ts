@@ -48,6 +48,26 @@ test('[mirror] computers: list empty + pairing code mint', async () => {
   assert.ok(typeof pair.json.code === 'string' && pair.json.code.length > 0)
 })
 
+// #123:GET 单读 —— TS rows[0] ?? 默认门(未见行 0.6 起步)。
+test('[mirror] agents: autonomy GET 单读 — 默认 0.6 / 已存值 / 404 闸门', async () => {
+  await seedAgent('ag-auto-1')
+  const def = await call('/agents/ag-auto-1/autonomy')
+  assert.equal(def.status, 200)
+  assert.deepEqual(def.json, {
+    userId: USER, agentId: 'ag-auto-1', threshold: 0.6, pulled: 0, led: 0, dissolved: 0,
+  })
+  // PUT 钳位(-3 → 0)后单读回存值
+  const put = await call('/agents/ag-auto-1/autonomy', { method: 'PUT', body: JSON.stringify({ threshold: -3 }) })
+  assert.equal(put.status, 200)
+  assert.equal(put.json.threshold, 0)
+  assert.equal((await call('/agents/ag-auto-1/autonomy')).json.threshold, 0)
+  // 空 body → 0.6 默认
+  const put2 = await call('/agents/ag-auto-1/autonomy', { method: 'PUT', body: '' })
+  assert.equal(put2.json.threshold, 0.6)
+  // 非本租户 participant → 不可探测 404
+  assert.equal((await call('/agents/nope/autonomy')).status, 404)
+})
+
 test('[mirror] agents: create → update → list → autonomy → offboard → rehire', async () => {
   const created = await call('/agents', {
     method: 'POST',

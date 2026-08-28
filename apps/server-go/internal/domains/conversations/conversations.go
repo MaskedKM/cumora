@@ -21,6 +21,11 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 )
 
+// pushFanoutBudget:#136 推送扇出总预算——收件人/标题/作者查询 + 单轮
+// 并发推送(单端点 15s 客户端超时)的硬上限,挂起端点不再无限连坐
+// goroutine 与池连接。
+const pushFanoutBudget = 60 * time.Second
+
 func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /api/conversations", list(db))
 	mux.HandleFunc("POST /api/conversations", createGroup(db))
@@ -60,22 +65,40 @@ func memberCheck(ctx context.Context, db *sql.DB, uid, companyID, convID string)
 
 // postSystemMessage 对齐 membership.postMembershipSystemMessage:
 // body = JSON {kind, participantId, actorId};消费 WS 广播留 Redis 面。
+// #138:取序 + INSERT 单事务(对齐 runtime/cli_reply.go 的事务形态),
+// 任一步失败整体回滚 + slog——此前两步裸跑、`_,_=` 吞错,半写会留孤儿
+// counter(序号断档)且无排障痕迹。系统消息是礼节性写:失败不阻断
+// 成员变更主路径,只留日志。
 func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actorID, sysKind, participantID string) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Warn("postSystemMessage begin tx failed", "conv", convID, "kind", sysKind, "err", err)
+		return
+	}
+	defer tx.Rollback() // 提交后为 no-op
 	var sequence int
-	if err := db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
 		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
 		RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
+		slog.Warn("postSystemMessage sequence upsert failed", "conv", convID, "kind", sysKind, "err", err)
 		return
 	}
 	body, _ := json.Marshal(map[string]string{
 		"kind": sysKind, "participantId": participantID, "actorId": actorID,
 	})
 	msgID := "m-" + authn.NewToken()[:12]
-	_, _ = db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
 		VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
-		msgID, convID, companyID, actorID, body, sequence)
+		msgID, convID, companyID, actorID, body, sequence); err != nil {
+		slog.Warn("postSystemMessage insert failed", "conv", convID, "kind", sysKind, "err", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Warn("postSystemMessage commit failed", "conv", convID, "kind", sysKind, "err", err)
+		return
+	}
 	events.MessageNew(ctx, companyID, convID, map[string]any{
 		"id": msgID, "conversationId": convID, "authorId": actorID,
 		"kind": "system", "body": string(body), "sequence": sequence,
@@ -83,7 +106,6 @@ func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actor
 	})
 }
 
-// postSystemMessage 兼容包装(老签名调用点)
 func memberGate(w http.ResponseWriter, r *http.Request, db *sql.DB, uid, companyID, convID string) ([]string, bool) {
 	members, code, msg := memberCheck(r.Context(), db, uid, companyID, convID)
 	if code != 0 {
@@ -908,12 +930,24 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				quoted = body.QuotedMessageID
 			}
 		}
-		// 原子取序(counters 行缺失即补——upsert 语义)
+		// 写段单事务(#138):取序 + INSERT + updated_at 同生共死——任一步
+		// 失败整体回滚,不再留孤儿 counter(序号断档);错误传播 + slog
+		// (此前 updated_at 失败被 `_,_=` 吞)。事务形态对齐
+		// runtime/cli_reply.go。赢在原子性不在时延:BEGIN/COMMIT 各加一趟
+		// 往返,真正的往返大头(前置认证查询无缓存)另票(#141)。
+		tx, err := db.BeginTx(r.Context(), nil)
+		if err != nil {
+			slog.Warn("sendMessage begin tx failed", "conv", convID, "err", err)
+			httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
+			return
+		}
+		defer tx.Rollback() // 提交后为 no-op
 		var sequence int
-		if err := db.QueryRowContext(r.Context(), `
+		if err := tx.QueryRowContext(r.Context(), `
 			INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
 			ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
 			RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
+			slog.Warn("sendMessage sequence upsert failed", "conv", convID, "err", err)
 			httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
 			return
 		}
@@ -923,7 +957,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		// TS router 同款;裸 INSERT 会在重试时撞索引 500。
 		var persistedID string
 		var persistedSeq int
-		err := db.QueryRowContext(r.Context(), `
+		err = tx.QueryRowContext(r.Context(), `
 			INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence, quoted_message_id, client_id, attachment)
 			VALUES ($1, $2, $3, $4, 'text', $5, $6, $7, NULLIF($8,''), $9)
 			ON CONFLICT (conversation_id, author_id, client_id) WHERE client_id IS NOT NULL
@@ -934,11 +968,13 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			// DO NOTHING 落空(零行)= 撞唯一索引:回查既有行(并发双投
 			// 时另一请求已落);其余才是真错。复用路径照 TS 短路——不
 			// bump updated_at、不重播 message.new、不重推(lost-ACK 重试
-			// 不产生第二次副作用)。
+			// 不产生第二次副作用);回滚只退掉本次预占的序号(重发路径
+			// 本就不该消耗序号)。
 			if !(err == sql.ErrNoRows && body.ClientID != "" &&
-				db.QueryRowContext(r.Context(),
+				tx.QueryRowContext(r.Context(),
 					`SELECT id, sequence FROM messages WHERE conversation_id = $1 AND author_id = $2 AND client_id = $3`,
 					convID, uid, body.ClientID).Scan(&persistedID, &persistedSeq) == nil) {
+				slog.Warn("sendMessage insert failed", "conv", convID, "err", err)
 				httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
 				return
 			}
@@ -946,7 +982,16 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		id, sequence = persistedID, persistedSeq
-		_, _ = db.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID)
+		if _, err := tx.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID); err != nil {
+			slog.Warn("sendMessage updated_at bump failed", "conv", convID, "err", err)
+			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			slog.Warn("sendMessage commit failed", "conv", convID, "err", err)
+			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+			return
+		}
 		broadcastMsg := map[string]any{
 			"id": id, "conversationId": convID, "authorId": uid,
 			"kind": "text", "body": body.Body, "sequence": sequence,
@@ -970,7 +1015,9 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 					slog.Warn("push fanout panicked", "err", rec)
 				}
 			}()
-			ctx := context.Background()
+			// #136:扇出预算见 pushFanoutBudget;defer cancel 随 goroutine 退出。
+			ctx, cancel := context.WithTimeout(context.Background(), pushFanoutBudget)
+			defer cancel()
 			recipients := push.ComputeMessageRecipients(ctx, db, convID, uid)
 			if len(recipients) == 0 {
 				return

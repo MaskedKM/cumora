@@ -4,6 +4,7 @@
   "version": "0.2.2",
   "workspaces": [
     "apps/web",
+    "apps/yjs-sidecar",
     "packages/contract"
   ],
   "type": "module",
@@ -27,8 +28,7 @@
     "preview": "npm run preview -w apps/web",
     "typecheck": "npm run typecheck -w apps/web",
     "server:typecheck": "tsc -p server/tsconfig.json --noEmit",
-    "guard:big-brain": "node scripts/guard-big-brain.mjs",
-    "guard:llm-tracked": "node scripts/guard-llm-tracked.mjs",
+    "sidecar:typecheck": "tsc -p apps/yjs-sidecar/tsconfig.json --noEmit",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "test": "node --import tsx --test --test-force-exit \"apps/yjs-sidecar/src/**/*.test.ts\" \"workers/**/*.test.ts\"",

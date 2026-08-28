@@ -1,8 +1,10 @@
-# CI on every push to main: typecheck + guards + unit + integration.
+# CI on every push to main: typecheck + unit + integration.
+# (#132: the big-brain/llm-tracked static guards retired — their TS scan
+#  surface was deleted in #70; LLM calls now live behind the Go daemon's
+#  local triage gate.)
 # (ADR 0003: hard fork, single-box self-host — no GKE images are built
-# or pushed anymore. Build the server image locally from
-# server/docker/cumora-server.Dockerfile when needed; a Go-binary
-# release pipeline replaces this arrangement during the migration.)
+# or pushed anymore. The Go server deploys as a local binary via systemd —
+# see docs/SWITCHOVER.md; the TS Dockerfile was retired in #132.)
 
 name: Build
 
@@ -85,8 +87,6 @@ jobs:
         run: npm ci --prefix workers/email-gate
       - name: Lint (Biome)
         run: npm run lint
-      - name: Static safety guards
-        run: npm run guard:big-brain && npm run guard:llm-tracked
       - name: Unit tests
         run: npm test --silent
       - name: Enable pgvector extension

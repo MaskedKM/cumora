@@ -38,8 +38,8 @@ const WebAuth = registerPlugin<WebAuthPlugin>('WebAuth')
  * Required by App Review Guideline 4.8 when an iOS app offers any
  * third-party social login (we offer Google + GitHub). The native
  * SIWA flow returns the `identity_token` JWT directly to our
- * process — no browser redirect — and the server-side verifier in
- * `server/src/apple.ts` validates it against Apple's JWKS.
+ * process — no browser redirect — for the server-side verifier to
+ * validate against Apple's JWKS.
  */
 interface AppleSignInPlugin {
   signIn: () => Promise<{

@@ -20,7 +20,7 @@
  * 帧并可在 sidecar 恢复后重订阅;server 侧 relay 不缓存状态。
  */
 import http from 'node:http'
-import { env } from '../../../server/src/env.js'
+import { env } from './infra/env.js'
 import {
   subscribe,
   unsubscribe,

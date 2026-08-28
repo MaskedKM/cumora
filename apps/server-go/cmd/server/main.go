@@ -36,6 +36,7 @@ import (
 	pollsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
+	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
@@ -181,20 +182,19 @@ func main() {
 	// 挂 coreRouter 吃 authMiddleware 链)。
 	runtimeSvc.MountObservabilityApi(coreRouter)
 	invitations.Mount(coreRouter, pool)
-	// /api/* 统一入口:认证中间件 → core 域;域未挂载的路径落到 JSON 404
-	// 兜底(baseline 形状 {error:'not found'},#53 起域渐挂期间的平价)。
-	// 域内未匹配路径的 JSON 404 兜底(baseline 形状;#53 起域渐挂期关键)
+	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
+	// 回读/回归/摩擦,16 路由。
+	shipping.Mount(coreRouter, pool)
+	// /api/* 统一入口:写期限兜底(#136,非流式面)→ 认证中间件 → core
+	// 域;域未挂载的路径落到 JSON 404 兜底(baseline 形状
+	// {error:'not found'},#53 起域渐挂期间的平价)。
 	coreRouter.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 	})
-	mux.Handle("/api/", authMiddleware(coreRouter))
+	mux.Handle("/api/", httpx.WriteDeadline(5*time.Minute)(authMiddleware(coreRouter)))
 	// 后续域(#53 会话起)同样:各自 Mount 后经 authMiddleware 串接。
 
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := newHTTPServer(cfg.ListenAddr, mux)
 
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)
@@ -215,6 +215,21 @@ func main() {
 		slog.Warn("graceful shutdown incomplete", "err", err)
 	}
 	slog.Info("bye")
+}
+
+// newHTTPServer:#136 超时兜底。ReadTimeout 取宽值只为框住停滞的请求体
+// (大上传慢链路不误伤);WriteTimeout 必须保持 0——SSE 唤醒流与 WS
+// 升级共享本 Server,全局写期限会掐死长响应,非流式 /api 面由
+// httpx.WriteDeadline 单独设。IdleTimeout 只回收 keep-alive 空闲连接,
+// 对活跃请求无影响;WS hijack 后的连接不受任何 Server 超时管理。
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
 
 func envInt(key string, fallback int) int {

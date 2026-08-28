@@ -19,7 +19,12 @@ const scannerMinMessages = 8
 const scannerWindowHours = 24
 
 var scannerPrecedentMu sync.Mutex
-var scannerPrecedentScans = map[string]struct{}{}
+
+// #135:key = company|agent,值 = 该 agent 最新指纹。指纹是 24h 窗口内
+// 消息 id 全集——窗口只会进新 id、旧 id 出窗后不可回,历史指纹永不复发,
+// 留最新一条即保留全部去重语义;旧形状(整指纹作 key)每天新消息即新
+// 条目,只增不减(~2.3MB/agent/天)。
+var scannerPrecedentScans = map[string]string{}
 
 // envIntRaw 语义:SCANNER_INTERVAL_MS=0 原样生效(TS setInterval(fn,0)
 // 热循环怪癖按平价复刻,非数回落 90s 默认)。
@@ -112,7 +117,7 @@ func (s *Service) loadRecentActivity(ctx context.Context, companyID string) []sc
 		   AND m.kind = 'text'
 		   AND c.company_id = $1
 		   AND m.created_at > NOW() - ($2 || ' hours')::interval
-		 ORDER BY m.created_at DESC
+		 ORDER BY m.created_at DESC, m.id DESC
 		 LIMIT 80`, companyID, "24")
 	if err != nil {
 		slog.Warn("[scanner] load activity failed", "err", err)
@@ -280,13 +285,9 @@ func (s *Service) RunBackgroundScans(ctx context.Context) {
 			}
 			sort.Strings(ids)
 			fingerprint := a.companyID + "|" + a.id + "|" + strings.Join(ids, "|")
-			scannerPrecedentMu.Lock()
-			if _, seen := scannerPrecedentScans[fingerprint]; seen {
-				scannerPrecedentMu.Unlock()
+			if scannerSeenOrMark(a.companyID+"|"+a.id, fingerprint) {
 				return
 			}
-			scannerPrecedentScans[fingerprint] = struct{}{}
-			scannerPrecedentMu.Unlock()
 
 			if err := s.recordScanWake(ctx, a, fingerprint); err != nil {
 				slog.Warn("[scanner] record wake failed", "agent", a.id, "err", err)
@@ -304,11 +305,23 @@ func (s *Service) RunBackgroundScans(ctx context.Context) {
 	}
 }
 
+// scannerSeenOrMark:指纹去重,该 agent 已扫过同一指纹返回 true,
+// 未见则记下(只留最新)后返回 false。
+func scannerSeenOrMark(agentKey, fingerprint string) bool {
+	scannerPrecedentMu.Lock()
+	defer scannerPrecedentMu.Unlock()
+	if scannerPrecedentScans[agentKey] == fingerprint {
+		return true
+	}
+	scannerPrecedentScans[agentKey] = fingerprint
+	return false
+}
+
 // ResetBackgroundScannerForTests: 测试隔离入口(生产不调用)。
 func ResetBackgroundScannerForTests() {
 	scannerPrecedentMu.Lock()
 	defer scannerPrecedentMu.Unlock()
-	scannerPrecedentScans = map[string]struct{}{}
+	scannerPrecedentScans = map[string]string{}
 }
 
 // StartScanner: 周期 kick;ENABLE_SCANNER='false' 关闭(nil = 未启动)。

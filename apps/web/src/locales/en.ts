@@ -651,7 +651,7 @@ export const en = {
   'adminobs.topSpendersTitle': 'Top spenders',
   'adminobs.topSpendersSub': 'By agent · top 20 over the window',
   'adminobs.daemonTitle': 'By daemon version',
-  'adminobs.daemonSub': 'Spend × cache behaviour per agent-cli release · drill into a row to see its calls',
+  'adminobs.daemonSub': 'Spend × cache behaviour per daemon release · drill into a row to see its calls',
   'adminobs.heroSpendPrefix': '{unit} · last {days}d',
   'adminobs.heroSubUsd': '{in} input · {out} output',
   'adminobs.heroSubTokens': '{in} in · {cached} cached · {out} out',
@@ -1066,7 +1066,7 @@ export const en = {
   'cli.methodNpx': 'npx (published)',
   'cli.methodLocal': 'Local build',
   'cli.methodNpxHint': 'runs the published npm package',
-  'cli.methodLocalHint': 'runs a repo build — edit the path to your dist/cli.js',
+  'cli.methodLocalHint': 'runs a repo build — path to your byoa-daemon binary',
   // ─── onboarding (first-run computer pairing) ─────────────────────
 
   'onboard.title': 'Set up your computer',
