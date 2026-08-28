@@ -50,7 +50,6 @@ const PENDING_IMPLEMENTATION = new Set([
   'GET /api/shipping/friction',
   'POST /api/shipping/friction',
   'PATCH /api/shipping/friction/:x',
-  'GET /api/og',
 ])
 const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
 

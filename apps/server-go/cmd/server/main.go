@@ -32,6 +32,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
+	ogdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/og"
 	pollsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
@@ -152,6 +153,7 @@ func main() {
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
 	core.Mount(coreRouter, pool, rdb)
+	ogdomain.Mount(coreRouter, rdb) // og 预览代理(#122):Redis 缓存
 	conversations.Mount(coreRouter, pool)
 	// 投票 HTTP 面(#121):引擎 internal/polls 与 runtime CLI 同源。
 	pollsdomain.Mount(coreRouter, pool)
