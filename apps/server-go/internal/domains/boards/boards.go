@@ -213,12 +213,13 @@ func create(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		title := strings.TrimSpace(body.Title)
+		// F16:TS create 是 String(x ?? '') 强转,struct 解码丢非串体。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		var titleRaw, descRaw any
+		_ = json.Unmarshal(raw["title"], &titleRaw)
+		_ = json.Unmarshal(raw["description"], &descRaw)
+		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
 		if runes := []rune(title); len(runes) > 200 {
 			title = string(runes[:200])
 		}
@@ -226,7 +227,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
-		description := strings.TrimSpace(body.Description)
+		description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
 		if runes := []rune(description); len(runes) > 4000 {
 			description = string(runes[:4000])
 		}
@@ -486,11 +487,12 @@ func addColumn(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		boardID := r.PathValue("id")
-		var body struct {
-			Title string `json:"title"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		title := strings.TrimSpace(body.Title)
+		// F16:TS addColumn 是 String(x ?? '') 强转。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		var titleRaw any
+		_ = json.Unmarshal(raw["title"], &titleRaw)
+		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
 		if runes := []rune(title); len(runes) > 100 {
 			title = string(runes[:100])
 		}
@@ -593,14 +595,17 @@ func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			return
 		}
 		boardID := r.PathValue("id")
-		var body struct {
-			Title       string  `json:"title"`
-			Description string  `json:"description"`
-			ColumnID    string  `json:"columnId"`
-			AssigneeID  *string `json:"assigneeId"`
+		// F16:TS createCard 各键强转(title/description/columnId 走
+		// String(x ?? ''),assigneeId 走 truthy 门)。
+		var raw map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		keyAny := func(k string) any {
+			var a any
+			_ = json.Unmarshal(raw[k], &a)
+			return a
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		title := strings.TrimSpace(body.Title)
+		titleRaw, descRaw, colRaw, assigneeRaw := keyAny("title"), keyAny("description"), keyAny("columnId"), keyAny("assigneeId")
+		title := strings.TrimSpace(httpx.JSStringOrNullish(titleRaw))
 		if runes := []rune(title); len(runes) > 200 {
 			title = string(runes[:200])
 		}
@@ -608,12 +613,12 @@ func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "title required")
 			return
 		}
-		columnID := strings.TrimSpace(body.ColumnID)
+		columnID := strings.TrimSpace(httpx.JSStringOrNullish(colRaw))
 		if columnID == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "columnId required")
 			return
 		}
-		description := strings.TrimSpace(body.Description)
+		description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
 		if runes := []rune(description); len(runes) > 8000 {
 			description = string(runes[:8000])
 		}
@@ -632,11 +637,8 @@ func createCard(db *sql.DB, wake WakeMentioned) http.HandlerFunc {
 			position = maxPos.Float64 + 1000
 		}
 		var assignee any
-		if body.AssigneeID != nil {
-			a := strings.TrimSpace(*body.AssigneeID)
-			if a != "" {
-				assignee = a
-			}
+		if httpx.JSTruthy(assigneeRaw) {
+			assignee = strings.TrimSpace(httpx.JSToString(assigneeRaw))
 		}
 		mentions := parseMentions(r.Context(), db, companyID, title+"\n"+description)
 		cardID := "card-" + authn.NewToken()[:12]

@@ -26,6 +26,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
@@ -527,7 +528,7 @@ func oauthFindOrCreate(ctx context.Context, db *sql.DB, p string, profile *oauth
 	}
 	// #all-hands 尽力而为 —— 绝不阻断首登(组未建即 no-op)。
 	if companyID != "" {
-		joinAllHands(ctx, db, companyID, userID)
+		onboard.JoinAllHands(ctx, db, companyID, userID)
 	}
 	return &oauthCompletion{userID, profile.email, profile.displayName, companyID}, nil
 }

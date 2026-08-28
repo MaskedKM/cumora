@@ -6,7 +6,7 @@ import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { pool } from '../db/pool.js'
 import {
-  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
+  ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror, MIRROR_BASE,
 } from './_helpers.js'
 
 const USER = 'u-mirror-conv'
@@ -82,6 +82,118 @@ test('[mirror] convene: start → active → transcript(list shape)', async () =
   const transcript = await call(`/convene/${started.json.id}/transcript`)
   assert.equal(transcript.status, 200)
   assert.ok(Array.isArray(transcript.json))
+})
+
+test('[mirror] convene: numeric topic coerces via String semantics (F16)', async () => {
+  const agentA = await seedAgent('a-conv-num')
+  const conv = await call('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'Coerce Room', members: [USER, agentA] }),
+  })
+  assert.equal(conv.status, 201)
+  const started = await call(`/conversations/${conv.json.id}/convene`, {
+    method: 'POST',
+    body: JSON.stringify({ topic: 123 }),
+  })
+  assert.ok([200, 201].includes(started.status), `start=${started.status}`)
+  // TS String(123) === '123' —— flair 即 topic 截 80。
+  assert.equal(started.json.flair, '123')
+})
+
+test('[mirror] convene: restart supersedes prior live session', async () => {
+  const agentA = await seedAgent('a-conv-sup')
+  const conv = await call('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'Supersede Room', members: [USER, agentA] }),
+  })
+  assert.equal(conv.status, 201)
+  const s1 = await call(`/conversations/${conv.json.id}/convene`, {
+    method: 'POST',
+    body: JSON.stringify({ topic: 'first' }),
+  })
+  assert.ok([200, 201].includes(s1.status))
+  const s2 = await call(`/conversations/${conv.json.id}/convene`, {
+    method: 'POST',
+    body: JSON.stringify({ topic: 'second' }),
+  })
+  assert.ok([200, 201].includes(s2.status))
+  const active = await call(`/conversations/${conv.json.id}/convene`)
+  assert.equal(active.status, 200)
+  assert.equal(active.json.id, s2.json.id)
+  assert.equal(active.json.state, 'live')
+})
+
+test('[mirror] convene: TTL sweep reaps zombie live sessions (F6, Go hygiene)', async (t) => {
+  if (!MIRROR_BASE) {
+    // TS 形态靠 orchestrate 自然收尾,无清扫面——本用例只钉 Go 侧
+    // (无编排,会话须由清扫兜底)。
+    t.skip('Go-side sweep has no TS counterpart')
+    return
+  }
+  const agentA = await seedAgent('a-conv-ttl')
+  const conv = await call('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: 'TTL Room', members: [USER, agentA] }),
+  })
+  assert.equal(conv.status, 201)
+  const s1 = await call(`/conversations/${conv.json.id}/convene`, {
+    method: 'POST',
+    body: JSON.stringify({ topic: 'stale' }),
+  })
+  assert.ok([200, 201].includes(s1.status))
+  await pool.query(
+    `UPDATE convene_sessions SET started_at = NOW() - INTERVAL '31 minutes' WHERE id = $1`,
+    [s1.json.id],
+  )
+  const active = await call(`/conversations/${conv.json.id}/convene`)
+  assert.equal(active.status, 200)
+  assert.equal(active.json, null)
+})
+
+test('[mirror] conversation create/title-set coerce non-string values (F16)', async () => {
+  const peer = await seedAgent('a-conv-coerce')
+  // TS String(42) === '42':非串标题不再 400。
+  const conv = await call('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: 42, members: [USER, peer] }),
+  })
+  assert.equal(conv.status, 201)
+  const renamed = await call(`/conversations/${conv.json.id}/title`, {
+    method: 'POST',
+    body: JSON.stringify({ title: 7 }),
+  })
+  assert.equal(renamed.status, 200)
+  assert.equal(renamed.json.title, '7')
+})
+
+test('[mirror] projects create coerces non-string name/description/color (F16)', async () => {
+  const res = await call('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: 123, description: true, color: 456 }),
+  })
+  assert.equal(res.status, 201)
+  assert.equal(res.json.name, '123')
+  assert.equal(res.json.description, 'true')
+  assert.equal(res.json.color, '456')
+  // JS truthy 门:0/''/null → color null。
+  const falsy = await call('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'plain', color: 0 }),
+  })
+  assert.equal(falsy.status, 201)
+  assert.equal(falsy.json.color, null)
+})
+
+test('[mirror] invitation create with sendEmail reports emailDelivery (F11, mock)', async () => {
+  const res = await call(`/companies/${COMPANY}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ email: 'invitee@example.com', sendEmail: true }),
+  })
+  assert.equal(res.status, 201)
+  // EMAIL_DOMAIN 已配 + RESEND_API_KEY 空 → mock 发送成功。
+  assert.deepEqual(res.json.emailDelivery, {
+    attempted: true, ok: true, error: null, skipped: null,
+  })
 })
 
 test('[mirror] email send returns transport envelope (mock mode)', async () => {

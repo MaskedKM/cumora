@@ -21,6 +21,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 )
 
 const inviteTokenBytes = 32
@@ -372,15 +373,46 @@ func create(db *sql.DB) http.HandlerFunc {
 		}
 		auditInvite(r.Context(), db, "invitation_create", me, companyID,
 			r.RemoteAddr, r.UserAgent(), map[string]any{"email": email, "role": role, "maxUses": maxUses, "note": noteDetail})
-		// sendEmail 分支:#58 邮件域真发送;测试不启用(默认 false),按需
-		// 接 email 域后补——当前与 TS 在 sendEmail!=true 时的 emailDelivery
-		// null 形状一致。
+		// F11:sendEmail 分支——email 锁定的邀请可代发信;RESEND_API_KEY
+		// 空时 provider 走 mock;失败只进 emailDelivery,不炸创建(邀请
+		// 行已落库,邀请人手上有 URL)。
+		sendEmail := false
+		if raw, has := body["sendEmail"]; has {
+			var v any
+			if json.Unmarshal(raw, &v) == nil {
+				if b, isBool := v.(bool); isBool {
+					sendEmail = b
+				}
+			}
+		}
+		var emailDelivery any
+		if sendEmail && emailStr != "" {
+			var inviterEmail, displayName string
+			inviterOK := db.QueryRowContext(r.Context(),
+				`SELECT email, display_name FROM users WHERE id = $1`, me).
+				Scan(&inviterEmail, &displayName) == nil
+			var companyName string
+			companyOK := db.QueryRowContext(r.Context(),
+				`SELECT name FROM companies WHERE id = $1`, companyID).Scan(&companyName) == nil
+			if inviterOK && companyOK {
+				inviterName := displayName
+				if inviterName == "" {
+					inviterName = inviterEmail
+				}
+				emailDelivery = sendInvitationEmail(r.Context(), db, invitationEmailArgs{
+					To: emailStr, InviterName: inviterName, InviterEmail: inviterEmail,
+					CompanyName: companyName, Role: role, Note: note, InviteURL: buildInviteURL(token),
+				})
+			} else {
+				emailDelivery = invitationEmailDelivery{Attempted: false, OK: false, Error: "inviter or company row missing", Skipped: nil}
+			}
+		}
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 			"id": tokenHash, "token": token, "url": buildInviteURL(token),
 			"email": email, "role": role, "note": note,
 			"maxUses": maxUses, "useCount": 0,
 			"createdAt": httpx.ISOms(time.Now()), "expiresAt": httpx.ISOms(expiresAt),
-			"status": "active", "emailDelivery": nil,
+			"status": "active", "emailDelivery": emailDelivery,
 		})
 	}
 }
@@ -617,7 +649,7 @@ func accept(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		joinAllHands(r.Context(), db, companyID, me)
+		onboard.JoinAllHands(r.Context(), db, companyID, me)
 		seedMemberDms(r.Context(), db, companyID, me)
 		var invitedBy sql.NullString
 		_ = db.QueryRowContext(r.Context(),
@@ -693,13 +725,13 @@ func conveneStart(db *sql.DB) http.HandlerFunc {
 		}
 		var body map[string]json.RawMessage
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		// F16:TS 是 String(body.topic ?? 'live work session')——非串值
+		// 强转(123→"123"),仅 null/缺省落默认。
 		topic := "live work session"
 		if raw, has := body["topic"]; has {
 			var v any
-			if json.Unmarshal(raw, &v) == nil {
-				if s, isStr := v.(string); isStr {
-					topic = s
-				}
+			if json.Unmarshal(raw, &v) == nil && v != nil {
+				topic = httpx.JSToString(v)
 			}
 		}
 		var convoTitle string
@@ -710,6 +742,9 @@ func conveneStart(db *sql.DB) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "conversation "+id+" not found")
 			return
 		}
+		// F6:Go 侧无服务端编排,会话无人终结——新会话开场即了结本会话
+		// 既有 live(被新会话取代),恢复 TS 编排自然结束时的终态。
+		sweepStaleConvene(r.Context(), db, id, true)
 		sessionID := "cs-" + randUUID()
 		flair := utf16Cap(topic, 80)
 		startedAt := time.Now().UTC()
@@ -740,12 +775,60 @@ func conveneStart(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+/* ───────── convene(F6 清扫 + 端点) ───────── */
+
+// sweepStaleConvene 了结指定会话的 live convene 会话:supersede=true 时
+// 全部(Go 无服务端编排,新会话开场即取代旧 live);否则仅超时僵尸
+// (started_at < NOW() - 30min)。每个被了结的会话补发 TS orchestrate
+// 结束时的 convene ended 事件,保持订阅端状态一致。
+func sweepStaleConvene(ctx context.Context, db *sql.DB, conversationID string, supersede bool) {
+	stale := `
+		SELECT s.id, s.conversation_id, c.company_id
+		  FROM convene_sessions s
+		  JOIN conversations c ON c.id = s.conversation_id
+		 WHERE s.conversation_id = $1 AND s.state = 'live'
+		   AND ($2::bool OR s.started_at < NOW() - INTERVAL '30 minutes')`
+	rows, err := db.QueryContext(ctx, stale, conversationID, supersede)
+	if err != nil {
+		return
+	}
+	type swept struct {
+		id, convID string
+		companyID  sql.NullString
+	}
+	var all []swept
+	for rows.Next() {
+		var s swept
+		if rows.Scan(&s.id, &s.convID, &s.companyID) == nil {
+			all = append(all, s)
+		}
+	}
+	rows.Close()
+	for _, s := range all {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE convene_sessions SET state = 'ended', ended_at = NOW() WHERE id = $1`, s.id); err != nil {
+			continue
+		}
+		payload := map[string]any{
+			"type": "convene", "sessionId": s.id, "conversationId": s.convID,
+			"kind": "ended",
+		}
+		if s.companyID.Valid {
+			payload["companyId"] = s.companyID.String
+		}
+		_ = events.PublishRaw(ctx, "cumora:convene", mustMJSON(payload))
+	}
+}
+
 func conveneActive(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if _, _, ok := requireConvoMember(w, r, db, id); !ok {
 			return
 		}
+		// F6:读侧兜底——超时(30min)live 僵尸就地了结(TS 编排崩溃同样
+		// 会留 live 僵尸,30min 远超编排时长,不影响真进行中的会话)。
+		sweepStaleConvene(r.Context(), db, id, false)
 		var sessionID, title, flair, startedBy, state string
 		var startedAt time.Time
 		var endedAt sql.NullTime
@@ -830,38 +913,8 @@ func conveneTranscript(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-/* ───────── all-hands / DM 种子(onboardCompany.ts 同语义) ───────── */
-
-func joinAllHands(ctx context.Context, db *sql.DB, companyID, participantID string) {
-	var convID sql.NullString
-	if err := db.QueryRowContext(ctx,
-		`SELECT all_hands_conversation_id FROM companies WHERE id = $1`, companyID).Scan(&convID); err != nil || !convID.Valid {
-		return
-	}
-	res, err := db.ExecContext(ctx, `
-		UPDATE conversations
-		   SET members = members || to_jsonb(ARRAY[$2::text]), updated_at = NOW()
-		 WHERE id = $1 AND NOT (members @> to_jsonb(ARRAY[$2::text]))`, convID.String, participantID)
-	if err != nil {
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return
-	}
-	var seq int
-	if err := db.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence)
-		VALUES ($1, 2)
-		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-		RETURNING next_sequence - 1`, convID.String).Scan(&seq); err != nil {
-		seq = 1
-	}
-	body, _ := json.Marshal(map[string]string{"kind": "joined", "participantId": participantID})
-	_, _ = db.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
-		VALUES ($1, $2, $3, 'system', $4, $5, $6)`,
-		"m-"+randUUID(), convID.String, participantID, string(body), seq, companyID)
-}
+/* ───────── all-hands / DM 种子(onboardCompany.ts 同语义;
+   joinAllHands 已合一到 onboard.JoinAllHands —— F7) ───────── */
 
 func seedMemberDms(ctx context.Context, db *sql.DB, companyID, memberID string) {
 	rows, err := db.QueryContext(ctx, `

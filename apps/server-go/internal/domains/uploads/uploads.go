@@ -41,11 +41,12 @@ func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string,
 	return companyID, true
 }
 
+// bodyString:F16 —— TS 侧 String(x ?? ”) 强转(name/mime/key/url/
+// dataBase64 同语义),非串不再吞成空串。
 func bodyString(body map[string]json.RawMessage, key string) string {
 	var v any
 	_ = json.Unmarshal(body[key], &v)
-	s, _ := v.(string)
-	return s
+	return httpx.JSStringOrNullish(v)
 }
 
 // presign:本地模式恒 501(TS storage.mode!=='r2' 分支——先于 body 校验,
