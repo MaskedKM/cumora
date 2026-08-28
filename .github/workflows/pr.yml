@@ -208,16 +208,9 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
-      # P0 tripwire: the BIG (brain) model may ONLY do real, heavy tasks.
-      # Static scan runs BEFORE npm ci — no install, no deps — so a
-      # broken dependency tree can never mask the tripwire (the image
-      # ships node already).
-      - name: Big-brain guard (P0, residual TS surface)
-        run: node scripts/guard-big-brain.mjs
-      # P1 tripwire: every sub2api callsite must go through
-      # getTrackedLlmClient() so the llm_calls ledger captures the spend.
-      - name: LLM-tracked guard (P1, residual TS surface)
-        run: node scripts/guard-llm-tracked.mjs
+      # #132: big-brain / llm-tracked 守卫退役——扫描面(TS LLM 调用)已随
+      # #70 删净,LLM 调用全在 Go 侧(byoa-daemon 本地小脑门控 + 代码评审),
+      # 两个脚本对残余 TS 面(sidecar/workers/harness)零命中空转。
       - run: npm ci
       # `npm test` runs workers/**/*.test.ts too, and the email-gate
       # worker has its own dependencies (postal-mime) that the root

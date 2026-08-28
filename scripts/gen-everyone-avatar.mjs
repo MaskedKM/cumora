@@ -12,7 +12,7 @@
  *
  * Run once, commit the output:
  *
- *   node scripts-gen-everyone-avatar.mjs
+ *   node scripts/gen-everyone-avatar.mjs
  *
  * Re-run only if the prompt or aesthetic intentionally changes. Don't
  * re-run on autopilot — the asset is meant to be stable.

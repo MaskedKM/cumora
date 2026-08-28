@@ -31,9 +31,6 @@ const PENDING_IMPLEMENTATION = new Set([
   'GET /api/admin/waitlist',
   'POST /api/admin/waitlist/:x/approve',
   'POST /api/admin/waitlist/:x/reject',
-  'GET /api/agents/:x/autonomy',
-  'PUT /api/agents/:x/autonomy',
-  'POST /api/auth/apple/native',
 ])
 const norm = (s) => s.replace(/\{[^}]+\}/g, ':x').replace(/:[^/]+/g, ':x').replace(/\/+/g, '/').replace(/\/$/, '') || '/'
 

@@ -35,7 +35,7 @@ npm install
 # Generate App Icon + Splash assets from build/icon.png.
 # `sharp` is required just for this script — install transient.
 npm install --no-save sharp
-node scripts-gen-ios-assets.mjs
+node scripts/gen-ios-assets.mjs
 
 # Build the web bundle and copy native assets/plugins into ios/.
 npm run mobile:sync

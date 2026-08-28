@@ -277,6 +277,9 @@ spawnChild('go-server', GO_BIN, [], {
     GITHUB_CLIENT_ID: 'stub-id',
     GITHUB_CLIENT_SECRET: 'stub-secret',
     CUMORA_OAUTH_GITHUB_BASE: 'http://127.0.0.1:18994',
+    // mirror-apple 的桩约定(同 :18994 款):JWKS 桩由测试文件自身起,
+    // Go 服的 apple 验签指到它。
+    CUMORA_APPLE_JWKS_URL: 'http://127.0.0.1:18995/keys',
     CUMORA_AUTH_RETURN_ALLOWLIST: 'http://localhost:5180/',
     YJS_SIDECAR_URL: `http://127.0.0.1:${SIDECAR_PORT}`,
     YJS_SIDECAR_TOKEN: 't',

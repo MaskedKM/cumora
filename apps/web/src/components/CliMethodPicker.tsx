@@ -1,8 +1,9 @@
 /**
  * The pairing/run command's launch method: the published npm package
- * (`npx cumora@latest` — the default for normal users) or a local repo
- * build (`node <path>/agent-cli/dist/cli.js` — for running from source or
- * riding unreleased changes, e.g. a fresh BYOA engine before it ships).
+ * (`npx cumora@latest` — the default for normal users) or a local build
+ * of the BYOA daemon Go binary (`<path>/apps/byoa-daemon/cumora` — for
+ * riding unreleased daemon changes before they ship; #70 retired the
+ * agent-cli TS shim this used to point at).
  *
  * The choice and the local path persist in localStorage so the onboarding
  * screen and the Me→Computers panel agree across sessions.
@@ -17,7 +18,7 @@ const LS_PATH = 'cumora.cliLocalPath'
 
 /** Shown (and used verbatim in the command) until the user types a path —
  *  visibly wrong-but-editable beats a silently broken copy. */
-export const LOCAL_CLI_PLACEHOLDER = '~/Code/cumora/agent-cli/dist/cli.js'
+export const LOCAL_CLI_PLACEHOLDER = '~/Code/cumora/apps/byoa-daemon/cumora'
 
 export function useCliLaunch(): {
   method: CliMethod
@@ -38,9 +39,10 @@ export function useCliLaunch(): {
   // Quote the local path ONLY when it contains whitespace: quoting breaks
   // tilde expansion (POSIX shells don't expand `~` inside quotes — and the
   // placeholder is tilde-leading), while an unquoted spaced path breaks
-  // argv. Conditional quoting keeps both copy-pasteable.
+  // argv. Conditional quoting keeps both copy-pasteable. The local entry is
+  // a self-contained binary, so no `node` prefix.
   const localEntry = localPath.trim() || LOCAL_CLI_PLACEHOLDER
-  const cli = method === 'npx' ? 'npx cumora@latest' : `node ${/\s/.test(localEntry) ? `"${localEntry}"` : localEntry}`
+  const cli = method === 'npx' ? 'npx cumora@latest' : (/\s/.test(localEntry) ? `"${localEntry}"` : localEntry)
   return { method, setMethod, localPath, setLocalPath, cli }
 }
 
