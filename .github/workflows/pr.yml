@@ -3,7 +3,7 @@
 #
 # Runs on the ser8 self-hosted fleet (labels: self-hosted,linux,ser8).
 # The two runner slots share one 4-core/4GB cgroup, so this workflow is
-# TWO jobs — go (gofmt + vet + build, golang:1.24-alpine container) and
+# TWO jobs — go (gofmt + vet + build + test, golang:1.24-alpine container) and
 # checks (guards + lint + typecheck + unit + integration, node:24
 # container + service containers) — matching the fleet's parallelism.
 # (checks used to be two jobs, quick + tests; they merged in #115's CI
@@ -99,8 +99,10 @@ jobs:
         timeout-minutes: 3
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
-      - name: vet + build (server)
-        run: cd apps/server-go && go vet ./... && go build ./...
+      # #133: server-go 已有 httpx/contacts/runtime 单测,与 build 同容器
+      # 零增量成本;不加 -run 过滤,后续新增 *_test.go 自动纳入。
+      - name: vet + build + test (server)
+        run: cd apps/server-go && go vet ./... && go build ./... && go test ./... -count=1
       # #63:BYOA daemon 是独立 Go 模块(单二进制,无 DB/Redis 依赖)——
       # vet + build + 协议级 stub-server 测试(stub 全进程内,无外部服务)。
       - name: vet + test (byoa-daemon)
