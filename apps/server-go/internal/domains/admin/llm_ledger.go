@@ -213,9 +213,9 @@ func getLlmSummary(db *sql.DB, sinceDays int, companyFilter string, hasCompany b
 	type sumRow struct {
 		isTotal               int
 		companyID             sql.NullString
-		calls, costUsd        string
-		input, cached, output string
-		failed, rateLimited   string
+		calls, costUsd        sql.NullString
+		input, cached, output sql.NullString
+		failed, rateLimited   sql.NullString
 	}
 	var total *sumRow
 	activeTenants := 0
@@ -239,9 +239,17 @@ func getLlmSummary(db *sql.DB, sinceDays int, companyFilter string, hasCompany b
 	if total != nil {
 		t = *total
 	}
-	totalCalls := atoi64(t.calls)
-	totalInput := atoi64(t.input)
-	totalCached := atoi64(t.cached)
+	// NullString 显式化:空表时 GROUPING SETS 总计行的 SUM() 为 NULL
+	// (TS Number(null)=0;不能靠 scan 报错丢行兜零——评审批注)。
+	nz := func(v sql.NullString) string {
+		if v.Valid {
+			return v.String
+		}
+		return "0"
+	}
+	totalCalls := atoi64(nz(t.calls))
+	totalInput := atoi64(nz(t.input))
+	totalCached := atoi64(nz(t.cached))
 	denom := totalInput + totalCached
 	cacheHitRate := any(nil)
 	if denom > 0 {
@@ -249,14 +257,14 @@ func getLlmSummary(db *sql.DB, sinceDays int, companyFilter string, hasCompany b
 	}
 	failureRate := 0.0
 	if totalCalls > 0 {
-		failureRate = float64(atoi64(t.failed)) / float64(totalCalls)
+		failureRate = float64(atoi64(nz(t.failed))) / float64(totalCalls)
 	}
 	return map[string]any{
 		"sinceDays": sinceDays, "totalCalls": totalCalls,
-		"totalCostUsd":     atof64(t.costUsd),
+		"totalCostUsd":     atof64(nz(t.costUsd)),
 		"totalInputTokens": totalInput, "totalCachedInputTokens": totalCached,
-		"totalOutputTokens": atoi64(t.output),
-		"failureRate":       failureRate, "rateLimitedCalls": atoi64(t.rateLimited),
+		"totalOutputTokens": atoi64(nz(t.output)),
+		"failureRate":       failureRate, "rateLimitedCalls": atoi64(nz(t.rateLimited)),
 		"activeTenants": activeTenants, "cacheHitRate": cacheHitRate,
 	}, nil
 }

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -32,17 +33,17 @@ type userRowDb struct {
 	tier             string
 	isAdmin          bool
 	sub2apiUserID    sql.NullInt64
-	createdAt        string
-	lastLoginAt      sql.NullString
+	createdAt        time.Time
+	lastLoginAt      sql.NullTime
 	companyCount     int
-	suspendedAt      sql.NullString
+	suspendedAt      sql.NullTime
 	suspensionReason sql.NullString
 	suspendedBy      sql.NullString
 }
 
 const userColsSQL = `u.id, u.email, u.display_name, u.avatar_url, u.tier, u.is_admin, u.sub2api_user_id,
-            u.created_at::text, u.last_login_at::text,
-            u.suspended_at::text, u.suspension_reason, u.suspended_by,
+            u.created_at, u.last_login_at,
+            u.suspended_at, u.suspension_reason, u.suspended_by,
             (SELECT COUNT(*)::int FROM company_members cm WHERE cm.user_id = u.id) AS company_count`
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -68,6 +69,15 @@ func nullStrAny(v sql.NullString) any {
 	return nil
 }
 
+// nullTimeAny:pg Date → JSON.stringify 的 ISO 形态(TS 线格式;评审批
+// 注:裸 ::text 会落 PG 文本格式,与基线及自家惯例分叉)。
+func nullTimeAny(v sql.NullTime) any {
+	if v.Valid {
+		return httpx.ISOms(v.Time)
+	}
+	return nil
+}
+
 func rowToUser(r userRowDb) map[string]any {
 	avatar := any(nil)
 	if r.avatarURL.Valid && r.avatarURL.String != "" {
@@ -82,9 +92,9 @@ func rowToUser(r userRowDb) map[string]any {
 	return map[string]any{
 		"id": r.id, "email": r.email, "name": r.displayName, "avatarUrl": avatar,
 		"tier": r.tier, "isAdmin": r.isAdmin, "sub2apiUserId": sub2api,
-		"createdAt": r.createdAt, "lastLoginAt": nullStrAny(r.lastLoginAt),
+		"createdAt": httpx.ISOms(r.createdAt), "lastLoginAt": nullTimeAny(r.lastLoginAt),
 		"companyCount": r.companyCount,
-		"suspended":    r.suspendedAt.Valid, "suspendedAt": nullStrAny(r.suspendedAt),
+		"suspended":    r.suspendedAt.Valid, "suspendedAt": nullTimeAny(r.suspendedAt),
 		"suspensionReason": nullStrAny(r.suspensionReason), "suspendedBy": nullStrAny(r.suspendedBy),
 	}
 }
@@ -160,8 +170,11 @@ func usersList(db *sql.DB) http.HandlerFunc {
 			items = append(items, rowToUser(u))
 		}
 		var totalStr string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*)::text FROM users u `+whereSql, filterParams...).Scan(&totalStr)
+		if err := db.QueryRowContext(r.Context(),
+			`SELECT COUNT(*)::text FROM users u `+whereSql, filterParams...).Scan(&totalStr); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
 		total, _ := strconv.Atoi(totalStr)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"items": items, "total": total, "limit": limit, "offset": offset,
@@ -186,7 +199,7 @@ func userGet(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		cRows, err := db.QueryContext(r.Context(),
-			`SELECT c.id, c.name, c.slug, cm.role, c.created_at::text,
+			`SELECT c.id, c.name, c.slug, cm.role, c.created_at,
 			        (SELECT COUNT(*)::int FROM participants p
 			          WHERE p.company_id = c.id AND p.kind = 'agent' AND p.departed_at IS NULL) AS agent_count
 			   FROM company_members cm
@@ -200,15 +213,16 @@ func userGet(db *sql.DB) http.HandlerFunc {
 		defer cRows.Close()
 		companies := []map[string]any{}
 		for cRows.Next() {
-			var cid, name, slug, createdAt string
+			var cid, name, slug string
 			var role sql.NullString
+			var createdAt time.Time
 			var agentCount int
 			if cRows.Scan(&cid, &name, &slug, &role, &createdAt, &agentCount) != nil {
 				continue
 			}
 			companies = append(companies, map[string]any{
 				"id": cid, "name": name, "slug": slug, "role": nullStrAny(role),
-				"createdAt": createdAt, "agentCount": agentCount,
+				"createdAt": httpx.ISOms(createdAt), "agentCount": agentCount,
 			})
 		}
 		out := rowToUser(u)
@@ -412,8 +426,8 @@ type waitlistEntryDb struct {
 	avatarURL   sql.NullString
 	status      string
 	note        sql.NullString
-	requestedAt string
-	decidedAt   sql.NullString
+	requestedAt time.Time
+	decidedAt   sql.NullTime
 	decidedBy   sql.NullString
 }
 
@@ -427,8 +441,8 @@ func rowToWaitlist(e waitlistEntryDb) map[string]any {
 	return map[string]any{
 		"id": e.id, "provider": e.provider, "providerId": e.providerID,
 		"email": e.email, "displayName": e.displayName, "avatarUrl": avatar,
-		"status": e.status, "note": nullStrAny(e.note), "requestedAt": e.requestedAt,
-		"decidedAt": nullStrAny(e.decidedAt), "decidedBy": nullStrAny(e.decidedBy),
+		"status": e.status, "note": nullStrAny(e.note), "requestedAt": httpx.ISOms(e.requestedAt),
+		"decidedAt": nullTimeAny(e.decidedAt), "decidedBy": nullStrAny(e.decidedBy),
 	}
 }
 
@@ -473,12 +487,15 @@ func waitlistList(db *sql.DB) http.HandlerFunc {
 		}
 		filterParams := append([]any{}, params...)
 		var totalStr string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*)::text FROM waitlist `+whereSql, filterParams...).Scan(&totalStr)
+		if err := db.QueryRowContext(r.Context(),
+			`SELECT COUNT(*)::text FROM waitlist `+whereSql, filterParams...).Scan(&totalStr); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
 		params = append(params, limit, offset)
 		rows, err := db.QueryContext(r.Context(),
 			`SELECT id, provider, provider_id, email, display_name, avatar_url, status, note,
-			        requested_at::text, decided_at::text, decided_by
+			        requested_at, decided_at, decided_by
 			   FROM waitlist `+whereSql+`
 			  ORDER BY requested_at DESC
 			  LIMIT $`+strconv.Itoa(len(params)-1)+` OFFSET $`+strconv.Itoa(len(params)), params...)

@@ -148,11 +148,12 @@ func ApproveWaitlist(ctx context.Context, db *sql.DB, waitlistID, decidedBy stri
 		companyID = &co
 	}
 
-	// provider 头像转存本地;TS 审批语义 = mirror 失败(或空)落
-	// gravatar——oauthMirrorAvatar 失败时回退原 URL,据此可区分:返回值
-	// 仍等于输入即未成功转存(成功路径是本地 /uploads URL)。
+	// provider 头像转存本地(TS admin.ts:575 `mirrorAvatar(...) ??
+	// gravatar`):mirror 一切失败路径回退**原 provider URL**(非 null,
+	// `??` 不触发)→ 保留真头像;仅空输入得 "" 才落 gravatar——与
+	// oauthFindOrCreate Path C(oauth.go:485)同款判断。
 	avatar := oauthMirrorAvatar(userID, row.avatarURL)
-	if avatar == row.avatarURL {
+	if avatar == "" {
 		avatar = gravatarURL(row.email)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -360,9 +361,14 @@ func sendWaitlistApprovedEmail(to, displayName string) {
 		signInRaw = os.Getenv("AUTH_DONE_URL")
 	}
 	httpURL := approvedEntryUrl(signInRaw)
-	firstName := strings.TrimSpace(strings.SplitN(displayName, " ", 2)[0])
+	// TS `(displayName.split(/\s+/)[0] || displayName).trim() || 'there'`
+	// —— 任意空白切分,前导空白不吃进首词。
+	firstName := ""
+	if fields := strings.Fields(displayName); len(fields) > 0 {
+		firstName = fields[0]
+	}
 	if firstName == "" {
-		firstName = displayName
+		firstName = strings.TrimSpace(displayName)
 	}
 	if firstName == "" {
 		firstName = "there"
@@ -381,7 +387,7 @@ func sendWaitlistApprovedEmail(to, displayName string) {
 		ctaLine,
 		"Use the same Google or GitHub account you used to join the waitlist.",
 		"",
-		"Don't have the desktop app yet? Get it at https://cumora.ai/?download=1",
+		"Don't have the desktop app yet? Get it at https://cumora.ai/?download=1#download",
 		"",
 		"Reply to this email if anything trips you up — a real person reads it.",
 		"",

@@ -314,6 +314,26 @@ test('[mirror] approve refuses when the email already has a user', async () => {
   })
 })
 
+test('[mirror] approve 404s on an unknown waitlist id; mirror failure keeps the provider avatar', async () => {
+  const admin = await seedAdmin()
+  await withClient(admin.userId, async (c) => {
+    const missing = await c.post('/admin/waitlist/wl-does-not-exist/approve')
+    assert.equal(missing.status, 404)
+    assert.equal(missing.body.error, 'waitlist entry not found')
+  })
+  // TS admin.ts mirrorAvatar:一切失败路径回退原 provider URL(非 null,
+  // `?? gravatar` 不触发)——不可达地址必须原样保留,不得换 gravatar。
+  const email = `avatar-${randomUUID().slice(0, 6)}@approve.test`
+  const wlId = await seedWaitlistRow({ email })
+  await pool.query(`UPDATE waitlist SET avatar_url = 'http://127.0.0.1:9/unreachable.png' WHERE id = $1`, [wlId])
+  await withClient(admin.userId, async (c) => {
+    const res = await c.post(`/admin/waitlist/${wlId}/approve`)
+    assert.equal(res.status, 200)
+    const { rows } = await pool.query(`SELECT avatar_url FROM users WHERE id = $1`, [res.body.userId])
+    assert.equal(rows[0].avatar_url, 'http://127.0.0.1:9/unreachable.png')
+  })
+})
+
 test('[mirror] approve with a pending invitation skips the personal workspace', async () => {
   const admin = await seedAdmin()
   const email = `invited-${randomUUID().slice(0, 6)}@approve.test`
