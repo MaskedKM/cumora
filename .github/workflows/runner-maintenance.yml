@@ -46,8 +46,12 @@ jobs:
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 10
     steps:
+      # No stderr suppression: a permission-denied here (root-owned
+      # subdirs under the cache) is exactly the signal this report exists
+      # to surface — du's nonzero exit is still swallowed by || true so
+      # the step never fails the job.
       - name: Disk state before
-        run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* 2>/dev/null || true
+        run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
       # Dangling images (old rolling-tag layers), stopped containers, unused
       # networks. NOT --all (tagged images stay cached for fast job startup),
       # NOT --volumes (never risks data).
@@ -73,4 +77,4 @@ jobs:
             echo "no root-owned residue — nothing to do"
           fi
       - name: Disk state after
-        run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* 2>/dev/null || true
+        run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true

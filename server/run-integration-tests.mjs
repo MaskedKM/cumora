@@ -22,8 +22,8 @@
  */
 import { spawn } from 'node:child_process'
 import { readdirSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // Load the developer's .env so RESEND_API_KEY / EMAIL_DOMAIN /
 // INTEGRATION_DATABASE_URL set there are visible to our gating checks
 // before we spawn the test child. The test child also imports

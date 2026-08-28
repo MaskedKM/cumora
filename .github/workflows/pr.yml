@@ -75,8 +75,11 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
       HTTPS_PROXY: http://host.docker.internal:7890
+      https_proxy: http://host.docker.internal:7890
       HTTP_PROXY: http://host.docker.internal:7890
+      http_proxy: http://host.docker.internal:7890
       NO_PROXY: localhost,127.0.0.1,host.docker.internal
+      no_proxy: localhost,127.0.0.1,host.docker.internal
       GOCACHE: /go/cache
       GOMODCACHE: /go/modcache
       CGO_ENABLED: '0'
@@ -159,12 +162,17 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # Egress via the host's Mihomo (see header). Service names stay off
-      # the proxy path (pg/redis clients don't proxy anyway — belt and
-      # braces).
+      # Egress via the host's Mihomo (see header). Lowercase twins matter:
+      # libcurl only honors lowercase http_proxy for http:// URLs (all
+      # current egress is https, this future-proofs it). Service names
+      # stay off the proxy path (pg/redis clients don't proxy anyway —
+      # belt and braces).
       HTTPS_PROXY: http://host.docker.internal:7890
+      https_proxy: http://host.docker.internal:7890
       HTTP_PROXY: http://host.docker.internal:7890
+      http_proxy: http://host.docker.internal:7890
       NO_PROXY: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
+      no_proxy: localhost,127.0.0.1,postgres,redis,redis2,redis3,host.docker.internal
       npm_config_cache: /npm/cache
       # Unit tests + non-sharded runs point here (shard steps override
       # INTEGRATION_DATABASE_URL/REDIS_URL per shard).
@@ -258,9 +266,9 @@ jobs:
       # One shard per database + Redis instance (pub/sub is instance-wide
       # — separate Redis DB indexes would still cross-talk). Shards run
       # in parallel; each stays internally serial via
-      # --test-concurrency=1 (run-integration-tests.mjs). tee keeps
-      # per-shard logs distinct and live; the [shardN] prefix keeps the
-      # interleaved step output readable.
+      # --test-concurrency=1 (run-integration-tests.mjs). sed -u keeps
+      # the [shardN] prefixes unbuffered so the interleaved step output
+      # stays live and readable.
       - name: Integration tests (3 shards, own DB + Redis each)
         shell: bash
         run: |
@@ -270,7 +278,7 @@ jobs:
             INTEGRATION_SHARD="$i/3" \
             INTEGRATION_DATABASE_URL="postgres://cumora:cumora@postgres:5432/cumora_test$i" \
             REDIS_URL="redis://$redis_name:6379" \
-            npm run test:integration 2>&1 | sed "s/^/[shard$i] /" | tee "/tmp/shard$i.log"
+            npm run test:integration 2>&1 | sed -u "s/^/[shard$i] /"
           }
           run_shard 1 redis  & p1=$!
           run_shard 2 redis2 & p2=$!
@@ -281,9 +289,9 @@ jobs:
           wait "$p3" || rc=1
           exit $rc
       # The container runs as root but shares the workspace with the host
-      # runner user — give ownership back so the next host job (go) can
-      # clean the workspace. Without this, root-owned files from the
-      # container break the host job's checkout with EACCES.
+      # runner user — give ownership back so the runner's next workspace
+      # cleanup can delete it. Without this, root-owned files from the
+      # container break the next job's checkout with EACCES.
       - name: Restore workspace ownership for the host runner
         if: always()
         run: |
