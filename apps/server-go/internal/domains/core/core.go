@@ -30,6 +30,9 @@ func Mount(mux *http.ServeMux, db *sql.DB, rdb *redis.Client) {
 	oauthDeps := oauthDeps{db: db, rdb: rdb}
 	mux.HandleFunc("GET /api/auth/start/{provider}", oauthStart(oauthDeps))
 	mux.HandleFunc("GET /api/auth/callback/{provider}", oauthCallback(oauthDeps))
+	// iOS 原生 Sign in with Apple(#123):匿名路由,验 JWKS 后以 JSON
+	// 回会话 token(无浏览器重定向)。
+	mux.HandleFunc("POST /api/auth/apple/native", appleNative(oauthDeps))
 	mux.HandleFunc("GET /api/me", me(db))
 	mux.HandleFunc("GET /api/me/quota", quota())
 	mux.HandleFunc("GET /api/me/preferences", preferencesGet(db))
