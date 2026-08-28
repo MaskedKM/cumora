@@ -290,7 +290,7 @@ func obsLlmTopAgents(db *sql.DB, sinceDays, limit int, companyFilter string) ([]
 			"agentName": nullStrAny(agentName), "agentAvatarUrl": nullStrAny(avatarURL),
 			"agentAvatarBg": nullStrAny(avatarBg), "agentInitial": nullStrAny(initial),
 			"companyName": nullStrAny(companyName),
-			"costUsd": cost, "calls": calls,
+			"costUsd":     cost, "calls": calls,
 			"inputTokens": inTok, "cachedInputTokens": cachedIn, "outputTokens": outTok,
 		})
 	}

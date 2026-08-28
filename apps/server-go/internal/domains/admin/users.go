@@ -58,17 +58,17 @@ func (r *adminUserRow) toWire() map[string]any {
 	}
 	return map[string]any{
 		"id": r.id, "email": r.email, "name": r.displayName,
-		"avatarUrl":         avatarOrGravatar(r.avatarURL, r.email),
-		"tier":              r.tier,
-		"isAdmin":           r.isAdmin,
-		"sub2apiUserId":     sub2api,
-		"createdAt":         isoTime(r.createdAt),
-		"lastLoginAt":       nullTimeAny(r.lastLoginAt),
-		"companyCount":      r.companyCount,
-		"suspended":         r.suspendedAt.Valid,
-		"suspendedAt":       nullTimeAny(r.suspendedAt),
-		"suspensionReason":  nullStrAny(r.suspensionReason),
-		"suspendedBy":       nullStrAny(r.suspendedBy),
+		"avatarUrl":        avatarOrGravatar(r.avatarURL, r.email),
+		"tier":             r.tier,
+		"isAdmin":          r.isAdmin,
+		"sub2apiUserId":    sub2api,
+		"createdAt":        isoTime(r.createdAt),
+		"lastLoginAt":      nullTimeAny(r.lastLoginAt),
+		"companyCount":     r.companyCount,
+		"suspended":        r.suspendedAt.Valid,
+		"suspendedAt":      nullTimeAny(r.suspendedAt),
+		"suspensionReason": nullStrAny(r.suspensionReason),
+		"suspendedBy":      nullStrAny(r.suspendedBy),
 	}
 }
 
