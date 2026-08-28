@@ -316,8 +316,8 @@ func appleNative(deps oauthDeps) http.HandlerFunc {
 							companyID = result.companyID
 						}
 						httpx.WriteJSON(w, http.StatusOK, map[string]any{
-							"token":    token,
-							"user":     map[string]any{"id": result.userID, "email": result.email, "displayName": result.displayName},
+							"token":     token,
+							"user":      map[string]any{"id": result.userID, "email": result.email, "displayName": result.displayName},
 							"companyId": companyID,
 						})
 						return

@@ -109,7 +109,7 @@ test('[mirror-apple] 新用户全链:验签 → 建号建区 → 会话 token �
     headers: { authorization: `Bearer ${r.json.token}` },
   })
   assert.equal(me.status, 200)
-  assert.equal((await me.json()).user.id, ident.user_id)
+  assert.equal((await me.json() as any).user.id, ident.user_id)
 })
 
 test('[mirror-apple] 回头客:token 不带 email,靠已链 sub 解析', async () => {
