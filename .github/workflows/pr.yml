@@ -21,9 +21,13 @@
 #     Redis DB indexes would still cross-talk). Shards stay internally
 #     serial (--test-concurrency=1 — concurrent TRUNCATEs on a shared
 #     DB deadlock at the catalog-lock level).
-#   - checkout steps carry timeout-minutes: 3 — a hung fetch fails in
-#     3 minutes (rerun the run) instead of hanging ~15min into a
-#     concurrency cancel.
+#   - Source arrives as a codeload tarball, not actions/checkout (#166):
+#     the git smart-HTTP exchange (POST /git-upload-pack — unbounded
+#     streaming body) is the one traffic class the flaky upstream chokes
+#     on at zero bytes, while plain GETs with Content-Length (tarball
+#     included) stay fast. No .git dir — nothing in this workflow runs
+#     git; the download step keeps a fail-fast ceiling like the old
+#     checkout timeout did.
 #
 # ALL jobs run in containers: PR code never executes as the host runner
 # user (runner is docker-group = host-root-equivalent). pgvector is
@@ -44,6 +48,12 @@ name: PR
 on:
   pull_request:
     branches: [main, my-custom]
+  # Manual lever: the pull_request event pipeline has gone silent before
+  # (2026-08-28/29 — synchronize/opened created no runs) while API-initiated
+  # actions kept working. Dispatch runs this same workflow on any branch
+  # without webhook delivery; note it checks the branch head, not the PR
+  # merge ref.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same PR — frees the two runner slots
 # for the newest push instead of finishing stale ones.
@@ -86,17 +96,30 @@ jobs:
       GOCACHE: /go/cache
       GOMODCACHE: /go/modcache
       CGO_ENABLED: '0'
-      # `go build` embeds VCS info by default; container-root git refuses the
-      # runner-owned checkout ("dubious ownership", exit 128) whenever this
-      # job runs after another job chowned the workspace back. The check
-      # binary is never shipped — no VCS stamping needed.
+      # `go build` embeds VCS info by default when a .git dir exists; the
+      # tarball pickup (#166) ships none, so auto would skip stamping on
+      # its own — the flag stays as a belt against checkout ever coming
+      # back (its root-owned .git trips "dubious ownership", exit 128).
+      # The check binary is never shipped — no VCS stamping needed.
       GOFLAGS: -buildvcs=false
     steps:
-      # 3-minute ceiling: a hung fetch (ser8↔GitHub link truncation) fails
-      # fast here instead of hanging ~15min into a concurrency cancel —
-      # rerun the failed run per the ops playbook.
-      - uses: actions/checkout@v4
-        timeout-minutes: 3
+      # git-free source pickup (#166): codeload tarball over a plain GET —
+      # the smart-HTTP POST streams without Content-Length and is what the
+      # upstream stalls on. Anonymous on purpose: codeload rejects requests
+      # carrying an Authorization header (the api.github.com /tarball
+      # redirect path 401s because of it), and the fork is public anyway.
+      # The workspace wipe matters: the runner reuses _work across runs and
+      # checkout used to clean it — without this, files deleted in later
+      # commits would linger and poison builds. (alpine ships no curl —
+      # apk add is itself a GET-class fetch through the same proxy.)
+      - name: Download source (tarball, git-free)
+        timeout-minutes: 5
+        run: |
+          apk add -q --no-cache curl
+          curl -fsSL -o /tmp/repo.tar.gz \
+            "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+          tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
       # #133: server-go 已有 httpx/contacts/runtime 单测,与 build 同容器
@@ -201,8 +224,15 @@ jobs:
       CUMORA_SECRETS_KEY: ci-test-secrets-key
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      - uses: actions/checkout@v4
-        timeout-minutes: 3
+      # Same git-free pickup as the go job (#166) — bookworm ships curl,
+      # so no apk step.
+      - name: Download source (tarball, git-free)
+        timeout-minutes: 5
+        run: |
+          curl -fsSL -o /tmp/repo.tar.gz \
+            "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+          tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
