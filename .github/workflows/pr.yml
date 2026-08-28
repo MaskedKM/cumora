@@ -230,24 +230,30 @@ jobs:
       # (service containers pre-create only POSTGRES_DB) + pgvector +
       # schema each. Unit tests above already used cumora_test, shards
       # take cumora_test1..3 — no overlap, so all four datasets coexist.
+      # NOTE shell: bash — the job container's default `sh -e` (dash)
+      # eats `$1` inside double-quoted node -e scripts (pg bind params)
+      # and rejects `set -o pipefail`; the node script below is wrapped
+      # in SINGLE quotes so its $ bind params reach node verbatim.
       - name: Create + migrate shard databases (cumora_test1..3)
+        shell: bash
         run: |
           set -e
-          node -e "const {Client}=require('pg');(async()=>{
-            const c=new Client({connectionString:process.env.DATABASE_URL});
-            await c.connect();
-            for (const db of ['cumora_test1','cumora_test2','cumora_test3']) {
-              const r=await c.query('SELECT 1 FROM pg_database WHERE datname=$1',[db]);
-              if (r.rowCount===0) await c.query('CREATE DATABASE '+db);
+          node -e 'const {Client}=require("pg");(async()=>{
+            const admin=new Client({connectionString:process.env.DATABASE_URL});
+            await admin.connect();
+            for (const db of ["cumora_test1","cumora_test2","cumora_test3"]) {
+              const r=await admin.query("SELECT 1 FROM pg_database WHERE datname=$1",[db]);
+              if (r.rowCount===0) await admin.query("CREATE DATABASE "+db);
             }
-            await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
+            await admin.end();
+            for (const db of ["cumora_test1","cumora_test2","cumora_test3"]) {
+              const c=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/"+db});
+              await c.connect(); await c.query("CREATE EXTENSION IF NOT EXISTS vector");
+              await c.end();
+            }
+          })().catch(e=>{console.error(e);process.exit(1)})'
           for db in cumora_test1 cumora_test2 cumora_test3; do
-            export PGURL="postgres://cumora:cumora@postgres:5432/$db"
-            node -e "const {Client}=require('pg');(async()=>{
-              const c=new Client({connectionString:process.env.PGURL});
-              await c.connect(); await c.query('CREATE EXTENSION IF NOT EXISTS vector');
-              await c.end();})().catch(e=>{console.error(e);process.exit(1)})"
-            DATABASE_URL="$PGURL" npm run migrate
+            DATABASE_URL="postgres://cumora:cumora@postgres:5432/$db" npm run migrate
           done
       # One shard per database + Redis instance (pub/sub is instance-wide
       # — separate Redis DB indexes would still cross-talk). Shards run
@@ -256,6 +262,7 @@ jobs:
       # per-shard logs distinct and live; the [shardN] prefix keeps the
       # interleaved step output readable.
       - name: Integration tests (3 shards, own DB + Redis each)
+        shell: bash
         run: |
           set -e -o pipefail
           run_shard() {
