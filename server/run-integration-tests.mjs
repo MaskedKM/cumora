@@ -92,7 +92,15 @@ const children = []
 let exited = false
 function killAll() {
   for (const c of children) {
-    try { c.kill('SIGTERM') } catch { /* already gone */ }
+    if (!c || c.killed) continue
+    try {
+      if (process.platform !== 'win32' && typeof c.pid === 'number') {
+        // 进程组:detach 子进程后向整组发信号,逮住孙进程。
+        process.kill(-c.pid, 'SIGTERM')
+      } else {
+        c.kill('SIGTERM')
+      }
+    } catch { /* already gone */ }
   }
 }
 function bail(msg, code = 1) {
