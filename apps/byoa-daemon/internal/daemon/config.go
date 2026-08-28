@@ -102,14 +102,24 @@ const (
 	tokenRefreshSkew = 5 * time.Minute         // 到期前 5min 刷新 runtime token
 	shutdownGraceDef = 15 * time.Second        // 优雅停机:等在飞 turn 落完
 	streamStableMS   = 60_000                  // SSE 稳定阈值(稳定过→重连退避归零)
-	maxLogBytes      = 20 << 20                // daemon.log 轮转阈值
-	logRotateEvery   = 5 * time.Minute
+	// sseHealthGrace:#134 pollLoop 门控的活性宽限——服务端每 25s 一条
+	// ping 注释(wakebus ssePingEvery),取 3 倍余量;窗口内有过任何行
+	// 即健康,轮询兜底静默。
+	sseHealthGrace = 75 * time.Second
+	// healthyPollDef:#134 评审 P2 安全网——ping 由 wakebus 自身节拍器
+	// 直发,服务端 Redis 断连时"聋但 ping 着"(Deliver 失败、ping 照
+	// 流),门控会把这段误判为健康而完全静默。健康期低频安全网轮询封顶
+	// 该场景的拾取延迟;20s→5min = 静默期压力降至 1/15。
+	healthyPollDef = 5 * time.Minute
+	maxLogBytes    = 20 << 20 // daemon.log 轮转阈值
+	logRotateEvery = 5 * time.Minute
 )
 
-func agentPollInterval() time.Duration { return envMS("CUMORA_AGENT_POLL_MS", agentPollDef) }
-func heartbeatInterval() time.Duration { return envMS("CUMORA_HEARTBEAT_MS", heartbeatDef) }
-func inboxPollInterval() time.Duration { return envMS("CUMORA_INBOX_POLL_MS", inboxPollDef) }
-func shutdownGrace() time.Duration     { return envMS("CUMORA_SHUTDOWN_GRACE_MS", shutdownGraceDef) }
+func agentPollInterval() time.Duration   { return envMS("CUMORA_AGENT_POLL_MS", agentPollDef) }
+func heartbeatInterval() time.Duration   { return envMS("CUMORA_HEARTBEAT_MS", heartbeatDef) }
+func inboxPollInterval() time.Duration   { return envMS("CUMORA_INBOX_POLL_MS", inboxPollDef) }
+func healthyPollInterval() time.Duration { return envMS("CUMORA_HEALTHY_POLL_MS", healthyPollDef) }
+func shutdownGrace() time.Duration       { return envMS("CUMORA_SHUTDOWN_GRACE_MS", shutdownGraceDef) }
 
 // AgentInfo:GET /api/computers/me/agents 的行形状。
 type AgentInfo struct {

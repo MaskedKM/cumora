@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,6 +66,10 @@ type AgentRunner struct {
 
 	wakeDebounce  *time.Timer
 	lastWakeConvo string
+
+	// streamAlive:#134——SSE 最近一行(ping/事件)到达时刻(UnixNano;
+	// 0=从未连上)。pollLoop 门控用;atomic:SSE 读循环与 pollLoop 并发。
+	streamAlive atomic.Int64
 
 	// 持久引擎会话(懒孵化、跨唤醒复用;死亡即弃、下一唤醒复活)。
 	engineSession EngineSession
@@ -420,6 +425,7 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 		return fmt.Errorf("wake-stream HTTP %d", res.StatusCode)
 	}
 	*connectedAt = time.Now()
+	r.markStreamAlive()
 	slog.Info("[computer] wake-stream connected", "agent", r.agent.ID, "engine", r.adapter.ID())
 	// 冷启动/重连补拍:断流窗口的消息由 inbox 兜底拾起。
 	r.scheduleWake("reconnect-catchup", "")
@@ -450,6 +456,7 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 		event, dataLines = "", nil
 	}
 	for sc.Scan() {
+		r.markStreamAlive() // 含 ping 注释——静默期也证明连接活着(#134)
 		line := sc.Text()
 		if line == "" {
 			handle()
@@ -470,20 +477,52 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 
 /* ───────── 轮询兜底 ───────── */
 
-// pollLoop:wake-stream 断流时的兜底(每 INBOX_POLL_MS 拍一次;忙时跳过)。
+// markStreamAlive/streamHealthy:#134——SSE 活性:任一行(含 25s ping
+// 注释)到达即记;健康 = 最近 sseHealthGrace 内有过行。未连上(0)恒不
+// 健康 → 冷启动/未连接期轮询兜底照旧。
+func (r *AgentRunner) markStreamAlive() { r.streamAlive.Store(time.Now().UnixNano()) }
+
+func (r *AgentRunner) streamHealthy() bool {
+	last := r.streamAlive.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) < sseHealthGrace
+}
+
+// pollLoop:wake-stream 断流时的兜底(每 INBOX_POLL_MS 拍一次;忙时
+// 跳过)。#134 门控:流健康(最近有帧/ping)时静默——事件驱动已覆盖,
+// 不再每拍打全库最重的 LoadInbox + status/runs 写(N 个 idle agent =
+// N×3 次/分钟独占池连接);断流/未连上才轮询,恢复后即回事件驱动。
 func (r *AgentRunner) pollLoop() {
 	defer r.wg.Done()
 	t := time.NewTicker(inboxPollInterval())
 	defer t.Stop()
+	safety := time.NewTicker(healthyPollInterval())
+	defer safety.Stop()
+	wasHealthy := false
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-t.C:
-			if r.IsBusy() {
+			healthy := r.streamHealthy()
+			if healthy != wasHealthy {
+				wasHealthy = healthy
+				if healthy {
+					slog.Info("[computer] wake-stream healthy — polling fallback silent", "agent", r.agent.ID)
+				} else {
+					slog.Warn("[computer] wake-stream unhealthy — polling fallback active", "agent", r.agent.ID)
+				}
+			}
+			if healthy || r.IsBusy() {
 				continue
 			}
 			r.scheduleWake("poll", "")
+		case <-safety.C:
+			// 健康期安全网(#134 评审 P2):流判健康但服务端事件链可能
+			// 已聋(Redis 断连时 ping 照流、Deliver 全丢)。不健康段由
+			// 主拍兜底,这里只补健康段的拾取封顶;忙时跳过。
+			if r.streamHealthy() && !r.IsBusy() {
+				r.scheduleWake("poll-safety-net", "")
+			}
 		}
 	}
 }
