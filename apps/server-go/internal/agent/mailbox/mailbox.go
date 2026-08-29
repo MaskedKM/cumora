@@ -1,7 +1,7 @@
 // /runtime/cli 邮箱组(#89):inbox / glance / ack / mute / follow。
 // 对齐 TS cli.ts 同名 cmd*;loadInbox 用 CLI 自己的 SELECT(与
 // /runtime/inbox 的变体不同:无 project 列、排序仅 created_at)。
-package agent
+package mailbox
 
 import (
 	"context"
@@ -11,26 +11,34 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 /* ───────── inbox 行加载 ───────── */
 
 type cliInboxRow struct {
-	ID                string        `json:"id"`
-	ConversationID    string        `json:"conversation_id"`
-	ConversationTitle string        `json:"conversation_title"`
-	ConversationKind  string        `json:"conversation_kind"`
-	ConversationTopic *string       `json:"conversation_topic"`
-	AuthorID          string        `json:"author_id"`
-	AuthorName        string        `json:"author_name"`
-	Body              string        `json:"body"`
-	Kind              string        `json:"kind"`
-	Sequence          int64         `json:"sequence"`
-	CreatedAt         cliISOTime    `json:"created_at"`
-	Attachment        cliAttachment `json:"attachment"`
-	Poll              cliPoll       `json:"poll"`
-	QuotedMessageID   *string       `json:"quoted_message_id"`
-	Quoted            cliRawJSON    `json:"quoted"`
+	ID                string           `json:"id"`
+	ConversationID    string           `json:"conversation_id"`
+	ConversationTitle string           `json:"conversation_title"`
+	ConversationKind  string           `json:"conversation_kind"`
+	ConversationTopic *string          `json:"conversation_topic"`
+	AuthorID          string           `json:"author_id"`
+	AuthorName        string           `json:"author_name"`
+	Body              string           `json:"body"`
+	Kind              string           `json:"kind"`
+	Sequence          int64            `json:"sequence"`
+	CreatedAt         agent.ISOTime    `json:"created_at"`
+	Attachment        agent.Attachment `json:"attachment"`
+	Poll              agent.Poll       `json:"poll"`
+	QuotedMessageID   *string          `json:"quoted_message_id"`
+	Quoted            agent.RawJSON    `json:"quoted"`
 }
 
 // quotedText:文本渲染所需的 quoted 子集(authorName 取 participants
@@ -46,13 +54,13 @@ func (r *cliInboxRow) quotedForRender() (quotedText, bool) {
 		return quotedText{}, false
 	}
 	var q quotedText
-	if err := jsonUnmarshal(r.Quoted, &q); err != nil || q.ID == "" {
+	if err := agent.JSONUnmarshal(r.Quoted, &q); err != nil || q.ID == "" {
 		return quotedText{}, false
 	}
 	return q, true
 }
 
-func (s *Service) cliLoadInbox(ctx context.Context, agentID string) ([]cliInboxRow, error) {
+func (s *Domain) cliLoadInbox(ctx context.Context, agentID string) ([]cliInboxRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT
         m.id,
         m.conversation_id,
@@ -130,18 +138,18 @@ func (s *Service) cliLoadInbox(ctx context.Context, agentID string) ([]cliInboxR
 
 /* ───────── inbox ───────── */
 
-func (s *Service) cliCmdInbox(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdInbox(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	filterConvo := ""
-	if len(parsed.positional) > 0 {
-		filterConvo = parsed.positional[0]
+	if len(parsed.Positional()) > 0 {
+		filterConvo = parsed.Positional()[0]
 	}
 	items, err := s.cliLoadInbox(ctx, me)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	filtered := items
 	if filterConvo != "" {
@@ -152,18 +160,18 @@ func (s *Service) cliCmdInbox(ctx context.Context, parsed cliParsed) cliResult {
 			}
 		}
 	}
-	if parsed.flagTruey("json") {
+	if parsed.FlagTruey("json") {
 		if filtered == nil {
 			filtered = []cliInboxRow{}
 		}
-		js, e := cliJSONList(filtered)
+		js, e := agent.JSONList(filtered)
 		if e != nil {
-			return cliErrThrow(e)
+			return agent.ErrThrow(e)
 		}
-		return cliOK(js)
+		return agent.OK(js)
 	}
 	if len(filtered) == 0 {
-		return cliOK("(inbox empty for " + me + ")")
+		return agent.OK("(inbox empty for " + me + ")")
 	}
 	// 按会话分组(保持出现顺序)
 	type convoGroup struct {
@@ -190,8 +198,8 @@ func (s *Service) cliCmdInbox(ctx context.Context, parsed cliParsed) cliResult {
 			lines = append(lines, "  Topic: "+*head.ConversationTopic)
 		}
 		for _, m := range msgs {
-			t := nodeHM(time.Time(m.CreatedAt))
-			body := strings.ReplaceAll(utf16Slice(m.Body, 240), "\n", " \\n ")
+			t := agent.NodeHM(time.Time(m.CreatedAt))
+			body := strings.ReplaceAll(agent.UTF16Slice(m.Body, 240), "\n", " \\n ")
 			if m.Kind == "tool" {
 				body = "[tool call]"
 			}
@@ -199,38 +207,38 @@ func (s *Service) cliCmdInbox(ctx context.Context, parsed cliParsed) cliResult {
 			// 引文内联(单行缩进):不查第二次就能看见回复在回复什么。
 			if m.QuotedMessageID != nil {
 				if q, ok := m.quotedForRender(); ok {
-					qBody := strings.ReplaceAll(utf16Slice(q.Body, 180), "\n", " \\n ")
+					qBody := strings.ReplaceAll(agent.UTF16Slice(q.Body, 180), "\n", " \\n ")
 					lines = append(lines, "    ↩ quoting ["+q.ID+"] "+q.AuthorName+": "+qBody)
 				} else {
 					lines = append(lines, "    ↩ quoting ["+*m.QuotedMessageID+"] (original deleted)")
 				}
 			}
-			if m.Kind == "poll" && m.Poll.present {
-				lines = append(lines, renderPollBlock(m.ID, m.Poll.parsed)...)
+			if m.Kind == "poll" && m.Poll.Present() {
+				lines = append(lines, agent.RenderPollForMessage(m.ID, m.Poll)...)
 			}
-			if att := renderAttachment(m.Attachment); att != "" {
+			if att := agent.RenderAttachment(m.Attachment); att != "" {
 				lines = append(lines, att)
 			}
 		}
 		lines = append(lines, "")
 	}
 	lines = append(lines, "when you're done deciding what to do (reply / react / dm / nothing), run `cumora ack <convo_id>` to clear that conversation from your inbox so the next wake-up doesn't see it again. `cumora ack --all` clears everything in your inbox.")
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 /* ───────── glance ───────── */
 
-func (s *Service) cliCmdGlance(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdGlance(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	convoID := parsed.flagStrOr("conversation", "")
-	if convoID == "" && len(parsed.positional) > 0 {
-		convoID = parsed.positional[0]
+	convoID := parsed.FlagStrOr("conversation", "")
+	if convoID == "" && len(parsed.Positional()) > 0 {
+		convoID = parsed.Positional()[0]
 	}
 	if convoID == "" {
-		return cliErr("usage: glance --conversation <id>  (or: glance <id>)")
+		return agent.Err("usage: glance --conversation <id>  (or: glance <id>)")
 	}
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT m.id, m.author_id, COALESCE(p.name, m.author_id) AS author_name,
@@ -242,28 +250,28 @@ func (s *Service) cliCmdGlance(ctx context.Context, parsed cliParsed) cliResult 
 		  ORDER BY m.created_at DESC
 		  LIMIT 12`, convoID)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	defer rows.Close()
 	type recentRow struct {
-		ID         string     `json:"id"`
-		AuthorID   string     `json:"author_id"`
-		AuthorName string     `json:"author_name"`
-		Kind       string     `json:"kind"`
-		Body       string     `json:"body"`
-		CreatedAt  cliISOTime `json:"created_at"`
-		Sequence   int64      `json:"sequence"`
+		ID         string        `json:"id"`
+		AuthorID   string        `json:"author_id"`
+		AuthorName string        `json:"author_name"`
+		Kind       string        `json:"kind"`
+		Body       string        `json:"body"`
+		CreatedAt  agent.ISOTime `json:"created_at"`
+		Sequence   int64         `json:"sequence"`
 	}
 	var listed []recentRow
 	for rows.Next() {
 		var r recentRow
 		if err := rows.Scan(&r.ID, &r.AuthorID, &r.AuthorName, &r.Kind, &r.Body, &r.CreatedAt, &r.Sequence); err != nil {
-			return cliErrThrow(err)
+			return agent.ErrThrow(err)
 		}
 		listed = append(listed, r)
 	}
 	if err := rows.Err(); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	recent := make([]recentRow, len(listed))
 	for i, r := range listed {
@@ -277,27 +285,27 @@ func (s *Service) cliCmdGlance(ctx context.Context, parsed cliParsed) cliResult 
 	// 不暴露"谁在写"名册:按序位对号入座(“我第 3 个 claim→我发第 3
 	// 条”)的协同缺陷由此结构性消失——agent 能依据的唯一事实是"实际发
 	// 出的最新消息",碰撞由 reply 的新鲜度门串行化。
-	if parsed.flagTruey("json") {
-		js, e := cliJSONStringify(map[string]any{
+	if parsed.FlagTruey("json") {
+		js, e := agent.JSONStringify(map[string]any{
 			"conversation_id": convoID,
 			"recent":          recent,
 		})
 		if e != nil {
-			return cliErrThrow(e)
+			return agent.ErrThrow(e)
 		}
-		return cliOK(js)
+		return agent.OK(js)
 	}
 	lines := []string{fmt.Sprintf("Glance into %s — last %d message(s):", convoID, len(recent)), ""}
 	if len(recent) == 0 {
 		lines = append(lines, "  (no messages yet)")
 	} else {
 		for _, m := range recent {
-			t := nodeHM(time.Time(m.CreatedAt))
+			t := agent.NodeHM(time.Time(m.CreatedAt))
 			tag := "   "
 			if m.AuthorID == me {
 				tag = "▸ME"
 			}
-			body := strings.ReplaceAll(utf16Slice(m.Body, 200), "\n", " \\n ")
+			body := strings.ReplaceAll(agent.UTF16Slice(m.Body, 200), "\n", " \\n ")
 			switch m.Kind {
 			case "tool":
 				body = "[tool call]"
@@ -307,15 +315,15 @@ func (s *Service) cliCmdGlance(ctx context.Context, parsed cliParsed) cliResult 
 			lines = append(lines, "  ["+m.ID+"] "+tag+" "+t+"  "+m.AuthorName+": "+body)
 		}
 	}
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 /* ───────── ack ───────── */
 
-func (s *Service) cliCmdAck(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdAck(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	ackOne := func(convoID string) error {
 		_, err := s.DB.ExecContext(ctx,
@@ -328,10 +336,10 @@ func (s *Service) cliCmdAck(ctx context.Context, parsed cliParsed) cliResult {
 		s.ClearHold(me, "reply:"+convoID)
 		return err
 	}
-	if parsed.flagTruey("all") {
+	if parsed.FlagTruey("all") {
 		items, err := s.cliLoadInbox(ctx, me)
 		if err != nil {
-			return cliErrThrow(err)
+			return agent.ErrThrow(err)
 		}
 		seen := map[string]bool{}
 		var convoIDs []string
@@ -343,19 +351,19 @@ func (s *Service) cliCmdAck(ctx context.Context, parsed cliParsed) cliResult {
 		}
 		for _, id := range convoIDs {
 			if err := ackOne(id); err != nil {
-				return cliErrThrow(err)
+				return agent.ErrThrow(err)
 			}
 		}
-		return cliOK(fmt.Sprintf("acked %d conversation(s)", len(convoIDs)))
+		return agent.OK(fmt.Sprintf("acked %d conversation(s)", len(convoIDs)))
 	}
-	if len(parsed.positional) == 0 || parsed.positional[0] == "" {
-		return cliErr("usage: ack <conversation_id>  OR  ack --all")
+	if len(parsed.Positional()) == 0 || parsed.Positional()[0] == "" {
+		return agent.Err("usage: ack <conversation_id>  OR  ack --all")
 	}
-	convoID := parsed.positional[0]
+	convoID := parsed.Positional()[0]
 	if err := ackOne(convoID); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	return cliOK("acked " + convoID)
+	return agent.OK("acked " + convoID)
 }
 
 /* ───────── mute / follow ───────── */
@@ -364,14 +372,14 @@ var muteForRe = regexp.MustCompile(`(?i)^(\d+)(m|h|d|w)$`)
 
 // parseMuteUntil:--until(ISO)或 --for(30m/2h/1d/1w,1 分钟–90 天)。
 // 语义错误走 err() 出口(exit 1),与 TS catch 分支一致。
-func parseMuteUntil(parsed cliParsed, now time.Time) (time.Time, bool, string) {
-	untilRaw, hasUntil := parsed.flagStr("until")
-	forRaw, hasFor := parsed.flagStr("for")
+func parseMuteUntil(parsed agent.Parsed, now time.Time) (time.Time, bool, string) {
+	untilRaw, hasUntil := parsed.FlagStr("until")
+	forRaw, hasFor := parsed.FlagStr("for")
 	if hasUntil && hasFor && untilRaw != "" && forRaw != "" {
 		return time.Time{}, false, "use either --until or --for, not both"
 	}
 	if hasUntil && untilRaw != "" {
-		until, ok := ParseJSDate(untilRaw)
+		until, ok := agent.ParseJSDate(untilRaw)
 		if !ok {
 			return time.Time{}, false, "invalid --until timestamp"
 		}
@@ -395,38 +403,19 @@ func parseMuteUntil(parsed cliParsed, now time.Time) (time.Time, bool, string) {
 	return now.Add(time.Duration(int64(amount)*unitMs) * time.Millisecond), true, ""
 }
 
-// ParseJSDate:JS `new Date(s)` 的常用子集(ISO 8601 两种、日期、
-// 日期+空格时间、时间无秒)。时区缺省按本地时区(JS 同)。
-func ParseJSDate(s string) (time.Time, bool) {
-	layouts := []string{
-		time.RFC3339Nano, time.RFC3339,
-		"2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04",
-		"2006-01-02", "2006-01-02T15:04:05.999999999",
-		// PG timestamptz ::text 形态("... 05:05:09.123+00" / 无毫秒变体)
-		"2006-01-02 15:04:05.999999999-07", "2006-01-02 15:04:05-07",
-		"2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05-07:00",
-	}
-	for _, l := range layouts {
-		if t, err := time.ParseInLocation(l, s, time.Local); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdMute(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	companyID, err := s.cliAgentCompany(ctx, me)
+	companyID, err := s.AgentCompany(ctx, me)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if companyID == "" {
-		return cliErr("unknown agent " + me + " (no company)")
+		return agent.Err("unknown agent " + me + " (no company)")
 	}
-	if len(parsed.positional) > 0 && parsed.positional[0] == "list" {
+	if len(parsed.Positional()) > 0 && parsed.Positional()[0] == "list" {
 		rows, err := s.DB.QueryContext(ctx,
 			`SELECT c.id, c.title, mu.muted_until
 		       FROM conversation_mutes mu
@@ -435,7 +424,7 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 		        AND (mu.muted_until IS NULL OR mu.muted_until > NOW())
 		      ORDER BY mu.muted_at DESC`, me, companyID)
 		if err != nil {
-			return cliErrThrow(err)
+			return agent.ErrThrow(err)
 		}
 		defer rows.Close()
 		type row struct {
@@ -447,75 +436,75 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 		for rows.Next() {
 			var r row
 			if err := rows.Scan(&r.ID, &r.Title, &r.MutedUntil); err != nil {
-				return cliErrThrow(err)
+				return agent.ErrThrow(err)
 			}
 			all = append(all, r)
 		}
 		if err := rows.Err(); err != nil {
-			return cliErrThrow(err)
+			return agent.ErrThrow(err)
 		}
-		if parsed.flagTruey("json") {
+		if parsed.FlagTruey("json") {
 			type jsonRow struct {
-				ID         string      `json:"id"`
-				Title      string      `json:"title"`
-				MutedUntil *cliISOTime `json:"muted_until"`
+				ID         string         `json:"id"`
+				Title      string         `json:"title"`
+				MutedUntil *agent.ISOTime `json:"muted_until"`
 			}
 			var jr []jsonRow
 			for _, r := range all {
 				e := jsonRow{ID: r.ID, Title: r.Title}
 				if r.MutedUntil != nil {
-					t := cliISOTime(*r.MutedUntil)
+					t := agent.ISOTime(*r.MutedUntil)
 					e.MutedUntil = &t
 				}
 				jr = append(jr, e)
 			}
-			js, e := cliJSONList(jr)
+			js, e := agent.JSONList(jr)
 			if e != nil {
-				return cliErrThrow(e)
+				return agent.ErrThrow(e)
 			}
-			return cliOK(js)
+			return agent.OK(js)
 		}
 		if len(all) == 0 {
-			return cliOK("(no muted groups)")
+			return agent.OK("(no muted groups)")
 		}
 		var lines []string
 		for _, r := range all {
 			expiry := "until you follow it"
 			if r.MutedUntil != nil {
-				expiry = "until " + isoMilli(*r.MutedUntil)
+				expiry = "until " + agent.ISOMilli(*r.MutedUntil)
 			}
 			lines = append(lines, "• "+r.ID+"  \""+r.Title+"\"  — "+expiry)
 		}
-		return cliOK(strings.Join(lines, "\n"))
+		return agent.OK(strings.Join(lines, "\n"))
 	}
-	if len(parsed.positional) == 0 || parsed.positional[0] == "" {
-		return cliErr("usage: mute <conversation_id> [--for 30m|2h|1d|1w] [--until <iso>]  OR  mute list")
+	if len(parsed.Positional()) == 0 || parsed.Positional()[0] == "" {
+		return agent.Err("usage: mute <conversation_id> [--for 30m|2h|1d|1w] [--until <iso>]  OR  mute list")
 	}
-	conversationID := parsed.positional[0]
+	conversationID := parsed.Positional()[0]
 	until, hasUntil, msg := parseMuteUntil(parsed, time.Now())
 	if msg != "" {
-		return cliErr(msg)
+		return agent.Err(msg)
 	}
 	var kind, title string
-	var members cliStrArr
+	var members agent.StrArr
 	err = s.DB.QueryRowContext(ctx,
 		`SELECT kind, title, members FROM conversations WHERE id = $1 AND company_id = $2`,
 		conversationID, companyID).Scan(&kind, &title, &members)
 	if err == sql.ErrNoRows {
-		return cliErr("conversation not found: " + conversationID)
+		return agent.Err("conversation not found: " + conversationID)
 	}
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	if !containsString(members, me) {
-		return cliErr("you are not a member of " + conversationID)
+	if !agent.ContainsString(members, me) {
+		return agent.Err("you are not a member of " + conversationID)
 	}
 	if kind == "direct" {
-		return cliErr("direct conversations always deliver; mute a group instead")
+		return agent.Err("direct conversations always deliver; mute a group instead")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
@@ -524,7 +513,7 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 	     ON CONFLICT (user_id, conversation_id)
 	     DO UPDATE SET muted_at = NOW(), muted_until = EXCLUDED.muted_until`,
 		me, conversationID, sqlUTCTime(until, hasUntil)); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	// 静音是明确的收兵:封住当前未读尾巴,follow 恢复后不回放积压。
 	if _, err := tx.ExecContext(ctx,
@@ -532,25 +521,20 @@ func (s *Service) cliCmdMute(ctx context.Context, parsed cliParsed) cliResult {
 	     VALUES ($1, $2, NOW())
 	     ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`,
 		me, conversationID); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	s.ClearHold(me, "reply:"+conversationID)
 	expiry := " until you follow it again"
 	if hasUntil {
-		expiry = " until " + isoMilli(until)
+		expiry = " until " + agent.ISOMilli(until)
 	}
-	return cliOK("Muted " + conversationID + " (\"" + title + "\")" + expiry + ". " +
+	return agent.OK("Muted " + conversationID + " (\"" + title + "\")" + expiry + ". " +
 		"New group messages will not wake you or enter your inbox. A direct @" + me +
 		" mention or a reply quoting your message still gets through. " +
 		"Resume with: cumora follow " + conversationID)
-}
-
-// isoMilli:JS Date.toISOString()(UTC, 毫秒 3 位)。
-func isoMilli(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
 // sqlUTCTime:可空时间参数。
@@ -561,30 +545,21 @@ func sqlUTCTime(t time.Time, has bool) any {
 	return t
 }
 
-func containsString(list cliStrArr, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Service) cliCmdFollow(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdFollow(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	if len(parsed.positional) == 0 || parsed.positional[0] == "" {
-		return cliErr("usage: follow <conversation_id>")
+	if len(parsed.Positional()) == 0 || parsed.Positional()[0] == "" {
+		return agent.Err("usage: follow <conversation_id>")
 	}
-	conversationID := parsed.positional[0]
-	companyID, err := s.cliAgentCompany(ctx, me)
+	conversationID := parsed.Positional()[0]
+	companyID, err := s.AgentCompany(ctx, me)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if companyID == "" {
-		return cliErr("unknown agent " + me + " (no company)")
+		return agent.Err("unknown agent " + me + " (no company)")
 	}
 	res, err := s.DB.ExecContext(ctx,
 		`DELETE FROM conversation_mutes mu USING conversations c
@@ -592,11 +567,11 @@ func (s *Service) cliCmdFollow(ctx context.Context, parsed cliParsed) cliResult 
 		    AND c.id = mu.conversation_id AND c.company_id = $3`,
 		me, conversationID, companyID)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	n, _ := res.RowsAffected()
 	if n > 0 {
-		return cliOK("Following " + conversationID + " again. New messages will resume normal inbox delivery.")
+		return agent.OK("Following " + conversationID + " again. New messages will resume normal inbox delivery.")
 	}
-	return cliOK(conversationID + " was not muted; normal delivery is already active.")
+	return agent.OK(conversationID + " was not muted; normal delivery is already active.")
 }

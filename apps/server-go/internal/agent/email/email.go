@@ -1,7 +1,7 @@
-// agent 包 email 面 —— cli.ts 的 cmdEmail 六子命令(whoami/contacts/
+// email 包 email 面 —— cli.ts 的 cmdEmail 六子命令(whoami/contacts/
 // inbox/show/send/reply)+ listEmailContacts/listAgentEmailThreads 收件人
 // 与线程面。Provider/持久层复用 internal/email(已与 email.ts 对齐)。
-package agent
+package email
 
 import (
 	"bytes"
@@ -14,16 +14,23 @@ import (
 	"regexp"
 	"strings"
 
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/email"
 )
 
-func (s *Service) cliCmdEmail(ctx context.Context, parsed cliParsed) cliResult {
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
+
+func (s *Domain) CmdEmail(ctx context.Context, parsed agent.Parsed) agent.Result {
 	sub := ""
-	if len(parsed.positional) > 0 {
-		sub = parsed.positional[0]
+	if len(parsed.Positional()) > 0 {
+		sub = parsed.Positional()[0]
 	}
 	if sub == "" {
-		return cliErr(strings.Join([]string{
+		return agent.Err(strings.Join([]string{
 			"usage:",
 			`  email send --to <addr|id>[,<addr|id>...] [--cc <...>] --subject "..." --body "..." [--attach <path>[,<path>...]] [--as <id>]`,
 			`  email reply <message_id> --body "..." [--cc <addr|id>...] [--attach <path>[,<path>...]] [--as <id>]`,
@@ -33,22 +40,22 @@ func (s *Service) cliCmdEmail(ctx context.Context, parsed cliParsed) cliResult {
 			`  email whoami [--as <id>]   — your own address`,
 		}, "\n"))
 	}
-	me, err := cliResolveAs(parsed)
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
-	companyID, err := s.cliAgentCompany(ctx, me)
+	companyID, err := s.AgentCompany(ctx, me)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	if companyID == "" {
-		return cliErr(fmt.Sprintf("unknown agent %s (no company)", me))
+		return agent.Err(fmt.Sprintf("unknown agent %s (no company)", me))
 	}
 	switch sub {
 	case "whoami":
 		return s.cliEmailWhoami(ctx, me)
 	case "contacts":
-		return s.cliEmailContacts(ctx, parsed, me, companyID, parsed.flagTruey("json"))
+		return s.cliEmailContacts(ctx, parsed, me, companyID, parsed.FlagTruey("json"))
 	case "inbox":
 		return s.cliEmailInbox(ctx, parsed, me, companyID)
 	case "show":
@@ -58,25 +65,25 @@ func (s *Service) cliCmdEmail(ctx context.Context, parsed cliParsed) cliResult {
 	case "reply":
 		return s.cliEmailReplyCmd(ctx, parsed, me, companyID)
 	default:
-		return cliErr(fmt.Sprintf("unknown email subcommand: %s", sub))
+		return agent.Err(fmt.Sprintf("unknown email subcommand: %s", sub))
 	}
 }
 
 // cliEmailWhoami:自己的地址(惰铸)。
-func (s *Service) cliEmailWhoami(ctx context.Context, me string) cliResult {
+func (s *Domain) cliEmailWhoami(ctx context.Context, me string) agent.Result {
 	addr := s.cliEnsureAgentAddress(ctx, me)
 	if addr == nil {
 		if email.RootDomain() == "" {
-			return cliErr("email feature not configured (set EMAIL_DOMAIN)")
+			return agent.Err("email feature not configured (set EMAIL_DOMAIN)")
 		}
-		return cliErr(fmt.Sprintf("no email address available for %s (not an agent, or company missing)", me))
+		return agent.Err(fmt.Sprintf("no email address available for %s (not an agent, or company missing)", me))
 	}
-	return cliOK(fmt.Sprintf("%s <%s>", addr.DisplayName, addr.Email))
+	return agent.OK(fmt.Sprintf("%s <%s>", addr.DisplayName, addr.Email))
 }
 
 // cliEnsureAgentAddress:ensureAgentAddress 等价 —— 先按 agent 找公司,再
 // 惰铸地址;非 agent / 无公司 → nil。
-func (s *Service) cliEnsureAgentAddress(ctx context.Context, agentID string) *email.ParticipantAddr {
+func (s *Domain) cliEnsureAgentAddress(ctx context.Context, agentID string) *email.ParticipantAddr {
 	var companyID string
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT company_id FROM participants
@@ -105,7 +112,7 @@ type cliEmailContact struct {
 // SetEscapeHTML(false) 不会解开内层 json.Marshal 的转义序列)。
 func jsonStringNoEscape(s string) []byte {
 	var buf bytes.Buffer
-	enc := newJSONEncoderNoEscape(&buf)
+	enc := agent.NewJSONEncoderNoEscape(&buf)
 	_ = enc.Encode(s)
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
@@ -136,7 +143,7 @@ func (c cliEmailContact) MarshalJSON() ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-func (s *Service) cliListEmailContacts(ctx context.Context, companyID, viewerID, query string) []cliEmailContact {
+func (s *Domain) cliListEmailContacts(ctx context.Context, companyID, viewerID, query string) []cliEmailContact {
 	q := strings.ToLower(strings.TrimSpace(query))
 	matches := func(c cliEmailContact) bool {
 		if q == "" {
@@ -243,32 +250,32 @@ func (s *Service) cliListEmailContacts(ctx context.Context, companyID, viewerID,
 
 // cliEmailContacts:目录渲染。宽度按各列最长项驱动(带 cap),空结果时
 // 显式区分"未配置"与"无匹配"(agent 会拿这个信号去问用户要地址)。
-func (s *Service) cliEmailContacts(ctx context.Context, parsed cliParsed, me, companyID string, asJSON bool) cliResult {
+func (s *Domain) cliEmailContacts(ctx context.Context, parsed agent.Parsed, me, companyID string, asJSON bool) agent.Result {
 	query := ""
-	if len(parsed.positional) > 1 {
-		query = strings.TrimSpace(parsed.positional[1])
+	if len(parsed.Positional()) > 1 {
+		query = strings.TrimSpace(parsed.Positional()[1])
 	}
 	list := s.cliListEmailContacts(ctx, companyID, me, query)
 	if asJSON {
-		txt, jerr := cliJSONStringify(list)
+		txt, jerr := agent.JSONStringify(list)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	if len(list) == 0 {
 		if email.RootDomain() == "" {
-			return cliOK("(email feature not configured — set EMAIL_DOMAIN to enable)")
+			return agent.OK("(email feature not configured — set EMAIL_DOMAIN to enable)")
 		}
 		if query != "" {
-			return cliOK(fmt.Sprintf("(no contacts match %q. If the user named someone you don't recognize, ASK them for the email address before guessing — don't silently skip the task.)", query))
+			return agent.OK(fmt.Sprintf("(no contacts match %q. If the user named someone you don't recognize, ASK them for the email address before guessing — don't silently skip the task.)", query))
 		}
-		return cliOK("(no email contacts yet — invite someone or wait for inbound mail)")
+		return agent.OK("(no email contacts yet — invite someone or wait for inbound mail)")
 	}
 	const kindW = 8
 	nameW := 12
 	for _, c := range list {
-		if n := utf16Len(c.Name); n > nameW {
+		if n := agent.UTF16Len(c.Name); n > nameW {
 			nameW = n
 		}
 	}
@@ -281,7 +288,7 @@ func (s *Service) cliEmailContacts(ctx context.Context, parsed cliParsed, me, co
 		if c.Role != nil {
 			r = *c.Role
 		}
-		if n := utf16Len(r); n > roleW {
+		if n := agent.UTF16Len(r); n > roleW {
 			roleW = n
 		}
 	}
@@ -290,7 +297,7 @@ func (s *Service) cliEmailContacts(ctx context.Context, parsed cliParsed, me, co
 	}
 	addrW := 20
 	for _, c := range list {
-		if n := utf16Len(c.Address); n > addrW {
+		if n := agent.UTF16Len(c.Address); n > addrW {
 			addrW = n
 		}
 	}
@@ -298,7 +305,7 @@ func (s *Service) cliEmailContacts(ctx context.Context, parsed cliParsed, me, co
 		addrW = 60
 	}
 	lines := []string{
-		utf16PadEnd("kind", kindW) + " " + utf16PadEnd("name", nameW) + "  " + utf16PadEnd("role", roleW) + "  " + utf16PadEnd("address", addrW) + "  id",
+		agent.UTF16PadEnd("kind", kindW) + " " + agent.UTF16PadEnd("name", nameW) + "  " + agent.UTF16PadEnd("role", roleW) + "  " + agent.UTF16PadEnd("address", addrW) + "  id",
 		strings.Repeat("-", kindW+1+nameW+2+roleW+2+addrW+2+6),
 	}
 	for _, c := range list {
@@ -311,11 +318,11 @@ func (s *Service) cliEmailContacts(ctx context.Context, parsed cliParsed, me, co
 			pid = *c.ParticipantID
 		}
 		lines = append(lines,
-			utf16PadEnd(c.Kind, kindW)+" "+utf16PadEnd(utf16Slice(c.Name, nameW), nameW)+"  "+
-				utf16PadEnd(utf16Slice(roleTxt, roleW), roleW)+"  "+
-				utf16PadEnd(utf16Slice(c.Address, addrW), addrW)+"  "+pid)
+			agent.UTF16PadEnd(c.Kind, kindW)+" "+agent.UTF16PadEnd(agent.UTF16Slice(c.Name, nameW), nameW)+"  "+
+				agent.UTF16PadEnd(agent.UTF16Slice(roleTxt, roleW), roleW)+"  "+
+				agent.UTF16PadEnd(agent.UTF16Slice(c.Address, addrW), addrW)+"  "+pid)
 	}
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 /* ───────────── inbox ───────────── */
@@ -332,11 +339,11 @@ type cliEmailThreadRow struct {
 	LastBody       *string `json:"last_body"`
 }
 
-func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
-	unread := parsed.flagTruey("unread")
-	limit, err := cliMsgFlagNum(parsed, "limit", 20, 50)
+func (s *Domain) cliEmailInbox(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
+	unread := parsed.FlagTruey("unread")
+	limit, err := agent.MsgFlagNum(parsed, "limit", 20, 50)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	rows, qerr := s.DB.QueryContext(ctx, `
 		WITH my_threads AS (
@@ -377,7 +384,7 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		  ORDER BY t.updated_at DESC
 		  LIMIT $4`, companyID, me, unread, limit)
 	if qerr != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", qerr), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", qerr), 2)
 	}
 	defer rows.Close()
 	threads := []cliEmailThreadRow{}
@@ -389,21 +396,21 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		}
 		threads = append(threads, t)
 	}
-	if parsed.flagTruey("json") {
-		txt, jerr := cliJSONStringify(threads)
+	if parsed.FlagTruey("json") {
+		txt, jerr := agent.JSONStringify(threads)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	if len(threads) == 0 {
 		if email.RootDomain() == "" {
-			return cliOK("(email feature not configured — set EMAIL_DOMAIN to enable inbound + outbound)")
+			return agent.OK("(email feature not configured — set EMAIL_DOMAIN to enable inbound + outbound)")
 		}
 		if unread {
-			return cliOK(fmt.Sprintf("(no unread email for %s)", me))
+			return agent.OK(fmt.Sprintf("(no unread email for %s)", me))
 		}
-		return cliOK(fmt.Sprintf("(no email threads for %s yet)", me))
+		return agent.OK(fmt.Sprintf("(no email threads for %s yet)", me))
 	}
 	lines := []string{}
 	for _, t := range threads {
@@ -423,12 +430,12 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		}
 		snippet := ""
 		if t.LastBody != nil {
-			snippet = utf16Slice(*t.LastBody, 240)
+			snippet = agent.UTF16Slice(*t.LastBody, 240)
 		}
 		snippet = emailSnippetFlatten.ReplaceAllString(snippet, " \\n ")
 		at := ""
 		if t.LastAt != nil && *t.LastAt != "" {
-			if ts, ok := ParseJSDate(*t.LastAt); ok {
+			if ts, ok := agent.ParseJSDate(*t.LastAt); ok {
 				at = strings.ReplaceAll(ts.UTC().Format("2006-01-02T15:04:05.000Z"), "T", " ")[:16]
 			}
 		}
@@ -441,7 +448,7 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		lines = append(lines, "")
 	}
 	lines = append(lines, "run `cumora email show <conversation_id>` to read the full thread, then `cumora email reply <message_id> --body \"...\"` to respond. `cumora ack <conversation_id>` clears unread state.")
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 var emailSnippetFlatten = regexp.MustCompile(`\n+`)
@@ -450,41 +457,41 @@ var emailSnippetFlatten = regexp.MustCompile(`\n+`)
 
 // cliEmailShowMsg:--json 键序 = SELECT 列序。
 type cliEmailShowMsg struct {
-	ID              string    `json:"id"`
-	CreatedAt       string    `json:"created_at"`
-	Body            string    `json:"body"`
-	FromAddr        string    `json:"from_addr"`
-	ToAddrs         cliStrArr `json:"to_addrs"`
-	CCAddrs         cliStrArr `json:"cc_addrs"`
-	Subject         string    `json:"subject"`
-	SmtpMessageID   *string   `json:"smtp_message_id"`
-	InReplyTo       *string   `json:"in_reply_to"`
-	Direction       string    `json:"direction"`
-	TransportStatus string    `json:"transport_status"`
+	ID              string       `json:"id"`
+	CreatedAt       string       `json:"created_at"`
+	Body            string       `json:"body"`
+	FromAddr        string       `json:"from_addr"`
+	ToAddrs         agent.StrArr `json:"to_addrs"`
+	CCAddrs         agent.StrArr `json:"cc_addrs"`
+	Subject         string       `json:"subject"`
+	SmtpMessageID   *string      `json:"smtp_message_id"`
+	InReplyTo       *string      `json:"in_reply_to"`
+	Direction       string       `json:"direction"`
+	TransportStatus string       `json:"transport_status"`
 }
 
-func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliEmailShow(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	convoID := ""
-	if len(parsed.positional) > 1 {
-		convoID = parsed.positional[1]
+	if len(parsed.Positional()) > 1 {
+		convoID = parsed.Positional()[1]
 	}
 	if convoID == "" {
-		return cliErr("usage: email show <conversation_id> [--tail N]")
+		return agent.Err("usage: email show <conversation_id> [--tail N]")
 	}
-	tail, err := cliMsgFlagNum(parsed, "tail", 10, 50)
+	tail, err := agent.MsgFlagNum(parsed, "tail", 10, 50)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
-	var members cliStrArr
+	var members agent.StrArr
 	var title string
 	qerr := s.DB.QueryRowContext(ctx, `
 		SELECT members, title FROM conversations
 		 WHERE id = $1 AND company_id = $2 AND kind = 'email' LIMIT 1`, convoID, companyID).Scan(&members, &title)
 	if qerr != nil {
-		return cliErr(fmt.Sprintf("unknown email thread %s", convoID))
+		return agent.Err(fmt.Sprintf("unknown email thread %s", convoID))
 	}
-	if !containsString(members, me) {
-		return cliErr(fmt.Sprintf("%s is not a member of %s", me, convoID))
+	if !agent.ContainsString(members, me) {
+		return agent.Err(fmt.Sprintf("%s is not a member of %s", me, convoID))
 	}
 	rows, qerr := s.DB.QueryContext(ctx, `
 		SELECT m.id, m.created_at::text, m.body,
@@ -496,7 +503,7 @@ func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, compan
 		 ORDER BY m.sequence DESC
 		 LIMIT $2`, convoID, tail)
 	if qerr != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", qerr), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", qerr), 2)
 	}
 	defer rows.Close()
 	msgs := []cliEmailShowMsg{}
@@ -512,24 +519,24 @@ func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, compan
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
-	if parsed.flagTruey("json") {
-		txt, jerr := cliJSONStringify(struct {
+	if parsed.FlagTruey("json") {
+		txt, jerr := agent.JSONStringify(struct {
 			Thread   string            `json:"thread"`
 			Title    string            `json:"title"`
 			Messages []cliEmailShowMsg `json:"messages"`
 		}{convoID, title, msgs})
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	if len(msgs) == 0 {
-		return cliOK(fmt.Sprintf("(thread %s has no email messages)", convoID))
+		return agent.OK(fmt.Sprintf("(thread %s has no email messages)", convoID))
 	}
 	lines := []string{fmt.Sprintf("thread %s  \"%s\"", convoID, title), ""}
 	for _, m := range msgs {
 		at := ""
-		if ts, ok := ParseJSDate(m.CreatedAt); ok {
+		if ts, ok := agent.ParseJSDate(m.CreatedAt); ok {
 			at = strings.ReplaceAll(ts.UTC().Format("2006-01-02T15:04:05.000Z"), "T", " ")[:16]
 		}
 		arrow := "↑ out"
@@ -553,7 +560,7 @@ func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, compan
 		lines = append(lines, "")
 	}
 	lines = append(lines, fmt.Sprintf("reply with `cumora email reply %s --body \"...\"`.", msgs[len(msgs)-1].ID))
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 /* ───────────── send ───────────── */
@@ -581,7 +588,7 @@ func nodeFsErrorText(err error, path string) string {
 	}
 }
 
-func (s *Service) cliLoadEmailAttachment(path string) (cliEmailLoadedAttachment, error) {
+func (s *Domain) cliLoadEmailAttachment(path string) (cliEmailLoadedAttachment, error) {
 	const maxBytes = 20 * 1024 * 1024
 	buf, err := os.ReadFile(path)
 	if err != nil {
@@ -598,12 +605,12 @@ func (s *Service) cliLoadEmailAttachment(path string) (cliEmailLoadedAttachment,
 	if i := strings.LastIndex(filename, "."); i >= 0 && i+1 < len(filename) {
 		ext = strings.ToLower(filename[i+1:])
 	}
-	mimeType := extToMime(ext)
+	mimeType := agent.ExtToMime(ext)
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	storageKey := fmt.Sprintf("email-attachments/%s.%s", randHex32(), ext)
-	url, err := cliStoragePut(storageKey, buf)
+	storageKey := fmt.Sprintf("email-attachments/%s.%s", agent.RandHex32(), ext)
+	url, err := agent.StoragePut(storageKey, buf)
 	if err != nil {
 		return cliEmailLoadedAttachment{}, err
 	}
@@ -633,7 +640,7 @@ type cliEmailResolvedAddr struct {
 	Name *string
 }
 
-func (s *Service) cliResolveEmailRecipient(ctx context.Context, raw, companyID string) (cliEmailResolvedAddr, bool) {
+func (s *Domain) cliResolveEmailRecipient(ctx context.Context, raw, companyID string) (cliEmailResolvedAddr, bool) {
 	if addr, name, ok := email.ResolveRecipient(ctx, s.DB, raw, companyID); ok {
 		var np *string
 		if name != "" {
@@ -644,45 +651,45 @@ func (s *Service) cliResolveEmailRecipient(ctx context.Context, raw, companyID s
 	return cliEmailResolvedAddr{}, false
 }
 
-func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
-	toRaw := parsed.flagStrOr("to", "")
-	ccRaw := parsed.flagStrOr("cc", "")
-	subject := email.SanitizeSubject(cliUnescapeChat(parsed.flagStrOr("subject", "")))
-	body := strings.TrimSpace(cliUnescapeChat(parsed.flagStrOr("body", "")))
-	attachRaw := parsed.flagStrOr("attach", "")
+func (s *Domain) cliEmailSend(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
+	toRaw := parsed.FlagStrOr("to", "")
+	ccRaw := parsed.FlagStrOr("cc", "")
+	subject := email.SanitizeSubject(agent.UnescapeChat(parsed.FlagStrOr("subject", "")))
+	body := strings.TrimSpace(agent.UnescapeChat(parsed.FlagStrOr("body", "")))
+	attachRaw := parsed.FlagStrOr("attach", "")
 	if toRaw == "" || subject == "" || body == "" {
-		return cliErr(`usage: email send --to <addr|id>[,...] [--cc <...>] --subject "..." --body "..." [--attach <path>[,<path>...]]`)
+		return agent.Err(`usage: email send --to <addr|id>[,...] [--cc <...>] --subject "..." --body "..." [--attach <path>[,<path>...]]`)
 	}
 	var loaded []cliEmailLoadedAttachment
 	for _, p := range splitCommaList(attachRaw) {
 		att, err := s.cliLoadEmailAttachment(p)
 		if err != nil {
-			return cliErr(fmt.Sprintf("attachment %s: %s", p, err.Error()))
+			return agent.Err(fmt.Sprintf("attachment %s: %s", p, err.Error()))
 		}
 		loaded = append(loaded, att)
 	}
 	sender := s.cliEnsureAgentAddress(ctx, me)
 	if sender == nil {
-		return cliErr("agent has no email address (EMAIL_DOMAIN unset or company missing)")
+		return agent.Err("agent has no email address (EMAIL_DOMAIN unset or company missing)")
 	}
 
 	var toResolved, ccResolved []cliEmailResolvedAddr
 	for _, t := range splitCommaList(toRaw) {
 		r, ok := s.cliResolveEmailRecipient(ctx, t, companyID)
 		if !ok {
-			return cliErr(fmt.Sprintf("can't resolve recipient: %s", t))
+			return agent.Err(fmt.Sprintf("can't resolve recipient: %s", t))
 		}
 		toResolved = append(toResolved, r)
 	}
 	for _, c := range splitCommaList(ccRaw) {
 		r, ok := s.cliResolveEmailRecipient(ctx, c, companyID)
 		if !ok {
-			return cliErr(fmt.Sprintf("can't resolve cc: %s", c))
+			return agent.Err(fmt.Sprintf("can't resolve cc: %s", c))
 		}
 		ccResolved = append(ccResolved, r)
 	}
 	if len(toResolved) == 0 {
-		return cliErr("at least one --to recipient required")
+		return agent.Err("at least one --to recipient required")
 	}
 
 	// 同租户的 agent 收件人成为会话成员。
@@ -702,7 +709,7 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 	messageID := email.MintMessageId()
 	convoID, _, err := email.FindOrCreateEmailConversation(ctx, s.DB, companyID, "", nil, subject, memberOrder)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 
 	fromLine := email.FormatAddress(sender.Email, sender.DisplayName)
@@ -771,11 +778,11 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 		Attachments:     persistAttachments,
 	})
 	if perr != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", perr), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", perr), 2)
 	}
 
 	if !sendRes.OK {
-		return cliErrCode(fmt.Sprintf("email persisted as failed: %s · message_id=%s", sendRes.Error, persistedID), 1)
+		return agent.ErrCode(fmt.Sprintf("email persisted as failed: %s · message_id=%s", sendRes.Error, persistedID), 1)
 	}
 	mockTag := ""
 	if sendRes.Mock {
@@ -789,7 +796,7 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 	for _, r := range ccResolved {
 		ccAddrs = append(ccAddrs, r.Addr)
 	}
-	return cliOK(fmt.Sprintf("sent%s · %s · thread %s", mockTag, persistedID, convoID), CliSideEffect{
+	return agent.OK(fmt.Sprintf("sent%s · %s · thread %s", mockTag, persistedID, convoID), agent.CliSideEffect{
 		"event":           "email.sent",
 		"command":         "email send",
 		"conversationId":  convoID,
@@ -811,59 +818,59 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 var emailExtractAddrRe = regexp.MustCompile(`<([^>]+)>`)
 var emailSubjectRePrefix = regexp.MustCompile(`(?i)^(re|fwd|fw)\s*:`)
 
-func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliEmailReplyCmd(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	replyTo := ""
-	if len(parsed.positional) > 1 {
-		replyTo = parsed.positional[1]
+	if len(parsed.Positional()) > 1 {
+		replyTo = parsed.Positional()[1]
 	}
-	body := strings.TrimSpace(cliUnescapeChat(parsed.flagStrOr("body", "")))
-	attachRaw := parsed.flagStrOr("attach", "")
+	body := strings.TrimSpace(agent.UnescapeChat(parsed.FlagStrOr("body", "")))
+	attachRaw := parsed.FlagStrOr("attach", "")
 	if replyTo == "" || body == "" {
-		return cliErr(`usage: email reply <message_id> --body "..." [--cc <addr|id>...] [--attach <path>[,<path>...]]`)
+		return agent.Err(`usage: email reply <message_id> --body "..." [--cc <addr|id>...] [--attach <path>[,<path>...]]`)
 	}
 	var loaded []cliEmailLoadedAttachment
 	for _, p := range splitCommaList(attachRaw) {
 		att, err := s.cliLoadEmailAttachment(p)
 		if err != nil {
-			return cliErr(fmt.Sprintf("attachment %s: %s", p, err.Error()))
+			return agent.Err(fmt.Sprintf("attachment %s: %s", p, err.Error()))
 		}
 		loaded = append(loaded, att)
 	}
 	// 原邮件行 + 会话上下文。
 	var oConvo string
 	var oSmtp sql.NullString
-	var oRefs cliStrArr
+	var oRefs agent.StrArr
 	var oSubject, oFrom string
-	var oTo, oCc cliStrArr
+	var oTo, oCc agent.StrArr
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT conversation_id, smtp_message_id, references_chain,
 		       subject, from_addr, to_addrs, cc_addrs
 		  FROM email_messages WHERE message_id = $1 AND company_id = $2`,
 		replyTo, companyID).Scan(&oConvo, &oSmtp, &oRefs, &oSubject, &oFrom, &oTo, &oCc)
 	if err != nil {
-		return cliErr(fmt.Sprintf("unknown email message %s", replyTo))
+		return agent.Err(fmt.Sprintf("unknown email message %s", replyTo))
 	}
-	var members cliStrArr
+	var members agent.StrArr
 	if s.DB.QueryRowContext(ctx, `SELECT members FROM conversations WHERE id = $1`, oConvo).Scan(&members) != nil ||
-		!containsString(members, me) {
-		return cliErr(fmt.Sprintf("%s is not a member of thread %s", me, oConvo))
+		!agent.ContainsString(members, me) {
+		return agent.Err(fmt.Sprintf("%s is not a member of thread %s", me, oConvo))
 	}
 	sender := s.cliEnsureAgentAddress(ctx, me)
 	if sender == nil {
-		return cliErr("agent has no email address (EMAIL_DOMAIN unset or company missing)")
+		return agent.Err("agent has no email address (EMAIL_DOMAIN unset or company missing)")
 	}
 
 	// reply-all 切分:TO = 原 From,CC = 原 To+Cc 去掉自己。
 	toAddrs, ccFromOriginal := email.SplitReplyAddresses(oFrom, oTo, oCc, []string{sender.Email})
 	if len(toAddrs) == 0 {
-		return cliErr("no other recipients to reply to")
+		return agent.Err("no other recipients to reply to")
 	}
 
 	var ccResolved []cliEmailResolvedAddr
-	for _, c := range splitCommaList(parsed.flagStrOr("cc", "")) {
+	for _, c := range splitCommaList(parsed.FlagStrOr("cc", "")) {
 		r, ok := s.cliResolveEmailRecipient(ctx, c, companyID)
 		if !ok {
-			return cliErr(fmt.Sprintf("can't resolve cc: %s", c))
+			return agent.Err(fmt.Sprintf("can't resolve cc: %s", c))
 		}
 		ccResolved = append(ccResolved, r)
 	}
@@ -962,7 +969,7 @@ func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, co
 		Attachments:     persistAttachments,
 	})
 	if perr != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", perr), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", perr), 2)
 	}
 
 	// 回复即已读(auto-ack)。
@@ -972,13 +979,13 @@ func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, co
 		 ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`, me, oConvo)
 
 	if !sendRes.OK {
-		return cliErrCode(fmt.Sprintf("email persisted as failed: %s · message_id=%s", sendRes.Error, persistedID), 1)
+		return agent.ErrCode(fmt.Sprintf("email persisted as failed: %s · message_id=%s", sendRes.Error, persistedID), 1)
 	}
 	mockTag := ""
 	if sendRes.Mock {
 		mockTag = " (mock)"
 	}
-	return cliOK(fmt.Sprintf("replied%s · %s · thread %s", mockTag, persistedID, oConvo), CliSideEffect{
+	return agent.OK(fmt.Sprintf("replied%s · %s · thread %s", mockTag, persistedID, oConvo), agent.CliSideEffect{
 		"event":            "email.sent",
 		"command":          "email reply",
 		"conversationId":   oConvo,
@@ -998,19 +1005,18 @@ func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, co
 
 // cliCmdContacts:`contacts` 顶层别名 —— positional 前插 'contacts' 占位
 // 对齐 cmdEmailContacts 的下标读取。
-func (s *Service) cliCmdContacts(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdContacts(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
-	companyID, err := s.cliAgentCompany(ctx, me)
+	companyID, err := s.AgentCompany(ctx, me)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	if companyID == "" {
-		return cliErr(fmt.Sprintf("unknown agent %s (no company)", me))
+		return agent.Err(fmt.Sprintf("unknown agent %s (no company)", me))
 	}
-	shimmed := parsed
-	shimmed.positional = append([]string{"contacts"}, parsed.positional...)
-	return s.cliEmailContacts(ctx, shimmed, me, companyID, parsed.flagTruey("json"))
+	shimmed := parsed.WithPositional(append([]string{"contacts"}, parsed.Positional()...))
+	return s.cliEmailContacts(ctx, shimmed, me, companyID, parsed.FlagTruey("json"))
 }

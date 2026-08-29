@@ -4,7 +4,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -37,6 +39,13 @@ func UUIDHex() string { return uuidHex() }
 
 // Positional:cliParsed.positional 字段的只读访问器(域子包专用)。
 func (p cliParsed) Positional() []string { return p.positional }
+
+// WithPositional:返回 positional 被替换的值副本(域子包的改写形,
+// email 的 `contacts` 无子命令垫片用)。
+func (p cliParsed) WithPositional(pos []string) cliParsed {
+	p.positional = pos
+	return p
+}
 
 // FlagValue:cliParsed.flags 的按键取值(域子包的 `v, ok :=` 形)。
 func (p cliParsed) FlagValue(key string) (any, bool) {
@@ -79,3 +88,69 @@ func MarshalOrdered(v any) ([]byte, error)   { return jsonMarshalOrdered(v) }
 func ISOMilli(t time.Time) string         { return isoMilli(t) }
 func NodeDateToString(t time.Time) string { return nodeDateToString(t) }
 func JSFloorNumber(v any) (int, bool)     { return jsFloorNumber(v) }
+
+/* ───────── 共享件归位(#140 4/9:原居 cli_mailbox,内核文件同用)───────── */
+
+// isoMilli:JS Date.toISOString()(UTC, 毫秒 3 位)。
+func isoMilli(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// ParseJSDate:JS `new Date(s)` 的常用子集(ISO 8601 两种、日期、
+// 日期+空格时间、时间无秒)。时区缺省按本地时区(JS 同)。
+func ParseJSDate(s string) (time.Time, bool) {
+	layouts := []string{
+		time.RFC3339Nano, time.RFC3339,
+		"2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04",
+		"2006-01-02", "2006-01-02T15:04:05.999999999",
+		// PG timestamptz ::text 形态("... 05:05:09.123+00" / 无毫秒变体)
+		"2006-01-02 15:04:05.999999999-07", "2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05-07:00",
+	}
+	for _, l := range layouts {
+		if t, err := time.ParseInLocation(l, s, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func containsString(list cliStrArr, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// Poll / Attachment / RawJSON:内核消息行类型的导出别名(域子包行结构用)。
+type Poll = cliPoll
+type Attachment = cliAttachment
+type RawJSON = cliRawJSON
+
+// StoragePut / RandHex32 / ExtToMime / MsgFlagNum / UTF16Len /
+// NewJSONEncoderNoEscape / NodeHM / JSONUnmarshal:内核散件导出包装。
+func StoragePut(key string, body []byte) (string, error) { return cliStoragePut(key, body) }
+func RandHex32() string                                  { return randHex32() }
+func ExtToMime(ext string) string                        { return extToMime(ext) }
+func MsgFlagNum(p Parsed, key string, def, max int) (int, error) {
+	return cliMsgFlagNum(p, key, def, max)
+}
+func UTF16Len(s string) int { return utf16Len(s) }
+func NewJSONEncoderNoEscape(w *bytes.Buffer) *json.Encoder {
+	return newJSONEncoderNoEscape(w)
+}
+func NodeHM(t time.Time) string                 { return nodeHM(t) }
+func JSONUnmarshal(b []byte, v any) error       { return jsonUnmarshal(b, v) }
+func ContainsString(list StrArr, s string) bool { return containsString(list, s) }
+
+// Present:cliPoll.present 字段的只读访问器(域子包判 poll 有效)。
+func (p cliPoll) Present() bool { return p.present }
+
+// RenderAttachment / RenderPollForMessage:渲染件(pollPayload 不出内核,
+// 经 cliPoll 包装;域子包不触未导出字段)。
+func RenderAttachment(att Attachment) string { return renderAttachment(att) }
+func RenderPollForMessage(messageID string, p Poll) []string {
+	return renderPollBlock(messageID, p.parsed)
+}

@@ -405,16 +405,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdToolsLog(ctx, parsed)
 	case "participants-status":
 		return s.cliCmdStatusList(ctx, parsed)
-	case "inbox":
-		return s.cliCmdInbox(ctx, parsed)
-	case "glance":
-		return s.cliCmdGlance(ctx, parsed)
-	case "ack":
-		return s.cliCmdAck(ctx, parsed)
-	case "mute":
-		return s.cliCmdMute(ctx, parsed)
-	case "follow":
-		return s.cliCmdFollow(ctx, parsed)
 	case "reply":
 		return s.cliCmdReply(ctx, parsed)
 	case "leave":
@@ -451,12 +441,8 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdAvatar(ctx, parsed)
 	case "skills":
 		return s.cliCmdSkills(ctx, parsed)
-	case "email":
-		return s.cliCmdEmail(ctx, parsed)
 	case "poll":
 		return s.cliCmdPoll(ctx, parsed)
-	case "contacts":
-		return s.cliCmdContacts(ctx, parsed)
 	case "react":
 		return s.cliRunTool(ctx, "react", parsed)
 	case "dm":
@@ -468,7 +454,7 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 	case "image":
 		return s.cliCmdImage(ctx, parsed)
 	default:
-		// 域子包命令(#140 刀法):boards/email/… 居 agent/<domain>,
+		// 域子包命令(#140 刀法):boards/email/mailbox/… 居 agent/<domain>,
 		// 由 runtime 接线注入(本包不得 import 子包——防环)。
 		if s.domainDispatch != nil {
 			if res, ok := s.domainDispatch(sub, ctx, parsed); ok {
