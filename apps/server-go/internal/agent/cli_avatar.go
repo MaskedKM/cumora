@@ -503,7 +503,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 		return "", err
 	}
 	record("ok", nil)
-	key := fmt.Sprintf("avatars/avatar-%s-%s.png", agentID, jsUUID()[:8])
+	key := fmt.Sprintf("avatars/avatar-%s-%s.png", agentID, uuidHex()[:8])
 	url, err := cliStoragePut(key, buf)
 	if err != nil {
 		return "", err
@@ -582,7 +582,7 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 	case "image/svg+xml":
 		ext = "svg"
 	}
-	key := fmt.Sprintf("avatars/avatar-%s-%s.%s", agentID, jsUUID()[:8], ext)
+	key := fmt.Sprintf("avatars/avatar-%s-%s.%s", agentID, uuidHex()[:8], ext)
 	url, err := cliStoragePut(key, buf)
 	if err != nil {
 		return "", err

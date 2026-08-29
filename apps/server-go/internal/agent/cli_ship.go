@@ -383,7 +383,7 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 	if len(found) != len(builderIDs) {
 		return cliErr("one or more --builders are not active participants in this company")
 	}
-	id := "ship-" + jsUUID()
+	id := "ship-" + uuidHex()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
@@ -412,7 +412,7 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO shipping_verifications (id,feature_id,title,method,required,builder_ids,position,created_by)
 			VALUES ($1,$2,$3,$4,TRUE,$5::jsonb,$6,$7)`,
-			"sv-"+jsUUID(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
+			"sv-"+uuidHex(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
 			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 	}
@@ -420,7 +420,7 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data)
 		 VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
-		"se-"+jsUUID(), companyID, id, me, string(eventJSON)); err != nil {
+		"se-"+uuidHex(), companyID, id, me, string(eventJSON)); err != nil {
 		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	if err := tx.Commit(); err != nil {
@@ -492,7 +492,7 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 			 VALUES ($1,$2,$3,$4,'manual_replay',$5,'failing',$6)
 			 ON CONFLICT (source_verification_id) WHERE source_verification_id IS NOT NULL
 			 DO UPDATE SET status='failing',updated_at=NOW()`,
-			"rg-"+jsUUID(), featureID, squareID, "Replay failed square: "+squareTitle,
+			"rg-"+uuidHex(), featureID, squareID, "Replay failed square: "+squareTitle,
 			"The behavior proven by this square remains true", me); err != nil {
 			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
@@ -504,7 +504,7 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 			 ON CONFLICT (company_id,source_key) WHERE source_key IS NOT NULL
 			 DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
 			               last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
-			"fr-"+jsUUID(), companyID, featureID, me, "verification:"+squareID,
+			"fr-"+uuidHex(), companyID, featureID, me, "verification:"+squareID,
 			"Verification failed: "+squareTitle,
 			"An agent-reported proof failed and was promoted into friction plus a replayable regression.", frictionProof); err != nil {
 			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
@@ -513,7 +513,7 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 	sqEvent, _ := json.Marshal(map[string]any{"id": squareID, "status": status, "via": "agent-cli"})
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data) VALUES ($1,$2,$3,$4,'verification.updated',$5::jsonb)`,
-		"se-"+jsUUID(), companyID, featureID, me, string(sqEvent)); err != nil {
+		"se-"+uuidHex(), companyID, featureID, me, string(sqEvent)); err != nil {
 		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	if err := tx.Commit(); err != nil {
@@ -557,7 +557,7 @@ func (s *Service) cliShipFriction(ctx context.Context, parsed cliParsed, me, com
 	if description == "" {
 		description = title
 	}
-	id := "fr-" + jsUUID()
+	id := "fr-" + uuidHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO shipping_friction_reports (id,company_id,feature_id,reporter_id,source,title,description,severity)
 		 VALUES ($1,$2,$3,$4,'agent-cli',$5,$6,$7)`,
@@ -596,7 +596,7 @@ func (s *Service) cliShipRegression(ctx context.Context, parsed cliParsed, me, c
 	if expected == "" {
 		expected = "Previously verified behavior remains true"
 	}
-	id := "rg-" + jsUUID()
+	id := "rg-" + uuidHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO shipping_regressions (id,feature_id,title,kind,command,expected,status,created_by)
 		 VALUES ($1,$2,$3,$4,$5,$6,'active',$7)`,
