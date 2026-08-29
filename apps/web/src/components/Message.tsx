@@ -262,15 +262,11 @@ export function CodeBlock({ lang, code }: { lang: string; code: string }) {
         className="cumora-code overflow-x-auto py-2.5 px-3.5 text-[12.5px] leading-[1.6]"
         style={{ color: 'var(--ink-700)', margin: 0, whiteSpace: 'pre' }}
       >
-        {html === null ? (
-          <code>{code}</code>
-        ) : (
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: `html` is
-          // highlight.js output over the message's own code text — hljs
-          // HTML-escapes the source, and the catch fallback escapes via
-          // textContent→innerHTML. No untrusted raw HTML reaches the DOM.
-          <code dangerouslySetInnerHTML={{ __html: html }} />
-        )}
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: `html` is
+            highlight.js output over the message's own code text — hljs
+            HTML-escapes the source, and the catch fallback escapes via
+            textContent→innerHTML. No untrusted raw HTML reaches the DOM. */}
+        {html === null ? <code>{code}</code> : <code dangerouslySetInnerHTML={{ __html: html }} />}
       </pre>
     </div>
   )
