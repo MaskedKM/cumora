@@ -2,7 +2,7 @@
 // search/install)+ skills.ts 的校验与 SkillHub HTTP。技能存在
 // agent_workspace 的 skills/<name>/ 下,按 agent 隔离(渐进披露:唤醒
 // 提示只带 name+description)。
-package agent
+package skills
 
 import (
 	"context"
@@ -15,7 +15,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 // cliValidateSkillName:Agent Skills 规范校验;nil 表示通过。
 func cliValidateSkillName(name string) string {
@@ -114,7 +122,7 @@ func urlQueryEscape(s string) string {
 // cliFetchSkillManifest:id 或完整 URL → manifest。
 func cliFetchSkillManifest(idOrURL, hubURL string) (cliSkillManifest, error) {
 	var url string
-	if httpPrefixRe.MatchString(idOrURL) {
+	if agent.HTTPPrefixRe.MatchString(idOrURL) {
 		url = idOrURL
 	} else {
 		if hubURL == "" {
@@ -141,12 +149,11 @@ func cliFetchSkillManifest(idOrURL, hubURL string) (cliSkillManifest, error) {
 	return m, nil
 }
 
-var httpPrefixRe = regexp.MustCompile(`^https?://`)
 var skillUnsafePathRe = regexp.MustCompile(`[\\:*?<>"|]`)
 
 // cliInstallSkillFromManifest:校验(名称/大小/路径穿越/SKILL.md 必在根)
 // + 逐文件 upsert 到 agent_workspace;拒绝覆盖同名技能。
-func (s *Service) cliInstallSkillFromManifest(ctx context.Context, agentID string, manifest cliSkillManifest) (string, int, error) {
+func (s *Domain) cliInstallSkillFromManifest(ctx context.Context, agentID string, manifest cliSkillManifest) (string, int, error) {
 	if nameErr := cliValidateSkillName(manifest.Name); nameErr != "" {
 		return "", 0, fmt.Errorf("skill name invalid: %s", nameErr)
 	}
@@ -210,14 +217,14 @@ type cliSkillIndexEntry struct {
 	Path        string `json:"path"`
 }
 
-func (s *Service) cliCmdSkills(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdSkills(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	op := "list"
-	if len(parsed.positional) > 0 && parsed.positional[0] != "" {
-		op = parsed.positional[0]
+	if len(parsed.Positional()) > 0 && parsed.Positional()[0] != "" {
+		op = parsed.Positional()[0]
 	}
 
 	switch op {
@@ -227,7 +234,7 @@ func (s *Service) cliCmdSkills(ctx context.Context, parsed cliParsed) cliResult 
 			 WHERE agent_id = $1 AND path LIKE 'skills/%/SKILL.md'
 			 ORDER BY path ASC`, me)
 		if err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 		defer rows.Close()
 		skills := []cliSkillIndexEntry{}
@@ -236,39 +243,39 @@ func (s *Service) cliCmdSkills(ctx context.Context, parsed cliParsed) cliResult 
 			if rows.Scan(&path, &body) != nil {
 				continue
 			}
-			fm, _ := ParseSkillMd(body)
+			fm, _ := agent.ParseSkillMd(body)
 			if fm == nil {
 				continue
 			}
 			skills = append(skills, cliSkillIndexEntry{Name: fm.Name, Description: fm.Description, Path: path})
 		}
-		if parsed.flagTruey("json") {
-			txt, jerr := cliJSONList(skills)
+		if parsed.FlagTruey("json") {
+			txt, jerr := agent.JSONList(skills)
 			if jerr != nil {
-				return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+				return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 			}
-			return cliOK(txt)
+			return agent.OK(txt)
 		}
 		if len(skills) == 0 {
-			return cliOK("(no skills installed — use `cumora skills create <name> \"<description>\"` to scaffold one)")
+			return agent.OK("(no skills installed — use `cumora skills create <name> \"<description>\"` to scaffold one)")
 		}
 		lines := make([]string, 0, len(skills))
 		for _, sk := range skills {
 			lines = append(lines, fmt.Sprintf("  %s\n    %s\n    → cumora skills read %s", sk.Name, sk.Description, sk.Name))
 		}
-		return cliOK(strings.Join(lines, "\n\n"))
+		return agent.OK(strings.Join(lines, "\n\n"))
 
 	case "read":
 		name := ""
-		if len(parsed.positional) > 1 {
-			name = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			name = parsed.Positional()[1]
 		}
 		if name == "" {
-			return cliErr("usage: skills read <name> [<sub-path>]")
+			return agent.Err("usage: skills read <name> [<sub-path>]")
 		}
 		subPath := ""
-		if len(parsed.positional) > 2 {
-			subPath = parsed.positional[2]
+		if len(parsed.Positional()) > 2 {
+			subPath = parsed.Positional()[2]
 		}
 		fullPath := "skills/" + name + "/SKILL.md"
 		if subPath != "" {
@@ -279,33 +286,33 @@ func (s *Service) cliCmdSkills(ctx context.Context, parsed cliParsed) cliResult 
 			`SELECT body FROM agent_workspace WHERE agent_id = $1 AND path = $2 LIMIT 1`,
 			me, fullPath).Scan(&body)
 		if err != nil {
-			return cliErr(fmt.Sprintf("no such file: %s", fullPath))
+			return agent.Err(fmt.Sprintf("no such file: %s", fullPath))
 		}
-		return cliOK(body)
+		return agent.OK(body)
 
 	case "create":
 		name, description := "", ""
-		if len(parsed.positional) > 1 {
-			name = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			name = parsed.Positional()[1]
 		}
-		if len(parsed.positional) > 2 {
-			description = parsed.positional[2]
+		if len(parsed.Positional()) > 2 {
+			description = parsed.Positional()[2]
 		}
 		if name == "" || description == "" {
-			return cliErr(`usage: skills create <name> "<description>"  (name: lowercase a-z, 0-9, hyphens; description: ≤1024 chars)`)
+			return agent.Err(`usage: skills create <name> "<description>"  (name: lowercase a-z, 0-9, hyphens; description: ≤1024 chars)`)
 		}
 		if nameErr := cliValidateSkillName(name); nameErr != "" {
-			return cliErr(nameErr)
+			return agent.Err(nameErr)
 		}
 		if len(description) > 1024 {
-			return cliErr("description must be ≤ 1024 characters")
+			return agent.Err("description must be ≤ 1024 characters")
 		}
 		path := "skills/" + name + "/SKILL.md"
 		var existing string
 		if s.DB.QueryRowContext(ctx,
 			`SELECT path FROM agent_workspace WHERE agent_id = $1 AND path = $2 LIMIT 1`,
 			me, path).Scan(&existing) == nil {
-			return cliErr(fmt.Sprintf("skill %q already exists — use `cumora ws edit %s` to modify it, or `cumora skills delete %s` first", name, path, name))
+			return agent.Err(fmt.Sprintf("skill %q already exists — use `cumora ws edit %s` to modify it, or `cumora skills delete %s` first", name, path, name))
 		}
 		body := fmt.Sprintf(`---
 name: %s
@@ -319,7 +326,7 @@ step-by-step, examples, edge cases. Keep this file under ~500 lines —
 move long reference material into `+"`references/`"+` files and load them
 on demand via `+"`cumora skills read %s references/<file>`"+`._
 `, name, description, name, name)
-		companyID, _ := s.cliAgentCompany(ctx, me)
+		companyID, _ := s.AgentCompany(ctx, me)
 		var companyArg any
 		if companyID != "" {
 			companyArg = companyID
@@ -327,11 +334,11 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		if _, err := s.DB.ExecContext(ctx, `
 			INSERT INTO agent_workspace (agent_id, path, body, company_id, updated_at)
 			VALUES ($1, $2, $3, $4, NOW())`, me, path, body, companyArg); err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
-		return cliOK(fmt.Sprintf(
+		return agent.OK(fmt.Sprintf(
 			"created skill %q at %s\n\nflesh it out: cumora ws edit %s \"<old>\" \"<new>\"\nadd scripts:  cumora ws write skills/%s/scripts/<file>.py \"<body>\"\nread it back: cumora skills read %s",
-			name, path, path, name, name), CliSideEffect{
+			name, path, path, name, name), agent.CliSideEffect{
 			"event":     "skill.created",
 			"command":   "skills create",
 			"agentId":   me,
@@ -341,27 +348,27 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 
 	case "delete":
 		name := ""
-		if len(parsed.positional) > 1 {
-			name = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			name = parsed.Positional()[1]
 		}
 		if name == "" {
-			return cliErr("usage: skills delete <name>")
+			return agent.Err("usage: skills delete <name>")
 		}
 		res, err := s.DB.ExecContext(ctx, `
 			DELETE FROM agent_workspace
 			 WHERE agent_id = $1 AND (path = $2 OR path LIKE $3)`,
 			me, "skills/"+name+"/SKILL.md", "skills/"+name+"/%")
 		if err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 		removed := 0
 		if n, err := res.RowsAffected(); err == nil {
 			removed = int(n)
 		}
 		if removed == 0 {
-			return cliErr(fmt.Sprintf("no such skill: %s", name))
+			return agent.Err(fmt.Sprintf("no such skill: %s", name))
 		}
-		return cliOK(fmt.Sprintf("deleted skill %q (%d files removed)", name, removed), CliSideEffect{
+		return agent.OK(fmt.Sprintf("deleted skill %q (%d files removed)", name, removed), agent.CliSideEffect{
 			"event":     "skill.deleted",
 			"command":   "skills delete",
 			"agentId":   me,
@@ -370,27 +377,27 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		})
 
 	case "search":
-		query := strings.TrimSpace(strings.Join(parsed.positional[1:], " "))
+		query := strings.TrimSpace(strings.Join(parsed.Positional()[1:], " "))
 		if query == "" {
-			return cliErr("usage: skills search <query>")
+			return agent.Err("usage: skills search <query>")
 		}
 		hub := os.Getenv("SKILLHUB_URL")
 		if hub == "" {
-			return cliErr("SkillHub URL not configured — set SKILLHUB_URL on the server")
+			return agent.Err("SkillHub URL not configured — set SKILLHUB_URL on the server")
 		}
 		hits, err := cliSearchSkillHub(query, hub)
 		if err != nil {
-			return cliErr(fmt.Sprintf("skills search failed: %s", errText(err)))
+			return agent.Err(fmt.Sprintf("skills search failed: %s", errText(err)))
 		}
-		if parsed.flagTruey("json") {
-			txt, jerr := cliJSONList(hits)
+		if parsed.FlagTruey("json") {
+			txt, jerr := agent.JSONList(hits)
 			if jerr != nil {
-				return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+				return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 			}
-			return cliOK(txt)
+			return agent.OK(txt)
 		}
 		if len(hits) == 0 {
-			return cliOK(fmt.Sprintf("(no skills found matching %q)", query))
+			return agent.OK(fmt.Sprintf("(no skills found matching %q)", query))
 		}
 		blocks := make([]string, 0, len(hits))
 		for _, h := range hits {
@@ -412,15 +419,15 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 			}
 			blocks = append(blocks, fmt.Sprintf("  %s\n    %s\n    → cumora skills install %s", nameLine, h.Description, tag))
 		}
-		return cliOK(strings.Join(blocks, "\n\n"))
+		return agent.OK(strings.Join(blocks, "\n\n"))
 
 	case "install":
 		idOrURL := ""
-		if len(parsed.positional) > 1 {
-			idOrURL = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			idOrURL = parsed.Positional()[1]
 		}
 		if idOrURL == "" {
-			return cliErr("usage: skills install <skill_id_or_install_url>")
+			return agent.Err("usage: skills install <skill_id_or_install_url>")
 		}
 		hub := os.Getenv("SKILLHUB_URL")
 		manifest, err := cliFetchSkillManifest(idOrURL, hub)
@@ -433,7 +440,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 				if files == 1 {
 					plural = ""
 				}
-				return cliOK(fmt.Sprintf("installed skill %q (%d file%s)\nread it with: cumora skills read %s", name, files, plural, name), CliSideEffect{
+				return agent.OK(fmt.Sprintf("installed skill %q (%d file%s)\nread it with: cumora skills read %s", name, files, plural, name), agent.CliSideEffect{
 					"event":     "skill.installed",
 					"command":   "skills install",
 					"agentId":   me,
@@ -443,10 +450,10 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 				})
 			}
 		}
-		return cliErr(fmt.Sprintf("skills install failed: %s", errText(err)))
+		return agent.Err(fmt.Sprintf("skills install failed: %s", errText(err)))
 	}
 
-	return cliErr(strings.Join([]string{
+	return agent.Err(strings.Join([]string{
 		"usage:",
 		"  skills list                                 list installed skills (name + description only)",
 		"  skills read <name> [<sub-path>]             load full SKILL.md (or a bundled file)",

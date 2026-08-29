@@ -431,20 +431,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdWorkspace(ctx, parsed)
 	case "tasks":
 		return s.cliCmdTasks(ctx, parsed)
-	case "avatar":
-		return s.cliCmdAvatar(ctx, parsed)
-	case "skills":
-		return s.cliCmdSkills(ctx, parsed)
-	case "react":
-		return s.cliRunTool(ctx, "react", parsed)
-	case "dm":
-		return s.cliRunTool(ctx, "dm_with", parsed)
-	case "pull-group":
-		return s.cliRunTool(ctx, "pull_group", parsed)
-	case "palette":
-		return s.cliRunTool(ctx, "palette", parsed)
-	case "image":
-		return s.cliCmdImage(ctx, parsed)
 	default:
 		// 域子包命令(#140 刀法):boards/email/mailbox/… 居 agent/<domain>,
 		// 由 runtime 接线注入(本包不得 import 子包——防环)。

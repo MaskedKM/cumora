@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/avatar"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/boards"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/calendar"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/doc"
@@ -14,11 +15,14 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/mailbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/poll"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/ship"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/skills"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/tools"
 )
 
 // wireDomainDispatch:域子包命令接线——boards(看板:kanban/card/
 // claim/unclaim)、email(email/contacts)、mailbox(inbox/glance/ack/
-// mute/follow)。
+// mute/follow)、calendar/poll、doc/ship、avatar/image/skills、
+// tools(react/dm/pull-group/palette)。
 func wireDomainDispatch(core *agent.Service) {
 	b := boards.Domain{Service: core}
 	e := email.Domain{Service: core}
@@ -27,6 +31,9 @@ func wireDomainDispatch(core *agent.Service) {
 	po := poll.Domain{Service: core}
 	d := doc.Domain{Service: core}
 	sh := ship.Domain{Service: core}
+	av := avatar.Domain{Service: core}
+	tl := tools.Domain{Service: core}
+	sk := skills.Domain{Service: core}
 	core.SetDomainDispatcher(func(sub string, ctx context.Context, p agent.Parsed) (agent.Result, bool) {
 		switch sub {
 		case "kanban":
@@ -59,7 +66,27 @@ func wireDomainDispatch(core *agent.Service) {
 			return d.CmdDoc(ctx, p), true
 		case "ship":
 			return sh.CmdShip(ctx, p), true
+		case "avatar":
+			return av.CmdAvatar(ctx, p), true
+		case "image":
+			return av.CmdImage(ctx, p), true
+		case "skills":
+			return sk.CmdSkills(ctx, p), true
+		case "react":
+			return tl.RunTool(ctx, "react", p), true
+		case "dm":
+			return tl.RunTool(ctx, "dm_with", p), true
+		case "pull-group":
+			return tl.RunTool(ctx, "pull_group", p), true
+		case "palette":
+			return tl.RunTool(ctx, "palette", p), true
 		}
 		return agent.Result{}, false
 	})
+}
+
+// GenerateAgentAvatar:启动/管理面的头像生成引导(avatar 域实装,
+// main.go 与 domains/agents·devtools 挂载回调用)的壳面代理。
+func (s *Service) GenerateAgentAvatar(ctx context.Context, agentID, tenant string) (string, error) {
+	return (&avatar.Domain{Service: s.Service}).GenerateAgentAvatar(ctx, agentID, tenant)
 }

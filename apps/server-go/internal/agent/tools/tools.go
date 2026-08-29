@@ -2,21 +2,28 @@
 // "动作"子命令:buildToolArgs 组参 → executeTool(tools.ts)→ CLI 渲染。
 // executeTool 落 tool_calls 行(先 pending 后回填),三个 DB 型工具的
 // 广播(reactions/group.pulled/message.new)与展示文本逐字对齐 TS。
-package agent
+package tools
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 /* ───────────── ToolResult ───────────── */
 
@@ -37,20 +44,12 @@ type cliToolResult struct {
 	Display    cliToolDisplay
 }
 
-// SupportModelEnv:OPENAI_MODEL_SUPPORT(TS 缺省 gpt-5.4-mini)。
-func SupportModelEnv() string {
-	if m := os.Getenv("OPENAI_MODEL_SUPPORT"); m != "" {
-		return m
-	}
-	return "gpt-5.4-mini"
-}
-
 // cliExecuteTool:tools.ts executeTool 的 CLI 子集(palette/dm_with/
 // pull_group/react)——tool_calls 先 pending 落行,结束回填 result/status/
 // error/duration。
-func (s *Service) cliExecuteTool(ctx context.Context, agentID, name, argsJSON string) cliToolResult {
+func (s *Domain) cliExecuteTool(ctx context.Context, agentID, name, argsJSON string) cliToolResult {
 	t0 := time.Now()
-	id := "t-" + uuidHex()
+	id := "t-" + agent.UUIDHex()
 	parsed := map[string]any{}
 	_ = json.Unmarshal([]byte(argsJSON), &parsed)
 	argsJSONNorm, _ := json.Marshal(parsed)
@@ -80,7 +79,7 @@ func (s *Service) cliExecuteTool(ctx context.Context, agentID, name, argsJSON st
 	return result
 }
 
-func (s *Service) cliDispatchTool(ctx context.Context, name string, args map[string]any, agentID string, t0 time.Time) cliToolResult {
+func (s *Domain) cliDispatchTool(ctx context.Context, name string, args map[string]any, agentID string, t0 time.Time) cliToolResult {
 	defer func() {
 		// panic 已由上层 RunCli 兜底;这里保持与 TS 一致:异常 → error 行。
 	}()
@@ -98,7 +97,7 @@ func (s *Service) cliDispatchTool(ctx context.Context, name string, args map[str
 	default:
 		err = nil
 		result = cliToolResult{
-			OK: false, Error: "unknown tool", DurationMS: msSince(t0),
+			OK: false, Error: "unknown tool", DurationMS: agent.MsSince(t0),
 			Display: cliToolDisplay{Name: name, Arg: "", Status: "unknown tool",
 				Detail: fmt.Sprintf("tool not implemented: %s", name)},
 		}
@@ -106,27 +105,25 @@ func (s *Service) cliDispatchTool(ctx context.Context, name string, args map[str
 	if err != nil {
 		argPreview := ""
 		if b, jerr := json.Marshal(args); jerr == nil {
-			argPreview = TruncateRunesSimple(string(b), 80)
+			argPreview = agent.TruncateRunesSimple(string(b), 80)
 		}
 		// TS catch 用 String(err) —— Error 对象即 "Error: <msg>"。
 		strErr := "Error: " + err.Error()
 		result = cliToolResult{
-			OK: false, Error: strErr, DurationMS: msSince(t0),
+			OK: false, Error: strErr, DurationMS: agent.MsSince(t0),
 			Display: cliToolDisplay{Name: name, Arg: argPreview, Status: "error", Detail: strErr},
 		}
 	}
 	return result
 }
 
-func msSince(t0 time.Time) int64 { return time.Since(t0).Milliseconds() }
-
 /* ───────────── buildToolArgs ───────────── */
 
 // cliBuildToolArgs:TS buildToolArgs —— (子命令参数)→ 工具 JSON 参数,
 // 或错误文本。
-func cliBuildToolArgs(toolName string, parsed cliParsed) (string, string, bool) {
-	pos := parsed.positional
-	f := parsed.flags
+func cliBuildToolArgs(toolName string, parsed agent.Parsed) (string, string, bool) {
+	pos := parsed.Positional()
+	f := parsed.FlagsMap()
 	switch toolName {
 	case "react":
 		messageID, emoji := "", ""
@@ -216,24 +213,24 @@ func cliBuildToolArgs(toolName string, parsed cliParsed) (string, string, bool) 
 
 /* ───────────── runTool(命令面) ───────────── */
 
-func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliParsed) cliResult {
+func (s *Domain) RunTool(ctx context.Context, toolName string, parsed agent.Parsed) agent.Result {
 	argsJSON, buildErr, ok := cliBuildToolArgs(toolName, parsed)
 	if !ok {
-		return cliErr(buildErr)
+		return agent.Err(buildErr)
 	}
-	me, err := cliResolveAs(parsed)
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	r := s.cliExecuteTool(ctx, me, toolName, argsJSON)
 	sideEffects := cliToolSideEffects(toolName, r.Output, me)
-	if parsed.flagTruey("json") {
+	if parsed.FlagTruey("json") {
 		if r.OK {
-			txt, jerr := cliJSONStringify(r.Output)
+			txt, jerr := agent.JSONStringify(r.Output)
 			if jerr != nil {
-				return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+				return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 			}
-			return cliResult{ok: true, text: txt, exitCode: 0, sideEffects: sideEffects}
+			return agent.OKWithEffects(txt, sideEffects)
 		}
 		var errPayload any
 		if r.Error != "" {
@@ -246,17 +243,17 @@ func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliPar
 				Display cliToolDisplay `json:"display"`
 			}{r.Display}
 		}
-		txt, jerr := cliJSONStringify(errPayload)
+		txt, jerr := agent.JSONStringify(errPayload)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliResult{ok: false, text: txt, exitCode: 1}
+		return agent.ErrCode(txt, 1)
 	}
 	// detail = display.detail || (output ? JSON.stringify(output, null, 2) : '(no output)')
 	detail := r.Display.Detail
 	if detail == "" {
 		if r.Output != nil {
-			detail, _ = cliJSONStringify(r.Output)
+			detail, _ = agent.JSONStringify(r.Output)
 		} else {
 			detail = "(no output)"
 		}
@@ -266,14 +263,14 @@ func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliPar
 		if reason == "" {
 			reason = r.Display.Status
 		}
-		return cliErr(fmt.Sprintf("%s failed: %s\n%s", r.Display.Name, reason, detail))
+		return agent.Err(fmt.Sprintf("%s failed: %s\n%s", r.Display.Name, reason, detail))
 	}
 	head := fmt.Sprintf("%s → %s", r.Display.Name, r.Display.Status)
-	return cliResult{ok: true, text: cliStripLoneSurrogates(fmt.Sprintf("%s\n\n%s", head, detail)), exitCode: 0, sideEffects: sideEffects}
+	return agent.OKWithEffects(agent.StripLoneSurrogates(fmt.Sprintf("%s\n\n%s", head, detail)), sideEffects)
 }
 
 // cliToolSideEffects:react/dm_with/pull_group 的副作用事件。
-func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEffect {
+func cliToolSideEffects(toolName string, output any, agentID string) []agent.CliSideEffect {
 	m, ok := output.(map[string]any)
 	if !ok {
 		return nil
@@ -284,7 +281,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEf
 	}
 	switch toolName {
 	case "react":
-		return []CliSideEffect{{
+		return []agent.CliSideEffect{{
 			"event":         "reaction.updated",
 			"command":       "react",
 			"visibleToUser": true,
@@ -294,7 +291,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEf
 			"action":        str("action"),
 		}}
 	case "dm_with":
-		return []CliSideEffect{{
+		return []agent.CliSideEffect{{
 			"event":          "conversation.created",
 			"command":        "dm",
 			"actorId":        agentID,
@@ -310,7 +307,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEf
 				members = append(members, fmt.Sprint(v))
 			}
 		}
-		return []CliSideEffect{{
+		return []agent.CliSideEffect{{
 			"event":          "conversation.created",
 			"command":        "pull-group",
 			"actorId":        agentID,
@@ -327,18 +324,18 @@ func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEf
 
 var paletteHexRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
-func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
+func (s *Domain) cliTPalette(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
 	brief := strings.TrimSpace(fmt.Sprint(args["brief"]))
-	model := SupportModelEnv()
+	model := agent.SupportModelEnv()
 	agentArg, tenantArg := agentID, (*string)(nil)
 	record := func(status string, errMsg *string, usage *costing.TokenUsage) {
 		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose: "palette", CompanyID: tenantArg, AgentID: &agentArg, Source: "cloud",
-			Model: model, Usage: usage, LatencyMS: msSince(t0), Status: status, Error: errMsg,
-			Extras: map[string]any{"brief": TruncateRunesSimple(brief, 120)},
+			Model: model, Usage: usage, LatencyMS: agent.MsSince(t0), Status: status, Error: errMsg,
+			Extras: map[string]any{"brief": agent.TruncateRunesSimple(brief, 120)},
 		})
 	}
-	res, err := s.ResponsesCreate(ctx, "", CliResponsesArgs{
+	res, err := s.ResponsesCreate(ctx, "", agent.CliResponsesArgs{
 		Model:           model,
 		Instructions:    `You produce 5-color hex palettes. Reply ONLY with JSON: {"colors":["#RRGGBB", ...]}. No prose.`,
 		Input:           fmt.Sprintf("Design brief: %s\n\nReply with JSON only.", brief),
@@ -373,10 +370,10 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 			Colors []string `json:"colors"`
 			Brief  string   `json:"brief"`
 		}{colors, brief},
-		DurationMS: msSince(t0),
+		DurationMS: agent.MsSince(t0),
 		Display: cliToolDisplay{
 			Name:   "palette",
-			Arg:    TruncateRunesSimple(brief, 60),
+			Arg:    agent.TruncateRunesSimple(brief, 60),
 			Status: fmt.Sprintf("%d colors", len(colors)),
 			Detail: strings.Join(colors, "  "),
 			Icon:   &icon,
@@ -386,13 +383,13 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 
 /* ───────────── tDmWith / startPrivateChat ───────────── */
 
-func (s *Service) cliTDmWith(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
+func (s *Domain) cliTDmWith(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
 	partnerID := strings.TrimSpace(fmt.Sprint(args["partner_id"]))
 	topic := strings.TrimSpace(fmt.Sprint(args["topic"]))
 	opening := strings.TrimSpace(fmt.Sprint(args["opening_message"]))
 	if partnerID == "" || partnerID == agentID {
 		return cliToolResult{
-			OK: false, Error: "invalid partner", DurationMS: msSince(t0),
+			OK: false, Error: "invalid partner", DurationMS: agent.MsSince(t0),
 			Display: cliToolDisplay{Name: "dm_with", Arg: partnerID, Status: "error", Detail: "Pick a different agent", Icon: strPtr("web")},
 		}, nil
 	}
@@ -408,12 +405,12 @@ func (s *Service) cliTDmWith(ctx context.Context, args map[string]any, agentID s
 			PartnerID      string `json:"partnerId"`
 			Topic          string `json:"topic"`
 		}{convoID, partnerID, topic},
-		DurationMS: msSince(t0),
+		DurationMS: agent.MsSince(t0),
 		Display: cliToolDisplay{
 			Name:   "dm_with",
-			Arg:    fmt.Sprintf("%s · %s", partnerID, TruncateRunesSimple(topic, 40)),
-			Status: fmt.Sprintf("opened · %s", utf16Slice(convoID, 12)),
-			Detail: fmt.Sprintf("→ \"%s\"\n\nDirect conversation opened with %s. Same shape as any 1-on-1 chat — your partner will see it in their mailbox and reply naturally.", TruncateRunesSimple(opening, 200), partnerID),
+			Arg:    fmt.Sprintf("%s · %s", partnerID, agent.TruncateRunesSimple(topic, 40)),
+			Status: fmt.Sprintf("opened · %s", agent.UTF16Slice(convoID, 12)),
+			Detail: fmt.Sprintf("→ \"%s\"\n\nDirect conversation opened with %s. Same shape as any 1-on-1 chat — your partner will see it in their mailbox and reply naturally.", agent.TruncateRunesSimple(opening, 200), partnerID),
 			Icon:   &icon,
 		},
 	}, nil
@@ -421,7 +418,7 @@ func (s *Service) cliTDmWith(ctx context.Context, args map[string]any, agentID s
 
 func strPtr(s string) *string { return &s }
 
-func (s *Service) cliParticipantBrief(ctx context.Context, id string) (name, kind string, ok bool) {
+func (s *Domain) cliParticipantBrief(ctx context.Context, id string) (name, kind string, ok bool) {
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT name, kind FROM participants WHERE id = $1 AND departed_at IS NULL`, id).Scan(&name, &kind)
 	return name, kind, err == nil
@@ -429,7 +426,7 @@ func (s *Service) cliParticipantBrief(ctx context.Context, id string) (name, kin
 
 // cliStartPrivateChat:private_chat.ts startPrivateChat —— 复用既有 direct
 // 会话(顺序无关),否则建 direct-<uuid12>;首发消息 + auto-ack + 广播。
-func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partnerID, topic, opening string) (string, error) {
+func (s *Domain) cliStartPrivateChat(ctx context.Context, instigatorID, partnerID, topic, opening string) (string, error) {
 	if instigatorID == partnerID {
 		return "", fmt.Errorf("cannot open a DM with yourself")
 	}
@@ -441,7 +438,7 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 	if !partOK {
 		return "", fmt.Errorf("private-chat partner not found: %s", partnerID)
 	}
-	companyID, err := s.cliAgentCompany(ctx, instigatorID)
+	companyID, err := s.AgentCompany(ctx, instigatorID)
 	if err != nil {
 		return "", err
 	}
@@ -450,7 +447,7 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 		return "", err
 	}
 
-	messageID := "m-" + uuidHex()
+	messageID := "m-" + agent.UUIDHex()
 	var sequence int
 	err = s.DB.QueryRowContext(ctx, `
 		INSERT INTO conversation_counters (conversation_id, next_sequence)
@@ -480,19 +477,19 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 	if companyID != "" {
 		companyPtr = &companyID
 	}
-	eventsPublishMessageNew(ctx, companyPtr, convoID, map[string]any{
+	agent.EventsPublishMessageNew(ctx, companyPtr, convoID, map[string]any{
 		"id":             messageID,
 		"conversationId": convoID,
 		"authorId":       instigatorID,
 		"kind":           "text",
 		"body":           opening,
 		"sequence":       sequence,
-		"at":             isoNowMs(),
+		"at":             agent.ISONowMs(),
 	})
 	return convoID, nil
 }
 
-func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID, topic, aName string) (string, error) {
+func (s *Domain) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID, topic, aName string) (string, error) {
 	var existing string
 	query := `
 		SELECT c.id
@@ -525,8 +522,8 @@ func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID
 	if aName == "" {
 		aName = aID
 	}
-	id := "direct-" + uuidHex()[:12]
-	members, _ := jsonMarshalStrings([]string{aID, bID})
+	id := "direct-" + agent.UUIDHex()[:12]
+	members, _ := agent.MarshalStrings([]string{aID, bID})
 	var topicArg any
 	if topic != "" {
 		topicArg = topic
@@ -546,7 +543,7 @@ func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID
 
 /* ───────────── tPullGroup / startPulledGroup ───────────── */
 
-func (s *Service) cliTPullGroup(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
+func (s *Domain) cliTPullGroup(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
 	title := strings.TrimSpace(fmt.Sprint(args["title"]))
 	if len(title) > 80 {
 		title = title[:80]
@@ -564,7 +561,7 @@ func (s *Service) cliTPullGroup(ctx context.Context, args map[string]any, agentI
 			}
 		}
 	}
-	if !containsString(members, agentID) {
+	if !agent.ContainsString(members, agentID) {
 		members = append(members, agentID)
 	}
 	convoID, err := s.cliStartPulledGroup(ctx, agentID, title, members, reason, opening)
@@ -578,12 +575,12 @@ func (s *Service) cliTPullGroup(ctx context.Context, args map[string]any, agentI
 			ConversationID string   `json:"conversationId"`
 			Members        []string `json:"members"`
 		}{convoID, members},
-		DurationMS: msSince(t0),
+		DurationMS: agent.MsSince(t0),
 		Display: cliToolDisplay{
 			Name:   "pull_group",
 			Arg:    title,
-			Status: fmt.Sprintf("created · %s", utf16Slice(convoID, 12)),
-			Detail: fmt.Sprintf("members: %s\nreason: %s\n\n→ \"%s\"", strings.Join(members, ", "), reason, TruncateRunesSimple(opening, 200)),
+			Status: fmt.Sprintf("created · %s", agent.UTF16Slice(convoID, 12)),
+			Detail: fmt.Sprintf("members: %s\nreason: %s\n\n→ \"%s\"", strings.Join(members, ", "), reason, agent.TruncateRunesSimple(opening, 200)),
 			Icon:   &icon,
 		},
 	}, nil
@@ -591,7 +588,7 @@ func (s *Service) cliTPullGroup(ctx context.Context, args map[string]any, agentI
 
 const pullCooldownHours = 6
 
-func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title string, members []string, reason, opening string) (string, error) {
+func (s *Domain) cliStartPulledGroup(ctx context.Context, instigatorID, title string, members []string, reason, opening string) (string, error) {
 	// 含 human 的拉群才受冷却限制(纯 agent 群只进 peek,不打扰人)。
 	var includesHuman bool
 	err := s.DB.QueryRowContext(ctx, `
@@ -628,8 +625,8 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 		}
 	}
 
-	convoID := "pulled-" + uuidHex()[:8]
-	companyID, err := s.cliAgentCompany(ctx, instigatorID)
+	convoID := "pulled-" + agent.UUIDHex()[:8]
+	companyID, err := s.AgentCompany(ctx, instigatorID)
 	if err != nil {
 		return "", err
 	}
@@ -637,8 +634,8 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 	if companyID != "" {
 		companyArg = companyID
 	}
-	membersJSON, _ := jsonMarshalStrings(members)
-	pulledBy, _ := json.Marshal(map[string]any{"agentId": instigatorID, "at": isoNowMs(), "reason": reason})
+	membersJSON, _ := agent.MarshalStrings(members)
+	pulledBy, _ := json.Marshal(map[string]any{"agentId": instigatorID, "at": agent.ISONowMs(), "reason": reason})
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO conversations (id, kind, title, subtitle, members, pinned, tag, pulled_by, company_id)
 		VALUES ($1, 'group', $2, $3, $4::jsonb, FALSE, 'fresh-pulled', $5::jsonb, $6)`,
@@ -659,10 +656,10 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 	evidence, _ := json.Marshal(map[string]any{"tail": map[string]any{"tag": "context", "copy": reason}})
 	asks, _ := json.Marshal([]any{})
 	trigger, _ := json.Marshal(map[string]any{
-		"when": nodeLocaleString(time.Now()),
+		"when": agent.NodeLocaleString(time.Now()),
 		"what": fmt.Sprintf("%s pulled this together via tool call.", personaName),
 	})
-	reasoning, _ := jsonMarshalStrings([]string{reason})
+	reasoning, _ := agent.MarshalStrings([]string{reason})
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO convening_info
 		  (conversation_id, pulled_by_id, headline_lead, headline_tail, subhead,
@@ -673,7 +670,7 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 		return "", err
 	}
 
-	messageID := "m-" + uuidHex()
+	messageID := "m-" + agent.UUIDHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
 		VALUES ($1, $2, $3, 'text', $4, 1, $5)`,
@@ -693,15 +690,15 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 	if companyID != "" {
 		groupPayload["companyId"] = companyID
 	}
-	_ = s.publishRaw("cumora:group.pulled", mustJSON(groupPayload))
-	eventsPublishMessageNew(ctx, companyPtr, convoID, map[string]any{
+	_ = s.PublishRaw("cumora:group.pulled", agent.MustJSON(groupPayload))
+	agent.EventsPublishMessageNew(ctx, companyPtr, convoID, map[string]any{
 		"id":             messageID,
 		"conversationId": convoID,
 		"authorId":       instigatorID,
 		"kind":           "text",
 		"body":           opening,
 		"sequence":       1,
-		"at":             isoNowMs(),
+		"at":             agent.ISONowMs(),
 	})
 	return convoID, nil
 }
@@ -716,12 +713,12 @@ func mapList[T any, R any](xs []T, fn func(T) R) []R {
 
 /* ───────────── tReact ───────────── */
 
-func (s *Service) cliTReact(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
+func (s *Domain) cliTReact(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
 	messageID := strings.TrimSpace(fmt.Sprint(args["message_id"]))
 	emoji := strings.TrimSpace(fmt.Sprint(args["emoji"]))
 	if messageID == "" || emoji == "" {
 		return cliToolResult{
-			OK: false, Error: "message_id and emoji required", DurationMS: msSince(t0),
+			OK: false, Error: "message_id and emoji required", DurationMS: agent.MsSince(t0),
 			Display: cliToolDisplay{Name: "react", Arg: "", Status: "error", Detail: "missing args"},
 		}, nil
 	}
@@ -766,7 +763,7 @@ func (s *Service) cliTReact(ctx context.Context, args map[string]any, agentID st
 	reactions := []reaction{}
 	for rows.Next() {
 		var r reaction
-		var users cliStrArr
+		var users agent.StrArr
 		if rows.Scan(&r.Emoji, &r.Count, &users) == nil {
 			r.Users = users
 			if r.Users == nil {
@@ -791,7 +788,7 @@ func (s *Service) cliTReact(ctx context.Context, args map[string]any, agentID st
 	if rowCompany.Valid {
 		payload["companyId"] = rowCompany.String
 	}
-	_ = s.publishRaw("cumora:reactions", mustJSON(payload))
+	_ = s.PublishRaw("cumora:reactions", agent.MustJSON(payload))
 
 	detail := fmt.Sprintf("%s %s %s", agentID, action, emoji)
 	if emoji == "👀" && action == "added" {
@@ -806,10 +803,10 @@ func (s *Service) cliTReact(ctx context.Context, args map[string]any, agentID st
 			Action    string     `json:"action"`
 			Reactions []reaction `json:"reactions"`
 		}{messageID, emoji, action, reactions},
-		DurationMS: msSince(t0),
+		DurationMS: agent.MsSince(t0),
 		Display: cliToolDisplay{
 			Name:   "react",
-			Arg:    fmt.Sprintf("%s %s", emoji, utf16Slice(messageID, 12)),
+			Arg:    fmt.Sprintf("%s %s", emoji, agent.UTF16Slice(messageID, 12)),
 			Status: action,
 			Detail: detail,
 			Icon:   &icon,
