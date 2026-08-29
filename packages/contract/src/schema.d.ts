@@ -7399,7 +7399,7 @@ export interface operations {
     adminLlmSummary: {
         parameters: {
             query?: {
-                days?: number;
+                sinceDays?: string;
             };
             header?: never;
             path?: never;

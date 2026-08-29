@@ -22,24 +22,18 @@ import (
 	"sort"
 	"strings"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/admin"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
+// Server:admin tag(13 路由)的域实现(#187 机械迁移,方法散在
+// 本包各文件)。
+type Server struct{ DB *sql.DB }
+
+var _ contract.ServerInterface = (*Server)(nil)
+
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("GET /api/admin/me", me(db))
-	mux.HandleFunc("GET /api/admin/settings", settingsGet(db))
-	mux.HandleFunc("PUT /api/admin/settings", settingsPut(db))
-	mux.HandleFunc("GET /api/admin/computers/available-engines", engines(db))
-	// #124 子面:用户管理 / 等待名单 / 快速计数 / LLM 观察面。
-	mux.HandleFunc("GET /api/admin/users", usersList(db))
-	mux.HandleFunc("GET /api/admin/users/{id}", userGet(db))
-	mux.HandleFunc("PATCH /api/admin/users/{id}", userPatch(db))
-	mux.HandleFunc("GET /api/admin/waitlist", waitlistList(db))
-	mux.HandleFunc("POST /api/admin/waitlist/{id}/approve", waitlistApprove(db))
-	mux.HandleFunc("POST /api/admin/waitlist/{id}/reject", waitlistReject(db))
-	mux.HandleFunc("GET /api/admin/stats", stats(db))
-	mux.HandleFunc("GET /api/admin/observability/llm", llmObservability(db))
-	mux.HandleFunc("GET /api/admin/observability/llm/calls", llmCallsDrilldown(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
 // requireAdmin:门语义逐字对齐 admin.ts(401 匿名 / 403 非管理员)。
@@ -57,14 +51,12 @@ func requireAdmin(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, b
 	return uid, true
 }
 
-func me(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := requireAdmin(w, r, db)
-		if !ok {
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": uid, "isAdmin": true})
+func (s *Server) AdminMe(w http.ResponseWriter, r *http.Request) {
+	uid, ok := requireAdmin(w, r, s.DB)
+	if !ok {
+		return
 	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": uid, "isAdmin": true})
 }
 
 // ---- app_settings 读写 ----
@@ -256,13 +248,11 @@ func buildSettingsResponse(w http.ResponseWriter, db *sql.DB) {
 	})
 }
 
-func settingsGet(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		buildSettingsResponse(w, db)
+func (s *Server) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	buildSettingsResponse(w, s.DB)
 }
 
 // settingsPut:类型门部分更新(对齐 admin-router.ts 113–137):
@@ -272,98 +262,96 @@ func settingsGet(db *sql.DB) http.HandlerFunc {
 // cerebellum_api_key 是 string 即触发写(空串=显式清除,缺键=不动);
 // 加密失败(CUMORA_SECRETS_KEY 缺)→ 500 绝不装成功;
 // 全空更新集 → 400 'no settings to update'。
-func settingsPut(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := requireAdmin(w, r, db)
-		if !ok {
+func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
+	uid, ok := requireAdmin(w, r, s.DB)
+	if !ok {
+		return
+	}
+	// 空体按 {} 处理(TS express.json 语义)→ 落到 400 no settings;
+	// 坏 JSON 才 400 invalid JSON body。
+	body := map[string]json.RawMessage{}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil && err != io.EOF {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	// TS 的门是 typeof(布尔/字符串);JSON null 在 Go unmarshal 里
+	// 无错也不置值,会把 null 当 false/"" 放行 —— 须显式拒 null
+	// (否则 cerebellum_api_key:null 会静默删掉已存密钥)。
+	isNull := func(raw json.RawMessage) bool { return string(raw) == "null" }
+	strOf := func(key string) (string, bool) {
+		raw, present := body[key]
+		if !present || isNull(raw) {
+			return "", false
+		}
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return "", false
+		}
+		return s, true
+	}
+	boolOf := func(key string) (bool, bool) {
+		raw, present := body[key]
+		if !present || isNull(raw) {
+			return false, false
+		}
+		var b bool
+		if json.Unmarshal(raw, &b) != nil {
+			return false, false
+		}
+		return b, true
+	}
+	failed := false
+	upsert := func(key, valJSON string) {
+		if failed {
 			return
 		}
-		// 空体按 {} 处理(TS express.json 语义)→ 落到 400 no settings;
-		// 坏 JSON 才 400 invalid JSON body。
-		body := map[string]json.RawMessage{}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil && err != io.EOF {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
-			return
+		if !setSettingJSON(w, r, s.DB, key, valJSON, uid) {
+			failed = true
 		}
-		// TS 的门是 typeof(布尔/字符串);JSON null 在 Go unmarshal 里
-		// 无错也不置值,会把 null 当 false/"" 放行 —— 须显式拒 null
-		// (否则 cerebellum_api_key:null 会静默删掉已存密钥)。
-		isNull := func(raw json.RawMessage) bool { return string(raw) == "null" }
-		strOf := func(key string) (string, bool) {
-			raw, present := body[key]
-			if !present || isNull(raw) {
-				return "", false
-			}
-			var s string
-			if json.Unmarshal(raw, &s) != nil {
-				return "", false
-			}
-			return s, true
+	}
+	hasUpdate := false
+	if b, ok := boolOf("waitlist_enabled"); ok {
+		hasUpdate = true
+		upsert("waitlist_enabled", mustJSON(b))
+	}
+	if b, ok := boolOf("signups_paused"); ok {
+		hasUpdate = true
+		upsert("signups_paused", mustJSON(b))
+	}
+	if s, ok := strOf("cerebellum_route"); ok && (s == "remote" || s == "byoa") {
+		hasUpdate = true
+		upsert("cerebellum_route", mustJSON(s))
+	}
+	for _, k := range []string{"cerebellum_local_engine", "cerebellum_provider", "cerebellum_base_url", "cerebellum_model"} {
+		if s, ok := strOf(k); ok {
+			hasUpdate = true
+			upsert(k, mustJSON(s))
 		}
-		boolOf := func(key string) (bool, bool) {
-			raw, present := body[key]
-			if !present || isNull(raw) {
-				return false, false
-			}
-			var b bool
-			if json.Unmarshal(raw, &b) != nil {
-				return false, false
-			}
-			return b, true
-		}
-		failed := false
-		upsert := func(key, valJSON string) {
-			if failed {
+	}
+	if skey, ok := strOf("cerebellum_api_key"); ok {
+		hasUpdate = true
+		switch {
+		case skey == "":
+			_, _ = s.DB.ExecContext(r.Context(), `DELETE FROM app_settings WHERE key = 'cerebellum_api_key'`)
+		default:
+			// 加密失败 = 服务器缺 CUMORA_SECRETS_KEY(TS:throw → 500),
+			// 绝不能装作成功。
+			enc, encOK := encryptApiKey(skey)
+			if !encOK {
+				httpx.WriteError(w, http.StatusInternalServerError, "CUMORA_SECRETS_KEY is not configured on the server")
 				return
 			}
-			if !setSettingJSON(w, r, db, key, valJSON, uid) {
-				failed = true
-			}
+			upsert("cerebellum_api_key", mustJSON(enc))
 		}
-		hasUpdate := false
-		if b, ok := boolOf("waitlist_enabled"); ok {
-			hasUpdate = true
-			upsert("waitlist_enabled", mustJSON(b))
-		}
-		if b, ok := boolOf("signups_paused"); ok {
-			hasUpdate = true
-			upsert("signups_paused", mustJSON(b))
-		}
-		if s, ok := strOf("cerebellum_route"); ok && (s == "remote" || s == "byoa") {
-			hasUpdate = true
-			upsert("cerebellum_route", mustJSON(s))
-		}
-		for _, k := range []string{"cerebellum_local_engine", "cerebellum_provider", "cerebellum_base_url", "cerebellum_model"} {
-			if s, ok := strOf(k); ok {
-				hasUpdate = true
-				upsert(k, mustJSON(s))
-			}
-		}
-		if s, ok := strOf("cerebellum_api_key"); ok {
-			hasUpdate = true
-			switch {
-			case s == "":
-				_, _ = db.ExecContext(r.Context(), `DELETE FROM app_settings WHERE key = 'cerebellum_api_key'`)
-			default:
-				// 加密失败 = 服务器缺 CUMORA_SECRETS_KEY(TS:throw → 500),
-				// 绝不能装作成功。
-				enc, encOK := encryptApiKey(s)
-				if !encOK {
-					httpx.WriteError(w, http.StatusInternalServerError, "CUMORA_SECRETS_KEY is not configured on the server")
-					return
-				}
-				upsert("cerebellum_api_key", mustJSON(enc))
-			}
-		}
-		if failed {
-			return // upsert 已写 500
-		}
-		if !hasUpdate {
-			httpx.WriteError(w, http.StatusBadRequest, "no settings to update")
-			return
-		}
-		buildSettingsResponse(w, db)
 	}
+	if failed {
+		return // upsert 已写 500
+	}
+	if !hasUpdate {
+		httpx.WriteError(w, http.StatusBadRequest, "no settings to update")
+		return
+	}
+	buildSettingsResponse(w, s.DB)
 }
 
 func mustJSON(v any) string {
@@ -372,37 +360,35 @@ func mustJSON(v any) string {
 }
 
 // engines:在线且未吊销 computer 的 available_engines 并集,字典序。
-func engines(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		rows, err := db.QueryContext(r.Context(),
-			`SELECT available_engines FROM computers WHERE status = 'online' AND revoked_at IS NULL`)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-		defer rows.Close()
-		union := map[string]bool{}
-		for rows.Next() {
-			var raw []byte
-			if rows.Scan(&raw) != nil {
-				continue
-			}
-			var list []string
-			if json.Unmarshal(raw, &list) != nil {
-				continue
-			}
-			for _, e := range list {
-				union[e] = true
-			}
-		}
-		out := make([]string, 0, len(union))
-		for e := range union {
-			out = append(out, e)
-		}
-		sort.Strings(out)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"engines": out})
+func (s *Server) AdminAvailableEngines(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	rows, err := s.DB.QueryContext(r.Context(),
+		`SELECT available_engines FROM computers WHERE status = 'online' AND revoked_at IS NULL`)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	defer rows.Close()
+	union := map[string]bool{}
+	for rows.Next() {
+		var raw []byte
+		if rows.Scan(&raw) != nil {
+			continue
+		}
+		var list []string
+		if json.Unmarshal(raw, &list) != nil {
+			continue
+		}
+		for _, e := range list {
+			union[e] = true
+		}
+	}
+	out := make([]string, 0, len(union))
+	for e := range union {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"engines": out})
 }

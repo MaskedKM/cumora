@@ -57,87 +57,83 @@ func scanWaitlistRow(scanner interface{ Scan(...any) error }, row *waitlistRowDb
 		&row.avatarURL, &row.status, &row.note, &row.requestedAt, &row.decidedAt, &row.decidedBy)
 }
 
-func waitlistList(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		statusParam := r.URL.Query().Get("status")
-		status := ""
-		if statusParam == "pending" || statusParam == "approved" || statusParam == "rejected" {
-			status = statusParam
-		}
-		q := strings.TrimSpace(r.URL.Query().Get("q"))
-		limit := int(min(500, max(1, numOrDefault(r.URL.Query().Get("limit"), 50))))
-		offset := int(max(0, numOrDefault(r.URL.Query().Get("offset"), 0)))
-
-		where := []string{}
-		var params []any
-		if status != "" {
-			params = append(params, status)
-			where = append(where, fmt.Sprintf(`status = $%d`, len(params)))
-		}
-		if q != "" {
-			params = append(params, "%"+strings.ToLower(q)+"%")
-			n := len(params)
-			where = append(where, fmt.Sprintf(`(
-	      LOWER(email) LIKE $%[1]d OR LOWER(display_name) LIKE $%[1]d
-	      OR LOWER(provider) LIKE $%[1]d OR LOWER(provider_id) LIKE $%[1]d
-	      OR LOWER(COALESCE(note, '')) LIKE $%[1]d
-	    )`, n))
-		}
-		whereSql := ""
-		if len(where) > 0 {
-			whereSql = "WHERE " + strings.Join(where, " AND ")
-		}
-		var total int
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*)::int FROM waitlist `+whereSql, params...).Scan(&total)
-		params = append(params, limit, offset)
-		rows, err := db.QueryContext(r.Context(), fmt.Sprintf(`
-			SELECT %s FROM waitlist %s
-			  ORDER BY requested_at DESC LIMIT $%d OFFSET $%d`,
-			waitlistCols, whereSql, len(params)-1, len(params)), params...)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		items := []map[string]any{}
-		for rows.Next() {
-			var row waitlistRowDb
-			if scanWaitlistRow(rows, &row) == nil {
-				items = append(items, row.toWire())
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"items": items, "total": total, "limit": limit, "offset": offset,
-		})
+func (s *Server) AdminListWaitlist(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	statusParam := r.URL.Query().Get("status")
+	status := ""
+	if statusParam == "pending" || statusParam == "approved" || statusParam == "rejected" {
+		status = statusParam
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit := int(min(500, max(1, numOrDefault(r.URL.Query().Get("limit"), 50))))
+	offset := int(max(0, numOrDefault(r.URL.Query().Get("offset"), 0)))
+
+	where := []string{}
+	var params []any
+	if status != "" {
+		params = append(params, status)
+		where = append(where, fmt.Sprintf(`status = $%d`, len(params)))
+	}
+	if q != "" {
+		params = append(params, "%"+strings.ToLower(q)+"%")
+		n := len(params)
+		where = append(where, fmt.Sprintf(`(
+      LOWER(email) LIKE $%[1]d OR LOWER(display_name) LIKE $%[1]d
+      OR LOWER(provider) LIKE $%[1]d OR LOWER(provider_id) LIKE $%[1]d
+      OR LOWER(COALESCE(note, '')) LIKE $%[1]d
+    )`, n))
+	}
+	whereSql := ""
+	if len(where) > 0 {
+		whereSql = "WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT COUNT(*)::int FROM waitlist `+whereSql, params...).Scan(&total)
+	params = append(params, limit, offset)
+	rows, err := s.DB.QueryContext(r.Context(), fmt.Sprintf(`
+		SELECT %s FROM waitlist %s
+		  ORDER BY requested_at DESC LIMIT $%d OFFSET $%d`,
+		waitlistCols, whereSql, len(params)-1, len(params)), params...)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var row waitlistRowDb
+		if scanWaitlistRow(rows, &row) == nil {
+			items = append(items, row.toWire())
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "limit": limit, "offset": offset,
+	})
 }
 
-func waitlistApprove(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		adminID, ok := requireAdmin(w, r, db)
-		if !ok {
-			return
-		}
-		userID, companyID, httpErr, err := approveWaitlistRow(r.Context(), db, r.PathValue("id"), adminID)
-		if err != nil {
-			if httpErr != 0 {
-				// 受控域错(HttpError 语义:状态+文案由 fail() 显式给定)
-				httpx.WriteError(w, httpErr, err.Error())
-			} else {
-				httpx.WriteInternalError(w, r, err)
-			}
-			return
-		}
-		var companyIDWire any
-		if companyID != "" {
-			companyIDWire = companyID
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": userID, "companyId": companyIDWire})
+func (s *Server) AdminApproveWaitlist(w http.ResponseWriter, r *http.Request, id string) {
+	adminID, ok := requireAdmin(w, r, s.DB)
+	if !ok {
+		return
 	}
+	userID, companyID, httpErr, err := approveWaitlistRow(r.Context(), s.DB, id, adminID)
+	if err != nil {
+		if httpErr != 0 {
+			// 受控域错(HttpError 语义:状态+文案由 fail() 显式给定)
+			httpx.WriteError(w, httpErr, err.Error())
+		} else {
+			httpx.WriteInternalError(w, r, err)
+		}
+		return
+	}
+	var companyIDWire any
+	if companyID != "" {
+		companyIDWire = companyID
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": userID, "companyId": companyIDWire})
 }
 
 // approveWaitlistRow:事务 = SELECT FOR UPDATE → 已存在同 email 拒 →
@@ -254,36 +250,34 @@ func approveWaitlistRow(ctx context.Context, db *sql.DB, waitlistID, decidedBy s
 	return userID, companyID, 0, nil
 }
 
-func waitlistReject(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		adminID, ok := requireAdmin(w, r, db)
-		if !ok {
-			return
-		}
-		// TS:note 是字符串就原样入库(空串也是 ''),非字符串 → null。
-		var note sql.NullString
-		var body map[string]json.RawMessage
-		if json.NewDecoder(r.Body).Decode(&body) == nil {
-			if raw, has := body["note"]; has {
-				var s string
-				if json.Unmarshal(raw, &s) == nil {
-					note = sql.NullString{String: s, Valid: true}
-				}
+func (s *Server) AdminRejectWaitlist(w http.ResponseWriter, r *http.Request, id string) {
+	adminID, ok := requireAdmin(w, r, s.DB)
+	if !ok {
+		return
+	}
+	// TS:note 是字符串就原样入库(空串也是 ''),非字符串 → null。
+	var note sql.NullString
+	var body map[string]json.RawMessage
+	if json.NewDecoder(r.Body).Decode(&body) == nil {
+		if raw, has := body["note"]; has {
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				note = sql.NullString{String: s, Valid: true}
 			}
 		}
-		res, err := db.ExecContext(r.Context(), `
-			UPDATE waitlist SET status = 'rejected', decided_at = NOW(), decided_by = $2, note = $3
-			 WHERE id = $1 AND status = 'pending'`, r.PathValue("id"), adminID, note)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusNotFound, "no pending waitlist entry")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
+	res, err := s.DB.ExecContext(r.Context(), `
+		UPDATE waitlist SET status = 'rejected', decided_at = NOW(), decided_by = $2, note = $3
+		 WHERE id = $1 AND status = 'pending'`, id, adminID, note)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "no pending waitlist entry")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // slugSeedFrom:TS localpart.replace(/[^a-z0-9]+/g,'-').slice(0,30)

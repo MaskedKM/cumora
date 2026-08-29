@@ -84,177 +84,169 @@ func numOrDefault(raw string, def float64) float64 {
 	return f
 }
 
-func usersList(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		q := strings.TrimSpace(r.URL.Query().Get("q"))
-		tier := strings.TrimSpace(r.URL.Query().Get("tier"))
-		limit := int(math.Min(200, math.Max(1, numOrDefault(r.URL.Query().Get("limit"), 50))))
-		offset := int(math.Max(0, numOrDefault(r.URL.Query().Get("offset"), 0)))
-
-		where := []string{}
-		var params []any
-		if q != "" {
-			params = append(params, "%"+strings.ToLower(q)+"%")
-			where = append(where, fmt.Sprintf(`(LOWER(u.email) LIKE $%d OR LOWER(u.display_name) LIKE $%d)`, len(params), len(params)))
-		}
-		if tier == "free" || tier == "pro" || tier == "max" {
-			params = append(params, tier)
-			where = append(where, fmt.Sprintf(`u.tier = $%d`, len(params)))
-		}
-		whereSql := ""
-		if len(where) > 0 {
-			whereSql = "WHERE " + strings.Join(where, " AND ")
-		}
-		params = append(params, limit, offset)
-		rows, err := db.QueryContext(r.Context(), fmt.Sprintf(`
-			SELECT %s FROM users u %s ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`,
-			adminUserCols, whereSql, len(params)-1, len(params)), params...)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		items := []map[string]any{}
-		for rows.Next() {
-			u, err := scanAdminUserRow(rows)
-			if err != nil {
-				continue
-			}
-			items = append(items, u.toWire())
-		}
-		var total int
-		countParams := params[:len(params)-2]
-		_ = db.QueryRowContext(r.Context(),
-			fmt.Sprintf(`SELECT COUNT(*)::int FROM users u %s`, whereSql), countParams...).Scan(&total)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"items": items, "total": total, "limit": limit, "offset": offset,
-		})
+func (s *Server) AdminListUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	tier := strings.TrimSpace(r.URL.Query().Get("tier"))
+	limit := int(math.Min(200, math.Max(1, numOrDefault(r.URL.Query().Get("limit"), 50))))
+	offset := int(math.Max(0, numOrDefault(r.URL.Query().Get("offset"), 0)))
+
+	where := []string{}
+	var params []any
+	if q != "" {
+		params = append(params, "%"+strings.ToLower(q)+"%")
+		where = append(where, fmt.Sprintf(`(LOWER(u.email) LIKE $%d OR LOWER(u.display_name) LIKE $%d)`, len(params), len(params)))
+	}
+	if tier == "free" || tier == "pro" || tier == "max" {
+		params = append(params, tier)
+		where = append(where, fmt.Sprintf(`u.tier = $%d`, len(params)))
+	}
+	whereSql := ""
+	if len(where) > 0 {
+		whereSql = "WHERE " + strings.Join(where, " AND ")
+	}
+	params = append(params, limit, offset)
+	rows, err := s.DB.QueryContext(r.Context(), fmt.Sprintf(`
+		SELECT %s FROM users u %s ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`,
+		adminUserCols, whereSql, len(params)-1, len(params)), params...)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		u, err := scanAdminUserRow(rows)
+		if err != nil {
+			continue
+		}
+		items = append(items, u.toWire())
+	}
+	var total int
+	countParams := params[:len(params)-2]
+	_ = s.DB.QueryRowContext(r.Context(),
+		fmt.Sprintf(`SELECT COUNT(*)::int FROM users u %s`, whereSql), countParams...).Scan(&total)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "limit": limit, "offset": offset,
+	})
 }
 
-func userGet(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		id := r.PathValue("id")
-		u, err := scanAdminUserRow(db.QueryRowContext(r.Context(),
-			fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1`, adminUserCols), id))
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT c.id, c.name, c.slug, cm.role, c.created_at,
-			       (SELECT COUNT(*)::int FROM participants p
-			         WHERE p.company_id = c.id AND p.kind = 'agent' AND p.departed_at IS NULL) AS agent_count
-			  FROM company_members cm JOIN companies c ON c.id = cm.company_id
-			 WHERE cm.user_id = $1 ORDER BY cm.joined_at ASC`, id)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		companies := []map[string]any{}
-		for rows.Next() {
-			var cid, name, slug, role string
-			var createdAt time.Time
-			var agentCount int
-			if rows.Scan(&cid, &name, &slug, &role, &createdAt, &agentCount) == nil {
-				companies = append(companies, map[string]any{
-					"id": cid, "name": name, "slug": slug, "role": role,
-					"createdAt": isoTime(createdAt), "agentCount": agentCount,
-				})
-			}
-		}
-		out := u.toWire()
-		out["companies"] = companies
-		httpx.WriteJSON(w, http.StatusOK, out)
+func (s *Server) AdminGetUser(w http.ResponseWriter, r *http.Request, id string) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	u, err := scanAdminUserRow(s.DB.QueryRowContext(r.Context(),
+		fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1`, adminUserCols), id))
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT c.id, c.name, c.slug, cm.role, c.created_at,
+		       (SELECT COUNT(*)::int FROM participants p
+		         WHERE p.company_id = c.id AND p.kind = 'agent' AND p.departed_at IS NULL) AS agent_count
+		  FROM company_members cm JOIN companies c ON c.id = cm.company_id
+		 WHERE cm.user_id = $1 ORDER BY cm.joined_at ASC`, id)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	companies := []map[string]any{}
+	for rows.Next() {
+		var cid, name, slug, role string
+		var createdAt time.Time
+		var agentCount int
+		if rows.Scan(&cid, &name, &slug, &role, &createdAt, &agentCount) == nil {
+			companies = append(companies, map[string]any{
+				"id": cid, "name": name, "slug": slug, "role": role,
+				"createdAt": isoTime(createdAt), "agentCount": agentCount,
+			})
+		}
+	}
+	out := u.toWire()
+	out["companies"] = companies
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // userPatch:三个字段独立可选,逐字段生效(管理 UI 每个开关单独发)。
-func userPatch(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		adminID, ok := requireAdmin(w, r, db)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-
-		// TS typeof === 'string' 门:字段是字符串就必校验(空串也 400)。
-		if raw, has := body["tier"]; has {
-			var tier string
-			if json.Unmarshal(raw, &tier) == nil {
-				if tier != "free" && tier != "pro" && tier != "max" {
-					httpx.WriteError(w, http.StatusBadRequest, "invalid tier")
-					return
-				}
-				if !adminChangeTier(r.Context(), db, id, tier) {
-					httpx.WriteError(w, http.StatusNotFound, "user not found")
-					return
-				}
-			}
-		}
-		if raw, has := body["isAdmin"]; has {
-			var isAdmin bool
-			if json.Unmarshal(raw, &isAdmin) == nil {
-				// 拒绝自降 —— 唯一操作员把自己锁在面板外。
-				if id == adminID && !isAdmin {
-					httpx.WriteError(w, http.StatusConflict, "cannot demote yourself")
-					return
-				}
-				res, err := db.ExecContext(r.Context(),
-					`UPDATE users SET is_admin = $2 WHERE id = $1`, id, isAdmin)
-				if err != nil {
-					httpx.WriteInternalError(w, r, err)
-					return
-				}
-				if n, _ := res.RowsAffected(); n == 0 {
-					httpx.WriteError(w, http.StatusNotFound, "user not found")
-					return
-				}
-			}
-		}
-		if raw, has := body["suspended"]; has {
-			var suspended bool
-			if json.Unmarshal(raw, &suspended) == nil {
-				if suspended {
-					// suspensionReason:trim + 截 500,空串归 null(TS 同款)。
-					var reason sql.NullString
-					var rawReason string
-					if rr, hasR := body["suspensionReason"]; hasR && json.Unmarshal(rr, &rawReason) == nil {
-						if t := strings.TrimSpace(rawReason); t != "" {
-							if len(t) > 500 {
-								t = t[:500]
-							}
-							reason = sql.NullString{String: t, Valid: true}
-						}
-					}
-					if !adminSuspendUser(w, r, db, id, adminID, reason) {
-						return // 细分错误已写响应
-					}
-				} else {
-					if !adminUnsuspendUser(w, r, db, id, adminID) {
-						return
-					}
-				}
-			}
-		}
-
-		u, err := scanAdminUserRow(db.QueryRowContext(r.Context(),
-			fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1`, adminUserCols), id))
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, u.toWire())
+func (s *Server) AdminPatchUser(w http.ResponseWriter, r *http.Request, id string) {
+	adminID, ok := requireAdmin(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	// TS typeof === 'string' 门:字段是字符串就必校验(空串也 400)。
+	if raw, has := body["tier"]; has {
+		var tier string
+		if json.Unmarshal(raw, &tier) == nil {
+			if tier != "free" && tier != "pro" && tier != "max" {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid tier")
+				return
+			}
+			if !adminChangeTier(r.Context(), s.DB, id, tier) {
+				httpx.WriteError(w, http.StatusNotFound, "user not found")
+				return
+			}
+		}
+	}
+	if raw, has := body["isAdmin"]; has {
+		var isAdmin bool
+		if json.Unmarshal(raw, &isAdmin) == nil {
+			// 拒绝自降 —— 唯一操作员把自己锁在面板外。
+			if id == adminID && !isAdmin {
+				httpx.WriteError(w, http.StatusConflict, "cannot demote yourself")
+				return
+			}
+			res, err := s.DB.ExecContext(r.Context(),
+				`UPDATE users SET is_admin = $2 WHERE id = $1`, id, isAdmin)
+			if err != nil {
+				httpx.WriteInternalError(w, r, err)
+				return
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				httpx.WriteError(w, http.StatusNotFound, "user not found")
+				return
+			}
+		}
+	}
+	if raw, has := body["suspended"]; has {
+		var suspended bool
+		if json.Unmarshal(raw, &suspended) == nil {
+			if suspended {
+				// suspensionReason:trim + 截 500,空串归 null(TS 同款)。
+				var reason sql.NullString
+				var rawReason string
+				if rr, hasR := body["suspensionReason"]; hasR && json.Unmarshal(rr, &rawReason) == nil {
+					if t := strings.TrimSpace(rawReason); t != "" {
+						if len(t) > 500 {
+							t = t[:500]
+						}
+						reason = sql.NullString{String: t, Valid: true}
+					}
+				}
+				if !adminSuspendUser(w, r, s.DB, id, adminID, reason) {
+					return // 细分错误已写响应
+				}
+			} else {
+				if !adminUnsuspendUser(w, r, s.DB, id, adminID) {
+					return
+				}
+			}
+		}
+	}
+
+	u, err := scanAdminUserRow(s.DB.QueryRowContext(r.Context(),
+		fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1`, adminUserCols), id))
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, u.toWire())
 }
 
 // adminChangeTier:changeUserTier —— sub2api 未配置(部署实态,#109 延后

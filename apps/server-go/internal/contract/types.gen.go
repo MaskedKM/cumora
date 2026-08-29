@@ -1762,7 +1762,7 @@ type WorkspaceSummary struct {
 
 // AdminLlmSummaryParams defines parameters for AdminLlmSummary.
 type AdminLlmSummaryParams struct {
-	Days *int `form:"days,omitempty" json:"days,omitempty"`
+	SinceDays *string `form:"sinceDays,omitempty" json:"sinceDays,omitempty"`
 }
 
 // AdminPutSettingsJSONBody defines parameters for AdminPutSettings.

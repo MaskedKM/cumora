@@ -2300,8 +2300,9 @@ paths:
       tags: [admin]
       operationId: adminLlmSummary
       summary: LLM 汇总
+      # 宽容强转(坏值回落默认),TS baseline 查询名是 sinceDays —— 如实化
       parameters:
-        - { name: days, in: query, schema: { type: integer } }
+        - { name: sinceDays, in: query, schema: { type: string } }
       responses:
         '200':
           description: ok
