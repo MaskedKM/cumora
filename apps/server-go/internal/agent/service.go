@@ -25,6 +25,11 @@ type Service struct {
 	Relay *docrelay.Relay
 
 	wakeAgentHook wakeAgentFn
+
+	// domainDispatch:域子包命令分发钩子(#140 刀法)——kanban/email/…
+	// 居 agent/<domain> 子包,本包不得 import 它们(防环);runtime 接线
+	// 时注入 sub → 域方法的闭包表,RunCli 的 default 分支回落于此。
+	domainDispatch func(sub string, ctx context.Context, p cliParsed) (cliResult, bool)
 }
 
 func New(db *sql.DB, rdb redis.UniversalClient) *Service {
@@ -44,6 +49,11 @@ func (s *Service) SetRelay(r *docrelay.Relay) { s.Relay = r }
 type wakeAgentFn func(agentID, reason string, conversationID *string)
 
 func (s *Service) SetWakeHook(fn wakeAgentFn) { s.wakeAgentHook = fn }
+
+// SetDomainDispatcher:注入域子包命令分发(runtime.New 接线)。
+func (s *Service) SetDomainDispatcher(fn func(sub string, ctx context.Context, p cliParsed) (cliResult, bool)) {
+	s.domainDispatch = fn
+}
 
 // WakeAgent:Boards 面的 legacy 形态(#82)——经钩子投递到 runtime 的
 // wakeOne(无 steer、无附加选项);钩子未接线则丢弃并记日志。

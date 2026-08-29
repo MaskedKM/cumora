@@ -26,6 +26,7 @@ func New(db *sql.DB, rdb redis.UniversalClient) *Service {
 	core.SetWakeHook(func(agentID, reason string, conversationID *string) {
 		svc.wakeOne(agentID, reason, conversationID, nil, nil)
 	})
+	wireDomainDispatch(core)
 	return svc
 }
 
