@@ -5819,8 +5819,8 @@ export interface operations {
     };
     listAgentWorkspace: {
         parameters: {
-            query: {
-                agentId: string;
+            query?: {
+                agentId?: string;
             };
             header?: never;
             path?: never;
@@ -5841,9 +5841,9 @@ export interface operations {
     };
     readAgentWorkspaceFile: {
         parameters: {
-            query: {
-                agentId: string;
-                path: string;
+            query?: {
+                agentId?: string;
+                path?: string;
             };
             header?: never;
             path?: never;
@@ -7010,7 +7010,7 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
-                kind: "project" | "board_card" | "document";
+                kind: string;
                 targetId: string;
             };
             cookie?: never;
@@ -7030,8 +7030,8 @@ export interface operations {
     };
     listWorkspaceFiles: {
         parameters: {
-            query: {
-                path: string;
+            query?: {
+                path?: string;
             };
             header?: never;
             path: {
@@ -7057,8 +7057,8 @@ export interface operations {
     };
     readWorkspaceFile: {
         parameters: {
-            query: {
-                path: string;
+            query?: {
+                path?: string;
             };
             header?: never;
             path: {
@@ -7087,8 +7087,8 @@ export interface operations {
     };
     writeWorkspaceFile: {
         parameters: {
-            query: {
-                path: string;
+            query?: {
+                path?: string;
             };
             header?: never;
             path: {

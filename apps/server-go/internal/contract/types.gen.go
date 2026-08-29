@@ -500,13 +500,6 @@ const (
 	AddWorkspaceAssociationJSONBodyKindProject   AddWorkspaceAssociationJSONBodyKind = "project"
 )
 
-// Defines values for RemoveWorkspaceAssociationParamsKind.
-const (
-	RemoveWorkspaceAssociationParamsKindBoardCard RemoveWorkspaceAssociationParamsKind = "board_card"
-	RemoveWorkspaceAssociationParamsKindDocument  RemoveWorkspaceAssociationParamsKind = "document"
-	RemoveWorkspaceAssociationParamsKindProject   RemoveWorkspaceAssociationParamsKind = "project"
-)
-
 // Defines values for RecordEventJSONBodyLevel.
 const (
 	RecordEventJSONBodyLevelDebug RecordEventJSONBodyLevel = "debug"
@@ -1996,13 +1989,13 @@ type EmitTypingJSONBody struct {
 
 // ListAgentWorkspaceParams defines parameters for ListAgentWorkspace.
 type ListAgentWorkspaceParams struct {
-	AgentId string `form:"agentId" json:"agentId"`
+	AgentId *string `form:"agentId,omitempty" json:"agentId,omitempty"`
 }
 
 // ReadAgentWorkspaceFileParams defines parameters for ReadAgentWorkspaceFile.
 type ReadAgentWorkspaceFileParams struct {
-	AgentId string `form:"agentId" json:"agentId"`
-	Path    string `form:"path" json:"path"`
+	AgentId *string `form:"agentId,omitempty" json:"agentId,omitempty"`
+	Path    *string `form:"path,omitempty" json:"path,omitempty"`
 }
 
 // CreateDocumentJSONBody defines parameters for CreateDocument.
@@ -2231,12 +2224,9 @@ type AddWorkspaceAssociationJSONBody struct {
 // AddWorkspaceAssociationJSONBodyKind defines parameters for AddWorkspaceAssociation.
 type AddWorkspaceAssociationJSONBodyKind string
 
-// RemoveWorkspaceAssociationParamsKind defines parameters for RemoveWorkspaceAssociation.
-type RemoveWorkspaceAssociationParamsKind string
-
 // ReadWorkspaceFileParams defines parameters for ReadWorkspaceFile.
 type ReadWorkspaceFileParams struct {
-	Path string `form:"path" json:"path"`
+	Path *string `form:"path,omitempty" json:"path,omitempty"`
 }
 
 // WriteWorkspaceFileJSONBody defines parameters for WriteWorkspaceFile.
@@ -2246,12 +2236,12 @@ type WriteWorkspaceFileJSONBody struct {
 
 // WriteWorkspaceFileParams defines parameters for WriteWorkspaceFile.
 type WriteWorkspaceFileParams struct {
-	Path string `form:"path" json:"path"`
+	Path *string `form:"path,omitempty" json:"path,omitempty"`
 }
 
 // ListWorkspaceFilesParams defines parameters for ListWorkspaceFiles.
 type ListWorkspaceFilesParams struct {
-	Path string `form:"path" json:"path"`
+	Path *string `form:"path,omitempty" json:"path,omitempty"`
 }
 
 // AddWorkspaceMemberJSONBody defines parameters for AddWorkspaceMember.
