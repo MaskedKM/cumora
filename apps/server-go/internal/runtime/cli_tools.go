@@ -490,7 +490,7 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 }
 
 func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID, topic, aName string) (string, error) {
-		var existing string
+	var existing string
 	query := `
 		SELECT c.id
 		  FROM conversation_members ca
