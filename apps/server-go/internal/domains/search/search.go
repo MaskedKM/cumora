@@ -96,7 +96,7 @@ func handler(db *sql.DB) http.HandlerFunc {
 			     ) other_participant ON c.kind = 'direct'
 			    WHERE c.company_id = $1
 			      AND c.kind IN ('direct', 'whisper')
-			      AND c.members @> to_jsonb(ARRAY[$2::text])
+			      AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 			 )
 			 SELECT r.id, r.kind, r.title, r.members, r.project_name
 			   FROM my_rooms r
@@ -106,7 +106,7 @@ func handler(db *sql.DB) http.HandlerFunc {
 			           WHERE p.company_id = $1
 			             AND p.name ILIKE $3 ESCAPE '\'
 			             AND p.id <> $2
-			             AND r.members @> to_jsonb(ARRAY[p.id::text])
+			             AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = r.id AND cm.participant_id = p.id)
 			        )
 			  ORDER BY
 			    CASE WHEN lower(r.title) = lower($4) THEN 0
@@ -125,7 +125,7 @@ func handler(db *sql.DB) http.HandlerFunc {
 			  LEFT JOIN projects p ON p.id = c.project_id
 			 WHERE c.company_id = $1
 			   AND c.kind = 'group'
-			   AND c.members @> to_jsonb(ARRAY[$2::text])
+			   AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 			   AND (c.title ILIKE $3 ESCAPE '\' OR (c.topic IS NOT NULL AND c.topic ILIKE $3 ESCAPE '\'))
 			 ORDER BY
 			   CASE WHEN lower(c.title) = lower($4) THEN 0
@@ -158,7 +158,7 @@ func handler(db *sql.DB) http.HandlerFunc {
 			     LIMIT 1
 			  ) other_participant ON c.kind = 'direct'
 			 WHERE c.company_id = $1
-			   AND c.members @> to_jsonb(ARRAY[$2::text])
+			   AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 			   AND m.kind = 'text'
 			   AND m.body ILIKE $3 ESCAPE '\'
 			 ORDER BY m.created_at DESC

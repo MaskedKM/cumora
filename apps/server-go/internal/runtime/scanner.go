@@ -79,7 +79,7 @@ func (s *Service) agentHasUnreadInbox(ctx context.Context, agentID string) bool 
 		   SELECT 1
 		     FROM messages m
 		     JOIN conversations c ON c.id = m.conversation_id
-		    WHERE c.members @> to_jsonb(ARRAY[$1::text])
+		    WHERE EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $1)
 		      AND m.author_id <> $1
 		      AND ROW(m.created_at, m.id) > (
 		        SELECT

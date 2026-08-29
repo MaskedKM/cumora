@@ -552,7 +552,7 @@ func (s *Service) cliCmdSearch(ctx context.Context, parsed cliParsed) cliResult 
 		   JOIN conversations c ON c.id = m.conversation_id
 		  WHERE m.body ILIKE $1
 		    AND c.company_id = $2
-		    AND c.members @> to_jsonb(ARRAY[$3::text]) `+whereExtra+`
+		    AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $3) `+whereExtra+`
 		  ORDER BY m.created_at DESC LIMIT `+limitParam, args...)
 	if err != nil {
 		return cliErrThrow(err)

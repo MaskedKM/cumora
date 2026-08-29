@@ -344,7 +344,7 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		     FROM conversations c
 		    WHERE c.kind = 'email'
 		      AND c.company_id = $1
-		      AND c.members @> to_jsonb(ARRAY[$2::text])
+		      AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 		 ),
 		 last_msg AS (
 		   SELECT DISTINCT ON (em.conversation_id)

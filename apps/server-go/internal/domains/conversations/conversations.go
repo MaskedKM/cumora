@@ -466,7 +466,8 @@ func list(db *sql.DB) http.HandlerFunc {
 					     (SELECT last_read_at FROM conversation_reads WHERE user_id = $1 AND conversation_id = c.id),
 					     '1970-01-01T00:00:00Z'::timestamptz)
 				), 0)
-			FROM conversations c
+			FROM conversation_members cmv
+			JOIN conversations c ON c.id = cmv.conversation_id
 			LEFT JOIN projects p ON p.id = c.project_id
 			LEFT JOIN conversation_mutes mu ON mu.conversation_id = c.id AND mu.user_id = $1
 			LEFT JOIN LATERAL (
@@ -474,7 +475,7 @@ func list(db *sql.DB) http.HandlerFunc {
 				JOIN participants po ON po.id = member.id AND po.company_id = c.company_id
 				WHERE member.id <> $1 ORDER BY member.ord LIMIT 1
 			) op ON c.kind = 'direct'
-			WHERE c.company_id = $2 AND c.members @> to_jsonb(ARRAY[$1::text])
+			WHERE cmv.participant_id = $1 AND c.company_id = $2
 			ORDER BY c.pinned DESC, c.updated_at DESC`, uid, companyID)
 		if err != nil {
 			httpx.WriteError(w, http.StatusInternalServerError, "query failed")

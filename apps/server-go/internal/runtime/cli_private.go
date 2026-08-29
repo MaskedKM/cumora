@@ -999,7 +999,7 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 		     (a.target_kind = 'project' AND EXISTS (
 		        SELECT 1 FROM conversations c
 		         WHERE c.project_id = a.target_id AND c.company_id = $3
-		           AND c.members @> to_jsonb(ARRAY[$2::text])))
+		           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)))
 		     OR (a.target_kind = 'board_card' AND EXISTS (
 		        SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		         WHERE bc.id = a.target_id AND b.company_id = $3

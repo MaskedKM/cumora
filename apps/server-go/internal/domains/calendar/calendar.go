@@ -973,10 +973,13 @@ func resolveTargetConversation(ctx context.Context, db *sql.DB, e eventRow) (str
 	// 回退:creator↔assignee 既有 DM;不自动创建。
 	var id string
 	err := db.QueryRowContext(ctx, `
-		SELECT id FROM conversations
-		 WHERE company_id = $1 AND kind = 'direct'
-		   AND members @> $2::jsonb AND members @> $3::jsonb LIMIT 1`,
-		e.CompanyID, `["`+e.CreatedBy+`"]`, `["`+e.AssigneeID.String+`"]`).Scan(&id)
+		SELECT c.id
+		  FROM conversation_members ca
+		  JOIN conversation_members cb ON cb.conversation_id = ca.conversation_id
+		  JOIN conversations c ON c.id = ca.conversation_id
+		 WHERE ca.participant_id = $2 AND cb.participant_id = $3
+		   AND c.company_id = $1 AND c.kind = 'direct' LIMIT 1`,
+		e.CompanyID, e.CreatedBy, e.AssigneeID.String).Scan(&id)
 	if err != nil {
 		return "", false
 	}

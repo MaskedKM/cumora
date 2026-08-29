@@ -935,10 +935,13 @@ func seedMemberDms(ctx context.Context, db *sql.DB, companyID, memberID string) 
 	for _, o := range others {
 		var one int
 		if db.QueryRowContext(ctx, `
-			SELECT 1 FROM conversations
-			 WHERE company_id = $1 AND kind = 'direct'
-			   AND members @> to_jsonb(ARRAY[$2::text, $3::text])
-			   AND jsonb_array_length(members) = 2 LIMIT 1`, companyID, memberID, o.id).Scan(&one) == nil {
+			SELECT 1
+			   FROM conversation_members ca
+			   JOIN conversation_members cb ON cb.conversation_id = ca.conversation_id
+			   JOIN conversations c ON c.id = ca.conversation_id
+			  WHERE ca.participant_id = $2 AND cb.participant_id = $3
+			    AND c.company_id = $1 AND c.kind = 'direct'
+			    AND jsonb_array_length(c.members) = 2 LIMIT 1`, companyID, memberID, o.id).Scan(&one) == nil {
 			continue
 		}
 		dmID := "direct-" + o.id + "-" + randHex6()

@@ -177,9 +177,9 @@ func (s *Service) cliCmdWhoami(ctx context.Context, parsed cliParsed) cliResult 
 		return cliOK(js)
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, title, kind FROM conversations
-		  WHERE members @> to_jsonb(ARRAY[$1::text])
-		  ORDER BY updated_at DESC`, id)
+		`SELECT c.id, c.title, c.kind FROM conversations c
+		  WHERE EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $1)
+		  ORDER BY c.updated_at DESC`, id)
 	if err != nil {
 		return cliErrThrow(err)
 	}
@@ -331,10 +331,10 @@ func (s *Service) cliCmdConversations(ctx context.Context, parsed cliParsed, kin
 		kindWhere = `AND kind = $2`
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, kind, title, subtitle, members, tag, updated_at, pulled_by
-		   FROM conversations
-		  WHERE members @> to_jsonb(ARRAY[$1::text]) `+kindWhere+`
-		  ORDER BY updated_at DESC`, args...)
+		`SELECT c.id, c.kind, c.title, c.subtitle, c.members, c.tag, c.updated_at, c.pulled_by
+		   FROM conversations c
+		  WHERE EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $1) `+kindWhere+`
+		  ORDER BY c.updated_at DESC`, args...)
 	if err != nil {
 		return cliErrThrow(err)
 	}
