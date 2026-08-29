@@ -1728,8 +1728,9 @@ paths:
       operationId: listCalendarEvents
       summary: 日历事件(区间过滤)
       parameters:
-        - { name: from, in: query, schema: { type: string, format: date-time } }
-        - { name: to, in: query, schema: { type: string, format: date-time } }
+        # 宽容解析:坏值忽略过滤(TS/Go 同),非严格校验 —— 不标 date-time
+        - { name: from, in: query, schema: { type: string } }
+        - { name: to, in: query, schema: { type: string } }
       responses:
         '200':
           description: ok

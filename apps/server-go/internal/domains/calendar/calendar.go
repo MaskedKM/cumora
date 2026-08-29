@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/calendar"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -334,212 +335,210 @@ func publishCalendarChange(ctx context.Context, kind, eventID, companyID, actorI
 	_ = events.PublishRaw(ctx, chCalendarEvents, payload)
 }
 
+// Server:contract.calendar ServerInterface 的域实现(#187 机械迁移,
+// documents 范式)。方法体自原闭包工厂原样搬运。
+type Server struct{ DB *sql.DB }
+
+// 编译期接口把关:规范改动 operation 而域未跟 = 构建红。
+var _ contract.ServerInterface = (*Server)(nil)
+
+// Mount:注册串来自契约生成物(pattern 即规范,#139)。
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("GET /api/calendar/events", list(db))
-	mux.HandleFunc("POST /api/calendar/events", create(db))
-	mux.HandleFunc("GET /api/calendar/events/{id}", get(db))
-	mux.HandleFunc("PATCH /api/calendar/events/{id}", patch(db))
-	mux.HandleFunc("DELETE /api/calendar/events/{id}", del(db))
-	mux.HandleFunc("POST /api/calendar/events/{id}/run-now", runNow(db))
-	mux.HandleFunc("GET /api/calendar/events/{id}/dispatches", dispatches(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
-func list(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		// 可选窗口:from=「窗口内开始 OR 循环+active」,to=开始不晚于上界
-		args := []any{companyID, me}
-		sqlStr := `SELECT ` + eventScan + ` FROM calendar_events
-		 WHERE company_id = $1 AND ` + vis(2, 1)
-		// TS:同名多值 → express 给数组 → new Date(数组)=NaN → 忽略过滤
-		qvals := r.URL.Query()
-		if len(qvals["from"]) == 1 {
-			if d, ok := tsDate(qvals["from"][0]); ok {
-				args = append(args, d)
-				sqlStr += fmt.Sprintf(` AND (start_at >= $%d OR (recurrence IS NOT NULL AND status = 'active'))`, len(args))
-			}
-		}
-		if len(qvals["to"]) == 1 {
-			if d, ok := tsDate(qvals["to"][0]); ok {
-				args = append(args, d)
-				sqlStr += fmt.Sprintf(` AND start_at <= $%d`, len(args))
-			}
-		}
-		sqlStr += ` ORDER BY start_at ASC LIMIT 1000`
-		rows, err := db.QueryContext(r.Context(), sqlStr, args...)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			if e, ok := scanEvent(rows); ok {
-				out = append(out, e.toPayload())
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"events": out})
+func (s *Server) ListCalendarEvents(w http.ResponseWriter, r *http.Request, params contract.ListCalendarEventsParams) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
+	// 可选窗口:from=「窗口内开始 OR 循环+active」,to=开始不晚于上界
+	args := []any{companyID, me}
+	sqlStr := `SELECT ` + eventScan + ` FROM calendar_events
+	 WHERE company_id = $1 AND ` + vis(2, 1)
+	// TS:同名多值 → express 给数组 → new Date(数组)=NaN → 忽略过滤
+	qvals := r.URL.Query()
+	if len(qvals["from"]) == 1 {
+		if d, ok := tsDate(qvals["from"][0]); ok {
+			args = append(args, d)
+			sqlStr += fmt.Sprintf(` AND (start_at >= $%d OR (recurrence IS NOT NULL AND status = 'active'))`, len(args))
+		}
+	}
+	if len(qvals["to"]) == 1 {
+		if d, ok := tsDate(qvals["to"][0]); ok {
+			args = append(args, d)
+			sqlStr += fmt.Sprintf(` AND start_at <= $%d`, len(args))
+		}
+	}
+	sqlStr += ` ORDER BY start_at ASC LIMIT 1000`
+	rows, err := s.DB.QueryContext(r.Context(), sqlStr, args...)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		if e, ok := scanEvent(rows); ok {
+			out = append(out, e.toPayload())
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"events": out})
 }
 
-func create(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var body map[string]json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
-			httpx.WriteError(w, http.StatusBadRequest, "body required")
-			return
-		}
-		title := ""
-		if raw, ok := body["title"]; ok && string(raw) != "null" {
-			title = text(tsString(raw), 200)
-		}
-		if title == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "title required")
-			return
-		}
-		kind := "personal"
-		if raw, ok := body["kind"]; ok {
-			if s := tsString(raw); isKind(s) {
-				kind = s
-			}
-		}
-		// baseline:String(x).slice —— 不 trim(改 trim 即改存库数据);null → NULL
-		var description sql.NullString
-		if raw, ok := body["description"]; ok && string(raw) != "null" {
-			description = sql.NullString{String: capOnly(tsString(raw), 4000), Valid: true}
-		}
-		trimOrNull := func(k string) sql.NullString {
-			if raw, ok := body[k]; ok && string(raw) != "null" {
-				if t := strings.TrimSpace(tsString(raw)); t != "" {
-					return sql.NullString{String: t, Valid: true}
-				}
-			}
-			return sql.NullString{}
-		}
-		assigneeID := trimOrNull("assigneeId")
-		targetConv := trimOrNull("targetConversationId")
-		var agentPrompt sql.NullString
-		if raw, ok := body["agentPrompt"]; ok && string(raw) != "null" {
-			agentPrompt = sql.NullString{String: capOnly(tsString(raw), 8000), Valid: true}
-		}
-		startAt, startOK := func() (time.Time, bool) {
-			if raw, ok := body["startAt"]; ok {
-				return tsDate(tsString(raw))
-			}
-			return time.Time{}, false
-		}()
-		if !startOK {
-			httpx.WriteError(w, http.StatusBadRequest, "startAt must be a valid ISO timestamp")
-			return
-		}
-		var endAt sql.NullTime
-		if raw, ok := body["endAt"]; ok {
-			if d, ok2 := tsDate(tsString(raw)); ok2 {
-				endAt = sql.NullTime{Time: d, Valid: true}
-			}
-		}
-		var allDay bool
-		if raw, ok := body["allDay"]; ok {
-			allDay = tsBool(raw)
-		}
-		var recurrence []byte
-		if raw, ok := body["recurrence"]; ok {
-			parsed, code, msg := parseRecurrence(raw)
-			if code != 0 {
-				httpx.WriteError(w, code, msg)
-				return
-			}
-			if parsed != nil {
-				recurrence, _ = json.Marshal(parsed)
-			}
-		}
-		status := "active"
-		if raw, ok := body["status"]; ok {
-			if s := tsString(raw); isStatus(s) {
-				status = s
-			}
-		}
-		// reminder 双置校验:非空 channel 须配正提前量,反之亦然。
-		var reminderMinutes sql.NullInt64
-		var reminderChannel sql.NullString
-		if raw, ok := body["reminderMinutesBefore"]; ok && string(raw) != "null" {
-			f, ok2 := tsNumber(raw)
-			n := int64(f) // TS Math.floor(先取整再校验;负数在本域必被拒)
-			if !ok2 || n < 0 || n > 14*24*60 {
-				httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
-				return
-			}
-			reminderMinutes = sql.NullInt64{Int64: n, Valid: true}
-		}
-		if raw, ok := body["reminderChannel"]; ok && string(raw) != "null" {
-			s := tsString(raw)
-			if !isReminderChannel(s) {
-				httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")
-				return
-			}
-			reminderChannel = sql.NullString{String: s, Valid: true}
-		}
-		if reminderMinutes.Valid != reminderChannel.Valid {
-			httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore and reminderChannel must both be set or both null")
-			return
-		}
-		var isPrivate bool
-		if raw, ok := body["isPrivate"]; ok {
-			isPrivate = tsBool(raw)
-		}
-		if kind == "agent_task" && !assigneeID.Valid {
-			httpx.WriteError(w, http.StatusBadRequest, "agent_task events require an assigneeId")
-			return
-		}
-		// 跨租户安全预检:assignee 与目标会话须属本公司。
-		if assigneeID.Valid {
-			var exists bool
-			if err := db.QueryRowContext(r.Context(),
-				`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
-				assigneeID.String, companyID).Scan(&exists); err != nil || !exists {
-				httpx.WriteError(w, http.StatusBadRequest, "assigneeId not found in this team")
-				return
-			}
-		}
-		if targetConv.Valid {
-			var exists bool
-			if err := db.QueryRowContext(r.Context(),
-				`SELECT 1 FROM conversations WHERE id = $1 AND company_id = $2 LIMIT 1`,
-				targetConv.String, companyID).Scan(&exists); err != nil || !exists {
-				httpx.WriteError(w, http.StatusBadRequest, "targetConversationId not found in this team")
-				return
-			}
-		}
-		id := newID("ce-")
-		var e eventRow
-		insertErr := db.QueryRowContext(r.Context(), `
-			INSERT INTO calendar_events
-			  (id, company_id, created_by, kind, title, description, assignee_id,
-			   target_conversation_id, agent_prompt, start_at, end_at, all_day,
-			   recurrence, status, reminder_minutes_before, reminder_channel, is_private)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17)
-			RETURNING `+eventScan,
-			id, companyID, me, kind, title, description, assigneeID, targetConv, agentPrompt,
-			startAt, endAt, allDay, recurrenceByte(recurrence), status, reminderMinutes, reminderChannel, isPrivate).
-			Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
-				&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
-				&recurrence, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
-				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
-		if insertErr != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
-			return
-		}
-		e.Recurrence = recurrence
-		publishCalendarChange(r.Context(), "event.created", id, companyID, me)
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"event": e.toPayload()})
+func (s *Server) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
+		httpx.WriteError(w, http.StatusBadRequest, "body required")
+		return
+	}
+	title := ""
+	if raw, ok := body["title"]; ok && string(raw) != "null" {
+		title = text(tsString(raw), 200)
+	}
+	if title == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "title required")
+		return
+	}
+	kind := "personal"
+	if raw, ok := body["kind"]; ok {
+		if s := tsString(raw); isKind(s) {
+			kind = s
+		}
+	}
+	// baseline:String(x).slice —— 不 trim(改 trim 即改存库数据);null → NULL
+	var description sql.NullString
+	if raw, ok := body["description"]; ok && string(raw) != "null" {
+		description = sql.NullString{String: capOnly(tsString(raw), 4000), Valid: true}
+	}
+	trimOrNull := func(k string) sql.NullString {
+		if raw, ok := body[k]; ok && string(raw) != "null" {
+			if t := strings.TrimSpace(tsString(raw)); t != "" {
+				return sql.NullString{String: t, Valid: true}
+			}
+		}
+		return sql.NullString{}
+	}
+	assigneeID := trimOrNull("assigneeId")
+	targetConv := trimOrNull("targetConversationId")
+	var agentPrompt sql.NullString
+	if raw, ok := body["agentPrompt"]; ok && string(raw) != "null" {
+		agentPrompt = sql.NullString{String: capOnly(tsString(raw), 8000), Valid: true}
+	}
+	startAt, startOK := func() (time.Time, bool) {
+		if raw, ok := body["startAt"]; ok {
+			return tsDate(tsString(raw))
+		}
+		return time.Time{}, false
+	}()
+	if !startOK {
+		httpx.WriteError(w, http.StatusBadRequest, "startAt must be a valid ISO timestamp")
+		return
+	}
+	var endAt sql.NullTime
+	if raw, ok := body["endAt"]; ok {
+		if d, ok2 := tsDate(tsString(raw)); ok2 {
+			endAt = sql.NullTime{Time: d, Valid: true}
+		}
+	}
+	var allDay bool
+	if raw, ok := body["allDay"]; ok {
+		allDay = tsBool(raw)
+	}
+	var recurrence []byte
+	if raw, ok := body["recurrence"]; ok {
+		parsed, code, msg := parseRecurrence(raw)
+		if code != 0 {
+			httpx.WriteError(w, code, msg)
+			return
+		}
+		if parsed != nil {
+			recurrence, _ = json.Marshal(parsed)
+		}
+	}
+	status := "active"
+	if raw, ok := body["status"]; ok {
+		if s := tsString(raw); isStatus(s) {
+			status = s
+		}
+	}
+	// reminder 双置校验:非空 channel 须配正提前量,反之亦然。
+	var reminderMinutes sql.NullInt64
+	var reminderChannel sql.NullString
+	if raw, ok := body["reminderMinutesBefore"]; ok && string(raw) != "null" {
+		f, ok2 := tsNumber(raw)
+		n := int64(f) // TS Math.floor(先取整再校验;负数在本域必被拒)
+		if !ok2 || n < 0 || n > 14*24*60 {
+			httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
+			return
+		}
+		reminderMinutes = sql.NullInt64{Int64: n, Valid: true}
+	}
+	if raw, ok := body["reminderChannel"]; ok && string(raw) != "null" {
+		s := tsString(raw)
+		if !isReminderChannel(s) {
+			httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")
+			return
+		}
+		reminderChannel = sql.NullString{String: s, Valid: true}
+	}
+	if reminderMinutes.Valid != reminderChannel.Valid {
+		httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore and reminderChannel must both be set or both null")
+		return
+	}
+	var isPrivate bool
+	if raw, ok := body["isPrivate"]; ok {
+		isPrivate = tsBool(raw)
+	}
+	if kind == "agent_task" && !assigneeID.Valid {
+		httpx.WriteError(w, http.StatusBadRequest, "agent_task events require an assigneeId")
+		return
+	}
+	// 跨租户安全预检:assignee 与目标会话须属本公司。
+	if assigneeID.Valid {
+		var exists bool
+		if err := s.DB.QueryRowContext(r.Context(),
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+			assigneeID.String, companyID).Scan(&exists); err != nil || !exists {
+			httpx.WriteError(w, http.StatusBadRequest, "assigneeId not found in this team")
+			return
+		}
+	}
+	if targetConv.Valid {
+		var exists bool
+		if err := s.DB.QueryRowContext(r.Context(),
+			`SELECT 1 FROM conversations WHERE id = $1 AND company_id = $2 LIMIT 1`,
+			targetConv.String, companyID).Scan(&exists); err != nil || !exists {
+			httpx.WriteError(w, http.StatusBadRequest, "targetConversationId not found in this team")
+			return
+		}
+	}
+	id := newID("ce-")
+	var e eventRow
+	insertErr := s.DB.QueryRowContext(r.Context(), `
+		INSERT INTO calendar_events
+		  (id, company_id, created_by, kind, title, description, assignee_id,
+		   target_conversation_id, agent_prompt, start_at, end_at, all_day,
+		   recurrence, status, reminder_minutes_before, reminder_channel, is_private)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17)
+		RETURNING `+eventScan,
+		id, companyID, me, kind, title, description, assigneeID, targetConv, agentPrompt,
+		startAt, endAt, allDay, recurrenceByte(recurrence), status, reminderMinutes, reminderChannel, isPrivate).
+		Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
+			&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
+			&recurrence, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
+			&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
+	if insertErr != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		return
+	}
+	e.Recurrence = recurrence
+	publishCalendarChange(r.Context(), "event.created", id, companyID, me)
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"event": e.toPayload()})
 }
 
 func recurrenceByte(b []byte) any {
@@ -549,321 +548,310 @@ func recurrenceByte(b []byte) any {
 	return b
 }
 
-func get(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var e eventRow
-		var rec []byte
-		err := db.QueryRowContext(r.Context(),
-			`SELECT `+eventScan+` FROM calendar_events
-			 WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
-			r.PathValue("id"), companyID, me).
-			Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
-				&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
-				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
-				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				httpx.WriteError(w, http.StatusNotFound, "event not found")
-			} else {
-				httpx.WriteError(w, http.StatusInternalServerError, "query failed")
-			}
-			return
-		}
-		e.Recurrence = rec
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"event": e.toPayload()})
+func (s *Server) GetCalendarEvent(w http.ResponseWriter, r *http.Request, id string) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
-}
-
-func patch(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var body map[string]json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
-			httpx.WriteError(w, http.StatusBadRequest, "body required")
-			return
-		}
-		// 隐私守卫:看不到的行也改不了(同 GET 的可见性子句,404 不泄存在)。
-		var visible bool
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
-			id, companyID, me).Scan(&visible); err != nil || !visible {
+	var e eventRow
+	var rec []byte
+	err := s.DB.QueryRowContext(r.Context(),
+		`SELECT `+eventScan+` FROM calendar_events
+		 WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
+		id, companyID, me).
+		Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
+			&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
+			&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
+			&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
 			httpx.WriteError(w, http.StatusNotFound, "event not found")
-			return
-		}
-		sets := []string{}
-		args := []any{}
-		push := func(col string, v any) {
-			args = append(args, v)
-			sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
-		}
-		has := func(k string) bool {
-			_, ok := body[k]
-			return ok
-		}
-		rawOf := func(k string) json.RawMessage { return body[k] }
-		isNull := func(k string) bool { return string(rawOf(k)) == "null" }
-		strOf := func(k string) string { return tsString(rawOf(k)) }
-		if has("title") {
-			t := text(strOf("title"), 200)
-			if t == "" {
-				httpx.WriteError(w, http.StatusBadRequest, "title cannot be empty")
-				return
-			}
-			push("title", t)
-		}
-		if has("kind") {
-			k := strOf("kind")
-			if !isKind(k) {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid kind")
-				return
-			}
-			push("kind", k)
-		}
-		if has("description") {
-			if isNull("description") {
-				push("description", nil)
-			} else {
-				push("description", text(strOf("description"), 4000))
-			}
-		}
-		if has("assigneeId") {
-			if isNull("assigneeId") {
-				push("assignee_id", nil)
-			} else {
-				push("assignee_id", strOf("assigneeId"))
-			}
-		}
-		if has("targetConversationId") {
-			if isNull("targetConversationId") {
-				push("target_conversation_id", nil)
-			} else {
-				push("target_conversation_id", strOf("targetConversationId"))
-			}
-		}
-		if has("agentPrompt") {
-			if isNull("agentPrompt") {
-				push("agent_prompt", nil)
-			} else {
-				push("agent_prompt", text(strOf("agentPrompt"), 8000))
-			}
-		}
-		if has("startAt") {
-			d, ok2 := tsDate(strOf("startAt"))
-			if !ok2 {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid startAt")
-				return
-			}
-			push("start_at", d)
-		}
-		if has("endAt") {
-			if isNull("endAt") {
-				push("end_at", nil)
-			} else {
-				d, ok2 := tsDate(strOf("endAt"))
-				if !ok2 {
-					httpx.WriteError(w, http.StatusBadRequest, "invalid endAt")
-					return
-				}
-				push("end_at", d)
-			}
-		}
-		if has("allDay") {
-			push("all_day", tsBool(rawOf("allDay")))
-		}
-		if has("recurrence") {
-			parsed, code, msg := parseRecurrence(rawOf("recurrence"))
-			if code != 0 {
-				httpx.WriteError(w, code, msg)
-				return
-			}
-			if parsed == nil {
-				args = append(args, nil)
-				sets = append(sets, fmt.Sprintf("recurrence = $%d::jsonb", len(args)))
-			} else {
-				raw, _ := json.Marshal(parsed)
-				args = append(args, raw)
-				sets = append(sets, fmt.Sprintf("recurrence = $%d::jsonb", len(args)))
-			}
-		}
-		if has("status") {
-			s := strOf("status")
-			if !isStatus(s) {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid status")
-				return
-			}
-			push("status", s)
-		}
-		if has("reminderMinutesBefore") {
-			if isNull("reminderMinutesBefore") {
-				push("reminder_minutes_before", nil)
-			} else {
-				f, ok2 := tsNumber(rawOf("reminderMinutesBefore"))
-				n := int64(f) // TS Math.floor
-				if !ok2 || n < 0 || n > 14*24*60 {
-					httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
-					return
-				}
-				push("reminder_minutes_before", n)
-			}
-		}
-		if has("reminderChannel") {
-			if isNull("reminderChannel") {
-				push("reminder_channel", nil)
-			} else {
-				s := strOf("reminderChannel")
-				if !isReminderChannel(s) {
-					httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")
-					return
-				}
-				push("reminder_channel", s)
-			}
-		}
-		if has("isPrivate") {
-			push("is_private", tsBool(rawOf("isPrivate")))
-		}
-		if len(sets) == 0 {
-			httpx.WriteError(w, http.StatusBadRequest, "no updatable fields")
-			return
-		}
-		sets = append(sets, "updated_at = NOW()")
-		args = append(args, id, companyID)
-		sqlStr := fmt.Sprintf(`UPDATE calendar_events SET %s
-			WHERE id = $%d AND company_id = $%d RETURNING %s`,
-			strings.Join(sets, ", "), len(args)-1, len(args), eventScan)
-		var e eventRow
-		var rec []byte
-		err := db.QueryRowContext(r.Context(), sqlStr, args...).
-			Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
-				&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
-				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
-				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				httpx.WriteError(w, http.StatusNotFound, "event not found")
-			} else {
-				httpx.WriteError(w, http.StatusInternalServerError, "update failed")
-			}
-			return
-		}
-		e.Recurrence = rec
-		publishCalendarChange(r.Context(), "event.updated", id, companyID, me)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"event": e.toPayload()})
-	}
-}
-
-func del(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		res, err := db.ExecContext(r.Context(),
-			`DELETE FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2),
-			r.PathValue("id"), companyID, me)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusNotFound, "event not found")
-			return
-		}
-		publishCalendarChange(r.Context(), "event.deleted", r.PathValue("id"), companyID, me)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
-	}
-}
-
-func runNow(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var e eventRow
-		var rec []byte
-		err := db.QueryRowContext(r.Context(),
-			`SELECT `+eventScan+` FROM calendar_events
-			 WHERE id = $1 AND company_id = $2 AND `+vis(3, 2),
-			r.PathValue("id"), companyID, me).
-			Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
-				&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
-				&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
-				&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				httpx.WriteError(w, http.StatusNotFound, "event not found")
-			} else {
-				httpx.WriteError(w, http.StatusInternalServerError, "query failed")
-			}
-			return
-		}
-		e.Recurrence = rec
-		// NOW() 为槽位;(event_id, scheduled_for) 唯一性吸收同分钟内连点。
-		result := DispatchEvent(r.Context(), db, e, time.Now())
-		publishCalendarChange(r.Context(), "event.dispatched", e.ID, companyID, me)
-		httpx.WriteJSON(w, http.StatusOK, result)
-	}
-}
-
-func dispatches(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var visible bool
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
-			r.PathValue("id"), companyID, me).Scan(&visible); err != nil || !visible {
-			httpx.WriteError(w, http.StatusNotFound, "event not found")
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT cd.id, cd.event_id, cd.scheduled_for, cd.dispatched_at, cd.status,
-			       cd.conversation_id, cd.message_id, cd.error
-			  FROM calendar_dispatches cd
-			  JOIN calendar_events ce ON ce.id = cd.event_id
-			 WHERE cd.event_id = $1 AND ce.company_id = $2
-			 ORDER BY cd.scheduled_for DESC LIMIT 200`, r.PathValue("id"), companyID)
-		if err != nil {
+		} else {
 			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	e.Recurrence = rec
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"event": e.toPayload()})
+}
+
+func (s *Server) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request, id string) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
+		httpx.WriteError(w, http.StatusBadRequest, "body required")
+		return
+	}
+	// 隐私守卫:看不到的行也改不了(同 GET 的可见性子句,404 不泄存在)。
+	var visible bool
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
+		id, companyID, me).Scan(&visible); err != nil || !visible {
+		httpx.WriteError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	sets := []string{}
+	args := []any{}
+	push := func(col string, v any) {
+		args = append(args, v)
+		sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
+	}
+	has := func(k string) bool {
+		_, ok := body[k]
+		return ok
+	}
+	rawOf := func(k string) json.RawMessage { return body[k] }
+	isNull := func(k string) bool { return string(rawOf(k)) == "null" }
+	strOf := func(k string) string { return tsString(rawOf(k)) }
+	if has("title") {
+		t := text(strOf("title"), 200)
+		if t == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "title cannot be empty")
 			return
 		}
-		defer rows.Close()
-		type dispatch struct {
-			ID             string `json:"id"`
-			EventID        string `json:"eventId"`
-			ScheduledFor   string `json:"scheduledFor"`
-			DispatchedAt   string `json:"dispatchedAt"`
-			Status         string `json:"status"`
-			ConversationID any    `json:"conversationId"`
-			MessageID      any    `json:"messageId"`
-			Error          any    `json:"error"`
-		}
-		out := []dispatch{}
-		for rows.Next() {
-			var d dispatch
-			var schedFor, dispatched time.Time
-			var convo, msg, errTxt sql.NullString
-			if rows.Scan(&d.ID, &d.EventID, &schedFor, &dispatched, &d.Status, &convo, &msg, &errTxt) == nil {
-				d.ScheduledFor = httpx.ISOms(schedFor)
-				d.DispatchedAt = httpx.ISOms(dispatched)
-				d.ConversationID = ns(convo)
-				d.MessageID = ns(msg)
-				d.Error = ns(errTxt)
-				out = append(out, d)
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"dispatches": out})
+		push("title", t)
 	}
+	if has("kind") {
+		k := strOf("kind")
+		if !isKind(k) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid kind")
+			return
+		}
+		push("kind", k)
+	}
+	if has("description") {
+		if isNull("description") {
+			push("description", nil)
+		} else {
+			push("description", text(strOf("description"), 4000))
+		}
+	}
+	if has("assigneeId") {
+		if isNull("assigneeId") {
+			push("assignee_id", nil)
+		} else {
+			push("assignee_id", strOf("assigneeId"))
+		}
+	}
+	if has("targetConversationId") {
+		if isNull("targetConversationId") {
+			push("target_conversation_id", nil)
+		} else {
+			push("target_conversation_id", strOf("targetConversationId"))
+		}
+	}
+	if has("agentPrompt") {
+		if isNull("agentPrompt") {
+			push("agent_prompt", nil)
+		} else {
+			push("agent_prompt", text(strOf("agentPrompt"), 8000))
+		}
+	}
+	if has("startAt") {
+		d, ok2 := tsDate(strOf("startAt"))
+		if !ok2 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid startAt")
+			return
+		}
+		push("start_at", d)
+	}
+	if has("endAt") {
+		if isNull("endAt") {
+			push("end_at", nil)
+		} else {
+			d, ok2 := tsDate(strOf("endAt"))
+			if !ok2 {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid endAt")
+				return
+			}
+			push("end_at", d)
+		}
+	}
+	if has("allDay") {
+		push("all_day", tsBool(rawOf("allDay")))
+	}
+	if has("recurrence") {
+		parsed, code, msg := parseRecurrence(rawOf("recurrence"))
+		if code != 0 {
+			httpx.WriteError(w, code, msg)
+			return
+		}
+		if parsed == nil {
+			args = append(args, nil)
+			sets = append(sets, fmt.Sprintf("recurrence = $%d::jsonb", len(args)))
+		} else {
+			raw, _ := json.Marshal(parsed)
+			args = append(args, raw)
+			sets = append(sets, fmt.Sprintf("recurrence = $%d::jsonb", len(args)))
+		}
+	}
+	if has("status") {
+		s := strOf("status")
+		if !isStatus(s) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+		push("status", s)
+	}
+	if has("reminderMinutesBefore") {
+		if isNull("reminderMinutesBefore") {
+			push("reminder_minutes_before", nil)
+		} else {
+			f, ok2 := tsNumber(rawOf("reminderMinutesBefore"))
+			n := int64(f) // TS Math.floor
+			if !ok2 || n < 0 || n > 14*24*60 {
+				httpx.WriteError(w, http.StatusBadRequest, "reminderMinutesBefore must be a non-negative integer (≤ 2 weeks)")
+				return
+			}
+			push("reminder_minutes_before", n)
+		}
+	}
+	if has("reminderChannel") {
+		if isNull("reminderChannel") {
+			push("reminder_channel", nil)
+		} else {
+			s := strOf("reminderChannel")
+			if !isReminderChannel(s) {
+				httpx.WriteError(w, http.StatusBadRequest, "reminderChannel must be toast|email|both")
+				return
+			}
+			push("reminder_channel", s)
+		}
+	}
+	if has("isPrivate") {
+		push("is_private", tsBool(rawOf("isPrivate")))
+	}
+	if len(sets) == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "no updatable fields")
+		return
+	}
+	sets = append(sets, "updated_at = NOW()")
+	args = append(args, id, companyID)
+	sqlStr := fmt.Sprintf(`UPDATE calendar_events SET %s
+		WHERE id = $%d AND company_id = $%d RETURNING %s`,
+		strings.Join(sets, ", "), len(args)-1, len(args), eventScan)
+	var e eventRow
+	var rec []byte
+	err := s.DB.QueryRowContext(r.Context(), sqlStr, args...).
+		Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
+			&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
+			&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
+			&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "event not found")
+		} else {
+			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		}
+		return
+	}
+	e.Recurrence = rec
+	publishCalendarChange(r.Context(), "event.updated", id, companyID, me)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"event": e.toPayload()})
+}
+
+func (s *Server) DeleteCalendarEvent(w http.ResponseWriter, r *http.Request, id string) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(),
+		`DELETE FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2),
+		id, companyID, me)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	publishCalendarChange(r.Context(), "event.deleted", id, companyID, me)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) RunCalendarEventNow(w http.ResponseWriter, r *http.Request, id string) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var e eventRow
+	var rec []byte
+	err := s.DB.QueryRowContext(r.Context(),
+		`SELECT `+eventScan+` FROM calendar_events
+		 WHERE id = $1 AND company_id = $2 AND `+vis(3, 2),
+		id, companyID, me).
+		Scan(&e.ID, &e.CompanyID, &e.CreatedBy, &e.Kind, &e.Title, &e.Description,
+			&e.AssigneeID, &e.TargetConversation, &e.AgentPrompt, &e.StartAt, &e.EndAt, &e.AllDay,
+			&rec, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
+			&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "event not found")
+		} else {
+			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	e.Recurrence = rec
+	// NOW() 为槽位;(event_id, scheduled_for) 唯一性吸收同分钟内连点。
+	result := DispatchEvent(r.Context(), s.DB, e, time.Now())
+	publishCalendarChange(r.Context(), "event.dispatched", e.ID, companyID, me)
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) ListCalendarDispatches(w http.ResponseWriter, r *http.Request, id string) {
+	me, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var visible bool
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2)+` LIMIT 1`,
+		id, companyID, me).Scan(&visible); err != nil || !visible {
+		httpx.WriteError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT cd.id, cd.event_id, cd.scheduled_for, cd.dispatched_at, cd.status,
+		       cd.conversation_id, cd.message_id, cd.error
+		  FROM calendar_dispatches cd
+		  JOIN calendar_events ce ON ce.id = cd.event_id
+		 WHERE cd.event_id = $1 AND ce.company_id = $2
+		 ORDER BY cd.scheduled_for DESC LIMIT 200`, id, companyID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	type dispatch struct {
+		ID             string `json:"id"`
+		EventID        string `json:"eventId"`
+		ScheduledFor   string `json:"scheduledFor"`
+		DispatchedAt   string `json:"dispatchedAt"`
+		Status         string `json:"status"`
+		ConversationID any    `json:"conversationId"`
+		MessageID      any    `json:"messageId"`
+		Error          any    `json:"error"`
+	}
+	out := []dispatch{}
+	for rows.Next() {
+		var d dispatch
+		var schedFor, dispatched time.Time
+		var convo, msg, errTxt sql.NullString
+		if rows.Scan(&d.ID, &d.EventID, &schedFor, &dispatched, &d.Status, &convo, &msg, &errTxt) == nil {
+			d.ScheduledFor = httpx.ISOms(schedFor)
+			d.DispatchedAt = httpx.ISOms(dispatched)
+			d.ConversationID = ns(convo)
+			d.MessageID = ns(msg)
+			d.Error = ns(errTxt)
+			out = append(out, d)
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"dispatches": out})
 }
 
 // DispatchResult 对齐 calendar.ts dispatchEvent 的返回形状
