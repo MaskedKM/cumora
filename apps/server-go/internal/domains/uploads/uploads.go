@@ -16,17 +16,23 @@ import (
 	"strconv"
 	"strings"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
 )
 
 // Mount:/api/uploads 面(presign + refresh-url;base64 上传与 capabilities
 // 不在本票清单)。
+// Server:contract.uploads ServerInterface 的域实现(#187 机械迁移,
+// documents 范式)。方法体自原闭包工厂/直接 handler 原样搬运。
+type Server struct{ DB *sql.DB }
+
+// 编译期接口把关:规范改动 operation 而域未跟 = 构建红。
+var _ contract.ServerInterface = (*Server)(nil)
+
+// Mount:注册串来自契约生成物(pattern 即规范,#139)。
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("POST /api/uploads/presign", presign(db))
-	mux.HandleFunc("POST /api/uploads/refresh-url", refreshURL(db))
-	mux.HandleFunc("GET /api/uploads/capabilities", capabilities)
-	mux.HandleFunc("POST /api/uploads", uploadBase64(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
 // bodyString:F16 —— TS 侧 String(x ?? ”) 强转(name/mime/key/url/
@@ -39,36 +45,32 @@ func bodyString(body map[string]json.RawMessage, key string) string {
 
 // presign:本地模式恒 501(TS storage.mode!=='r2' 分支——先于 body 校验,
 // 本地模式下任何 body 都拿到同一条 501)。
-func presign(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
-			return
-		}
-		httpx.WriteError(w, http.StatusNotImplemented,
-			"presign not available in local mode — POST /uploads instead")
+func (s *Server) PresignUpload(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httpx.RequireCompanyID(w, r, s.DB); !ok {
+		return
 	}
+	httpx.WriteError(w, http.StatusNotImplemented,
+		"presign not available in local mode — POST /uploads instead")
 }
 
 // refreshURL:{url?, key?} → {key, url}。key 解析顺序:显式 key 走
 // normalizeStorageKey,否则 url 走 storageKeyFromPublicUrl;都不成 →
 // 400 'not a Cumora storage URL'。
-func refreshURL(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
-			return
-		}
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		key := storage.NormalizeStorageKey(bodyString(body, "key"))
-		if key == "" {
-			key = storage.StorageKeyFromPublicUrl(bodyString(body, "url"))
-		}
-		if key == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "not a Cumora storage URL")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"key": key, "url": storage.PublicUrl(key)})
+func (s *Server) RefreshUploadUrl(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httpx.RequireCompanyID(w, r, s.DB); !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	key := storage.NormalizeStorageKey(bodyString(body, "key"))
+	if key == "" {
+		key = storage.StorageKeyFromPublicUrl(bodyString(body, "url"))
+	}
+	if key == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "not a Cumora storage URL")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"key": key, "url": storage.PublicUrl(key)})
 }
 
 /* ───────── capabilities + base64 上传(#68 补齐) ───────── */
@@ -110,7 +112,7 @@ var mimePolicy = map[string]struct {
 
 // capabilities:上传能力通告。allowedMimes 键序 = TS Object.keys 的
 // 字面插入序(Go map 无序,按源码序排列)。
-func capabilities(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) UploadCapabilities(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"mode":             "local",
 		"presignSupported": false,
@@ -141,56 +143,54 @@ func uploadDir() string {
 // uploadBase64:{name, mime, dataBase64} → 解码校验 → 落盘 →
 // {url, key, name, mime, size, kind}。name 按 TS trim().slice(0,200)
 // (UTF-16 码元)。
-func uploadBase64(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
-			return
-		}
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		name := httpx.UTF16Cap(strings.TrimSpace(bodyString(body, "name")), 200)
-		mime := strings.ToLower(strings.TrimSpace(bodyString(body, "mime")))
-		dataBase64 := bodyString(body, "dataBase64")
-		if name == "" || mime == "" || dataBase64 == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "name, mime, dataBase64 are required")
-			return
-		}
-		policy, allowed := mimePolicy[mime]
-		if !allowed {
-			httpx.WriteError(w, http.StatusUnsupportedMediaType, "mime not allowed: "+mime)
-			return
-		}
-		// TS Buffer.from(...,'base64') 宽容(尽力解码、忽略坏块);
-		// Go base64 严格 —— RawStdEncoding 尽力路径近似(合法输入两者
-		// 等价,坏输入的漂移留档:测试只用合法 base64)。
-		buf, err := base64.StdEncoding.DecodeString(dataBase64)
-		if err != nil {
-			buf, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(dataBase64, "="))
-			if err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid base64")
-				return
-			}
-		}
-		if len(buf) == 0 || len(buf) > maxUploadBytes {
-			httpx.WriteError(w, http.StatusRequestEntityTooLarge,
-				"size out of range (got "+strconv.Itoa(len(buf))+", max "+strconv.Itoa(maxUploadBytes)+")")
-			return
-		}
-		key := "attachments/" + randHex32() + "." + policy.ext
-		dst := filepath.Join(uploadDir(), filepath.FromSlash(key))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		if err := os.WriteFile(dst, buf, 0o644); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"url": storage.PublicUrl(key), "key": key, "name": name, "mime": mime,
-			"size": len(buf), "kind": policy.kind,
-		})
+func (s *Server) UploadBase64(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httpx.RequireCompanyID(w, r, s.DB); !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	name := httpx.UTF16Cap(strings.TrimSpace(bodyString(body, "name")), 200)
+	mime := strings.ToLower(strings.TrimSpace(bodyString(body, "mime")))
+	dataBase64 := bodyString(body, "dataBase64")
+	if name == "" || mime == "" || dataBase64 == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "name, mime, dataBase64 are required")
+		return
+	}
+	policy, allowed := mimePolicy[mime]
+	if !allowed {
+		httpx.WriteError(w, http.StatusUnsupportedMediaType, "mime not allowed: "+mime)
+		return
+	}
+	// TS Buffer.from(...,'base64') 宽容(尽力解码、忽略坏块);
+	// Go base64 严格 —— RawStdEncoding 尽力路径近似(合法输入两者
+	// 等价,坏输入的漂移留档:测试只用合法 base64)。
+	buf, err := base64.StdEncoding.DecodeString(dataBase64)
+	if err != nil {
+		buf, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(dataBase64, "="))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid base64")
+			return
+		}
+	}
+	if len(buf) == 0 || len(buf) > maxUploadBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+			"size out of range (got "+strconv.Itoa(len(buf))+", max "+strconv.Itoa(maxUploadBytes)+")")
+		return
+	}
+	key := "attachments/" + randHex32() + "." + policy.ext
+	dst := filepath.Join(uploadDir(), filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if err := os.WriteFile(dst, buf, 0o644); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"url": storage.PublicUrl(key), "key": key, "name": name, "mime": mime,
+		"size": len(buf), "kind": policy.kind,
+	})
 }
 
 func randHex32() string {

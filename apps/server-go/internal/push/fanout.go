@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/push"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -168,9 +169,16 @@ func ComputeMessageRecipients(ctx context.Context, db *sql.DB, conversationID, a
 
 /* ───────────── HTTP 端点 ───────────── */
 
+// Server:contract.push ServerInterface 的域实现(#187 机械迁移,
+// documents 范式)。方法体自原闭包工厂/直接 handler 原样搬运。
+type Server struct{ DB *sql.DB }
+
+// 编译期接口把关:规范改动 operation 而域未跟 = 构建红。
+var _ contract.ServerInterface = (*Server)(nil)
+
+// Mount:注册串来自契约生成物(pattern 即规范,#139)。
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("POST /api/push/register", register(db))
-	mux.HandleFunc("POST /api/push/unregister", unregister(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
 func newID(prefix string) string {
@@ -218,76 +226,72 @@ func utf16Slice(s string, max int) string {
 	return s
 }
 
-func register(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		var body struct {
-			Platform    string  `json:"platform"`
-			Token       string  `json:"token"`
-			AppVersion  *string `json:"appVersion"`
-			DeviceModel *string `json:"deviceModel"`
-		}
-		_ = decodeBodyJSON(r, &body)
-		platform := body.Platform
-		if platform != "ios" && platform != "android" && platform != "web" {
-			httpx.WriteError(w, http.StatusBadRequest, "platform must be ios | android | web")
-			return
-		}
-		token := strings.TrimSpace(body.Token)
-		if token == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "token required")
-			return
-		}
-		if utf16Len(token) > 1024 {
-			httpx.WriteError(w, http.StatusBadRequest, "token too long")
-			return
-		}
-		// 缺省(nil)→ NULL(COALESCE 保旧);空串 → ''(TS 存空串覆盖)
-		var appV, modelV any
-		if body.AppVersion != nil {
-			appV = capRunes(*body.AppVersion, 64)
-		}
-		if body.DeviceModel != nil {
-			modelV = capRunes(*body.DeviceModel, 128)
-		}
-		if _, err := db.ExecContext(r.Context(), `
-			INSERT INTO push_devices (id, user_id, platform, token, app_version, device_model)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (platform, token) DO UPDATE SET
-			  user_id = EXCLUDED.user_id,
-			  last_seen_at = NOW(),
-			  disabled_at = NULL,
-			  app_version = COALESCE(EXCLUDED.app_version, push_devices.app_version),
-			  device_model = COALESCE(EXCLUDED.device_model, push_devices.device_model)`,
-			newID("pd-"), uid, platform, token, appV, modelV); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) RegisterPushDevice(w http.ResponseWriter, r *http.Request) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	var body struct {
+		Platform    string  `json:"platform"`
+		Token       string  `json:"token"`
+		AppVersion  *string `json:"appVersion"`
+		DeviceModel *string `json:"deviceModel"`
+	}
+	_ = decodeBodyJSON(r, &body)
+	platform := body.Platform
+	if platform != "ios" && platform != "android" && platform != "web" {
+		httpx.WriteError(w, http.StatusBadRequest, "platform must be ios | android | web")
+		return
+	}
+	token := strings.TrimSpace(body.Token)
+	if token == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	if utf16Len(token) > 1024 {
+		httpx.WriteError(w, http.StatusBadRequest, "token too long")
+		return
+	}
+	// 缺省(nil)→ NULL(COALESCE 保旧);空串 → ''(TS 存空串覆盖)
+	var appV, modelV any
+	if body.AppVersion != nil {
+		appV = capRunes(*body.AppVersion, 64)
+	}
+	if body.DeviceModel != nil {
+		modelV = capRunes(*body.DeviceModel, 128)
+	}
+	if _, err := s.DB.ExecContext(r.Context(), `
+		INSERT INTO push_devices (id, user_id, platform, token, app_version, device_model)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (platform, token) DO UPDATE SET
+		  user_id = EXCLUDED.user_id,
+		  last_seen_at = NOW(),
+		  disabled_at = NULL,
+		  app_version = COALESCE(EXCLUDED.app_version, push_devices.app_version),
+		  device_model = COALESCE(EXCLUDED.device_model, push_devices.device_model)`,
+		newID("pd-"), uid, platform, token, appV, modelV); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func unregister(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		var body struct {
-			Token string `json:"token"`
-		}
-		_ = decodeBodyJSON(r, &body)
-		token := strings.TrimSpace(body.Token)
-		if token == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "token required")
-			return
-		}
-		_, _ = db.ExecContext(r.Context(), `
-			UPDATE push_devices SET disabled_at = NOW()
-			 WHERE token = $1 AND user_id = $2 AND disabled_at IS NULL`, token, uid)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) UnregisterPushDevice(w http.ResponseWriter, r *http.Request) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	_ = decodeBodyJSON(r, &body)
+	token := strings.TrimSpace(body.Token)
+	if token == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	_, _ = s.DB.ExecContext(r.Context(), `
+		UPDATE push_devices SET disabled_at = NOW()
+		 WHERE token = $1 AND user_id = $2 AND disabled_at IS NULL`, token, uid)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
