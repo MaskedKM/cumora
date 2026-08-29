@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -63,6 +64,12 @@ func (s *Service) AgentCompany(ctx context.Context, agentID string) (string, err
 	return s.cliAgentCompany(ctx, agentID)
 }
 
+// TryClaimTenantWork:租户级工作 claim(cli_reply 定义,avatar/doc/
+// calendar 域共用)的导出包装。
+func (s *Service) TryClaimTenantWork(companyID, agentID, taskType, subject string) *cliResult {
+	return s.cliTryClaimTenantWork(companyID, agentID, taskType, subject)
+}
+
 // ISOTime / TimeOf:cliISOTime(扫库时间型)与 timeOf 转换的导出面
 // (timeOf 原居 cli_boards,cli_doc 同用 → 归内核,boards 经此调用)。
 type ISOTime = cliISOTime
@@ -88,6 +95,7 @@ func MarshalOrdered(v any) ([]byte, error)   { return jsonMarshalOrdered(v) }
 func ISOMilli(t time.Time) string         { return isoMilli(t) }
 func NodeDateToString(t time.Time) string { return nodeDateToString(t) }
 func JSFloorNumber(v any) (int, bool)     { return jsFloorNumber(v) }
+func JSFloor(f float64) float64           { return floorJS(f) }
 
 /* ───────── 共享件归位(#140 4/9:原居 cli_mailbox,内核文件同用)───────── */
 
@@ -153,4 +161,39 @@ func (p cliPoll) Present() bool { return p.present }
 func RenderAttachment(att Attachment) string { return renderAttachment(att) }
 func RenderPollForMessage(messageID string, p Poll) []string {
 	return renderPollBlock(messageID, p.parsed)
+}
+
+// PollPayload / PollOption:poll 消息模型(pollPayload 居 cli_read2,
+// cli_poll 命令面与读路径共用)的导出别名。
+type PollPayload = pollPayload
+type PollOption = cliPollOption
+
+// JSONString / CompactJSON:内核 JSON 文本件导出包装。
+func JSONString(s string) []byte { return cliJSONString(s) }
+func CompactJSON(v any) string   { return compactJSON(v) }
+
+// jsFloorNumber:JS Math.floor(Number(v)) 语义;不可解析返回 valid=false。
+func jsFloorNumber(v any) (int, bool) {
+	switch t := v.(type) {
+	case string:
+		f, err := strconv.ParseFloat(t, 64)
+		if err != nil {
+			return 0, false
+		}
+		return int(floorJS(f)), true
+	case bool:
+		if t {
+			return 1, true
+		}
+		return 0, true
+	default:
+		return 0, false
+	}
+}
+
+func floorJS(f float64) float64 {
+	if f < 0 {
+		return -float64(int(-f))
+	}
+	return float64(int(f))
 }

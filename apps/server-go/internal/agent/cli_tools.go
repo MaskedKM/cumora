@@ -50,7 +50,7 @@ func SupportModelEnv() string {
 // error/duration。
 func (s *Service) cliExecuteTool(ctx context.Context, agentID, name, argsJSON string) cliToolResult {
 	t0 := time.Now()
-	id := "t-" + jsUUID()
+	id := "t-" + uuidHex()
 	parsed := map[string]any{}
 	_ = json.Unmarshal([]byte(argsJSON), &parsed)
 	argsJSONNorm, _ := json.Marshal(parsed)
@@ -450,7 +450,7 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 		return "", err
 	}
 
-	messageID := "m-" + jsUUID()
+	messageID := "m-" + uuidHex()
 	var sequence int
 	err = s.DB.QueryRowContext(ctx, `
 		INSERT INTO conversation_counters (conversation_id, next_sequence)
@@ -525,7 +525,7 @@ func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID
 	if aName == "" {
 		aName = aID
 	}
-	id := "direct-" + jsUUID()[:12]
+	id := "direct-" + uuidHex()[:12]
 	members, _ := jsonMarshalStrings([]string{aID, bID})
 	var topicArg any
 	if topic != "" {
@@ -628,7 +628,7 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 		}
 	}
 
-	convoID := "pulled-" + jsUUID()[:8]
+	convoID := "pulled-" + uuidHex()[:8]
 	companyID, err := s.cliAgentCompany(ctx, instigatorID)
 	if err != nil {
 		return "", err
@@ -673,7 +673,7 @@ func (s *Service) cliStartPulledGroup(ctx context.Context, instigatorID, title s
 		return "", err
 	}
 
-	messageID := "m-" + jsUUID()
+	messageID := "m-" + uuidHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
 		VALUES ($1, $2, $3, 'text', $4, 1, $5)`,

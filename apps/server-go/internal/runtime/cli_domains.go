@@ -8,8 +8,10 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/boards"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/calendar"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/mailbox"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/poll"
 )
 
 // wireDomainDispatch:域子包命令接线——boards(看板:kanban/card/
@@ -19,6 +21,8 @@ func wireDomainDispatch(core *agent.Service) {
 	b := boards.Domain{Service: core}
 	e := email.Domain{Service: core}
 	m := mailbox.Domain{Service: core}
+	c := calendar.Domain{Service: core}
+	po := poll.Domain{Service: core}
 	core.SetDomainDispatcher(func(sub string, ctx context.Context, p agent.Parsed) (agent.Result, bool) {
 		switch sub {
 		case "kanban":
@@ -43,6 +47,10 @@ func wireDomainDispatch(core *agent.Service) {
 			return m.CmdMute(ctx, p), true
 		case "follow":
 			return m.CmdFollow(ctx, p), true
+		case "calendar":
+			return c.CmdCalendar(ctx, p), true
+		case "poll":
+			return po.CmdPoll(ctx, p), true
 		}
 		return agent.Result{}, false
 	})
