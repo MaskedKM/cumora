@@ -114,12 +114,13 @@
     "cross-env": "^7.0.3",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "openapi-typescript": "^7.9.1",
     "postcss": "^8.4.47",
+    "sharp": "^0.35.4",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
-    "wait-on": "^8.0.5",
-    "openapi-typescript": "^7.9.1"
+    "wait-on": "^8.0.5"
   },
   "build": {
     "appId": "io.cumora.app",
