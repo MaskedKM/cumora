@@ -1,13 +1,21 @@
 // /runtime/cli 群成员组(#89):leave / invite / kick + 成员变更系统消息
 // (membership.ts postMembershipSystemMessage 等价)。
-package agent
+package membership
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 // cliJSONKV:按键的书写序拼 JSON 对象(Go map 会按字母序重排;TS
 // JSON.stringify 按字面量序,系统消息 body 的键序要逐字节对齐)。
@@ -18,39 +26,12 @@ func cliJSONKV(pairs ...[2]string) string {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		sb.Write(cliJSONString(p[0]))
+		sb.Write(agent.JSONString(p[0]))
 		sb.WriteByte(':')
-		sb.Write(cliJSONString(p[1]))
+		sb.Write(agent.JSONString(p[1]))
 	}
 	sb.WriteByte('}')
 	return sb.String()
-}
-
-func cliJSONString(s string) []byte {
-	var sb strings.Builder
-	sb.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			sb.WriteString("\\\"")
-		case '\\':
-			sb.WriteString("\\\\")
-		case '\n':
-			sb.WriteString("\\n")
-		case '\r':
-			sb.WriteString("\\r")
-		case '\t':
-			sb.WriteString("\\t")
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&sb, "\\u%04x", r)
-			} else {
-				sb.WriteRune(r)
-			}
-		}
-	}
-	sb.WriteByte('"')
-	return []byte(sb.String())
 }
 
 // cliPostMembershipSystemMessage:插入 kind='system' 的成员变更行并广播。
@@ -58,9 +39,9 @@ func cliJSONString(s string) []byte {
 //   - joined:在 members 更新之后调(新成员已在数组里,调度器会唤醒他);
 //   - left / kicked:在移除之前调(邮箱按当前 members 过滤,先移除他就
 //     看不见解释"为什么这个会话安静了"的那行系统消息)。
-func (s *Service) cliPostMembershipSystemMessage(ctx context.Context, conversationID string, companyID *string,
+func (s *Domain) cliPostMembershipSystemMessage(ctx context.Context, conversationID string, companyID *string,
 	actorID, kind, participantID string) (messageID string, sequence int64, err error) {
-	messageID = "m-" + uuidHex()
+	messageID = "m-" + agent.UUIDHex()
 	sequence, err = s.NextConversationSequence(ctx, conversationID)
 	if err != nil {
 		return "", 0, err
@@ -80,14 +61,14 @@ func (s *Service) cliPostMembershipSystemMessage(ctx context.Context, conversati
 		messageID, conversationID, actorID, body, sequence, companyArg); err != nil {
 		return "", 0, err
 	}
-	eventsPublishMessageNew(ctx, companyID, conversationID, map[string]any{
+	agent.EventsPublishMessageNew(ctx, companyID, conversationID, map[string]any{
 		"id":             messageID,
 		"conversationId": conversationID,
 		"authorId":       actorID,
 		"kind":           "system",
 		"body":           body,
 		"sequence":       sequence,
-		"at":             isoNowMs(),
+		"at":             agent.ISONowMs(),
 	})
 	return messageID, sequence, nil
 }
@@ -97,11 +78,11 @@ func (s *Service) cliPostMembershipSystemMessage(ctx context.Context, conversati
 type cliConvoInfo struct {
 	kind      string
 	title     string
-	members   cliStrArr
+	members   agent.StrArr
 	companyID *string
 }
 
-func (s *Service) cliLoadConvoInfo(ctx context.Context, convoID string) (*cliConvoInfo, error) {
+func (s *Domain) cliLoadConvoInfo(ctx context.Context, convoID string) (*cliConvoInfo, error) {
 	var c cliConvoInfo
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT kind, title, members, company_id FROM conversations WHERE id = $1`, convoID,
@@ -115,39 +96,39 @@ func (s *Service) cliLoadConvoInfo(ctx context.Context, convoID string) (*cliCon
 	return &c, nil
 }
 
-func (s *Service) cliCmdLeave(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdLeave(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	if len(parsed.positional) == 0 || parsed.positional[0] == "" {
-		return cliErr("usage: leave <conversation_id>")
+	if len(parsed.Positional()) == 0 || parsed.Positional()[0] == "" {
+		return agent.Err("usage: leave <conversation_id>")
 	}
-	convoID := parsed.positional[0]
+	convoID := parsed.Positional()[0]
 	c, err := s.cliLoadConvoInfo(ctx, convoID)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if c == nil {
-		return cliErr("unknown conversation " + convoID)
+		return agent.Err("unknown conversation " + convoID)
 	}
 	if c.kind == "direct" {
-		return cliErr("cannot leave a direct conversation — use `cumora ack` to mute it from your inbox instead")
+		return agent.Err("cannot leave a direct conversation — use `cumora ack` to mute it from your inbox instead")
 	}
-	if !containsString(c.members, me) {
-		return cliErr(me + " is not a member of " + convoID)
+	if !agent.ContainsString(c.members, me) {
+		return agent.Err(me + " is not a member of " + convoID)
 	}
 	// 先发系统消息再改 members:离场 agent 的邮箱按 c.members 过滤,这行
 	// "告别消息"仍会在他下次唤醒时出现——他由此干净地感知自己的离场。
 	sysMsg, _, err := s.cliPostMembershipSystemMessage(ctx, convoID, c.companyID, me, "left", me)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	next := c.members.without(me)
+	next := c.members.Without(me)
 	if err := s.cliUpdateMembers(ctx, convoID, next); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	effect := CliSideEffect{
+	effect := agent.CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "leave",
 		"action":          "left",
@@ -161,11 +142,11 @@ func (s *Service) cliCmdLeave(ctx context.Context, parsed cliParsed) cliResult {
 	if c.companyID != nil {
 		effect["companyId"] = *c.companyID
 	}
-	return cliOK(fmt.Sprintf("left %q (%s); %d member(s) remain", c.title, convoID, len(next)), effect)
+	return agent.OK(fmt.Sprintf("left %q (%s); %d member(s) remain", c.title, convoID, len(next)), effect)
 }
 
-func (s *Service) cliUpdateMembers(ctx context.Context, convoID string, members cliStrArr) error {
-	b, err := jsonMarshalStrings(members)
+func (s *Domain) cliUpdateMembers(ctx context.Context, convoID string, members agent.StrArr) error {
+	b, err := agent.MarshalStrings(members)
 	if err != nil {
 		return err
 	}
@@ -177,33 +158,33 @@ func (s *Service) cliUpdateMembers(ctx context.Context, convoID string, members 
 
 /* ───────── invite ───────── */
 
-func (s *Service) cliCmdInvite(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdInvite(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	if len(parsed.positional) < 2 || parsed.positional[0] == "" || parsed.positional[1] == "" {
-		return cliErr("usage: invite <conversation_id> <member_id>")
+	if len(parsed.Positional()) < 2 || parsed.Positional()[0] == "" || parsed.Positional()[1] == "" {
+		return agent.Err("usage: invite <conversation_id> <member_id>")
 	}
-	convoID, target := parsed.positional[0], parsed.positional[1]
+	convoID, target := parsed.Positional()[0], parsed.Positional()[1]
 	if target == me {
-		return cliErr(me + " is already the one inviting")
+		return agent.Err(me + " is already the one inviting")
 	}
 	c, err := s.cliLoadConvoInfo(ctx, convoID)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if c == nil {
-		return cliErr("unknown conversation " + convoID)
+		return agent.Err("unknown conversation " + convoID)
 	}
 	if c.kind == "direct" {
-		return cliErr("cannot invite into a direct conversation — use `cumora pull-group` to start a fresh thread")
+		return agent.Err("cannot invite into a direct conversation — use `cumora pull-group` to start a fresh thread")
 	}
-	if !containsString(c.members, me) {
-		return cliErr(me + " is not a member of " + convoID + " — can't invite into a group you're not in")
+	if !agent.ContainsString(c.members, me) {
+		return agent.Err(me + " is not a member of " + convoID + " — can't invite into a group you're not in")
 	}
-	if containsString(c.members, target) {
-		return cliOK(target + " is already a member of " + convoID)
+	if agent.ContainsString(c.members, target) {
+		return agent.OK(target + " is already a member of " + convoID)
 	}
 	// 受邀人必须存在于本租户。
 	if c.companyID != nil {
@@ -212,21 +193,21 @@ func (s *Service) cliCmdInvite(ctx context.Context, parsed cliParsed) cliResult 
 			`SELECT id FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
 			target, *c.companyID).Scan(&id)
 		if err == sql.ErrNoRows {
-			return cliErr(target + " is not a participant in this workspace")
+			return agent.Err(target + " is not a participant in this workspace")
 		}
 		if err != nil {
-			return cliErrThrow(err)
+			return agent.ErrThrow(err)
 		}
 	}
-	next := append(append(cliStrArr{}, c.members...), target)
+	next := append(append(agent.StrArr{}, c.members...), target)
 	if err := s.cliUpdateMembers(ctx, convoID, next); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	sysMsg, _, err := s.cliPostMembershipSystemMessage(ctx, convoID, c.companyID, me, "joined", target)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	effect := CliSideEffect{
+	effect := agent.CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "invite",
 		"action":          "joined",
@@ -240,54 +221,54 @@ func (s *Service) cliCmdInvite(ctx context.Context, parsed cliParsed) cliResult 
 	if c.companyID != nil {
 		effect["companyId"] = *c.companyID
 	}
-	return cliOK(fmt.Sprintf("invited %s into %q (%s); %d member(s) total", target, c.title, convoID, len(next)), effect)
+	return agent.OK(fmt.Sprintf("invited %s into %q (%s); %d member(s) total", target, c.title, convoID, len(next)), effect)
 }
 
 /* ───────── kick ───────── */
 
-func (s *Service) cliCmdKick(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdKick(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	if len(parsed.positional) < 2 || parsed.positional[0] == "" || parsed.positional[1] == "" {
-		return cliErr("usage: kick <conversation_id> <member_id>")
+	if len(parsed.Positional()) < 2 || parsed.Positional()[0] == "" || parsed.Positional()[1] == "" {
+		return agent.Err("usage: kick <conversation_id> <member_id>")
 	}
-	convoID, target := parsed.positional[0], parsed.positional[1]
+	convoID, target := parsed.Positional()[0], parsed.Positional()[1]
 	if target == me {
-		return cliErr("use `cumora leave <convo_id>` to leave a group yourself")
+		return agent.Err("use `cumora leave <convo_id>` to leave a group yourself")
 	}
 	c, err := s.cliLoadConvoInfo(ctx, convoID)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if c == nil {
-		return cliErr("unknown conversation " + convoID)
+		return agent.Err("unknown conversation " + convoID)
 	}
 	if c.kind == "direct" {
-		return cliErr("cannot kick from a direct conversation")
+		return agent.Err("cannot kick from a direct conversation")
 	}
-	if !containsString(c.members, me) {
-		return cliErr(me + " is not a member of " + convoID + " — can't kick from a group you're not in")
+	if !agent.ContainsString(c.members, me) {
+		return agent.Err(me + " is not a member of " + convoID + " — can't kick from a group you're not in")
 	}
-	if !containsString(c.members, target) {
-		return cliErr(target + " is not a member of " + convoID)
+	if !agent.ContainsString(c.members, target) {
+		return agent.Err(target + " is not a member of " + convoID)
 	}
-	next := c.members.without(target)
+	next := c.members.Without(target)
 	// kick 不许顺手清空群:只剩自己时要显式 --confirm-empty。
-	if len(next) == 1 && !parsed.flagTruey("confirm-empty") {
-		return cliErr("kicking " + target + " would leave only " + me + " in this group; pass --confirm-empty if that's intended")
+	if len(next) == 1 && !parsed.FlagTruey("confirm-empty") {
+		return agent.Err("kicking " + target + " would leave only " + me + " in this group; pass --confirm-empty if that's intended")
 	}
 	// 先发系统消息再移除:邮箱按当前 members 过滤,先移除被踢者就永远
 	// 看不见解释"为什么这个会话安静了"的那行——先发让他带着这行醒来。
 	sysMsg, _, err := s.cliPostMembershipSystemMessage(ctx, convoID, c.companyID, me, "kicked", target)
 	if err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
 	if err := s.cliUpdateMembers(ctx, convoID, next); err != nil {
-		return cliErrThrow(err)
+		return agent.ErrThrow(err)
 	}
-	effect := CliSideEffect{
+	effect := agent.CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "kick",
 		"action":          "kicked",
@@ -301,5 +282,5 @@ func (s *Service) cliCmdKick(ctx context.Context, parsed cliParsed) cliResult {
 	if c.companyID != nil {
 		effect["companyId"] = *c.companyID
 	}
-	return cliOK(fmt.Sprintf("kicked %s from %q (%s); %d member(s) remain", target, c.title, convoID, len(next)), effect)
+	return agent.OK(fmt.Sprintf("kicked %s from %q (%s); %d member(s) remain", target, c.title, convoID, len(next)), effect)
 }

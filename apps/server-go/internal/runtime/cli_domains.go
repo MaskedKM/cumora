@@ -12,7 +12,9 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/calendar"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/doc"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/email"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/help"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/mailbox"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/membership"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/poll"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/ship"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/skills"
@@ -31,6 +33,8 @@ func wireDomainDispatch(core *agent.Service) {
 	po := poll.Domain{Service: core}
 	d := doc.Domain{Service: core}
 	sh := ship.Domain{Service: core}
+	mem := membership.Domain{Service: core}
+	h := help.Domain{Service: core}
 	av := avatar.Domain{Service: core}
 	tl := tools.Domain{Service: core}
 	sk := skills.Domain{Service: core}
@@ -80,6 +84,15 @@ func wireDomainDispatch(core *agent.Service) {
 			return tl.RunTool(ctx, "pull_group", p), true
 		case "palette":
 			return tl.RunTool(ctx, "palette", p), true
+		case "leave":
+			return mem.CmdLeave(ctx, p), true
+		case "invite":
+			return mem.CmdInvite(ctx, p), true
+		case "kick":
+			return mem.CmdKick(ctx, p), true
+		case "help", "--help", "-h":
+			_, _ = ctx, p
+			return h.CmdHelp(), true
 		}
 		return agent.Result{}, false
 	})

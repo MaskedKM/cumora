@@ -1,6 +1,16 @@
-package agent
+package help
 
-import "strings"
+import (
+	"strings"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+)
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 // cliHelpText:TS cli.ts cmdHelp 的静态正文,由构建侧脚本从源码机械
 // 提取(模板字面量解除转义)生成,保证逐字节对齐;§ 是反引号占位符
@@ -260,6 +270,6 @@ EXAMPLES:
   cumora calendar create "Daily standup digest" --at 2026-05-24T09:00:00Z --assignee iris --prompt "Summarize yesterday's group activity and post into <convo_id>" --every daily     # recurring self-schedule
   cumora calendar list --as iris                                          # see what you've already scheduled for yourself`
 
-func (s *Service) cliCmdHelp() cliResult {
-	return cliOK(strings.ReplaceAll(cliHelpText, "§", "`"))
+func (s *Domain) CmdHelp() agent.Result {
+	return agent.OK(strings.ReplaceAll(cliHelpText, "§", "`"))
 }

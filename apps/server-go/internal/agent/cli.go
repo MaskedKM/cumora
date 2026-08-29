@@ -363,7 +363,7 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		}
 	}
 	if len(argv) == 0 {
-		return s.cliCmdHelp()
+		argv = []string{"help"} // 空 argv = help(经域分发,与原直调等价)
 	}
 	sub, rest := argv[0], argv[1:]
 	parsed := cliParseArgs(rest)
@@ -379,8 +379,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		}
 	}()
 	switch sub {
-	case "help", "--help", "-h":
-		return s.cliCmdHelp()
 	case "whoami":
 		return s.cliCmdWhoami(ctx, parsed)
 	case "participants":
@@ -407,12 +405,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdStatusList(ctx, parsed)
 	case "reply":
 		return s.cliCmdReply(ctx, parsed)
-	case "leave":
-		return s.cliCmdLeave(ctx, parsed)
-	case "invite":
-		return s.cliCmdInvite(ctx, parsed)
-	case "kick":
-		return s.cliCmdKick(ctx, parsed)
 	case "topic":
 		return s.cliCmdTopicRead(ctx, parsed)
 	case "topic-set":
