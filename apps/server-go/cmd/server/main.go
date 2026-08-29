@@ -8,8 +8,6 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +16,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
@@ -180,7 +181,7 @@ func main() {
 	admin.Mount(coreRouter, pool)
 	computers.StartSweepWorker(ctxBoot, pool)
 
-	// 观察面(#68):runs/triage 经济学/llm-spend(runtime 包自有实现,
+	// 观察面(#68):runs/triage 经济学/llm-spend(obs 包实现(#140 拆出),
 	// 挂 coreRouter 吃 authMiddleware 链)。
 	obs.MountObservabilityApi(coreRouter, runtimeSvc.DB)
 	invitations.Mount(coreRouter, pool)

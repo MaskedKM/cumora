@@ -8,12 +8,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
 // 从 router.ts VISUAL_DIMENSIONS 程序化提取(2026-08-27)—— 请勿手改。

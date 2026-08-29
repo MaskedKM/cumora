@@ -9,8 +9,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"log/slog"
 	"os"
 	"regexp"
@@ -18,6 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	"bytes"
 	"crypto/aes"
