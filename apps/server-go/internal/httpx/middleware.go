@@ -102,6 +102,26 @@ func ResolveCompany(w http.ResponseWriter, r *http.Request, db *sql.DB, uid stri
 	return companyID, true
 }
 
+// RequireCompany 认证 + 租户解析一步到位(#141 合一前是 9 个域包的
+// 逐字节相同拷贝 + uploads 单返回变体;失败路径已写响应,调用方直接 return)。
+func RequireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (uid, companyID string, ok bool) {
+	uid, ok = RequireAuth(w, r)
+	if !ok {
+		return "", "", false
+	}
+	companyID, ok = ResolveCompany(w, r, db, uid)
+	if !ok {
+		return "", "", false
+	}
+	return uid, companyID, true
+}
+
+// RequireCompanyID 同 RequireCompany,但调用方只需要租户(uploads 形态)。
+func RequireCompanyID(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
+	_, companyID, ok := RequireCompany(w, r, db)
+	return companyID, ok
+}
+
 // ResolveCompanyRole 在 ResolveCompany 之上再校验 owner/admin。
 func ResolveCompanyRole(w http.ResponseWriter, r *http.Request, db *sql.DB, uid string) (companyID string, ok bool) {
 	companyID, ok = ResolveCompany(w, r, db, uid)

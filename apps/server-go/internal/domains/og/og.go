@@ -71,7 +71,7 @@ func handler(rdb *redis.Client) http.HandlerFunc {
 				httpx.WriteError(w, oe.status, oe.msg)
 				return
 			}
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		// 5min 浏览器/CDN 缓存:同会话的兄弟客户端不重复打 Redis;

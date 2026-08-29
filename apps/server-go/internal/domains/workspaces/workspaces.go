@@ -210,18 +210,6 @@ func text(v string, max int) string {
 
 /* handlers */
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func create(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, ok := httpx.RequireAuth(w, r)
@@ -299,7 +287,7 @@ func create(db *sql.DB) http.HandlerFunc {
 
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -336,7 +324,7 @@ func list(db *sql.DB) http.HandlerFunc {
 
 func detail(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}

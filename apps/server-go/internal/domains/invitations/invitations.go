@@ -77,18 +77,6 @@ func requireAuth(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return httpx.RequireAuth(w, r)
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 // requireCompanyAdmin:路径段公司上的 owner/admin 门(403 两段文案)。
 func requireCompanyAdmin(w http.ResponseWriter, r *http.Request, db *sql.DB, companyID string) (string, bool) {
 	uid, ok := requireAuth(w, r)
@@ -104,7 +92,7 @@ func requireCompanyAdmin(w http.ResponseWriter, r *http.Request, db *sql.DB, com
 		return "", false
 	}
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return "", false
 	}
 	if role != "owner" && role != "admin" {
@@ -194,7 +182,7 @@ func list(db *sql.DB) http.HandlerFunc {
 			 ORDER BY i.created_at DESC
 			 LIMIT 200`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -364,7 +352,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			  (token_hash, company_id, invited_by, email, role, note, max_uses, expires_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			tokenHash, companyID, me, email, role, note, maxUses, expiresAt); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		noteDetail := any(nil)
@@ -431,7 +419,7 @@ func revoke(db *sql.DB) http.HandlerFunc {
 			UPDATE company_invitations SET revoked_at = NOW()
 			 WHERE token_hash = $1 AND company_id = $2 AND revoked_at IS NULL`, inviteID, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		revoked := false
@@ -557,7 +545,7 @@ func accept(db *sql.DB) http.HandlerFunc {
 		// 事务:F OR UPDATE 防两单用邀请并发双赢。
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		rollback := func() { _ = tx.Rollback() }
@@ -578,7 +566,7 @@ func accept(db *sql.DB) http.HandlerFunc {
 		}
 		if err != nil {
 			rollback()
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if revokedAt.Valid {
@@ -646,7 +634,7 @@ func accept(db *sql.DB) http.HandlerFunc {
 			   SET use_count = use_count + 1, last_accepted_at = NOW(), last_accepted_by = $2
 			 WHERE token_hash = $1`, tokenHash, me)
 		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		onboard.JoinAllHands(r.Context(), db, companyID, me)
@@ -693,7 +681,7 @@ func firstRune(s string) string {
 /* ───────── convene ───────── */
 
 func requireConvoMember(w http.ResponseWriter, r *http.Request, db *sql.DB, convoID string) (string, string, bool) {
-	uid, companyID, ok := requireCompany(w, r, db)
+	uid, companyID, ok := httpx.RequireCompany(w, r, db)
 	if !ok {
 		return "", "", false
 	}
@@ -843,7 +831,7 @@ func conveneActive(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -856,7 +844,7 @@ func conveneActive(db *sql.DB) http.HandlerFunc {
 
 func conveneTranscript(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, tenant, ok := requireCompany(w, r, db)
+		me, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -889,7 +877,7 @@ func conveneTranscript(db *sql.DB) http.HandlerFunc {
 			  FROM convene_transcript WHERE session_id = $1
 			 ORDER BY sequence ASC`, sessionID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()

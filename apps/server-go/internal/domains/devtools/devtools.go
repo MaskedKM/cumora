@@ -119,7 +119,7 @@ func workspaceFile(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -146,7 +146,7 @@ func runEvents(db *sql.DB) http.HandlerFunc {
 				httpx.WriteError(w, http.StatusNotFound, "not found")
 			} else {
 				// 门禁查询失败 ≠ 不存在(TS throw → 500,#107 评审 NIT5)。
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 			}
 			return
 		}
@@ -156,7 +156,7 @@ func runEvents(db *sql.DB) http.HandlerFunc {
 			 WHERE run_id = $1 AND company_id = $2
 			 ORDER BY created_at ASC, id ASC`, runID, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -205,7 +205,7 @@ func peekAgentChat(db *sql.DB) http.HandlerFunc {
 			if err == sql.ErrNoRows {
 				httpx.WriteError(w, http.StatusNotFound, "not found")
 			} else {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 			}
 			return
 		}
@@ -219,7 +219,7 @@ func peekAgentChat(db *sql.DB) http.HandlerFunc {
 			 WHERE conversation_id = $1
 			 ORDER BY sequence ASC`, id)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -264,6 +264,8 @@ func avatarGenerate(db *sql.DB, gen AvatarGen) http.HandlerFunc {
 				httpx.WriteError(w, http.StatusBadRequest, "avatar generation is only for agents")
 			default:
 				slog.Warn("[agents] avatar generate failed", "err", err)
+				// TS baseline 无条件透传(`image generation failed: ${msg}`),
+				// 非 errorHandler 面 —— 不进 WriteInternalError。
 				httpx.WriteError(w, http.StatusBadGateway, "image generation failed: "+err.Error())
 			}
 			return
@@ -322,7 +324,7 @@ func workspaceIndex(db *sql.DB) http.HandlerFunc {
 			 WHERE agent_id = $1 AND company_id = $2
 			 ORDER BY path`, agentID, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -364,7 +366,7 @@ func peekAgentChatsList(db *sql.DB) http.HandlerFunc {
 			 ORDER BY c.updated_at DESC
 			 LIMIT 50`, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()

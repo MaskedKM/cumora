@@ -17,19 +17,19 @@ import (
 
 func invariantCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		if _, serr := requireFeature(r.Context(), db, companyID, featureID); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
 		title := body.text("title", 300)
 		if title == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "title required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "title required"))
 			return
 		}
 		id := randID("si")
@@ -46,14 +46,14 @@ func invariantCreate(db *sql.DB) http.HandlerFunc {
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 			id, featureID, title, body.text("description", 20000),
 			body.enumValue("kind", invariantKinds, "behavior"), body.boolean("required", true), position, uid); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, featureID, uid, "invariant.created",
 			map[string]any{"id": id, "title": title})
 		detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, detail)
@@ -62,13 +62,13 @@ func invariantCreate(db *sql.DB) http.HandlerFunc {
 
 func invariantPatch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		if _, serr := requireFeature(r.Context(), db, companyID, featureID); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
@@ -101,18 +101,18 @@ func invariantPatch(db *sql.DB) http.HandlerFunc {
 			 WHERE id = $6 AND feature_id = $7`,
 			title, description, kind, required, position, r.PathValue("iid"), featureID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			writeShipError(w, fail(http.StatusNotFound, "invariant not found"))
+			writeShipError(w, r, fail(http.StatusNotFound, "invariant not found"))
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, featureID, uid, "invariant.updated",
 			map[string]any{"id": r.PathValue("iid")})
 		detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)
@@ -123,26 +123,26 @@ func invariantPatch(db *sql.DB) http.HandlerFunc {
 
 func verificationCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		feature, serr := requireFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
 		title := body.text("title", 300)
 		if title == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "title required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "title required"))
 			return
 		}
 		ownerID := body.optText("ownerId", 2000)
 		if ownerID.Valid {
 			if serr := assertParticipants(r.Context(), db, companyID, []string{ownerID.String}); serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 		}
@@ -151,11 +151,11 @@ func verificationCreate(db *sql.DB) http.HandlerFunc {
 			builderIDs = body.stringArray("builderIds", 100)
 		}
 		if serr := assertParticipants(r.Context(), db, companyID, builderIDs); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		if ownerID.Valid && contains(builderIDs, ownerID.String) {
-			writeShipError(w, fail(http.StatusConflict, "verification owner cannot be one of the builders"))
+			writeShipError(w, r, fail(http.StatusConflict, "verification owner cannot be one of the builders"))
 			return
 		}
 		invariantID := body.optText("invariantId", 2000)
@@ -164,7 +164,7 @@ func verificationCreate(db *sql.DB) http.HandlerFunc {
 			if db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM shipping_invariants WHERE id = $1 AND feature_id = $2`,
 				invariantID.String, feature.id).Scan(&one) != nil {
-				writeShipError(w, fail(http.StatusBadRequest, "invariant does not belong to this feature"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "invariant does not belong to this feature"))
 				return
 			}
 		}
@@ -177,7 +177,7 @@ func verificationCreate(db *sql.DB) http.HandlerFunc {
 		}
 		dueAt, serr2 := body.isoOrNull("dueAt")
 		if serr2 != nil {
-			writeShipError(w, serr2)
+			writeShipError(w, r, serr2)
 			return
 		}
 		id := randID("sv")
@@ -189,14 +189,14 @@ func verificationCreate(db *sql.DB) http.HandlerFunc {
 			id, feature.id, nullStrPtr(invariantID), title, body.text("description", 20000),
 			body.enumValue("method", verificationMethods, "user_path"), body.boolean("required", true),
 			nullStrPtr(ownerID), mustJSONString(builderIDs), position, nullTimePtr(dueAt), uid); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, feature.id, uid, "verification.created",
 			map[string]any{"id": id, "title": title, "ownerId": nullStr(ownerID)})
 		detail, serr := detailFeature(r.Context(), db, companyID, feature.id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, detail)
@@ -205,14 +205,14 @@ func verificationCreate(db *sql.DB) http.HandlerFunc {
 
 func verificationPatch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		feature, serr := requireFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		verificationID := r.PathValue("vid")
@@ -223,7 +223,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 			`SELECT builder_ids, status, owner_id, title FROM shipping_verifications WHERE id = $1 AND feature_id = $2`,
 			verificationID, feature.id).Scan(&currentBuilderIDs, &currentStatus, &currentOwnerID, &currentTitle)
 		if err != nil {
-			writeShipError(w, fail(http.StatusNotFound, "verification square not found"))
+			writeShipError(w, r, fail(http.StatusNotFound, "verification square not found"))
 			return
 		}
 		body := readBody(r)
@@ -237,16 +237,16 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 		}
 		if ownerID.Valid {
 			if serr := assertParticipants(r.Context(), db, companyID, []string{ownerID.String}); serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 		}
 		if serr := assertParticipants(r.Context(), db, companyID, builderIDs); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		if ownerID.Valid && contains(builderIDs, ownerID.String) {
-			writeShipError(w, fail(http.StatusConflict, "verification owner cannot be one of the builders"))
+			writeShipError(w, r, fail(http.StatusConflict, "verification owner cannot be one of the builders"))
 			return
 		}
 		nextStatus := currentStatus
@@ -254,12 +254,12 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 			nextStatus = body.enumValue("status", verificationStatuses, "")
 		}
 		if nextStatus == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "invalid verification status"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "invalid verification status"))
 			return
 		}
 		completing := nextStatus == "passed" || nextStatus == "failed" || nextStatus == "waived"
 		if completing && contains(builderIDs, uid) {
-			writeShipError(w, fail(http.StatusConflict, "the builder cannot verify their own work"))
+			writeShipError(w, r, fail(http.StatusConflict, "the builder cannot verify their own work"))
 			return
 		}
 		var evidence []any
@@ -269,11 +269,11 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 			hasEvidence = true
 		}
 		if (nextStatus == "passed" || nextStatus == "failed") && (!hasEvidence || len(evidence) == 0) {
-			writeShipError(w, fail(http.StatusConflict, "passed/failed verification requires evidence"))
+			writeShipError(w, r, fail(http.StatusConflict, "passed/failed verification requires evidence"))
 			return
 		}
 		if nextStatus == "waived" && body.text("notes", 20000) == "" {
-			writeShipError(w, fail(http.StatusConflict, "waiving a square requires a written reason"))
+			writeShipError(w, r, fail(http.StatusConflict, "waiving a square requires a written reason"))
 			return
 		}
 		var title, description, method, required, notes, dueAt, evidenceSQL any
@@ -298,7 +298,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 		if body.has("dueAt") {
 			due, serr2 := body.isoOrNull("dueAt")
 			if serr2 != nil {
-				writeShipError(w, serr2)
+				writeShipError(w, r, serr2)
 				return
 			}
 			dueAt = nullTimePtr(due)
@@ -318,7 +318,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 			 WHERE id = $13 AND feature_id = $14`,
 			title, description, method, required, nullStrPtr(ownerID), mustJSONString(builderIDs), nextStatus,
 			evidenceSQL, notes, dueAt, completing, verifiedBy, verificationID, feature.id); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if nextStatus == "failed" {
@@ -336,7 +336,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 				randID("rg"), feature.id, verificationID,
 				"Replay failed square: "+titleForAssets,
 				"The behavior proven by this square remains true", uid); err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 			if _, err := db.ExecContext(r.Context(), `
@@ -351,7 +351,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 				"verification:"+verificationID, "Verification failed: "+titleForAssets,
 				"A required proof failed and has been promoted into the friction inbox plus a replayable regression asset.",
 				mustJSONString(orEmpty(evidence))); err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 		}
@@ -359,7 +359,7 @@ func verificationPatch(db *sql.DB) http.HandlerFunc {
 			map[string]any{"id": verificationID, "status": nextStatus})
 		detail, serr := detailFeature(r.Context(), db, companyID, feature.id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)
@@ -393,30 +393,30 @@ func nullTimePtr(nt sql.NullTime) any {
 
 func releaseCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		feature, serr := requireFeature(r.Context(), db, companyID, r.PathValue("id"))
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
 		environment := body.enumValue("environment", releaseEnvironments, "")
 		if environment == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "valid environment required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "valid environment required"))
 			return
 		}
 		if environment == "staging" || environment == "canary" || environment == "production" {
 			if feature.status != "ready" && feature.status != "releasing" && feature.status != "watching" {
-				writeShipError(w, fail(http.StatusConflict, "%s release requires a ready feature", environment))
+				writeShipError(w, r, fail(http.StatusConflict, "%s release requires a ready feature", environment))
 				return
 			}
 		}
 		readbackDue, serr2 := body.isoOrNull("readbackDueAt")
 		if serr2 != nil {
-			writeShipError(w, serr2)
+			writeShipError(w, r, serr2)
 			return
 		}
 		id := randID("sr")
@@ -429,14 +429,14 @@ func releaseCreate(db *sql.DB) http.HandlerFunc {
 			body.text("releaseNotes", 20000), body.text("rollbackPlan", 20000),
 			mustJSONString(body.jsonArray("knownGaps", 100)),
 			mustJSONString(body.jsonArray("baseline", 100)), nullTimePtr(readbackDue)); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, feature.id, uid, "release.planned",
 			map[string]any{"id": id, "environment": environment})
 		detail, serr := detailFeature(r.Context(), db, companyID, feature.id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, detail)
@@ -447,14 +447,14 @@ func releaseCreate(db *sql.DB) http.HandlerFunc {
 // approve/rollback 走 owner/admin 特权门(TS requireCompanyRole)。
 func releaseAction(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		feature, serr := requireFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		releaseID := r.PathValue("rid")
@@ -463,7 +463,7 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 		allowed := map[string]bool{"approve": true, "start": true, "succeed": true, "fail": true,
 			"readback_pass": true, "readback_fail": true, "rollback": true}
 		if !allowed[action] {
-			writeShipError(w, fail(http.StatusBadRequest, "invalid release action"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "invalid release action"))
 			return
 		}
 		actor := uid
@@ -474,7 +474,7 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 		}
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer tx.Rollback()
@@ -486,7 +486,7 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 			   FROM shipping_releases WHERE id = $1 AND feature_id = $2 FOR UPDATE`,
 			releaseID, feature.id).Scan(&environment, &status, &releaseNotes, &rollbackPlan, &baseline)
 		if err != nil {
-			writeShipError(w, fail(http.StatusNotFound, "release not found"))
+			writeShipError(w, r, fail(http.StatusNotFound, "release not found"))
 			return
 		}
 		var actionErr *shippingError
@@ -505,13 +505,13 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_releases SET status='running', started_by=$1, started_at=NOW(), updated_at=NOW() WHERE id=$2`,
 					actor, releaseID); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_features SET status='releasing', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 					actor, feature.id); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 			}
@@ -531,14 +531,14 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 					UPDATE shipping_releases SET status='succeeded', smoke_evidence=$1::jsonb,
 					       completed_at=NOW(), readback_due_at=COALESCE(readback_due_at,$2), updated_at=NOW() WHERE id=$3`,
 					mustJSONString(evidence), dueAt, releaseID); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if environment == "production" {
 					if _, err := tx.ExecContext(r.Context(),
 						`UPDATE shipping_features SET status='watching', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 						actor, feature.id); err != nil {
-						httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+						httpx.WriteInternalError(w, r, err)
 						return
 					}
 				}
@@ -554,13 +554,13 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_releases SET status='failed', smoke_evidence=$1::jsonb, completed_at=NOW(), updated_at=NOW() WHERE id=$2`,
 					mustJSONString(evidence), releaseID); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_features SET status='ready', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 					actor, feature.id); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 			}
@@ -579,7 +579,7 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 				if _, err := tx.ExecContext(r.Context(), `
 					UPDATE shipping_releases SET readback_status=$1, readback_evidence=$2::jsonb, updated_at=NOW() WHERE id=$3`,
 					rbStatus, mustJSONString(evidence), releaseID); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if action == "readback_fail" {
@@ -594,13 +594,13 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 						"Production readback failed: "+feature.title,
 						"Observed production behavior diverged from the release baseline; investigate and add a replayable regression.",
 						mustJSONString(evidence)); err != nil {
-						httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+						httpx.WriteInternalError(w, r, err)
 						return
 					}
 					if _, err := tx.ExecContext(r.Context(),
 						`UPDATE shipping_features SET status='building', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 						actor, feature.id); err != nil {
-						httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+						httpx.WriteInternalError(w, r, err)
 						return
 					}
 				}
@@ -617,30 +617,30 @@ func releaseAction(db *sql.DB) http.HandlerFunc {
 				if _, err := tx.ExecContext(r.Context(), `
 					UPDATE shipping_releases SET status='rolled_back', rolled_back_at=NOW(), rollback_reason=$1, updated_at=NOW() WHERE id=$2`,
 					reason, releaseID); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_features SET status='building', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 					actor, feature.id); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 			}
 		}
 		if actionErr != nil {
-			writeShipError(w, actionErr)
+			writeShipError(w, r, actionErr)
 			return
 		}
 		_ = recordEvent(r.Context(), tx, companyID, feature.id, actor, "release."+action,
 			map[string]any{"releaseId": releaseID, "evidence": body.jsonArray("evidence", 100)})
 		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		detail, serr := detailFeature(r.Context(), db, companyID, feature.id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)
@@ -683,7 +683,7 @@ func stringsBlank(s string) bool { return len(s) == 0 || strings.TrimSpace(s) ==
 
 func frictionList(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -696,7 +696,7 @@ func frictionList(db *sql.DB) http.HandlerFunc {
 			          CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
 			          last_seen_at DESC`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -731,28 +731,28 @@ func frictionList(db *sql.DB) http.HandlerFunc {
 
 func frictionCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		body := readBody(r)
 		title := body.text("title", 300)
 		if title == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "title required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "title required"))
 			return
 		}
 		id := randID("fr")
 		featureID := body.optText("featureId", 2000)
 		if featureID.Valid {
 			if _, serr := requireFeature(r.Context(), db, companyID, featureID.String); serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 		}
 		conversationID := body.optText("conversationId", 2000)
 		messageID := body.optText("messageId", 2000)
 		if serr := assertConversationMessageLinks(r.Context(), db, companyID, conversationID, messageID); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		source := body.optText("source", 100)
@@ -770,7 +770,7 @@ func frictionCreate(db *sql.DB) http.HandlerFunc {
 			body.enumValue("frequency", frictionFrequencies, "once"),
 			body.enumValue("status", frictionStatuses, "open"),
 			mustJSONString(body.jsonArray("evidence", 100))); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, nullStrPtr2Str(featureID), uid, "friction.created",
@@ -788,7 +788,7 @@ func nullStrPtr2Str(ns sql.NullString) string {
 
 func frictionPatch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -800,7 +800,7 @@ func frictionPatch(db *sql.DB) http.HandlerFunc {
 		}
 		if featureID.Valid {
 			if _, serr := requireFeature(r.Context(), db, companyID, featureID.String); serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 		}
@@ -840,11 +840,11 @@ func frictionPatch(db *sql.DB) http.HandlerFunc {
 			hasFeature, nullStrPtr(featureID), title, description, severity, frequency, status,
 			evidenceSQL, increment, r.PathValue("id"), companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			writeShipError(w, fail(http.StatusNotFound, "friction report not found"))
+			writeShipError(w, r, fail(http.StatusNotFound, "friction report not found"))
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, nullStrPtr2Str(featureID), uid, "friction.updated",
@@ -857,19 +857,19 @@ func frictionPatch(db *sql.DB) http.HandlerFunc {
 
 func regressionCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		if _, serr := requireFeature(r.Context(), db, companyID, featureID); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
 		title := body.text("title", 300)
 		if title == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "title required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "title required"))
 			return
 		}
 		invariantID := body.optText("invariantId", 2000)
@@ -878,7 +878,7 @@ func regressionCreate(db *sql.DB) http.HandlerFunc {
 			if db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM shipping_invariants WHERE id = $1 AND feature_id = $2`,
 				invariantID.String, featureID).Scan(&one) != nil {
-				writeShipError(w, fail(http.StatusBadRequest, "invariant does not belong to this feature"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "invariant does not belong to this feature"))
 				return
 			}
 		}
@@ -888,7 +888,7 @@ func regressionCreate(db *sql.DB) http.HandlerFunc {
 			if db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM shipping_verifications WHERE id = $1 AND feature_id = $2`,
 				sourceVerificationID.String, featureID).Scan(&one) != nil {
-				writeShipError(w, fail(http.StatusBadRequest, "source verification does not belong to this feature"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "source verification does not belong to this feature"))
 				return
 			}
 		}
@@ -902,14 +902,14 @@ func regressionCreate(db *sql.DB) http.HandlerFunc {
 			title, body.enumValue("kind", regressionKinds, "automated"),
 			nullStrPtr(body.optText("command", 8000)), body.text("expected", 20000),
 			body.enumValue("status", regressionStatuses, "active"), uid); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, featureID, uid, "regression.created",
 			map[string]any{"id": id, "title": title})
 		detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, detail)
@@ -918,13 +918,13 @@ func regressionCreate(db *sql.DB) http.HandlerFunc {
 
 func regressionPatch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		if _, serr := requireFeature(r.Context(), db, companyID, featureID); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
@@ -961,18 +961,18 @@ func regressionPatch(db *sql.DB) http.HandlerFunc {
 			title, kind, command, expected, status, lastResult, lastEvidenceSQL,
 			r.PathValue("gid"), featureID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			writeShipError(w, fail(http.StatusNotFound, "regression not found"))
+			writeShipError(w, r, fail(http.StatusNotFound, "regression not found"))
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, featureID, uid, "regression.updated",
 			map[string]any{"id": r.PathValue("gid"), "status": status})
 		detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)

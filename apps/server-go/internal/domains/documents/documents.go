@@ -82,21 +82,9 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("DELETE /api/documents/{id}", del(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -121,7 +109,7 @@ func list(db *sql.DB) http.HandlerFunc {
 
 func create(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -168,7 +156,7 @@ func create(db *sql.DB) http.HandlerFunc {
 
 func get(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -185,7 +173,7 @@ func get(db *sql.DB) http.HandlerFunc {
 
 func updateTitle(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -219,7 +207,7 @@ func updateTitle(db *sql.DB) http.HandlerFunc {
 // 治理 = creator 或 owner/admin(与 delete 同规则)。
 func setCollaborators(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -305,7 +293,7 @@ func setCollaborators(db *sql.DB) http.HandlerFunc {
 
 func del(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}

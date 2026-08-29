@@ -421,7 +421,7 @@ func llmObservability(db *sql.DB) http.HandlerFunc {
 			}, nil
 		})
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, payload)
@@ -511,7 +511,7 @@ func llmCallsDrilldown(db *sql.DB) http.HandlerFunc {
 			 ORDER BY `+orderBy+`
 			 LIMIT $`+fmt.Sprint(len(params)), params...)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -555,7 +555,7 @@ func llmCallsDrilldown(db *sql.DB) http.HandlerFunc {
 			})
 		}
 		if err := rows.Err(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, out)

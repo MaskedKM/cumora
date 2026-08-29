@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -70,33 +71,24 @@ func memberCheck(ctx context.Context, db *sql.DB, uid, companyID, convID string)
 // counter(序号断档)且无排障痕迹。系统消息是礼节性写:失败不阻断
 // 成员变更主路径,只留日志。
 func postSystemMessage(ctx context.Context, db *sql.DB, convID, companyID, actorID, sysKind, participantID string) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Warn("postSystemMessage begin tx failed", "conv", convID, "kind", sysKind, "err", err)
-		return
-	}
-	defer tx.Rollback() // 提交后为 no-op
-	var sequence int
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
-		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-		RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
-		slog.Warn("postSystemMessage sequence upsert failed", "conv", convID, "kind", sysKind, "err", err)
-		return
-	}
+	var sequence int64
 	body, _ := json.Marshal(map[string]string{
 		"kind": sysKind, "participantId": participantID, "actorId": actorID,
 	})
 	msgID := "m-" + authn.NewToken()[:12]
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
-		VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
-		msgID, convID, companyID, actorID, body, sequence); err != nil {
-		slog.Warn("postSystemMessage insert failed", "conv", convID, "kind", sysKind, "err", err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		slog.Warn("postSystemMessage commit failed", "conv", convID, "kind", sysKind, "err", err)
+	if err := dbpkg.WithTx(ctx, db, func(tx *sql.Tx) error {
+		seq, err := dbpkg.AllocSequence(ctx, tx, convID)
+		if err != nil {
+			return err
+		}
+		sequence = seq
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence)
+			VALUES ($1, $2, $3, $4, 'system', $5, $6)`,
+			msgID, convID, companyID, actorID, body, sequence)
+		return err
+	}); err != nil {
+		slog.Warn("postSystemMessage tx failed", "conv", convID, "kind", sysKind, "err", err)
 		return
 	}
 	events.MessageNew(ctx, companyID, convID, map[string]any{
@@ -115,21 +107,9 @@ func memberGate(w http.ResponseWriter, r *http.Request, db *sql.DB, uid, company
 	return members, true
 }
 
-func requireConv(w http.ResponseWriter, r *http.Request, db *sql.DB) (uid, companyID string, ok bool) {
-	uid, ok = httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok = httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func setTopic(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -161,7 +141,7 @@ func setTopic(db *sql.DB) http.HandlerFunc {
 
 func setTitle(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -197,7 +177,7 @@ func setTitle(db *sql.DB) http.HandlerFunc {
 
 func setPin(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -228,7 +208,7 @@ func setPin(db *sql.DB) http.HandlerFunc {
 
 func setMute(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -273,7 +253,7 @@ func setMute(db *sql.DB) http.HandlerFunc {
 
 func addMember(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -323,7 +303,7 @@ func addMember(db *sql.DB) http.HandlerFunc {
 
 func leave(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -357,7 +337,7 @@ func leave(db *sql.DB) http.HandlerFunc {
 
 func typing(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -376,7 +356,7 @@ func typing(db *sql.DB) http.HandlerFunc {
 
 func markRead(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -394,7 +374,7 @@ func markRead(db *sql.DB) http.HandlerFunc {
 
 func replies(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireConv(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -888,7 +868,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				ConversationID: convID, CompanyID: companyID, AuthorID: uid, Body: body.Body,
 			})
 			if err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 			status := http.StatusBadGateway
@@ -964,11 +944,8 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback() // 提交后为 no-op
-		var sequence int
-		if err := tx.QueryRowContext(r.Context(), `
-			INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
-			ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-			RETURNING next_sequence - 1`, convID).Scan(&sequence); err != nil {
+		var sequence int64
+		if sequence, err = dbpkg.AllocSequence(r.Context(), tx, convID); err != nil {
 			slog.Warn("sendMessage sequence upsert failed", "conv", convID, "err", err)
 			httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
 			return
@@ -978,7 +955,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 		// 双投,经部分唯一索引 ON CONFLICT DO NOTHING + 回查取原行——
 		// TS router 同款;裸 INSERT 会在重试时撞索引 500。
 		var persistedID string
-		var persistedSeq int
+		var persistedSeq int64
 		err = tx.QueryRowContext(r.Context(), `
 			INSERT INTO messages (id, conversation_id, company_id, author_id, kind, body, sequence, quoted_message_id, client_id, attachment)
 			VALUES ($1, $2, $3, $4, 'text', $5, $6, $7, NULLIF($8,''), $9)
@@ -1217,7 +1194,7 @@ func toggleReaction(db *sql.DB) http.HandlerFunc {
 			  FROM message_reactions WHERE message_id = $1
 			 GROUP BY emoji ORDER BY count DESC, emoji ASC`, id)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()

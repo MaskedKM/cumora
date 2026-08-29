@@ -37,20 +37,8 @@ func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
 	mux.HandleFunc("GET /api/participants", listParticipants(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
-	uid, companyID, ok := requireCompany(w, r, db)
+	uid, companyID, ok := httpx.RequireCompany(w, r, db)
 	if !ok {
 		return "", false
 	}
@@ -259,7 +247,7 @@ func pickUniqueAgentID(ctx context.Context, db *sql.DB, baseName string) (string
 
 func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := requireCompany(w, r, db)
+		uid, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -333,7 +321,7 @@ func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
 			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "participants_agent_id_unique") {
 				httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
 			} else {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 			}
 			return
 		}
@@ -460,7 +448,7 @@ func update(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(),
 			fmt.Sprintf(`UPDATE participants SET %s WHERE id = $%d AND company_id = $%d`,
 				strings.Join(sets, ", "), len(params)-1, len(params)), params...); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -493,7 +481,7 @@ func offboard(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(), `
 			UPDATE participants SET departed_at = NOW(), status = 'resting', status_updated_at = NOW()
 			  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -539,7 +527,7 @@ func rehire(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(), `
 			UPDATE participants SET departed_at = NULL, status = 'avail', status_updated_at = NOW()
 			  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -552,7 +540,7 @@ func rehire(db *sql.DB) http.HandlerFunc {
 // threshold 0.6 起步(未见 ≠ 错误,前端首访即拿默认值)。
 func getAutonomyOne(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := requireCompany(w, r, db)
+		uid, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -570,7 +558,7 @@ func getAutonomyOne(db *sql.DB) http.HandlerFunc {
 			 WHERE user_id = $1 AND agent_id = $2`, uid, r.PathValue("id")).
 			Scan(&threshold, &pulled, &led, &dissolved)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if err != nil {
@@ -586,7 +574,7 @@ func getAutonomyOne(db *sql.DB) http.HandlerFunc {
 
 func putAutonomy(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := requireCompany(w, r, db)
+		uid, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -616,7 +604,7 @@ func putAutonomy(db *sql.DB) http.HandlerFunc {
 			VALUES ($1, $2, $3)
 			ON CONFLICT (user_id, agent_id) DO UPDATE SET threshold = EXCLUDED.threshold`,
 			uid, r.PathValue("id"), threshold); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "threshold": threshold})
@@ -625,7 +613,7 @@ func putAutonomy(db *sql.DB) http.HandlerFunc {
 
 func getAutonomy(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := requireCompany(w, r, db)
+		uid, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -635,7 +623,7 @@ func getAutonomy(db *sql.DB) http.HandlerFunc {
 			  JOIN participants p ON p.id = a.agent_id
 			 WHERE a.user_id = $1 AND p.company_id = $2`, uid, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -668,7 +656,7 @@ func randHex6() string {
 // listParticipants:过期 busy 状态回落 + 名册(含 agent 惰铸地址回显)。
 func listParticipants(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, tenant, ok := requireCompany(w, r, db)
+		_, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -695,7 +683,7 @@ func listParticipants(db *sql.DB) http.HandlerFunc {
 			 WHERE p.company_id = $1
 			 ORDER BY p.kind DESC, p.name ASC`, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()

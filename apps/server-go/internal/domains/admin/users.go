@@ -113,7 +113,7 @@ func usersList(db *sql.DB) http.HandlerFunc {
 			SELECT %s FROM users u %s ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`,
 			adminUserCols, whereSql, len(params)-1, len(params)), params...)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -154,7 +154,7 @@ func userGet(db *sql.DB) http.HandlerFunc {
 			  FROM company_members cm JOIN companies c ON c.id = cm.company_id
 			 WHERE cm.user_id = $1 ORDER BY cm.joined_at ASC`, id)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -212,7 +212,7 @@ func userPatch(db *sql.DB) http.HandlerFunc {
 				res, err := db.ExecContext(r.Context(),
 					`UPDATE users SET is_admin = $2 WHERE id = $1`, id, isAdmin)
 				if err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+					httpx.WriteInternalError(w, r, err)
 					return
 				}
 				if n, _ := res.RowsAffected(); n == 0 {
@@ -280,7 +280,7 @@ func adminSuspendUser(w http.ResponseWriter, r *http.Request, db *sql.DB, userID
 	}
 	tx, err := db.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	defer tx.Rollback()
@@ -288,7 +288,7 @@ func adminSuspendUser(w http.ResponseWriter, r *http.Request, db *sql.DB, userID
 		UPDATE users SET suspended_at = NOW(), suspension_reason = $2, suspended_by = $3
 		 WHERE id = $1 AND suspended_at IS NULL`, userID, reason, adminID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -304,11 +304,11 @@ func adminSuspendUser(w http.ResponseWriter, r *http.Request, db *sql.DB, userID
 		return false
 	}
 	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	if err := tx.Commit(); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	adminAudit(db, adminID, "user_suspend", map[string]any{"targetUserId": userID, "reason": nullStrAny(reason)})
@@ -321,7 +321,7 @@ func adminUnsuspendUser(w http.ResponseWriter, r *http.Request, db *sql.DB, user
 		UPDATE users SET suspended_at = NULL, suspension_reason = NULL, suspended_by = NULL
 		 WHERE id = $1 AND suspended_at IS NOT NULL`, userID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	if n, _ := res.RowsAffected(); n == 0 {

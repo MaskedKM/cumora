@@ -32,7 +32,7 @@ func fail(status int, format string, a ...any) *shippingError {
 	return &shippingError{status, fmt.Sprintf(format, a...)}
 }
 
-func writeShipError(w http.ResponseWriter, err error) bool {
+func writeShipError(w http.ResponseWriter, r *http.Request, err error) bool {
 	var se *shippingError
 	if se2, ok := err.(*shippingError); ok {
 		se = se2
@@ -41,7 +41,7 @@ func writeShipError(w http.ResponseWriter, err error) bool {
 		httpx.WriteError(w, se.status, se.msg)
 		return true
 	}
-	httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+	httpx.WriteInternalError(w, r, err)
 	return true
 }
 

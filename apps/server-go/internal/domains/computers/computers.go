@@ -26,18 +26,6 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/agents/{id}/runtime-token", runtimeToken(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
@@ -67,7 +55,7 @@ func requireDevice(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, 
 
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}

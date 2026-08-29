@@ -344,6 +344,8 @@ func appleNative(deps oauthDeps) http.HandlerFunc {
 			return
 		}
 		log.Printf("[auth] apple native sign-in failed: %v", err)
+		// TS baseline:console.warn + 400 透传失败原因(登录面需要理由),
+		// 非 errorHandler 面 —— 不进 WriteInternalError。
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 	}
 }

@@ -224,7 +224,7 @@ func personaJSON(p *agent.Persona) map[string]any {
 func (s *Service) handlePersona(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	p, err := s.GetPersona(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"persona": personaJSON(p)})
@@ -242,7 +242,7 @@ func (s *Service) handleConversationCompanyId(w http.ResponseWriter, r *http.Req
 	}
 	companyID, err := s.GetConversationCompanyId(r.Context(), conversationID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	var out any
@@ -260,7 +260,7 @@ func (s *Service) handleConversationCompanyId(w http.ResponseWriter, r *http.Req
 func (s *Service) handleInbox(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	rows, err := s.LoadInbox(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	probe := strings.TrimSpace(r.URL.Query().Get("probe")) == "1"
@@ -317,7 +317,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	persona, err := s.GetPersona(ctx, agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if persona == nil {
@@ -326,7 +326,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	}
 	inbox, err := s.LoadInbox(ctx, agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	convoSet := map[string]bool{}
@@ -352,7 +352,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	}
 	contextRows, err := s.LoadContext(ctx, agentID, companyID, convoIDs)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	claimsByConvo := s.gatherClaimsByConvo(inbox)
@@ -386,7 +386,7 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 	}
 	agenda, err := s.Sched.GatherAgentAgenda(ctx, agentID, *companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if len(agenda.Cards) == 0 && len(agenda.Events) == 0 && len(agenda.Stalls) == 0 {
@@ -395,7 +395,7 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 	}
 	persona, err := s.GetPersona(ctx, agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if persona == nil {
@@ -442,7 +442,7 @@ func (s *Service) handleAgendaVerdict(w http.ResponseWriter, r *http.Request, ag
 	verdict := sched.AgendaVerdict{Actionable: bodyBool(body, "actionable"), Focus: focus, Reason: reason}
 	agenda, err := s.Sched.GatherAgentAgenda(ctx, agentID, *companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, s.Sched.FinalizeAgendaVerdict(ctx, agenda, verdict))
@@ -477,7 +477,7 @@ func (s *Service) handleMemoryQuery(w http.ResponseWriter, r *http.Request, agen
 		semantic, recent, total,
 		bodyStrSlice(body, "projectIds"), bodyStrSlice(body, "conversationIds"))
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
@@ -500,7 +500,7 @@ func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID 
 	}
 	rows, err := s.LoadContext(r.Context(), agentID, companyID, ids)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
@@ -509,7 +509,7 @@ func (s *Service) handleContext(w http.ResponseWriter, r *http.Request, agentID 
 func (s *Service) handleClimate(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	rows, err := s.LoadClimate(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
@@ -518,7 +518,7 @@ func (s *Service) handleClimate(w http.ResponseWriter, r *http.Request, agentID 
 func (s *Service) handleSkills(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	rows, err := s.LoadSkillsIndex(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
@@ -535,7 +535,7 @@ func (s *Service) handleFaces(w http.ResponseWriter, r *http.Request, _ string, 
 	}
 	rows, err := s.LoadFaces(r.Context(), ids)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
@@ -544,7 +544,7 @@ func (s *Service) handleFaces(w http.ResponseWriter, r *http.Request, _ string, 
 func (s *Service) handleSystemPrompt(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	prompt, err := s.BuildSystemPrompt(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	var out any
@@ -560,7 +560,7 @@ func (s *Service) handleSystemPrompt(w http.ResponseWriter, r *http.Request, age
 func (s *Service) handleRoster(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	persona, err := s.GetPersona(r.Context(), agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if persona == nil {
@@ -569,7 +569,7 @@ func (s *Service) handleRoster(w http.ResponseWriter, r *http.Request, agentID s
 	}
 	roster, err := s.BuildTeamRosterText(r.Context(), persona.CompanyID, agentID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"roster": roster})
@@ -664,7 +664,7 @@ func (s *Service) handleCreateRun(w http.ResponseWriter, r *http.Request, agentI
 		Fingerprint     *string
 	}{agentID, companyID, trigger, inputIDs, inboxCount, fingerprint})
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"runId": runID})
@@ -1063,7 +1063,7 @@ func (s *Service) handleNotices(w http.ResponseWriter, r *http.Request, agentID 
 	}
 	member, err := s.IsConversationMember(r.Context(), conversationID, agentID, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if !member {
@@ -1076,7 +1076,7 @@ func (s *Service) handleNotices(w http.ResponseWriter, r *http.Request, agentID 
 	}
 	posted, err := s.PostSystemNotice(r.Context(), conversationID, companyID, agentID, noticeKind, text, dedupeKey, int(ttl))
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"posted": posted})
