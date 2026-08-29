@@ -17,7 +17,7 @@ if [ -n "$GEN_NETWORK" ]; then NET_FLAG=(--network "$GEN_NETWORK"); fi
 # 已迁移到 ServerInterface 的域 tag(扩域 = 此处加一行,生成物落
 # $GEN_DIR/<tag>/ 独立子包 —— 同包多 tag 会重复声明 ServerInterface/
 # Handler 等共享符号;types 留根包单文件,server 生成物不引用它)。
-SERVER_TAGS=(documents push uploads projects calendar computers email)
+SERVER_TAGS=(documents push uploads projects calendar computers email workspaces devtools)
 
 GEN_DIR=apps/server-go/internal/contract
 mkdir -p "$GEN_DIR"
@@ -60,12 +60,14 @@ for tag in "${SERVER_TAGS[@]}"; do
     echo
     echo 'import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"'
     echo
-    # pipefail 下 grep 无匹配会杀脚本 —— 先捕获(空则跳过)再输出
+    # pipefail 下 grep 无匹配会杀脚本 —— 先捕获(空则跳过)再输出;
+    # type 块与 const 块之间的空行是 gofmt 规范形(CI gofmt check 要求)。
     pt="$(grep -oE '\b[A-Z][A-Za-z0-9]+Params\b' "$GEN_DIR/$tag/server-$tag.gen.go" | sort -u)" || true
+    st="$(grep -oE '\b[A-Z][A-Za-z0-9]+Scopes\b' "$GEN_DIR/$tag/server-$tag.gen.go" | sort -u)" || true
     while read -r t; do
       [ -n "$t" ] && echo "type $t = contract.$t"
     done <<< "$pt"
-    st="$(grep -oE '\b[A-Z][A-Za-z0-9]+Scopes\b' "$GEN_DIR/$tag/server-$tag.gen.go" | sort -u)" || true
+    [ -n "$pt" ] && [ -n "$st" ] && echo
     while read -r t; do
       [ -n "$t" ] && echo "const $t = contract.$t"
     done <<< "$st"
