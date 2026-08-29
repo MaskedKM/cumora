@@ -331,18 +331,6 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func publishCalendarChange(ctx context.Context, kind, eventID, companyID, actorID string) {
 	payload, _ := json.Marshal(map[string]any{
 		"type": "calendar.changed", "kind": kind, "eventId": eventID,
@@ -363,7 +351,7 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -404,7 +392,7 @@ func list(db *sql.DB) http.HandlerFunc {
 
 func create(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -568,7 +556,7 @@ func recurrenceByte(b []byte) any {
 
 func get(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -597,7 +585,7 @@ func get(db *sql.DB) http.HandlerFunc {
 
 func patch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -778,7 +766,7 @@ func patch(db *sql.DB) http.HandlerFunc {
 
 func del(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -800,7 +788,7 @@ func del(db *sql.DB) http.HandlerFunc {
 
 func runNow(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -832,7 +820,7 @@ func runNow(db *sql.DB) http.HandlerFunc {
 
 func dispatches(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, companyID, ok := requireCompany(w, r, db)
+		me, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}

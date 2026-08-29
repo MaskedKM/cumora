@@ -72,7 +72,7 @@ func authMe(db *sql.DB) http.HandlerFunc {
 			  LEFT JOIN users o ON o.id = c.owner_user_id
 			 WHERE cm.user_id = $1 ORDER BY cm.joined_at ASC`, uid)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -137,7 +137,7 @@ func wsTicket(db *sql.DB) http.HandlerFunc {
 		}
 		ticket, expiresAt, err := authn.CreateWsTicket(r.Context(), db, uid)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expiresAt": expiresAt.UTC()})
@@ -204,7 +204,7 @@ func preferencesPut(db *sql.DB) http.HandlerFunc {
 			INSERT INTO user_preferences (user_id, prefs, updated_at) VALUES ($1, $2, NOW())
 			ON CONFLICT (user_id) DO UPDATE SET prefs = $2, updated_at = NOW()`, uid, prefs)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -219,7 +219,7 @@ func accountDelete(db *sql.DB) http.HandlerFunc {
 		}
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer tx.Rollback()
@@ -237,7 +237,7 @@ func accountDelete(db *sql.DB) http.HandlerFunc {
 			UPDATE users SET deleted_at = NOW(), email = $2, display_name = 'Deleted user',
 			  password_hash = NULL, avatar_url = NULL, email_verified_at = NULL
 			WHERE id = $1`, uid, sentinel); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		for _, q := range []string{
@@ -247,12 +247,12 @@ func accountDelete(db *sql.DB) http.HandlerFunc {
 			`UPDATE participants SET departed_at = NOW() WHERE id = $1 AND kind = 'human' AND departed_at IS NULL`,
 		} {
 			if _, err := tx.ExecContext(r.Context(), q, uid); err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 		}
 		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		// 审计失败不阻断(fire-and-forget,与 baseline 一致)
@@ -281,7 +281,7 @@ func companiesList(db *sql.DB) http.HandlerFunc {
 			  FROM company_members cm JOIN companies c ON c.id = cm.company_id
 			 WHERE cm.user_id = $1 ORDER BY cm.joined_at ASC`, uid)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -357,7 +357,7 @@ func companiesCreate(db *sql.DB) http.HandlerFunc {
 					id = "co-" + authn.NewToken()[:10]
 					continue
 				}
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 			_, _ = db.ExecContext(r.Context(),

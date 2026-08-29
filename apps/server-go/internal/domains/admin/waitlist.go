@@ -99,7 +99,7 @@ func waitlistList(db *sql.DB) http.HandlerFunc {
 			  ORDER BY requested_at DESC LIMIT $%d OFFSET $%d`,
 			waitlistCols, whereSql, len(params)-1, len(params)), params...)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -124,11 +124,12 @@ func waitlistApprove(db *sql.DB) http.HandlerFunc {
 		}
 		userID, companyID, httpErr, err := approveWaitlistRow(r.Context(), db, r.PathValue("id"), adminID)
 		if err != nil {
-			status := http.StatusInternalServerError
 			if httpErr != 0 {
-				status = httpErr
+				// 受控域错(HttpError 语义:状态+文案由 fail() 显式给定)
+				httpx.WriteError(w, httpErr, err.Error())
+			} else {
+				httpx.WriteInternalError(w, r, err)
 			}
-			httpx.WriteError(w, status, err.Error())
 			return
 		}
 		var companyIDWire any
@@ -274,7 +275,7 @@ func waitlistReject(db *sql.DB) http.HandlerFunc {
 			UPDATE waitlist SET status = 'rejected', decided_at = NOW(), decided_by = $2, note = $3
 			 WHERE id = $1 AND status = 'pending'`, r.PathValue("id"), adminID, note)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {

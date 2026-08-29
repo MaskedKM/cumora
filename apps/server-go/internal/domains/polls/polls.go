@@ -20,12 +20,12 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 }
 
 // pollHttpError:引擎可预期错误带状态;其余 500(对齐 pollHttpError)。
-func pollHttpError(w http.ResponseWriter, err error) {
+func pollHttpError(w http.ResponseWriter, r *http.Request, err error) {
 	if pe, ok := err.(*engine.PollError); ok {
 		httpx.WriteError(w, pe.Status, pe.Msg)
 		return
 	}
-	httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+	httpx.WriteInternalError(w, r, err)
 }
 
 // requireConversationMember:跨租户/不存在/非成员一律 404 'not found'
@@ -97,7 +97,7 @@ func create(db *sql.DB) http.HandlerFunc {
 			Options: options, ExpiresInMinutes: expiresIn,
 		})
 		if perr != nil {
-			pollHttpError(w, perr)
+			pollHttpError(w, r, perr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
@@ -135,7 +135,7 @@ func vote(db *sql.DB) http.HandlerFunc {
 			VoterKind: "human", OptionIDs: optionIDs,
 		})
 		if perr != nil {
-			pollHttpError(w, perr)
+			pollHttpError(w, r, perr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"tallies": event.Tallies, "poll": event.Poll})
@@ -157,7 +157,7 @@ func closePoll(db *sql.DB) http.HandlerFunc {
 			ActorID: &uid, Reason: "manual",
 		})
 		if perr != nil {
-			pollHttpError(w, perr)
+			pollHttpError(w, r, perr)
 			return
 		}
 		// 幂等关闭:closed=false + poll=null(TS !!event 形状)。

@@ -5,7 +5,9 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -18,6 +20,21 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
+}
+
+// WriteInternalError:TS errorHandler 非 HttpError 分支的合一(#141,
+// 122 处裸 err.Error() 500 收编)——恒 slog 排障;对外复刻 TS 的 dev/prod
+// 分流:NODE_ENV≠production 保留 err.message(TS 设计特性:不翻日志即可
+// 排障),production 收敛通用文案关泄漏。三处不进本助手:devtools 头像
+// 502 与 apple 400 是 TS baseline 无条件透传;waitlist approve 的受控
+// 域错走原 WriteError。
+func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Warn("api 500", "method", r.Method, "path", r.URL.Path, "err", err)
+	msg := err.Error()
+	if os.Getenv("NODE_ENV") == "production" {
+		msg = "internal server error"
+	}
+	WriteError(w, http.StatusInternalServerError, msg)
 }
 
 // MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)。

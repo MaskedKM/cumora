@@ -20,18 +20,6 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/email/reply/{messageId}", reply(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func decodeBody(w http.ResponseWriter, r *http.Request) map[string]json.RawMessage {
 	var body map[string]json.RawMessage
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -48,7 +36,7 @@ func arrOf(body map[string]json.RawMessage, key string) []any {
 
 func send(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, tenant, ok := requireCompany(w, r, db)
+		me, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -121,7 +109,7 @@ func send(db *sql.DB) http.HandlerFunc {
 		messageID := core.MintMessageId()
 		convID, _, err := core.FindOrCreateEmailConversation(r.Context(), db, tenant, "", nil, subject, memberIDs)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		fromLine := core.FromLine(sender.Email, sender.DisplayName)
@@ -154,7 +142,7 @@ func send(db *sql.DB) http.HandlerFunc {
 			Body: text, Attachments: persistAtts,
 		})
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		code := http.StatusOK
@@ -196,7 +184,7 @@ func anyString(v any) string {
 
 func html(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, tenant, ok := requireCompany(w, r, db)
+		me, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -242,7 +230,7 @@ var replyPrefixRe = regexp.MustCompile(`(?i)^(re|fwd|fw)\s*:`)
 
 func reply(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		me, tenant, ok := requireCompany(w, r, db)
+		me, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -383,7 +371,7 @@ func reply(db *sql.DB) http.HandlerFunc {
 			Body: text, Attachments: persistAtts,
 		})
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		// Auto-ack:回复即已读(TS 同位)。

@@ -23,21 +23,9 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/conversations/{id}/project", attach(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 // requireRole:owner/admin 门(TS requireCompanyRole;403 恒同文案)。
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
-	uid, companyID, ok := requireCompany(w, r, db)
+	uid, companyID, ok := httpx.RequireCompany(w, r, db)
 	if !ok {
 		return "", false
 	}
@@ -89,7 +77,7 @@ func utf16Cap(s string, n int) string {
 
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, tenant, ok := requireCompany(w, r, db)
+		_, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -101,7 +89,7 @@ func list(db *sql.DB) http.HandlerFunc {
 			 WHERE company_id = $1
 			 ORDER BY status ASC, created_at DESC`, tenant)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -141,7 +129,7 @@ func nullAny(ns sql.NullString) any {
 
 func create(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, tenant, ok := requireCompany(w, r, db)
+		_, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -169,7 +157,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(),
 			`INSERT INTO projects (id, company_id, name, description, color) VALUES ($1, $2, $3, $4, $5)`,
 			id, tenant, name, description, colorArg); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
@@ -225,7 +213,7 @@ func update(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(),
 			fmt.Sprintf(`UPDATE projects SET %s WHERE id = $%d AND company_id = $%d`,
 				strings.Join(sets, ", "), len(params)-1, len(params)), params...); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -250,7 +238,7 @@ func archive(db *sql.DB) http.HandlerFunc {
 			stmt = `UPDATE projects SET status = 'active', archived_at = NULL WHERE id = $1 AND company_id = $2`
 		}
 		if _, err := db.ExecContext(r.Context(), stmt, id, tenant); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		status := "active"
@@ -263,7 +251,7 @@ func archive(db *sql.DB) http.HandlerFunc {
 
 func attach(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := requireCompany(w, r, db)
+		uid, tenant, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -322,7 +310,7 @@ func attach(db *sql.DB) http.HandlerFunc {
 		if _, err := db.ExecContext(r.Context(),
 			`UPDATE conversations SET project_id = $2, updated_at = NOW() WHERE id = $1 AND company_id = $3`,
 			id, projectID, tenant); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "projectId": projectID})

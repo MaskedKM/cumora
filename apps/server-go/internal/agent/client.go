@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
@@ -42,18 +43,10 @@ func (s *Service) GetConversationCompanyId(ctx context.Context, conversationID s
 	return &companyID.String, nil
 }
 
-// NextConversationSequence:counter upsert(种子 2,RETURNING next-1)。
+// NextConversationSequence:counter upsert 委托 db.AllocSequence
+// (#141 三处同 SQL 合一;ErrNoRows→1 防御语义在合一处保留)。
 func (s *Service) NextConversationSequence(ctx context.Context, conversationID string) (int64, error) {
-	var seq int64
-	err := s.DB.QueryRowContext(ctx, `
-		INSERT INTO conversation_counters (conversation_id, next_sequence)
-		VALUES ($1, 2)
-		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
-		RETURNING next_sequence - 1 AS seq`, conversationID).Scan(&seq)
-	if err == sql.ErrNoRows {
-		return 1, nil
-	}
-	return seq, err
+	return dbpkg.AllocSequence(ctx, s.DB, conversationID)
 }
 
 // jsonbCol → any:sql 里 jsonb 列扫为 []byte 后解成 any(nil 保持 nil)。

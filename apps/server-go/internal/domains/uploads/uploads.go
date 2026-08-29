@@ -29,18 +29,6 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("POST /api/uploads", uploadBase64(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", false
-	}
-	return companyID, true
-}
-
 // bodyString:F16 —— TS 侧 String(x ?? ”) 强转(name/mime/key/url/
 // dataBase64 同语义),非串不再吞成空串。
 func bodyString(body map[string]json.RawMessage, key string) string {
@@ -53,7 +41,7 @@ func bodyString(body map[string]json.RawMessage, key string) string {
 // 本地模式下任何 body 都拿到同一条 501)。
 func presign(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireCompany(w, r, db); !ok {
+		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
 			return
 		}
 		httpx.WriteError(w, http.StatusNotImplemented,
@@ -66,7 +54,7 @@ func presign(db *sql.DB) http.HandlerFunc {
 // 400 'not a Cumora storage URL'。
 func refreshURL(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireCompany(w, r, db); !ok {
+		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
 			return
 		}
 		var body map[string]json.RawMessage
@@ -155,7 +143,7 @@ func uploadDir() string {
 // (UTF-16 码元)。
 func uploadBase64(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireCompany(w, r, db); !ok {
+		if _, ok := httpx.RequireCompanyID(w, r, db); !ok {
 			return
 		}
 		var body map[string]json.RawMessage
@@ -191,11 +179,11 @@ func uploadBase64(db *sql.DB) http.HandlerFunc {
 		key := "attachments/" + randHex32() + "." + policy.ext
 		dst := filepath.Join(uploadDir(), filepath.FromSlash(key))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if err := os.WriteFile(dst, buf, 0o644); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{

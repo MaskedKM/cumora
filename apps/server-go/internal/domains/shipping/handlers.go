@@ -31,18 +31,6 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("PATCH /api/shipping/features/{id}/regressions/{gid}", regressionPatch(db))
 }
 
-func requireCompany(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return "", "", false
-	}
-	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-	if !ok {
-		return "", "", false
-	}
-	return uid, companyID, true
-}
-
 func readBody(r *http.Request) shipBody {
 	var body shipBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -56,7 +44,7 @@ func readBody(r *http.Request) shipBody {
 
 func overview(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
@@ -74,7 +62,7 @@ func overview(db *sql.DB) http.HandlerFunc {
 			   CASE f.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
 			   f.updated_at DESC`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -105,7 +93,7 @@ func overview(db *sql.DB) http.HandlerFunc {
 			 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
 			          last_seen_at DESC`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer frows.Close()
@@ -133,7 +121,7 @@ func overview(db *sql.DB) http.HandlerFunc {
 			   AND (r.readback_status = 'overdue' OR r.readback_due_at <= NOW())
 			 ORDER BY r.readback_due_at ASC`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rrows.Close()
@@ -157,13 +145,13 @@ func overview(db *sql.DB) http.HandlerFunc {
 
 func featureGet(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireCompany(w, r, db)
+		_, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		detail, serr := detailFeature(r.Context(), db, companyID, r.PathValue("id"))
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)
@@ -174,19 +162,19 @@ func featureGet(db *sql.DB) http.HandlerFunc {
 
 func featureCreate(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		body := readBody(r)
 		title := body.text("title", 300)
 		if title == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "title required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "title required"))
 			return
 		}
 		builderIDs := body.stringArray("builderIds", 100)
 		if serr := assertParticipants(r.Context(), db, companyID, builderIDs); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		links := featureLinks{
@@ -194,13 +182,13 @@ func featureCreate(db *sql.DB) http.HandlerFunc {
 			documentID: body.optText("documentId", 2000), boardCardID: body.optText("boardCardId", 2000),
 		}
 		if serr := assertFeatureLinks(r.Context(), db, companyID, links); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		id := randID("ship")
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer tx.Rollback()
@@ -215,7 +203,7 @@ func featureCreate(db *sql.DB) http.HandlerFunc {
 			title, body.text("problem", 20000), body.text("desiredOutcome", 20000), body.text("contractSummary", 20000),
 			body.enumValue("priority", priorities, "medium"), body.enumValue("riskLevel", riskLevels, "medium"),
 			nullStrPtr(body.optText("releaseTarget", 2000)), mustJSONString(builderIDs), uid); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		// 三张默认必答格(user_path/trace/release_note)——ready 门的地基。
@@ -234,7 +222,7 @@ func featureCreate(db *sql.DB) http.HandlerFunc {
 				  (id, feature_id, title, description, method, required, builder_ids, position, created_by)
 				VALUES ($1,$2,$3,$4,$5,TRUE,$6::jsonb,$7,$8)`,
 				randID("sv"), id, sq.title, "", sq.method, mustJSONString(builderIDs), sq.position, uid); err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 		}
@@ -242,16 +230,16 @@ func featureCreate(db *sql.DB) http.HandlerFunc {
 			INSERT INTO shipping_events (id, company_id, feature_id, actor_id, kind, data)
 			VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
 			randID("se"), companyID, id, uid, mustJSONString(map[string]any{"title": title})); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		detail, serr := detailFeature(r.Context(), db, companyID, id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, detail)
@@ -260,18 +248,18 @@ func featureCreate(db *sql.DB) http.HandlerFunc {
 
 func featurePatch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		featureID := r.PathValue("id")
 		feature, serr := requireFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		if feature.status == "archived" {
-			writeShipError(w, fail(http.StatusConflict, "archived features are immutable"))
+			writeShipError(w, r, fail(http.StatusConflict, "archived features are immutable"))
 			return
 		}
 		body := readBody(r)
@@ -284,7 +272,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		if body.has("title") {
 			title := body.text("title", 300)
 			if title == "" {
-				writeShipError(w, fail(http.StatusBadRequest, "title cannot be empty"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "title cannot be empty"))
 				return
 			}
 			add("title", title)
@@ -301,7 +289,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		if body.has("priority") {
 			p := body.enumValue("priority", priorities, "\x00")
 			if p == "\x00" {
-				writeShipError(w, fail(http.StatusBadRequest, "invalid priority"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "invalid priority"))
 				return
 			}
 			add("priority", p)
@@ -309,7 +297,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		if body.has("riskLevel") {
 			rl := body.enumValue("riskLevel", riskLevels, "\x00")
 			if rl == "\x00" {
-				writeShipError(w, fail(http.StatusBadRequest, "invalid risk level"))
+				writeShipError(w, r, fail(http.StatusBadRequest, "invalid risk level"))
 				return
 			}
 			add("risk_level", rl)
@@ -328,7 +316,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 			links.boardCardID = body.optText("boardCardId", 2000)
 		}
 		if serr := assertFeatureLinks(r.Context(), db, companyID, links); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		if body.has("releaseTarget") {
@@ -350,7 +338,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		if body.has("builderIds") {
 			ids := body.stringArray("builderIds", 100)
 			if serr := assertParticipants(r.Context(), db, companyID, ids); serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 			add("builder_ids", mustJSONString(ids))
@@ -359,7 +347,7 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		if len(sets) == 0 {
 			detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 			if serr != nil {
-				writeShipError(w, serr)
+				writeShipError(w, r, serr)
 				return
 			}
 			httpx.WriteJSON(w, http.StatusOK, detail)
@@ -368,32 +356,32 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 		values = append(values, uid, featureID, companyID)
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer tx.Rollback()
 		if _, err := tx.ExecContext(r.Context(), `
 			UPDATE shipping_features SET `+strings.Join(sets, ", ")+`, updated_by = $`+itoa(len(values)-2)+`, updated_at = NOW()
 			  WHERE id = $`+itoa(len(values)-1)+` AND company_id = $`+itoa(len(values)), values...); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		if nextBuilderIDs != nil {
 			if _, err := tx.ExecContext(r.Context(),
 				`UPDATE shipping_verifications SET builder_ids = $1::jsonb, updated_at = NOW() WHERE feature_id = $2`,
 				mustJSONString(nextBuilderIDs), featureID); err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+				httpx.WriteInternalError(w, r, err)
 				return
 			}
 		}
 		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, featureID, uid, "feature.updated", body)
 		detail, serr := detailFeature(r.Context(), db, companyID, featureID)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)
@@ -402,37 +390,37 @@ func featurePatch(db *sql.DB) http.HandlerFunc {
 
 func featureTransition(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireCompany(w, r, db)
+		uid, companyID, ok := httpx.RequireCompany(w, r, db)
 		if !ok {
 			return
 		}
 		feature, serr := requireFeature(r.Context(), db, companyID, r.PathValue("id"))
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		body := readBody(r)
 		to := body.enumValue("status", featureStatuses, "")
 		if to == "" {
-			writeShipError(w, fail(http.StatusBadRequest, "valid status required"))
+			writeShipError(w, r, fail(http.StatusBadRequest, "valid status required"))
 			return
 		}
 		if serr := assertTransitionReady(r.Context(), db, feature.id, feature.status, to); serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		if _, err := db.ExecContext(r.Context(), `
 			UPDATE shipping_features SET status = $1, updated_by = $2, updated_at = NOW(),
 			       archived_at = CASE WHEN $1 = 'archived' THEN NOW() ELSE archived_at END
 			  WHERE id = $3 AND company_id = $4`, to, uid, feature.id, companyID); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		_ = recordEvent(r.Context(), db, companyID, feature.id, uid, "feature.transitioned",
 			map[string]any{"from": feature.status, "to": to})
 		detail, serr := detailFeature(r.Context(), db, companyID, feature.id)
 		if serr != nil {
-			writeShipError(w, serr)
+			writeShipError(w, r, serr)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, detail)

@@ -118,7 +118,7 @@ func (s *API) handleObsRuns(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY r.started_at DESC
 		 LIMIT $`+strconv.Itoa(len(params)), params...)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -190,7 +190,7 @@ func (s *API) handleObsTriage(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.buildTriageEconomics(r.Context(), tenant, agentID, sinceHours)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, body)
@@ -546,7 +546,7 @@ func (s *API) handleObsSpend(w http.ResponseWriter, r *http.Request) {
 		 GROUP BY purpose, model, source
 		 ORDER BY SUM(cost_usd) DESC`, params...)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
