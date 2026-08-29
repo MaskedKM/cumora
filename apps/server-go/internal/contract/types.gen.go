@@ -1886,8 +1886,8 @@ type CreateCardJSONBody struct {
 
 // ListCalendarEventsParams defines parameters for ListCalendarEvents.
 type ListCalendarEventsParams struct {
-	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
-	To   *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	From *string `form:"from,omitempty" json:"from,omitempty"`
+	To   *string `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // CreateCompanyJSONBody defines parameters for CreateCompany.

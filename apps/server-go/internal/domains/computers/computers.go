@@ -10,19 +10,21 @@ import (
 	"strings"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 )
 
+// Server:computers tag 的域实现(#187;方法体原样搬运)。
+type Server struct{ DB *sql.DB }
+
+var _ contract.ServerInterface = (*Server)(nil)
+
+// Mount:computers tag 7 路由走契约生成物;assign/runtimeToken 属
+// agents tag(本包代挂),待 agents 批次收编后并入。
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("GET /api/computers", list(db))
-	mux.HandleFunc("POST /api/computers", create(db))
-	mux.HandleFunc("POST /api/computers/{id}/repair", repair(db))
-	mux.HandleFunc("DELETE /api/computers/{id}", revoke(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 	mux.HandleFunc("POST /api/agents/{id}/computer", assign(db))
-	mux.HandleFunc("POST /api/computers/pair", pair(db))
-	mux.HandleFunc("GET /api/computers/me/agents", myAgents(db))
-	mux.HandleFunc("POST /api/computers/heartbeat", heartbeat(db))
 	mux.HandleFunc("POST /api/agents/{id}/runtime-token", runtimeToken(db))
 }
 
@@ -53,59 +55,51 @@ func requireDevice(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, 
 	return computerID, companyID, true
 }
 
-func list(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, reg.ListComputers(r.Context(), db, companyID))
+func (s *Server) GetComputers(w http.ResponseWriter, r *http.Request) {
+	_, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
+	httpx.WriteJSON(w, http.StatusOK, reg.ListComputers(r.Context(), s.DB, companyID))
 }
 
-func create(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		code, _, err := reg.IssuePairingCode(r.Context(), db, companyID)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
-			return
-		}
-		_ = uid
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"code": code, "expiresInSeconds": nil})
+func (s *Server) RequestPairingCode(w http.ResponseWriter, r *http.Request) {
+	uid, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	code, _, err := reg.IssuePairingCode(r.Context(), s.DB, companyID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	_ = uid
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"code": code, "expiresInSeconds": nil})
 }
 
-func repair(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		code, ok2 := reg.IssueRepairCode(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok2 {
-			httpx.WriteError(w, http.StatusNotFound, "computer not found or not re-pairable")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"code": code, "expiresInSeconds": nil})
+func (s *Server) RepairComputer(w http.ResponseWriter, r *http.Request, id string) {
+	_, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	code, ok2 := reg.IssueRepairCode(r.Context(), s.DB, companyID, id)
+	if !ok2 {
+		httpx.WriteError(w, http.StatusNotFound, "computer not found or not re-pairable")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"code": code, "expiresInSeconds": nil})
 }
 
-func revoke(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		if !reg.RevokeComputer(r.Context(), db, r.PathValue("id"), companyID) {
-			httpx.WriteError(w, http.StatusNotFound, "computer not found or not revocable")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) DeleteComputer(w http.ResponseWriter, r *http.Request, id string) {
+	_, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	if !reg.RevokeComputer(r.Context(), s.DB, id, companyID) {
+		httpx.WriteError(w, http.StatusNotFound, "computer not found or not revocable")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func assign(db *sql.DB) http.HandlerFunc {
@@ -137,74 +131,68 @@ func assign(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func pair(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Code       string   `json:"code"`
-			Engines    []string `json:"engines"`
-			HostName   string   `json:"hostName"`
-			Version    string   `json:"version"`
-			Supervised *bool    `json:"supervised"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		code := strings.TrimSpace(body.Code)
-		if code == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "code required")
-			return
-		}
-		paired, err := reg.PairComputer(r.Context(), db, code, body.HostName, body.Engines, body.Version, body.Supervised, true)
-		if err != nil || paired == nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid pairing token")
-			return
-		}
-		// 搁浅收养:legacy/未分配 agent 落到新机;已住真机的 agent 不动
-		// (保用户逐 agent 选的引擎)。engines[0] 为用户所选默认引擎。
-		engine := "claude"
-		if len(body.Engines) > 0 {
-			switch body.Engines[0] {
-			case "claude", "codex", "grok", "cursor", "zcode":
-				engine = body.Engines[0]
-			}
-		}
-		_, _ = db.ExecContext(r.Context(), `
-			UPDATE participants p
-			   SET computer_id = $1, engine = COALESCE(NULLIF(p.engine, 'managed'), $2)
-			 WHERE p.company_id = $3 AND p.kind = 'agent'
-			   AND NOT EXISTS (
-			     SELECT 1 FROM computers c
-			      WHERE c.id = p.computer_id AND c.kind <> 'cloud' AND c.revoked_at IS NULL)`,
-			paired.ComputerID, engine, paired.CompanyID)
-		onboard.OnboardStarterAgents(r.Context(), db, paired.CompanyID, &paired.ComputerID, &engine)
-		// 名册就绪后再广播上线(desktop 的 onboarding 门会立即重载名册)。
-		reg.AnnounceComputerOnline(r.Context(), paired.ComputerID, paired.CompanyID)
-		httpx.WriteJSON(w, http.StatusOK, paired)
+func (s *Server) PairComputer(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Code       string   `json:"code"`
+		Engines    []string `json:"engines"`
+		HostName   string   `json:"hostName"`
+		Version    string   `json:"version"`
+		Supervised *bool    `json:"supervised"`
 	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	code := strings.TrimSpace(body.Code)
+	if code == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "code required")
+		return
+	}
+	paired, err := reg.PairComputer(r.Context(), s.DB, code, body.HostName, body.Engines, body.Version, body.Supervised, true)
+	if err != nil || paired == nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid pairing token")
+		return
+	}
+	// 搁浅收养:legacy/未分配 agent 落到新机;已住真机的 agent 不动
+	// (保用户逐 agent 选的引擎)。engines[0] 为用户所选默认引擎。
+	engine := "claude"
+	if len(body.Engines) > 0 {
+		switch body.Engines[0] {
+		case "claude", "codex", "grok", "cursor", "zcode":
+			engine = body.Engines[0]
+		}
+	}
+	_, _ = s.DB.ExecContext(r.Context(), `
+		UPDATE participants p
+		   SET computer_id = $1, engine = COALESCE(NULLIF(p.engine, 'managed'), $2)
+		 WHERE p.company_id = $3 AND p.kind = 'agent'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM computers c
+		      WHERE c.id = p.computer_id AND c.kind <> 'cloud' AND c.revoked_at IS NULL)`,
+		paired.ComputerID, engine, paired.CompanyID)
+	onboard.OnboardStarterAgents(r.Context(), s.DB, paired.CompanyID, &paired.ComputerID, &engine)
+	// 名册就绪后再广播上线(desktop 的 onboarding 门会立即重载名册)。
+	reg.AnnounceComputerOnline(r.Context(), paired.ComputerID, paired.CompanyID)
+	httpx.WriteJSON(w, http.StatusOK, paired)
 }
 
-func myAgents(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		computerID, _, ok := requireDevice(w, r, db)
-		if !ok {
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, reg.ListAgentsForComputer(r.Context(), db, computerID))
+func (s *Server) ListAgentsForComputer(w http.ResponseWriter, r *http.Request) {
+	computerID, _, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
 	}
+	httpx.WriteJSON(w, http.StatusOK, reg.ListAgentsForComputer(r.Context(), s.DB, computerID))
 }
 
-func heartbeat(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		computerID, _, ok := requireDevice(w, r, db)
-		if !ok {
-			return
-		}
-		var body struct {
-			Version    string `json:"version"`
-			Supervised *bool  `json:"supervised"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		reg.HeartbeatComputer(r.Context(), db, computerID, body.Version, body.Supervised)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) HeartbeatComputer(w http.ResponseWriter, r *http.Request) {
+	computerID, _, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var body struct {
+		Version    string `json:"version"`
+		Supervised *bool  `json:"supervised"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	reg.HeartbeatComputer(r.Context(), s.DB, computerID, body.Version, body.Supervised)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func runtimeToken(db *sql.DB) http.HandlerFunc {
