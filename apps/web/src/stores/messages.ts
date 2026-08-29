@@ -1,8 +1,10 @@
 import { create } from 'zustand'
+import { useShallow } from 'zustand/react/shallow'
 import type { Message, ReactionEntry } from '@/types'
 import { api, ApiError, ws, type WsEvent, type ApiMessage } from '@/api/client'
 import { useApp } from '@/stores/app'
 import { getMeId } from '@/stores/auth'
+import { StreamingDeltaBatch, applyBufferedDeltas } from './streamingBatch'
 
 const EMPTY_MESSAGES: Message[] = []
 
@@ -83,6 +85,56 @@ function withTypingAgent(
   const cur = typing[conversationId] ?? []
   const without = cur.filter((id) => id !== agentId)
   return { ...typing, [conversationId]: [...without, agentId] }
+}
+
+// ── Streaming delta coalescing (#143) ──────────────────────────────────
+// One frame, one set: message.delta events accumulate in this batch and
+// flush together, so a token stream renders at display cadence instead
+// of socket cadence. Non-delta events (message.new / typing / hello)
+// stay synchronous; ordering is preserved because the flush runs the
+// buffer in arrival order and the terminal paths drop a message's
+// pending tail instead of applying it.
+const deltaBatch = new StreamingDeltaBatch()
+
+/** Flush when this much text is sitting in the buffer — the rAF/timer
+ *  scheduler is the normal drain, this is the stall safety valve. */
+const STREAMING_FLUSH_CHAR_CAP = 64 * 1024
+
+let flushScheduled = false
+
+/** Apply every buffered delta in a single store update. Public so tests
+ *  (and any future "sync now" caller) can drain without waiting a frame. */
+export function flushStreamingDeltas(): void {
+  flushScheduled = false
+  if (deltaBatch.isEmpty) return
+  const pending = deltaBatch.drain()
+  useMessages.setState((s) => {
+    let typing = s.typing
+    for (const d of pending) {
+      typing = withoutTypingAgent(typing, d.conversationId, d.authorId)
+    }
+    return {
+      streaming: applyBufferedDeltas(s.streaming, pending),
+      typing,
+    }
+  })
+}
+
+function scheduleStreamingFlush(): void {
+  if (flushScheduled) return
+  flushScheduled = true
+  // rAF fires before paint, so the flush's setState lands in that same
+  // frame — exactly one update per frame while a stream is live. Hidden
+  // tabs never receive rAF (and the Electron notification window is
+  // permanently hidden), so fall back to a short timer there to keep
+  // the buffer draining.
+  if (typeof requestAnimationFrame === 'function'
+    && typeof document !== 'undefined'
+    && !document.hidden) {
+    requestAnimationFrame(() => flushStreamingDeltas())
+  } else {
+    setTimeout(flushStreamingDeltas, 32)
+  }
 }
 
 function clearTypingExpiry(conversationId: string, agentId: string): void {
@@ -473,6 +525,9 @@ export const useMessages = create<MessagesState>((set, get) => ({
     if (e.type === 'message.new') {
       const m = fromApi(e.message)
       clearTypingExpiry(e.conversationId, m.authorId)
+      // The completed body supersedes any delta tail still sitting in
+      // the coalescing buffer (a fast finish can beat the next frame).
+      deltaBatch.drop(m.id)
       set((s) => {
         const existing = s.byConvo[e.conversationId] ?? []
         // Match the optimistic bubble against the server echo. We have to
@@ -525,6 +580,9 @@ export const useMessages = create<MessagesState>((set, get) => ({
     } else if (e.type === 'message.delta') {
       clearTypingExpiry(e.conversationId, e.authorId)
       if (e.done) {
+        // Terminal: drop the unflushed tail (the final body arrives via
+        // message.new) and retire the streaming entry as before.
+        deltaBatch.drop(e.messageId)
         set((s) => {
           const { [e.messageId]: _drop, ...rest } = s.streaming
           return {
@@ -534,22 +592,13 @@ export const useMessages = create<MessagesState>((set, get) => ({
         })
         return
       }
-      set((s) => {
-        const cur = s.streaming[e.messageId]
-        const body = (cur?.body ?? '') + e.delta
-        return {
-          typing: withoutTypingAgent(s.typing, e.conversationId, e.authorId),
-          streaming: {
-            ...s.streaming,
-            [e.messageId]: {
-              body,
-              conversationId: e.conversationId,
-              authorId: e.authorId,
-              sequence: e.sequence,
-            },
-          },
-        }
-      })
+      deltaBatch.push(e.messageId, e.conversationId, e.authorId, e.sequence, e.delta)
+      if (deltaBatch.bufferedChars >= STREAMING_FLUSH_CHAR_CAP) {
+        // Safety valve for a stalled scheduler — bounded memory.
+        flushStreamingDeltas()
+      } else {
+        scheduleStreamingFlush()
+      }
     } else if (e.type === 'typing') {
       if (e.done) clearTypingExpiry(e.conversationId, e.agentId)
       else scheduleTypingExpiry(e.conversationId, e.agentId)
@@ -594,18 +643,51 @@ export const useMessages = create<MessagesState>((set, get) => ({
 export const messagesFor = (s: MessagesState, convoId: string | null): Message[] => {
   if (!convoId) return EMPTY_MESSAGES
   const base = s.byConvo[convoId] ?? EMPTY_MESSAGES
+  // Synthesized streaming bubbles are cached per streaming-entry object
+  // (#143): the entry's reference only changes when a flush actually
+  // grew its body, so re-running this selector (typing ticks, unrelated
+  // store updates) hands back the SAME Message objects and downstream
+  // MessageRow memos hold instead of re-rendering every row.
   const streaming = Object.entries(s.streaming)
     .filter(([id, x]) => x.conversationId === convoId && !base.some((m) => m.id === id))
-    .map(([id, x]) => ({
-      id,
-      conversationId: convoId,
-      authorId: x.authorId,
-      kind: 'text' as const,
-      body: x.body,
-      at: timeFromIso(),
-    }))
+    .map(([id, x]) => {
+      let bubble = bubbleCache.get(x)
+      if (!bubble) {
+        bubble = {
+          id,
+          conversationId: convoId,
+          authorId: x.authorId,
+          kind: 'text' as const,
+          body: x.body,
+          at: timeFromIso(),
+        }
+        bubbleCache.set(x, bubble)
+      }
+      return bubble
+    })
   if (streaming.length === 0) return base
   return [...base, ...streaming]
+}
+
+type StreamingEntry = MessagesState['streaming'][string]
+const bubbleCache = new WeakMap<StreamingEntry, Message>()
+
+const EMPTY_STREAMING: MessagesState['streaming'] = {}
+
+/** Per-conversation streaming subscription with a stable identity
+ *  (#143). Subscribing to the raw `s.streaming` map re-renders the pane
+ *  for EVERY conversation's stream in the workspace; this selector
+ *  filters to the current convo and shallow-compares, so only streams
+ *  in the open conversation re-render us. */
+export function useStreamingFor(convoId: string | null): MessagesState['streaming'] {
+  return useMessages(useShallow((s: MessagesState) => {
+    if (!convoId) return EMPTY_STREAMING
+    const out: MessagesState['streaming'] = {}
+    for (const [id, x] of Object.entries(s.streaming)) {
+      if (x.conversationId === convoId) out[id] = x
+    }
+    return out
+  }))
 }
 
 function newTempId(): string {
@@ -784,6 +866,9 @@ export function bootMessagesStream() {
   // companyId change) — drops any messages the previous tenant left
   // behind in the byConvo cache.
   clearAllTypingExpiries()
+  // Same reasoning as the `hello` reset below: deltas buffered for the
+  // previous workspace must not flush into the freshly-cleared store.
+  deltaBatch.clear()
   useMessages.setState({
     byConvo: {},
     streaming: {},
@@ -807,6 +892,9 @@ export function bootMessagesStream() {
       // missed their terminal events and they're stuck.
       const active = useApp.getState().selectedConversationId
       clearAllTypingExpiries()
+      // Deltas buffered from the dead connection belong to that
+      // connection — a post-reset flush must not resurrect them.
+      deltaBatch.clear()
       useMessages.setState({ streaming: {}, typing: {} })
       useMessages.setState((s) => ({
         loaded: new Set(active && s.loaded.has(active) ? [active] : []),

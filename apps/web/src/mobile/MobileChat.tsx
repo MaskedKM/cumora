@@ -7,7 +7,7 @@ import { useApp } from '@/stores/app'
 import { useMe } from '@/stores/auth'
 import { useConversations, isMuted } from '@/stores/conversations'
 import { useParticipants } from '@/stores/participants'
-import { useMessages, sendUserMessage, messagesFor, toggleReaction, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
+import { useMessages, sendUserMessage, messagesFor, useStreamingFor, toggleReaction, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
 import type { MessagesState } from '@/stores/messages'
 import { Avatar, AvatarStack } from '@/components/Avatar'
 import { MessageRow, TypingRow } from '@/components/Message'
@@ -32,7 +32,7 @@ export function MobileChat() {
   const pushStack = useApp((s) => s.pushMobileStack)
   const setView = useApp((s) => s.setView)
   const byConvo = useMessages((s) => (convoId ? s.byConvo[convoId] : undefined))
-  const streaming = useMessages((s) => s.streaming)
+  const streaming = useStreamingFor(convoId)
   const typingIds = useMessages((s) => (convoId ? s.typing[convoId] ?? null : null))
   const [menuOpen, setMenuOpen] = useState(false)
   const [conveneStarting, setConveneStarting] = useState(false)

@@ -286,6 +286,10 @@ jobs:
         run: cd apps/server-go && go run ./cmd/migrate
       - name: Unit tests
         run: npm test --silent
+      # #143 rider:apps/web 首个单测面(vitest,纯逻辑两模块:roster
+      # diff + streaming 合帧),秒级,不动 ser8 时长预算。
+      - name: Unit tests (web)
+        run: npm run web:test
       # Integration shards: 3 databases on the shared postgres service
       # (service containers pre-create only POSTGRES_DB) + pgvector +
       # schema each. Unit tests above already used cumora_test, shards

@@ -504,8 +504,13 @@ const REMARK_PLUGINS = [remarkGfm, remarkBreaks, remarkCumora]
 /** Renders a message body as Markdown — full CommonMark + GFM via react-markdown,
  *  plus Cumora's own tokens (mentions / artifacts / emoji) — all styled to the
  *  app's look (see cumoraMarkdownComponents). `skipHtml` drops any raw HTML in
- *  agent/user content so messages can't inject markup. */
-export function RichBody({ body, conversationId }: { body: string; conversationId?: string | null }) {
+ *  agent/user content so messages can't inject markup.
+ *
+ *  Memoized on (body, conversationId) (#143): react-markdown re-parses the
+ *  whole body on every render and that parse is O(body), so a row that
+ *  re-renders for unrelated reasons (reactions pill update, roster churn)
+ *  must not pay the parse again for an unchanged body. */
+export const RichBody = memo(function RichBody({ body, conversationId }: { body: string; conversationId?: string | null }) {
   return (
     <ConversationIdContext.Provider value={conversationId ?? null}>
       <Markdown remarkPlugins={REMARK_PLUGINS} components={cumoraMarkdownComponents} skipHtml>
@@ -513,7 +518,7 @@ export function RichBody({ body, conversationId }: { body: string; conversationI
       </Markdown>
     </ConversationIdContext.Provider>
   )
-}
+})
 
 type ArtifactRef = { type: 'document' | 'board' | 'card' | 'calendar'; id: string }
 

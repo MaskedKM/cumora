@@ -3,6 +3,7 @@ import { api, ws, type ApiParticipant } from '@/api/client'
 import type { Participant, Status } from '@/types'
 import { invalidateAvatar, clearAvatarCache } from '@/lib/avatarCache'
 import { commitIfContextCurrent } from '@/stores/auth'
+import { mergeRoster } from './rosterMerge'
 
 interface ParticipantsState {
   byId: Record<string, Participant>
@@ -38,13 +39,16 @@ function normalizeStatus(status: Status, updatedAt?: string): Status {
 }
 
 /** Shared fetch impl — both load() and refresh() call this; the
- *  difference is whether they pre-clear state. */
-async function fetchInto(set: (partial: Partial<ParticipantsState>) => void): Promise<void> {
+ *  difference is whether they pre-clear state. The commit DIFF-merges
+ *  (#143): unchanged participants keep their old object reference and a
+ *  fully unchanged roster keeps the whole byId reference, so the 60s
+ *  refresher no longer churns every identity in the store. */
+async function fetchInto(
+  set: (partial: Partial<ParticipantsState> | ((s: ParticipantsState) => Partial<ParticipantsState>)) => void,
+): Promise<void> {
   try {
     await commitIfContextCurrent(() => api.getParticipants(), (list) => {
-      const byId: Record<string, Participant> = {}
-      for (const p of list) byId[p.id] = fromApi(p)
-      set({ byId, loaded: true })
+      set((s) => ({ byId: mergeRoster(s.byId, list, fromApi), loaded: true }))
     })
   } catch (err) {
     console.warn('[participants] fetch failed', err)

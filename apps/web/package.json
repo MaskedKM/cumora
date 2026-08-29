@@ -7,11 +7,15 @@
     "dev": "vite --port 5180 --strictPort",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host --port 5180",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@cumora/contract": "*",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@cumora/contract": "*"
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.7"
   }
 }
