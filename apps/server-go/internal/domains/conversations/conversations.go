@@ -851,7 +851,7 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			body.ClientID = s
 		}
 		// attachment 形状对齐 baseline:要求 url+name 为字符串;kind 非白名单
-		// 强转 'img'(从不拒绝)——见 router.ts readAttachment 的 coerce 语义;
+		// 强转 'img'(从不拒绝)——见 router.ts:3264-3281 的内联 coerce 语义;
 		// 畸形视同无附件(attachment=null 同款)。
 		var attachmentJSON any
 		if len(body.Attachment) > 0 && string(body.Attachment) != "null" {

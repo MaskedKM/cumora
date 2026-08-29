@@ -60,21 +60,6 @@ func bodyAny(body map[string]json.RawMessage, key string) (any, bool) {
 	return v, true
 }
 
-func utf16Cap(s string, n int) string {
-	count := 0
-	for i, r := range s {
-		w := 1
-		if r > 0xFFFF {
-			w = 2
-		}
-		if count+w > n {
-			return s[:i]
-		}
-		count += w
-	}
-	return s
-}
-
 func list(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, tenant, ok := httpx.RequireCompany(w, r, db)
@@ -139,11 +124,11 @@ func create(db *sql.DB) http.HandlerFunc {
 		colorRaw, hasColor := bodyAny(body, "color")
 		// F16:TS create 是 String(x ?? '') 强转(非 typeof 门),color 另有
 		// JS truthy 前置(0/""/null→null,对象/数组恒真)。
-		name := utf16Cap(strings.TrimSpace(httpx.JSStringOrNullish(nameRaw)), 80)
-		description := utf16Cap(httpx.JSStringOrNullish(descRaw), 1000)
+		name := httpx.UTF16Cap(strings.TrimSpace(httpx.JSStringOrNullish(nameRaw)), 80)
+		description := httpx.UTF16Cap(httpx.JSStringOrNullish(descRaw), 1000)
 		var color any
 		if hasColor && httpx.JSTruthy(colorRaw) {
-			color = utf16Cap(httpx.JSToString(colorRaw), 200)
+			color = httpx.UTF16Cap(httpx.JSToString(colorRaw), 200)
 		}
 		if name == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "name required")
@@ -190,17 +175,17 @@ func update(db *sql.DB) http.HandlerFunc {
 		// 则显式清空。
 		if v, has := bodyAny(body, "name"); has {
 			if s, isStr := v.(string); isStr {
-				add(utf16Cap(strings.TrimSpace(s), 80), "name")
+				add(httpx.UTF16Cap(strings.TrimSpace(s), 80), "name")
 			}
 		}
 		if v, has := bodyAny(body, "description"); has {
 			if s, isStr := v.(string); isStr {
-				add(utf16Cap(s, 1000), "description")
+				add(httpx.UTF16Cap(s, 1000), "description")
 			}
 		}
 		if v, has := bodyAny(body, "color"); has {
 			if s, isStr := v.(string); isStr {
-				add(utf16Cap(s, 200), "color")
+				add(httpx.UTF16Cap(s, 200), "color")
 			} else if v == nil {
 				add(nil, "color")
 			}
