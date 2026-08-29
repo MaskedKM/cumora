@@ -23,11 +23,15 @@
 #     DB deadlock at the catalog-lock level).
 #   - Source arrives as a codeload tarball, not actions/checkout (#166):
 #     the git smart-HTTP exchange (POST /git-upload-pack — unbounded
-#     streaming body) is the one traffic class the flaky upstream chokes
-#     on at zero bytes, while plain GETs with Content-Length (tarball
-#     included) stay fast. No .git dir — nothing in this workflow runs
-#     git; the download step keeps a fail-fast ceiling like the old
-#     checkout timeout did.
+#     streaming body) is what the flaky upstream chokes on; big GETs
+#     occasionally stall mid-transfer too, so the download carries a
+#     speed watchdog (--speed-limit aborts a stalled crawl so --retry
+#     can reconnect), an api.github.com fallback endpoint, and a
+#     per-sha cache on /var/lib/cumora-ci-cache/tarballs — only the
+#     first download of a run touches the network; the sibling job and
+#     any rerun read the cached tarball. No .git dir — nothing in this
+#     workflow runs git; the download step keeps a fail-fast ceiling
+#     like the old checkout timeout did.
 #
 # ALL jobs run in containers: PR code never executes as the host runner
 # user (runner is docker-group = host-root-equivalent). pgvector is
@@ -81,6 +85,7 @@ jobs:
       volumes:
         - /var/lib/cumora-ci-cache/gocache:/go/cache
         - /var/lib/cumora-ci-cache/gomodcache:/go/modcache
+        - /var/lib/cumora-ci-cache/tarballs:/cache/tarballs
     timeout-minutes: 10
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
@@ -112,14 +117,35 @@ jobs:
       # checkout used to clean it — without this, files deleted in later
       # commits would linger and poison builds. (alpine ships no curl —
       # apk add is itself a GET-class fetch through the same proxy.)
+      # Hardening (2026-08-29 flake): big GETs also stall mid-transfer
+      # silently — connect-timeout never fires, --retry never sees an
+      # error, only the step timeout kills it. --speed-limit/-speed-time
+      # aborts a stalled crawl (<20KB/s over 30s) as a transient error so
+      # --retry reconnects fresh; --max-time caps each attempt; the
+      # api.github.com endpoint is the fallback edge. The per-sha cache
+      # makes the sibling job (runner is single-slot serial) and any
+      # rerun of this run read the tarball from the persistent volume
+      # instead of re-rolling the network dice.
       - name: Download source (tarball, git-free)
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           apk add -q --no-cache curl
-          curl -fsSL --connect-timeout 20 --retry 2 -o /tmp/repo.tar.gz \
-            "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
+          TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
+          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 120 --retry 2 --retry-delay 2"
+          if [ ! -s "$TARBALL" ]; then
+            echo "[src] cache miss — fetching ${GITHUB_SHA}"
+            curl $CURLFLAGS -o "${TARBALL}.part" \
+              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            || curl $CURLFLAGS -o "${TARBALL}.part" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+            mv "${TARBALL}.part" "$TARBALL"
+            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
+            rm -f /cache/tarballs/*.part
+          else
+            echo "[src] cache hit: $TARBALL"
+          fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-          tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
+          tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
       # #133: server-go 已有 httpx/contacts/runtime 单测,与 build 同容器
@@ -158,6 +184,7 @@ jobs:
         - /var/lib/cumora-ci-cache/npmcache:/npm/cache
         - /var/lib/cumora-ci-cache/gocache:/go/cache
         - /var/lib/cumora-ci-cache/gomodcache:/go/modcache
+        - /var/lib/cumora-ci-cache/tarballs:/cache/tarballs
     timeout-minutes: 25
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     services:
@@ -225,14 +252,28 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       # Same git-free pickup as the go job (#166) — bookworm ships curl,
-      # so no apk step.
+      # so no apk step. Same hardening: speed watchdog + retry + endpoint
+      # fallback + per-sha cache (single-slot runner runs the jobs serially,
+      # so whichever job goes second usually finds the tarball cached).
       - name: Download source (tarball, git-free)
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
-          curl -fsSL --connect-timeout 20 --retry 2 -o /tmp/repo.tar.gz \
-            "https://codeload.github.com/${{ github.repository }}/tar.gz/${{ github.sha }}"
+          TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
+          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 120 --retry 2 --retry-delay 2"
+          if [ ! -s "$TARBALL" ]; then
+            echo "[src] cache miss — fetching ${GITHUB_SHA}"
+            curl $CURLFLAGS -o "${TARBALL}.part" \
+              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            || curl $CURLFLAGS -o "${TARBALL}.part" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+            mv "${TARBALL}.part" "$TARBALL"
+            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
+            rm -f /cache/tarballs/*.part
+          else
+            echo "[src] cache hit: $TARBALL"
+          fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-          tar xzf /tmp/repo.tar.gz -C "$GITHUB_WORKSPACE" --strip-components=1
+          tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
           # contract-check.sh (#48 guard) regenerates and diffs against
           # HEAD; with no checkout there is no HEAD — synthesize one from
           # the pristine tarball so "committed state" == branch head content.
