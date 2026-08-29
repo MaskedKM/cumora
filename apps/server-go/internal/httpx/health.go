@@ -28,6 +28,12 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 // 排障),production 收敛通用文案关泄漏。三处不进本助手:devtools 头像
 // 502 与 apple 400 是 TS baseline 无条件透传;waitlist approve 的受控
 // 域错走原 WriteError。
+//
+// 已知有意分歧(#184 评审 P1):TS 另有约 10 个端点是 handler 内显式
+// catch 500 无条件透传 msg(不经 errorHandler,production 也透传),
+// 对应 Go 站点已随本助手收编 —— 仅 NODE_ENV=production 下可见差异
+// (TS 动态文案 vs 通用文案),方向是收敛泄漏、状态码不变;本部署
+// NODE_ENV=development 无行为差。
 func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Warn("api 500", "method", r.Method, "path", r.URL.Path, "err", err)
 	msg := err.Error()
