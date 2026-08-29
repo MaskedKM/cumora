@@ -3,6 +3,10 @@
 // #70 TS 退役:提取腿从 TS Express 源换到 apps/server-go 的
 // mux.HandleFunc("METHOD /path") 注册(158+ 条,注册即路径,无挂载
 // 哨兵面;"/" 根兜底不带方法前缀,天然不入表)。
+// #139 双形态:已迁移 ServerInterface 的域,注册串来自契约生成物
+// (internal/contract/server-*.gen.go)——形态为
+// `m.HandleFunc("GET "+options.BaseURL+"/api/...", ...)`(pattern 由
+// 规范生成,天然不漂);提取正则同时认手写与生成两种形态。
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -17,7 +21,9 @@ function* goFiles(dir) {
   }
 }
 
-const METHOD_PATH = /Handle(?:Func)?\(\s*"(GET|POST|PUT|PATCH|DELETE) ([^"]+)"/g
+// 形态 1(手写):HandleFunc("GET /api/x", h)
+// 形态 2(生成):HandleFunc("GET "+options.BaseURL+"/api/x", h)
+const METHOD_PATH = /Handle(?:Func)?\(\s*(?:"(GET|POST|PUT|PATCH|DELETE) ([^"]+)"|"(GET|POST|PUT|PATCH|DELETE) ?"\s*\+\s*options\.BaseURL\s*\+\s*"([^"]+)")/g
 
 // 待实现豁免(#117 missed-routes):规范已登记、TS 已实现、Go 尚未移植
 // 的路由。实现一条删一条;表外新增缺路由仍会红。
@@ -29,7 +35,9 @@ const src = new Set()
 for (const f of goFiles(GO_ROOT)) {
   const text = readFileSync(f, 'utf8')
   for (const m of text.matchAll(METHOD_PATH)) {
-    src.add(`${m[1]} ${norm(m[2])}`)
+    const method = m[1] ?? m[3]
+    const path = m[2] ?? m[4]
+    src.add(`${method} ${norm(path)}`)
   }
 }
 
