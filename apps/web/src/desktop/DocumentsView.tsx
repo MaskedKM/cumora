@@ -1,11 +1,14 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { useDocuments } from '@/stores/documents'
-import { DocumentEditor } from '@/components/DocumentEditor'
 import { useAuth } from '@/stores/auth'
 import { useParticipants } from '@/stores/participants'
 import { useT } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { IPlus } from '@/components/icons'
+
+// #144b: tiptap+yjs+prosemirror ride along in the editor's own lazy chunk.
+const DocumentEditor = lazy(() =>
+  import('@/components/DocumentEditor').then((m) => ({ default: m.DocumentEditor })))
 
 export function DocumentsView() {
   const t = useT()
@@ -87,7 +90,9 @@ export function DocumentsView() {
       </aside>
       <main className="min-h-0 overflow-hidden bg-white">
         {selectedId ? (
-          <DocumentEditor documentId={selectedId} />
+          <Suspense fallback={<div className="h-full" />}>
+            <DocumentEditor documentId={selectedId} />
+          </Suspense>
         ) : (
           <div className="h-full grid place-items-center text-stone-400 text-sm">
             {list.length === 0

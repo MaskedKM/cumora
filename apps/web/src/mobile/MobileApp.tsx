@@ -10,7 +10,6 @@ import { MobileConvene } from './MobileConvene'
 import { MobileLibrary } from './MobileLibrary'
 import { MobileAgents } from './MobileAgents'
 import { MobileMe } from './MobileMe'
-import { DocumentEditor } from '@/components/DocumentEditor'
 import { BoardPeekContent, CalendarEventPeekContent } from '@/components/ArtifactPeekContent'
 import { useDocuments } from '@/stores/documents'
 import { IDoc } from '@/components/icons'
@@ -20,6 +19,9 @@ import { useSwipeBackProps } from './useSwipeBack'
 import { ViewBoundary } from './ViewBoundary'
 
 const ShippingWorkspace = lazy(() => import('@/components/ShippingWorkspace').then((module) => ({ default: module.ShippingWorkspace })))
+// #144b: tiptap+yjs+prosemirror ride along in the editor's own lazy chunk.
+const DocumentEditor = lazy(() =>
+  import('@/components/DocumentEditor').then((m) => ({ default: m.DocumentEditor })))
 
 /** iOS UINavigationController push/pop spring. CRITICALLY DAMPED:
  *  damping ratio ζ = damping / (2·√(k·m)) = 38 / (2·√320) ≈ 1.06,
@@ -85,11 +87,13 @@ function MobileDocumentPeek({ documentId, onClose }: { documentId: string; onClo
   }
 
   return (
-    <DocumentEditor
-      documentId={documentId}
-      variant="peek"
-      onClose={onClose}
-    />
+    <Suspense fallback={<div className="h-full" />}>
+      <DocumentEditor
+        documentId={documentId}
+        variant="peek"
+        onClose={onClose}
+      />
+    </Suspense>
   )
 }
 

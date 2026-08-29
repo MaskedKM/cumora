@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useIsMobile } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useAuth } from '@/stores/auth'
@@ -10,8 +10,6 @@ import { bootComputers, useComputers } from '@/stores/computers'
 import { Onboarding } from '@/desktop/Onboarding'
 import { usePrefs } from '@/stores/preferences'
 import { api } from '@/api/client'
-import { DesktopApp } from '@/desktop/DesktopApp'
-import { MobileApp } from '@/mobile/MobileApp'
 import { AuthGate } from '@/components/AuthGate'
 import { NotificationToasts } from '@/components/NotificationToasts'
 import { NotificationWindow } from '@/components/NotificationWindow'
@@ -23,10 +21,27 @@ import {
   getPendingInvite, clearPendingInvite,
 } from '@/components/InviteAcceptScreen'
 import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
-import { AdminApp } from '@/admin/AdminApp'
-import { WaitlistConfirmedScreen, consumeWaitlistFragment } from '@/admin/WaitlistConfirmedScreen'
-import { SuspendedScreen, consumeSuspendedFragment } from '@/admin/SuspendedScreen'
-import '@/admin/admin.css'
+import { consumeWaitlistFragment, consumeSuspendedFragment } from '@/admin/fragments'
+
+// Route-level code splitting (#144b): the three UI shells (desktop /
+// mobile / admin) and the two rare OAuth-gate screens each load as their
+// own chunk. Only the shell the entry actually renders is fetched; the
+// others ride along as ~0-byte references. Fragment probing stays eager
+// via @/admin/fragments, so the waitlist/suspended URL signals are
+// consumed without pulling the admin chunk.
+const DesktopApp = lazy(() => import('@/desktop/DesktopApp').then((m) => ({ default: m.DesktopApp })))
+const MobileApp = lazy(() => import('@/mobile/MobileApp').then((m) => ({ default: m.MobileApp })))
+const AdminApp = lazy(() => import('@/admin/AdminApp').then((m) => ({ default: m.AdminApp })))
+const WaitlistConfirmedScreen = lazy(() =>
+  import('@/admin/WaitlistConfirmedScreen').then((m) => ({ default: m.WaitlistConfirmedScreen })))
+const SuspendedScreen = lazy(() =>
+  import('@/admin/SuspendedScreen').then((m) => ({ default: m.SuspendedScreen })))
+
+/** Neutral full-viewport placeholder while a shell chunk loads — keeps
+ *  the flash to a blank frame instead of a layout jump. */
+function ShellFallback() {
+  return <div className="h-screen w-screen" />
+}
 
 /** True iff this browser tab is for the admin panel. On prod the
  *  hostname is admin.cumora.ai; in localhost dev the path prefix
@@ -155,7 +170,9 @@ function AuthedApp() {
 
   return (
     <>
-      {(needsOnboarding || forceOnboarding) ? <Onboarding /> : (isMobile ? <MobileApp /> : <DesktopApp />)}
+      <Suspense fallback={<ShellFallback />}>
+        {(needsOnboarding || forceOnboarding) ? <Onboarding /> : (isMobile ? <MobileApp /> : <DesktopApp />)}
+      </Suspense>
       {/* In-app message toasts (window-blur / different-convo only) —
           rendered at the AuthedApp level so they share auth context and
           unmount cleanly on sign-out. */}
@@ -213,11 +230,19 @@ export function App() {
   })
 
   if (waitlist) {
-    return <WaitlistConfirmedScreen email={waitlist.email} />
+    return (
+      <Suspense fallback={<ShellFallback />}>
+        <WaitlistConfirmedScreen email={waitlist.email} />
+      </Suspense>
+    )
   }
 
   if (suspended) {
-    return <SuspendedScreen email={suspended.email} reason={suspended.reason} />
+    return (
+      <Suspense fallback={<ShellFallback />}>
+        <SuspendedScreen email={suspended.email} reason={suspended.reason} />
+      </Suspense>
+    )
   }
 
   // Admin panel runs in its own shell — different sidebar, different
@@ -227,7 +252,9 @@ export function App() {
     return (
       <AuthGate>
         <ErrorBoundary>
-          <AdminApp />
+          <Suspense fallback={<ShellFallback />}>
+            <AdminApp />
+          </Suspense>
         </ErrorBoundary>
       </AuthGate>
     )

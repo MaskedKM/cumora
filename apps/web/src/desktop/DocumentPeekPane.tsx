@@ -1,9 +1,12 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { useApp } from '@/stores/app'
 import { useDocuments } from '@/stores/documents'
-import { DocumentEditor } from '@/components/DocumentEditor'
 import { IDoc } from '@/components/icons'
 import { useT } from '@/lib/i18n'
+
+// #144b: tiptap+yjs+prosemirror ride along in the editor's own lazy chunk.
+const DocumentEditor = lazy(() =>
+  import('@/components/DocumentEditor').then((m) => ({ default: m.DocumentEditor })))
 
 export function DocumentPeekPane() {
   const t = useT()
@@ -66,12 +69,14 @@ export function DocumentPeekPane() {
 
   return (
     <aside className="min-w-0 h-full border-l border-ink-100 bg-cloud overflow-hidden">
-      <DocumentEditor
-        documentId={documentId}
-        variant="peek"
-        onClose={closeDocumentPeek}
-        onOpenFull={openFullWorkspace}
-      />
+      <Suspense fallback={<div className="h-full" />}>
+        <DocumentEditor
+          documentId={documentId}
+          variant="peek"
+          onClose={closeDocumentPeek}
+          onOpenFull={openFullWorkspace}
+        />
+      </Suspense>
     </aside>
   )
 }
