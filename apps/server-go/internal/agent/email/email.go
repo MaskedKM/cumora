@@ -1003,7 +1003,7 @@ func (s *Domain) cliEmailReplyCmd(ctx context.Context, parsed agent.Parsed, me, 
 	})
 }
 
-// cliCmdContacts:`contacts` 顶层别名 —— positional 前插 'contacts' 占位
+// CmdContacts:`contacts` 顶层别名 —— positional 前插 'contacts' 占位
 // 对齐 cmdEmailContacts 的下标读取。
 func (s *Domain) CmdContacts(ctx context.Context, parsed agent.Parsed) agent.Result {
 	me, err := agent.ResolveAs(parsed)
