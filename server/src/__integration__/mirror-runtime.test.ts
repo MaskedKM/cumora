@@ -766,6 +766,14 @@ test('[mirror-runtime] /cli outlet: help + unknown subcommand exit codes', async
   assert.equal(help.body.exitCode, 0)
   assert.match(help.body.text, /usage/i)
   assert.deepEqual(help.body.sideEffects, [])
+  // --help / -h 别名与 help 同输出(TS cli.ts 三别名一组的契约;#182 评审 P1)
+  for (const alias of ['--help', '-h', 'help']) {
+    const h = await call('/runtime/cli', { token, body: { argv: [alias] } })
+    assert.equal(h.status, 200)
+    assert.equal(h.body.ok, true)
+    assert.equal(h.body.exitCode, 0)
+    assert.match(h.body.text, /usage/i)
+  }
   const bogus = await call('/runtime/cli', { token, body: { argv: ['bogus-subcommand'] } })
   assert.equal(bogus.status, 200)
   assert.equal(bogus.body.ok, false)

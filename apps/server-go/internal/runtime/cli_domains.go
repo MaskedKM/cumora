@@ -90,7 +90,7 @@ func wireDomainDispatch(core *agent.Service) {
 			return mem.CmdInvite(ctx, p), true
 		case "kick":
 			return mem.CmdKick(ctx, p), true
-		case "help":
+		case "help", "--help", "-h":
 			_, _ = ctx, p
 			return h.CmdHelp(), true
 		}
