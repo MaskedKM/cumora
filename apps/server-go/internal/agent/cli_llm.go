@@ -1,7 +1,7 @@
 // /runtime/cli LLM lite 客户端(#89):llm.ts 的 Go 等价路由(sub2api
 // 租户键 → legacy OPENAI_API_KEY)+ images.generate(generateAndUploadImage
 // 的引擎面)。Responses/Chat-Completions 客户端随 remote-classify 落地。
-package runtime
+package agent
 
 import (
 	"bytes"
@@ -58,7 +58,7 @@ func (s *Service) cliLlmEndpoint(ctx context.Context, tenant string) (baseURL, a
 	return base + "/v1", key.String
 }
 
-var httpClientLLM = &http.Client{Timeout: 5 * time.Minute}
+var HTTPClientLLM = &http.Client{Timeout: 5 * time.Minute}
 
 // cliImagesGenerate:images.generate 的直接 HTTP 形态(n 恒 1;响应取
 // data[0].b64_json,缺则按 data[0].url 回取)。仅图像模型;Novita 前缀
@@ -77,14 +77,14 @@ func (s *Service) cliImagesGenerate(ctx context.Context, tenant, model, prompt, 
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("authorization", "Bearer "+apiKey)
-	resp, err := httpClientLLM.Do(req)
+	resp, err := HTTPClientLLM.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("images API %d: %s", resp.StatusCode, truncateRunesSimple(string(body), 500))
+		return nil, fmt.Errorf("images API %d: %s", resp.StatusCode, TruncateRunesSimple(string(body), 500))
 	}
 	var parsed struct {
 		Data []struct {
@@ -106,7 +106,7 @@ func (s *Service) cliImagesGenerate(ctx context.Context, tenant, model, prompt, 
 		if err != nil {
 			return nil, err
 		}
-		fr, err := httpClientLLM.Do(fetch)
+		fr, err := HTTPClientLLM.Do(fetch)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func (s *Service) cliImagesGenerate(ctx context.Context, tenant, model, prompt, 
 	return nil, fmt.Errorf("image API returned no data")
 }
 
-func truncateRunesSimple(s string, n int) string {
+func TruncateRunesSimple(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
@@ -164,7 +164,7 @@ func (s *Service) cliGenerateAndUploadImage(prompt, size, tenant, agentID string
 			Error:     errMsg,
 			Extras: map[string]any{
 				"n": 1, "size": size,
-				"promptPreview": truncateRunesSimple(prompt, 120),
+				"promptPreview": TruncateRunesSimple(prompt, 120),
 			},
 		})
 	}
@@ -187,7 +187,7 @@ func (s *Service) cliGenerateAndUploadImage(prompt, size, tenant, agentID string
 	if len(parts) > 5 {
 		parts = parts[:5]
 	}
-	name := truncateRunesSimple(strings.Join(parts, "-"), 40)
+	name := TruncateRunesSimple(strings.Join(parts, "-"), 40)
 	if name == "" {
 		name = "image"
 	}
@@ -198,9 +198,9 @@ func (s *Service) cliGenerateAndUploadImage(prompt, size, tenant, agentID string
 
 /* ───────────── Responses 客户端(palette/gender/avatar/agenda 用) ───────────── */
 
-// cliResponsesArgs:CLI 侧 Responses 调用的参数面(非流式、无 tools——
+// CliResponsesArgs:CLI 侧 Responses 调用的参数面(非流式、无 tools——
 // agent turn 的流式/工具翻译不在 /runtime/cli 范围内)。
-type cliResponsesArgs struct {
+type CliResponsesArgs struct {
 	Model           string
 	Instructions    string
 	Input           string
@@ -209,8 +209,8 @@ type cliResponsesArgs struct {
 	ReasoningEffort string // "" = 省略(适配器路径本就丢弃)
 }
 
-// cliResponsesResult:output_text + 用量(台账用)。
-type cliResponsesResult struct {
+// CliResponsesResult:output_text + 用量(台账用)。
+type CliResponsesResult struct {
 	OutputText string
 	Usage      *costing.TokenUsage
 }
@@ -221,12 +221,12 @@ var novitaUnconfiguredWarned atomic.Bool
 // novita/ 前缀选择 Novita;未配置 key 则降级走普通客户端(仅警告一次)。
 func isNovitaModel(model string) bool { return strings.HasPrefix(model, "novita/") }
 
-// cliResponsesCreate:responses.create 的直接 HTTP 形态 + Novita
+// ResponsesCreate:responses.create 的直接 HTTP 形态 + Novita
 // Chat-Completions 翻译(novita.ts 的非流式分支:instructions→system、
 // string input→user、max_output_tokens→max_tokens、json_object→
 // response_format;usage 反向映射)。返回 output_text(SDK 的
 // output_text = message content 的 output_text 拼接)。
-func (s *Service) cliResponsesCreate(ctx context.Context, tenant string, args cliResponsesArgs) (cliResponsesResult, error) {
+func (s *Service) ResponsesCreate(ctx context.Context, tenant string, args CliResponsesArgs) (CliResponsesResult, error) {
 	baseURL, apiKey := s.cliLlmEndpoint(ctx, tenant)
 	var reqURL, method string
 	var body map[string]any
@@ -238,7 +238,7 @@ func (s *Service) cliResponsesCreate(ctx context.Context, tenant string, args cl
 		reqURL = base + "/chat/completions"
 		body = map[string]any{
 			"model":    strings.TrimPrefix(args.Model, "novita/"),
-			"messages": novitaChatMessages(args.Instructions, args.Input),
+			"messages": NovitaChatMessages(args.Instructions, args.Input),
 			"stream":   false,
 		}
 		if args.MaxOutputTokens > 0 {
@@ -271,27 +271,27 @@ func (s *Service) cliResponsesCreate(ctx context.Context, tenant string, args cl
 	payload, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, bytes.NewReader(payload))
 	if err != nil {
-		return cliResponsesResult{}, err
+		return CliResponsesResult{}, err
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("authorization", "Bearer "+apiKey)
-	resp, err := httpClientLLM.Do(req)
+	resp, err := HTTPClientLLM.Do(req)
 	if err != nil {
-		return cliResponsesResult{}, err
+		return CliResponsesResult{}, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if resp.StatusCode != http.StatusOK {
-		return cliResponsesResult{}, fmt.Errorf("%d %s", resp.StatusCode, truncateRunesSimple(string(respBody), 400))
+		return CliResponsesResult{}, fmt.Errorf("%d %s", resp.StatusCode, TruncateRunesSimple(string(respBody), 400))
 	}
 	if isNovitaModel(args.Model) && strings.HasSuffix(reqURL, "/chat/completions") {
-		return parseNovitaChatCompletion(respBody)
+		return ParseNovitaChatCompletion(respBody)
 	}
 	return parseResponsesOutput(respBody)
 }
 
-// novitaChatMessages:instructions → system,string input → user。
-func novitaChatMessages(instructions, input string) []map[string]any {
+// NovitaChatMessages:instructions → system,string input → user。
+func NovitaChatMessages(instructions, input string) []map[string]any {
 	msgs := []map[string]any{}
 	if instructions != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": instructions})
@@ -303,7 +303,7 @@ func novitaChatMessages(instructions, input string) []map[string]any {
 }
 
 // parseResponsesOutput:Responses 非流式响应 → output_text + usage。
-func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
+func parseResponsesOutput(raw []byte) (CliResponsesResult, error) {
 	var parsed struct {
 		Output []struct {
 			Type    string `json:"type"`
@@ -326,7 +326,7 @@ func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return cliResponsesResult{}, err
+		return CliResponsesResult{}, err
 	}
 	var b strings.Builder
 	for _, item := range parsed.Output {
@@ -339,7 +339,7 @@ func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
 			}
 		}
 	}
-	out := cliResponsesResult{OutputText: b.String()}
+	out := CliResponsesResult{OutputText: b.String()}
 	if parsed.Usage != nil {
 		u := costing.TokenUsage{
 			InputTokens:  parsed.Usage.InputTokens,
@@ -353,9 +353,9 @@ func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
 	return out, nil
 }
 
-// parseNovitaChatCompletion:Chat Completions → Responses 形态(novita.ts
+// ParseNovitaChatCompletion:Chat Completions → Responses 形态(novita.ts
 // toResponseUsage 的反向映射)。
-func parseNovitaChatCompletion(raw []byte) (cliResponsesResult, error) {
+func ParseNovitaChatCompletion(raw []byte) (CliResponsesResult, error) {
 	var parsed struct {
 		Choices []struct {
 			Message struct {
@@ -371,9 +371,9 @@ func parseNovitaChatCompletion(raw []byte) (cliResponsesResult, error) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return cliResponsesResult{}, err
+		return CliResponsesResult{}, err
 	}
-	out := cliResponsesResult{}
+	out := CliResponsesResult{}
 	if len(parsed.Choices) > 0 {
 		out.OutputText = parsed.Choices[0].Message.Content
 	}

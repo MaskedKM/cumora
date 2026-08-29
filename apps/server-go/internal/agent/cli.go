@@ -2,7 +2,7 @@
 // 等价物。daemon 的引擎经 cumora shim 把 argv POST 到本路由,服务端解析
 // 子命令、执行 DB+广播行为、返回 CliResult。文本输出与 TS 逐字节对齐
 // (mirror 测试为准)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -63,6 +63,22 @@ func eventsPublishMessageNew(ctx context.Context, companyID *string, convID stri
 }
 
 func isoNowMs() string { return httpx.ISOms(time.Now()) }
+
+// uuidHex:httpx.UUIDHex 的本包别名(#140 拆包后 cli 面调用点零改动)。
+func uuidHex() string { return httpx.UUIDHex() }
+
+// jsonUnmarshal:自 runtime/agenda.go 同名包装平移的副本(#140 拆包;
+// #141 横切统一票再议合并)。
+func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// mustJSON:自 runtime/presence.go 同名助手平移的副本(#140 拆包)。
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
+}
 
 /* ============== argv parsing(cli-parse.ts 等价) ============== */
 
@@ -224,8 +240,8 @@ func cliUnescapeChat(s string) string {
 
 /* ============== 结果形状(cli-result.ts / cli.ts ok()·err()) ============== */
 
-// cliSideEffect:TS CliSideEffect —— 必有非空字符串 event,其余字段自由。
-type cliSideEffect map[string]any
+// CliSideEffect:TS CliSideEffect —— 必有非空字符串 event,其余字段自由。
+type CliSideEffect map[string]any
 
 // cliResult:TS CliResult。sideEffects 为 nil 时 JSON 序列化按路由层补
 // 空数组(TS 路由 `result.sideEffects ?? []`)。
@@ -233,13 +249,22 @@ type cliResult struct {
 	ok          bool
 	text        string
 	exitCode    int
-	sideEffects []cliSideEffect
+	sideEffects []CliSideEffect
+}
+
+// HTTPShape:/runtime/cli HTTP 路由的响应渲染面(runtime 包专用;
+// sideEffects nil 补空数组,TS `result.sideEffects ?? []` 平价)。
+func (r cliResult) HTTPShape() (ok bool, text string, exitCode int, sideEffects []CliSideEffect) {
+	if r.sideEffects == nil {
+		r.sideEffects = []CliSideEffect{}
+	}
+	return r.ok, r.text, r.exitCode, r.sideEffects
 }
 
 // 每个结果都经 cliOK/cliErr 出口;在这里剥离 UTF-16 孤代理,正文截断
 // (body.slice(0,N) 切半个 emoji)产生的坏序列就到不了模型转录。
-func cliOK(text string, effects ...cliSideEffect) cliResult {
-	var sides []cliSideEffect
+func cliOK(text string, effects ...CliSideEffect) cliResult {
+	var sides []CliSideEffect
 	if len(effects) > 0 {
 		sides = effects
 	}
@@ -311,10 +336,10 @@ func cliStripAsArgs(argv []string) []string {
 	return out
 }
 
-// cliBuildRuntimeArgv:最终交给 RunCli 的 argv——头部注入 `--as <sub>`,
+// BuildRuntimeArgv:最终交给 RunCli 的 argv——头部注入 `--as <sub>`,
 // 尾部剥净调用方 --as(防御纵深:注入的头一个在最左,就算有漏网的也赢
 // 不过它)。
-func cliBuildRuntimeArgv(jwtSub string, clientArgv []string) []string {
+func BuildRuntimeArgv(jwtSub string, clientArgv []string) []string {
 	return append([]string{"--as", jwtSub}, cliStripAsArgs(clientArgv)...)
 }
 

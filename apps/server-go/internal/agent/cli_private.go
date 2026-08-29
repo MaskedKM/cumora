@@ -1,6 +1,6 @@
 // /runtime/cli 私有状态组(#89):topic·topic-set·rename / memory /
 // climate / log / workspace(团队)/ ws(私有区)/ tasks。
-package runtime
+package agent
 
 import (
 	"bytes"
@@ -103,7 +103,7 @@ func (s *Service) cliCmdTopicSet(ctx context.Context, parsed cliParsed) cliResul
 		return cliErrThrow(err)
 	}
 	s.publishConvoUpdated(convoID, companyID, map[string]any{"topic": topic})
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":          "conversation.topic_updated",
 		"command":        "topic-set",
 		"conversationId": convoID,
@@ -165,7 +165,7 @@ func (s *Service) cliCmdRename(ctx context.Context, parsed cliParsed) cliResult 
 		return cliErrThrow(err)
 	}
 	s.publishConvoUpdated(convoID, companyID, map[string]any{"title": title})
-	return cliOK(fmt.Sprintf("renamed to %q (%s)", title, convoID), cliSideEffect{
+	return cliOK(fmt.Sprintf("renamed to %q (%s)", title, convoID), CliSideEffect{
 		"event":          "conversation.renamed",
 		"command":        "rename",
 		"conversationId": convoID,
@@ -593,7 +593,7 @@ func (s *Service) cliMemoryNote(ctx context.Context, parsed cliParsed, me, expli
 		`{"memoryId":"`+id+`","path":"`+path+`"}`); err != nil {
 		return cliErrThrow(err)
 	}
-	return cliOK("saved memory "+id, cliSideEffect{
+	return cliOK("saved memory "+id, CliSideEffect{
 		"event":    "memory.written",
 		"command":  "memory note",
 		"memoryId": id,
@@ -624,7 +624,7 @@ func (s *Service) cliMemoryPin(ctx context.Context, parsed cliParsed, me string)
 		return cliErrThrow(err)
 	}
 	pinned, _ := meta["pinned"].(bool)
-	return cliOK("pinned: "+fmt.Sprint(pinned), cliSideEffect{
+	return cliOK("pinned: "+fmt.Sprint(pinned), CliSideEffect{
 		"event":    "memory.pinned",
 		"command":  "memory pin",
 		"memoryId": id,
@@ -647,7 +647,7 @@ func (s *Service) cliMemoryDelete(ctx context.Context, parsed cliParsed, me stri
 	if n == 0 {
 		return cliErr("no memory " + id + " for " + me)
 	}
-	return cliOK("deleted "+id, cliSideEffect{
+	return cliOK("deleted "+id, CliSideEffect{
 		"event":    "memory.deleted",
 		"command":  "memory delete",
 		"memoryId": id,
@@ -786,7 +786,7 @@ func (s *Service) cliCmdClimate(ctx context.Context, parsed cliParsed) cliResult
 		if n == 0 {
 			return cliErr("no climate to forget for " + me + " → " + aboutID)
 		}
-		return cliOK("forgot climate "+me+" → "+aboutID, cliSideEffect{
+		return cliOK("forgot climate "+me+" → "+aboutID, CliSideEffect{
 			"event":   "climate.deleted",
 			"command": "climate forget",
 			"agentId": me,
@@ -849,7 +849,7 @@ func (s *Service) cliClimateNote(ctx context.Context, parsed cliParsed, me strin
 		me, aboutID, nextAffinity, nextTrust, utf16Slice(note, 400), compactJSON(newHistory)); err != nil {
 		return cliErrThrow(err)
 	}
-	return cliOK(fmt.Sprintf("climate updated: %s → %s  affinity=%.2f  trust=%.2f", me, aboutID, nextAffinity, nextTrust), cliSideEffect{
+	return cliOK(fmt.Sprintf("climate updated: %s → %s  affinity=%.2f  trust=%.2f", me, aboutID, nextAffinity, nextTrust), CliSideEffect{
 		"event":    "climate.updated",
 		"command":  "climate note",
 		"agentId":  me,
@@ -1178,7 +1178,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if errMsg := cliWriteWorkspaceFile(folder, path, body); errMsg != "" {
 			return cliErr(errMsg)
 		}
-		return cliOK(fmt.Sprintf("wrote %s in %s (%d chars)", path, wsName, len(body)), cliSideEffect{
+		return cliOK(fmt.Sprintf("wrote %s in %s (%d chars)", path, wsName, len(body)), CliSideEffect{
 			"event":       "team_workspace.file_written",
 			"command":     "workspace write",
 			"agentId":     me,
@@ -1334,7 +1334,7 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 			me, path, body, metaArg, tenant); err != nil {
 			return cliErrThrow(err)
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":      "workspace.file_written",
 			"command":    "workspace write",
 			"agentId":    me,
@@ -1359,7 +1359,7 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 		if n == 0 {
 			return cliErr("no file at " + path)
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":   "workspace.file_deleted",
 			"command": "workspace delete",
 			"agentId": me,
@@ -1408,7 +1408,7 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 		if occurrences == 1 {
 			plural = ""
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":        "workspace.file_updated",
 			"command":      "workspace edit",
 			"agentId":      me,
@@ -1547,7 +1547,7 @@ func (s *Service) cliCmdTasks(ctx context.Context, parsed cliParsed) cliResult {
 			`INSERT INTO agent_tasks (id, agent_id, title) VALUES ($1, $2, $3)`, id, me, title); err != nil {
 			return cliErrThrow(err)
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":         "task.created",
 			"command":       "tasks add",
 			"taskId":        id,
@@ -1580,7 +1580,7 @@ func (s *Service) cliCmdTasks(ctx context.Context, parsed cliParsed) cliResult {
 		if n == 0 {
 			return cliErr("no task " + id + " for " + me)
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":         "task.status_changed",
 			"command":       "tasks set",
 			"taskId":        id,

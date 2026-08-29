@@ -1,8 +1,8 @@
-// runtime 包 skills CLI 面 —— cli.ts cmdSkills(list/read/create/delete/
+// agent 包 skills CLI 面 —— cli.ts cmdSkills(list/read/create/delete/
 // search/install)+ skills.ts 的校验与 SkillHub HTTP。技能存在
 // agent_workspace 的 skills/<name>/ 下,按 agent 隔离(渐进披露:唤醒
 // 提示只带 name+description)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -331,7 +331,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		}
 		return cliOK(fmt.Sprintf(
 			"created skill %q at %s\n\nflesh it out: cumora ws edit %s \"<old>\" \"<new>\"\nadd scripts:  cumora ws write skills/%s/scripts/<file>.py \"<body>\"\nread it back: cumora skills read %s",
-			name, path, path, name, name), cliSideEffect{
+			name, path, path, name, name), CliSideEffect{
 			"event":     "skill.created",
 			"command":   "skills create",
 			"agentId":   me,
@@ -361,7 +361,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		if removed == 0 {
 			return cliErr(fmt.Sprintf("no such skill: %s", name))
 		}
-		return cliOK(fmt.Sprintf("deleted skill %q (%d files removed)", name, removed), cliSideEffect{
+		return cliOK(fmt.Sprintf("deleted skill %q (%d files removed)", name, removed), CliSideEffect{
 			"event":     "skill.deleted",
 			"command":   "skills delete",
 			"agentId":   me,
@@ -433,7 +433,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 				if files == 1 {
 					plural = ""
 				}
-				return cliOK(fmt.Sprintf("installed skill %q (%d file%s)\nread it with: cumora skills read %s", name, files, plural, name), cliSideEffect{
+				return cliOK(fmt.Sprintf("installed skill %q (%d file%s)\nread it with: cumora skills read %s", name, files, plural, name), CliSideEffect{
 					"event":     "skill.installed",
 					"command":   "skills install",
 					"agentId":   me,

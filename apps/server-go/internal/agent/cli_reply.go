@@ -1,7 +1,7 @@
 // /runtime/cli reply(#89):cli.ts cmdReply 等价 —— 单口判语
 // (monologue 门 → email 自动升格 → 新鲜度预检/HELD → 逐字重复门 →
 // 事务内 seq 原子领取+复检+INSERT → 广播)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -157,7 +157,7 @@ func (s *Service) cliCmdReply(ctx context.Context, parsed cliParsed) cliResult {
 		if result.TransportStatus != "sent" {
 			return cliErr(fmt.Sprintf("email reply persisted as failed: %s · %s", tsNullStr(result.Error), result.MessageID))
 		}
-		effect := cliSideEffect{
+		effect := CliSideEffect{
 			"event":           "message.posted",
 			"command":         "reply",
 			"medium":          "email",
@@ -491,7 +491,7 @@ func (s *Service) cliCmdReply(ctx context.Context, parsed cliParsed) cliResult {
 	if resolvedQuotedID != "" {
 		quoteNote = " · quoted " + resolvedQuotedID
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":           "message.posted",
 		"command":         "reply",
 		"medium":          "chat",

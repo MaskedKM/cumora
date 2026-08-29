@@ -1,7 +1,7 @@
 // /runtime/cli 邮箱组(#89):inbox / glance / ack / mute / follow。
 // 对齐 TS cli.ts 同名 cmd*;loadInbox 用 CLI 自己的 SELECT(与
 // /runtime/inbox 的变体不同:无 project 列、排序仅 created_at)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -371,7 +371,7 @@ func parseMuteUntil(parsed cliParsed, now time.Time) (time.Time, bool, string) {
 		return time.Time{}, false, "use either --until or --for, not both"
 	}
 	if hasUntil && untilRaw != "" {
-		until, ok := parseJSDate(untilRaw)
+		until, ok := ParseJSDate(untilRaw)
 		if !ok {
 			return time.Time{}, false, "invalid --until timestamp"
 		}
@@ -395,9 +395,9 @@ func parseMuteUntil(parsed cliParsed, now time.Time) (time.Time, bool, string) {
 	return now.Add(time.Duration(int64(amount)*unitMs) * time.Millisecond), true, ""
 }
 
-// parseJSDate:JS `new Date(s)` 的常用子集(ISO 8601 两种、日期、
+// ParseJSDate:JS `new Date(s)` 的常用子集(ISO 8601 两种、日期、
 // 日期+空格时间、时间无秒)。时区缺省按本地时区(JS 同)。
-func parseJSDate(s string) (time.Time, bool) {
+func ParseJSDate(s string) (time.Time, bool) {
 	layouts := []string{
 		time.RFC3339Nano, time.RFC3339,
 		"2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04",

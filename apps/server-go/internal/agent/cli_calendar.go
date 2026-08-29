@@ -1,7 +1,7 @@
 // /runtime/cli calendar(#89):list / create / update / run-now /
 // dispatches / cancel / delete。dispatch 引擎复用 domains/calendar 的
 // DispatchEvent(与 REST 同源)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -270,7 +270,7 @@ func (s *Service) cliCalendarCreate(ctx context.Context, parsed cliParsed, me, c
 	if startStr == "" {
 		return cliErr("--at <iso-timestamp> is required")
 	}
-	start, ok := parseJSDate(startStr)
+	start, ok := ParseJSDate(startStr)
 	if !ok {
 		return cliErr("invalid --at: " + startStr)
 	}
@@ -406,7 +406,7 @@ func (s *Service) cliCalendarCreate(ctx context.Context, parsed cliParsed, me, c
 	if isPrivate {
 		lockNote = " · 🔒 private"
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":                "calendar.event_created",
 		"command":              "calendar create",
 		"calendarEventId":      id,
@@ -525,7 +525,7 @@ func (s *Service) cliCalendarUpdate(ctx context.Context, parsed cliParsed, op, m
 		}
 	}
 	if v, ok := parsed.flags["at"]; ok {
-		start, valid := parseJSDate(fmt.Sprint(v))
+		start, valid := ParseJSDate(fmt.Sprint(v))
 		if !valid {
 			return cliErr("invalid --at: " + fmt.Sprint(v))
 		}
@@ -536,7 +536,7 @@ func (s *Service) cliCalendarUpdate(ctx context.Context, parsed cliParsed, op, m
 		if raw == "" || raw == "null" || raw == "-" {
 			push("end_at", nil)
 		} else {
-			end, valid := parseJSDate(raw)
+			end, valid := ParseJSDate(raw)
 			if !valid {
 				return cliErr("invalid --end: " + raw)
 			}
@@ -617,7 +617,7 @@ func (s *Service) cliCalendarUpdate(ctx context.Context, parsed cliParsed, op, m
 		return cliErrThrow(err)
 	}
 	s.publishCalendarCli(companyID, "event.updated", id, me)
-	return cliOK(fmt.Sprintf("updated %s: %q at %s (%s)", id, rowTitle, isoMilli(rowStart), rowStatus), cliSideEffect{
+	return cliOK(fmt.Sprintf("updated %s: %q at %s (%s)", id, rowTitle, isoMilli(rowStart), rowStatus), CliSideEffect{
 		"event":                "calendar.event_updated",
 		"command":              "calendar " + op,
 		"calendarEventId":      id,
@@ -659,7 +659,7 @@ func (s *Service) cliCalendarRunNow(ctx context.Context, parsed cliParsed, me, c
 	}
 	result := domcalendar.DispatchEvent(ctx, s.DB, e, time.Now())
 	s.publishCalendarCli(companyID, "event.dispatched", id, me)
-	return cliOK("dispatched "+id+": "+compactJSON(result), cliSideEffect{
+	return cliOK("dispatched "+id+": "+compactJSON(result), CliSideEffect{
 		"event":           "calendar.event_dispatched",
 		"command":         "calendar run-now",
 		"calendarEventId": id,
@@ -772,7 +772,7 @@ func (s *Service) cliCalendarCancelDelete(ctx context.Context, parsed cliParsed,
 		effectEvent = "calendar.event_deleted"
 	}
 	s.publishCalendarCli(companyID, kind, id, me)
-	return cliOK(word+" "+id, cliSideEffect{
+	return cliOK(word+" "+id, CliSideEffect{
 		"event":           effectEvent,
 		"command":         "calendar " + op,
 		"calendarEventId": id,

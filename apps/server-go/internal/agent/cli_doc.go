@@ -1,7 +1,7 @@
 // /runtime/cli 文档组(#89):doc ls/create/read/append/prepend/image/
 // image-delete/replace/replace-block/rename/delete。编辑走 docrelay 的
 // ApplyAgentEdit(与 sidecar 同源),文本快照走 ReadDocumentText。
-package runtime
+package agent
 
 import (
 	"context"
@@ -183,7 +183,7 @@ func (s *Service) cliCmdDoc(ctx context.Context, parsed cliParsed) cliResult {
 		if op == "prepend" {
 			verb = "prepended"
 		}
-		return cliOK(fmt.Sprintf("%s %d chars to %s", verb, len(text), docID), cliSideEffect{
+		return cliOK(fmt.Sprintf("%s %d chars to %s", verb, len(text), docID), CliSideEffect{
 			"event":         "document.updated",
 			"command":       "doc " + op,
 			"documentId":    docID,
@@ -228,7 +228,7 @@ func (s *Service) cliCmdDoc(ctx context.Context, parsed cliParsed) cliResult {
 			return cliErr("text not found in " + docID + ": " + utf16Slice(compactJSON(find), 80))
 		}
 		s.publishDocChanged(companyID, docID, "document.updated", me)
-		return cliOK(fmt.Sprintf("replaced %d occurrence in %s", r.Replaced, docID), cliSideEffect{
+		return cliOK(fmt.Sprintf("replaced %d occurrence in %s", r.Replaced, docID), CliSideEffect{
 			"event":         "document.updated",
 			"command":       "doc replace",
 			"documentId":    docID,
@@ -271,7 +271,7 @@ func (s *Service) cliCmdDoc(ctx context.Context, parsed cliParsed) cliResult {
 			return cliErr("no block containing " + utf16Slice(compactJSON(anchor), 80) + " in " + docID)
 		}
 		s.publishDocChanged(companyID, docID, "document.updated", me)
-		return cliOK("replaced 1 block in "+docID, cliSideEffect{
+		return cliOK("replaced 1 block in "+docID, CliSideEffect{
 			"event":         "document.updated",
 			"command":       "doc replace-block",
 			"documentId":    docID,
@@ -305,7 +305,7 @@ func (s *Service) cliCmdDoc(ctx context.Context, parsed cliParsed) cliResult {
 			return cliErr("document " + docID + " not found")
 		}
 		s.publishDocChanged(companyID, docID, "document.updated", me)
-		return cliOK(fmt.Sprintf("renamed %s to %q", docID, title), cliSideEffect{
+		return cliOK(fmt.Sprintf("renamed %s to %q", docID, title), CliSideEffect{
 			"event":         "document.updated",
 			"command":       "doc rename",
 			"documentId":    docID,
@@ -337,7 +337,7 @@ func (s *Service) cliCmdDoc(ctx context.Context, parsed cliParsed) cliResult {
 			return cliErrThrow(err)
 		}
 		s.publishDocChanged(companyID, docID, "document.deleted", me)
-		return cliOK("deleted document "+docID, cliSideEffect{
+		return cliOK("deleted document "+docID, CliSideEffect{
 			"event":         "document.deleted",
 			"command":       "doc delete",
 			"documentId":    docID,
@@ -431,7 +431,7 @@ func (s *Service) cliDocCreate(ctx context.Context, parsed cliParsed, me, compan
 		}
 	}
 	s.publishDocChanged(companyID, id, "document.created", me)
-	return cliOK("created document "+id+": "+title, cliSideEffect{
+	return cliOK("created document "+id+": "+title, CliSideEffect{
 		"event":         "document.created",
 		"command":       "doc create",
 		"documentId":    id,
@@ -540,7 +540,7 @@ func (s *Service) cliDocImage(ctx context.Context, parsed cliParsed, me, company
 	} else {
 		where = "at end"
 	}
-	return cliOK("inserted image into "+docID+" "+where, cliSideEffect{
+	return cliOK("inserted image into "+docID+" "+where, CliSideEffect{
 		"event":         "document.updated",
 		"command":       "doc image",
 		"documentId":    docID,
@@ -607,7 +607,7 @@ func (s *Service) cliDocImageDelete(ctx context.Context, parsed cliParsed, me, c
 		plural = ""
 	}
 	s.publishDocChanged(companyID, docID, "document.updated", me)
-	return cliOK(fmt.Sprintf("deleted %d image%s from %s", result.ImagesDeleted, plural, docID), cliSideEffect{
+	return cliOK(fmt.Sprintf("deleted %d image%s from %s", result.ImagesDeleted, plural, docID), CliSideEffect{
 		"event":         "document.updated",
 		"command":       "doc image-delete",
 		"documentId":    docID,
