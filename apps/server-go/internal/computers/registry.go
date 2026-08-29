@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 const (
@@ -232,9 +233,8 @@ func PairComputer(ctx context.Context, db *sql.DB, code string, hostName string,
 func HeartbeatComputer(ctx context.Context, db *sql.DB, computerID, version string, supervised *bool) {
 	var vArg, sArg any
 	if version != "" {
-		if runes := []rune(version); len(runes) > 32 {
-			version = string(runes[:32])
-		}
+		// TS version.slice(0, 32) 按 UTF-16 码元(#141 rider)。
+		version = httpx.UTF16Cap(version, 32)
 		vArg = version
 	}
 	if supervised != nil {

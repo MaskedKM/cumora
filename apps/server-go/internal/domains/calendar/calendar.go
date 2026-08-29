@@ -228,21 +228,16 @@ func parseRecurrence(raw json.RawMessage) (map[string]any, int, string) {
 	return out, 0, ""
 }
 
+// text:TS `.trim().slice(0, N)` —— UTF-16 码元截断(#141 rider:
+// rune 截断在代理对边界漂移,长 emoji 标题会差 1 字)。
 func text(v string, max int) string {
-	t := strings.TrimSpace(v)
-	if runes := []rune(t); len(runes) > max {
-		t = string(runes[:max])
-	}
-	return t
+	return httpx.UTF16Cap(strings.TrimSpace(v), max)
 }
 
 // capOnly:TS 的 String(x).slice(0,N) 语义 —— 不 trim(description/
 // agentPrompt 在 baseline 不 trim,trim 会改存库数据),仅 rune 截断。
 func capOnly(v string, max int) string {
-	if runes := []rune(v); len(runes) > max {
-		return string(runes[:max])
-	}
-	return v
+	return httpx.UTF16Cap(v, max)
 }
 
 // tsString:TS String(x) 强转(JSON 标量 → 字符串;null 字面量除外,

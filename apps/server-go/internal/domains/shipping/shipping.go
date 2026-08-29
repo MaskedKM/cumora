@@ -83,12 +83,8 @@ func (b shipBody) text(k string, max int) string {
 	if json.Unmarshal(raw, &s) != nil {
 		return ""
 	}
-	s = strings.TrimSpace(s)
-	// TS slice 按 UTF-16 码元;Go 按 rune 近似(文本上限守门,非精确对账)。
-	if r := []rune(s); len(r) > max {
-		s = string(r[:max])
-	}
-	return s
+	// TS `value.trim().slice(0, max)` 按 UTF-16 码元(#141 rider 精确对齐)。
+	return httpx.UTF16Cap(strings.TrimSpace(s), max)
 }
 
 func (b shipBody) optText(k string, max int) sql.NullString {

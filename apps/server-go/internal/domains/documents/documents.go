@@ -54,12 +54,10 @@ func toDocPayload(d docRow) map[string]any {
 	}
 }
 
+// text:TS `.trim().slice(0, N)` —— UTF-16 码元截断(#141 rider:
+// rune 截断在代理对边界漂移,长 emoji 标题会差 1 字)。
 func text(v string, max int) string {
-	t := strings.TrimSpace(v)
-	if runes := []rune(t); len(runes) > max {
-		t = string(runes[:max])
-	}
-	return t
+	return httpx.UTF16Cap(strings.TrimSpace(v), max)
 }
 
 // privileged 对齐 PRIVILEGED_ROLES:creator-or-owner/admin 治理规则。
