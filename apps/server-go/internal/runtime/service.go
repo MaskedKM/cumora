@@ -1,6 +1,7 @@
-// runtime 包 service —— #140 拆包后的 HTTP/调度壳:真身(agent 面 +
-// client 数据面)在 internal/agent,本包经嵌入承接全部既有方法,并保留
-// 唤醒调度、agenda、扫描、presence、/runtime/* 路由面。
+// runtime 包 service —— #140 拆包后的 HTTP 壳:真身(agent 面 +
+// client 数据面)在 internal/agent,唤醒调度/议程在 internal/sched(经
+// Sched 字段与壳代理可达);本包自留 /runtime/* 路由、扫描、presence,
+// 并承担域子包与调度域的接线。
 package runtime
 
 import (
