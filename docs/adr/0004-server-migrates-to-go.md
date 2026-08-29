@@ -90,3 +90,25 @@ runtime and dependency pains).
 - ⚠️ 勾销时发现 #117:一组 TS 已实现而 Go 未移植的 HTTP 路由
   (polls/og/apple-native/autonomy/shipping/admin 子面)自切换日起
   404——契约守卫换 Go 腿后以豁免表显式记账,逐票补齐。
+
+## 契约硬化:Go 真消费生成类型(#139,2026-08-29)
+
+- 决策原文"oapi-codegen on the Go side"长期只兑现了一半:生成物
+  (types.gen.go 2,680 行)落在 packages/contract/go 且**零 import**,
+  Go 侧唯一约束是 coverage 脚本的正则路由对账——#117 正是从这条缝
+  漏进生产的。
+- 落地形态(分阶段):生成管线搬进 apps/server-go(`internal/contract`
+  = 根包全量 types + 每 tag 独立子包的 std-http ServerInterface —— 同包
+  多 tag 会重复声明共享符号,子包经一行生成式常量别名 glue 引根包;
+  `contract-gen-go.sh` 的 `SERVER_TAGS` 清单即迁移进度表),域包实现
+  接口后路由注册串由规范生成(pattern 即契约),`var _ …ServerInterface`
+  编译期强制每个 operation 有实现。documents 为首个试点域。生成器双
+  执行面:本机 docker 跑、CI checks 容器(无 docker)直跑 go run,Go 侧
+  对账两侧都真生效。
+- 请求体解码暂留手写:TS 的 `String(x ?? '')`/typeof-filter 强转与
+  生成类型的指针/严格解码语义不兼容(CreateDocumentJSONBody 是
+  `*string`、SetDocumentCollaboratorsJSONBody 是严格 `[]string`),
+  typed 解码会改行为;全面类型化待 strict-server 评估。
+- coverage 守卫升双形态:手写 `HandleFunc("GET /x")` 与生成
+  `HandleFunc("GET "+options.BaseURL+"/x")` 同腿对账,零豁免表。
+- 余 17 tag 机械迁移(闭包工厂 → 接口方法)渐进消化,不再豁免。
