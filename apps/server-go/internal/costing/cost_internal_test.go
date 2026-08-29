@@ -2,7 +2,7 @@
 // 语义。TS 侧 Object.entries 按文档序遍历——priceTable 渲染序与重叠键
 // 子串匹配的胜者都依赖它;JSON.parse 全有或全无、重复键后值覆盖且位置
 // 保持首见。纯逻辑,无 DB/Redis。
-package runtime
+package costing
 
 import (
 	"sync"

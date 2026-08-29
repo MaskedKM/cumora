@@ -16,8 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/runtime"
 )
 
 /* ───────── 30s TTL 聚合缓存(admin-router.ts cachedAgg 同型) ───────── */
@@ -106,7 +107,7 @@ func obsLlmRollup(db *sql.DB, sinceDays int, model, companyFilter string) ([]map
 		}
 		// savable $ = 未命中输入 ×(全价 − 缓存价);价未核验则 savable
 		// 同为估计(image 行 inTok=0 → 0)。
-		price := runtime.PriceFor(mdl)
+		price := costing.PriceFor(mdl)
 		gap := math.Max(0, price.InPer1M-price.CachedInPer1M)
 		out = append(out, map[string]any{
 			"purpose": purpose, "model": mdl, "source": source,

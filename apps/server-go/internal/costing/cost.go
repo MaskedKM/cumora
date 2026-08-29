@@ -1,8 +1,9 @@
-// runtime 包 cost —— 对齐 server/src/agents/cost.ts 的 token→成本核算。
-// 缓存感知定价:triage(冷会话,全额输入)对照大脑 turn(命中缓存,
-// ~0.1×)才是诚实比较。价格按 1M token 计;仅运营方经
-// CUMORA_MODEL_PRICES_JSON 提供的费率算 verified,种子默认一律 estimated。
-package runtime
+// costing 包 cost —— 对齐 server/src/agents/cost.ts 的 token→成本核算
+// (#140 自 runtime 拆出,纯移动)。缓存感知定价:triage(冷会话,全额
+// 输入)对照大脑 turn(命中缓存,~0.1×)才是诚实比较。价格按 1M token
+// 计;仅运营方经 CUMORA_MODEL_PRICES_JSON 提供的费率算 verified,种子
+// 默认一律 estimated。
+package costing
 
 import (
 	"encoding/json"
@@ -23,7 +24,8 @@ type TokenUsage struct {
 	OutputTokens        int64 `json:"outputTokens"`
 }
 
-var emptyUsage = TokenUsage{}
+// EmptyUsage:零用量(未计量调用的台账落库形,obs 写面复用)。
+var EmptyUsage = TokenUsage{}
 
 // ModelPrice:1M token 单价。
 type ModelPrice struct {
@@ -176,4 +178,30 @@ func EffectiveCostUsd(model string, usage TokenUsage) (usd float64, estimated bo
 		float64(usage.CacheCreationTokens)*p.CacheWritePer +
 		float64(usage.OutputTokens)*p.OutPer1M) / 1_000_000
 	return usd, !p.Verified
+}
+
+// ModelPriceTableRows:cost.ts modelPriceTable()——env 覆盖在前、种子在后,
+// 去重保序;estimated = !verified。(obs 三面 priceTable 用;#140 随价表
+// 内部件自 runtime/observability_api.go 迁入。)
+func ModelPriceTableRows() []map[string]any {
+	envOverridesOnce.Do(loadEnvOverrides)
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	add := func(id string, p ModelPrice) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, map[string]any{
+			"model": id, "inPer1M": p.InPer1M, "cachedInPer1M": p.CachedInPer1M,
+			"cacheWritePer1M": p.CacheWritePer, "outPer1M": p.OutPer1M, "estimated": !p.Verified,
+		})
+	}
+	for _, kv := range envOverrides {
+		add(kv.id, kv.price)
+	}
+	for _, kv := range seedPrices {
+		add(kv.id, kv.price)
+	}
+	return out
 }

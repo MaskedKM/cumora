@@ -1,13 +1,17 @@
-// runtime 包 rollup —— llm_calls_rollup 预聚合刷新(#62):llm-rollup.ts 的
+// costing 包 rollup —— llm_calls_rollup 预聚合刷新(#62;#140 自
+// runtime 拆出,纯移动——Service 方法改吃 *sql.DB):llm-rollup.ts 的
 // Go 等价。仪表盘聚合原本全表扫 ~47 万行 5–25s;rollup 折叠到小时桶
 // (~15×小)。刷新模型 = 整窗重算 + UPSERT(幂等自愈:漏 tick、双跑、
 // 迟到行下一轮全部收敛);advisory lock 单写者;启动即首轮回填。
-package runtime
+package costing
 
 import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,6 +27,22 @@ const rollupMaxBackfillHours = 95 * 24
 // 保留窗:更旧的桶定期清,rollup 随历史增长有界。
 const rollupRetentionHours = 95 * 24
 
+// envIntRaw:符号感知的环境整数(0/-1 原样返回);缺键/非数 → ok=false。
+// 与 envIntOr(0→默认)相反——间隔类 env 的 TS 语义是"0=禁用",
+// 必须让 0 活着到达调用方的禁用分支。(自 runtime/scheduler.go 平移;
+// #141 横切统一票若收敛 env 助手则届时合一。)
+func envIntRaw(name string) (int64, bool) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // envIntRaw 语义:LLM_ROLLUP_INTERVAL_MS=0 = 禁用(TS 文档化 kill-switch)。
 func rollupIntervalMS() int64 {
 	if n, ok := envIntRaw("LLM_ROLLUP_INTERVAL_MS"); ok {
@@ -33,11 +53,11 @@ func rollupIntervalMS() int64 {
 
 // RefreshLlmRollup: 把 created_at 新于 sinceHours 的小时桶整块重算并
 // UPSERT;返回写入(插入或更新)的桶数。
-func (s *Service) RefreshLlmRollup(ctx context.Context, sinceHours int) (int64, error) {
+func RefreshLlmRollup(ctx context.Context, db *sql.DB, sinceHours int) (int64, error) {
 	if sinceHours < 1 {
 		sinceHours = 1
 	}
-	res, err := s.DB.ExecContext(ctx, `
+	res, err := db.ExecContext(ctx, `
 		INSERT INTO llm_calls_rollup (
 		   bucket_hour, company_id, agent_id, purpose, model, source, daemon_version,
 		   calls, ok_calls, failed_calls, rate_limited_calls,
@@ -79,8 +99,8 @@ func (s *Service) RefreshLlmRollup(ctx context.Context, sinceHours int) (int64, 
 
 // RunLlmRollupTick: 一轮——取锁、选窗(首跑按最新桶间隙回填)、UPSERT、
 // 清老桶。尽力而为,失败下一 tick 重试。锁拿不到 = 他副本在刷新,跳过。
-func (s *Service) RunLlmRollupTick(ctx context.Context) (buckets int64, sinceHours int, ok bool) {
-	conn, err := s.DB.Conn(ctx)
+func RunLlmRollupTick(ctx context.Context, db *sql.DB) (buckets int64, sinceHours int, ok bool) {
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -113,7 +133,7 @@ func (s *Service) RunLlmRollupTick(ctx context.Context) (buckets int64, sinceHou
 			sinceHours = gapHours
 		}
 	}
-	buckets, err = s.RefreshLlmRollup(ctx, sinceHours)
+	buckets, err = RefreshLlmRollup(ctx, db, sinceHours)
 	if err != nil {
 		slog.Warn("[llm-rollup] refresh failed", "err", err)
 		return 0, sinceHours, false
@@ -126,11 +146,14 @@ func (s *Service) RunLlmRollupTick(ctx context.Context) (buckets int64, sinceHou
 	return buckets, sinceHours, true
 }
 
+// ctxBG:fire-and-forget 后台写共用的父上下文。
+var ctxBG = context.Background()
+
 var rollupStop chan struct{}
 
 // StartLlmRollupRefresher: 幂等启动;LLM_ROLLUP_INTERVAL_MS=0 关闭。
 // 启动即首轮(新部署立刻回填,不等整周期)。
-func (s *Service) StartLlmRollupRefresher() {
+func StartLlmRollupRefresher(db *sql.DB) {
 	interval := rollupIntervalMS()
 	if interval <= 0 {
 		slog.Info("[llm-rollup] disabled (LLM_ROLLUP_INTERVAL_MS=0)")
@@ -142,7 +165,7 @@ func (s *Service) StartLlmRollupRefresher() {
 	slog.Info("[llm-rollup] starting", "interval_ms", interval)
 	tick := func() {
 		start := time.Now()
-		buckets, _, ok := s.RunLlmRollupTick(ctxBG)
+		buckets, _, ok := RunLlmRollupTick(ctxBG, db)
 		if ok {
 			slog.Info("[llm-rollup] refreshed", "buckets", buckets, "ms", time.Since(start).Milliseconds())
 		}

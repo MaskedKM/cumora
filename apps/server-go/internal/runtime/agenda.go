@@ -17,6 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
+
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -893,7 +896,7 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 	}
 	t0 := time.Now()
 	var outputText string
-	var usage *TokenUsage
+	var usage *costing.TokenUsage
 	var err error
 	if useAdapter {
 		// 适配器路径不走 llm 台账(TS ponytail 备注);Chat-Completions
@@ -902,7 +905,7 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 	} else {
 		agentArg, tenantArg := agentID, companyID
 		record := func(status string, errMsg *string) {
-			s.RecordLlmCall(LlmCallRecord{
+			obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 				Purpose: "agenda", CompanyID: &tenantArg, AgentID: &agentArg, Source: "cloud",
 				Model: model, Usage: usage, LatencyMS: msSince(t0), Status: status, Error: errMsg,
 				Extras: map[string]any{
@@ -936,7 +939,7 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 
 // cerebellumResponsesCreate:Responses 参数 → Chat-Completions 翻译
 // (cerebellum-adapter.ts 的非流式分支;模型名原样透传)。
-func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args cliResponsesArgs) (string, *TokenUsage, error) {
+func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args cliResponsesArgs) (string, *costing.TokenUsage, error) {
 	body := map[string]any{
 		"model":    args.Model,
 		"messages": novitaChatMessages(args.Instructions, args.Input),

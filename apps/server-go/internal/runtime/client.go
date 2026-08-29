@@ -17,6 +17,14 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
 )
 
+// deref:*string → string(nil → ""),自 observability.go(#140 拆包)迁入。
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // GetConversationCompanyId:会话 → 租户(inbox 空时归 run 用)。
 func (s *Service) GetConversationCompanyId(ctx context.Context, conversationID string) (*string, error) {
 	var companyID sql.NullString
