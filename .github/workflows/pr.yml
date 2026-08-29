@@ -21,16 +21,20 @@
 #     Redis DB indexes would still cross-talk). Shards stay internally
 #     serial (--test-concurrency=1 — concurrent TRUNCATEs on a shared
 #     DB deadlock at the catalog-lock level).
-#   - Two-tier source pickup (#166). Tier 1: the official actions/checkout
+#   - Layered source pickup (#166). Tier 1: the official actions/checkout
 #     (git smart-HTTP) with a 3-minute fail-fast ceiling — the upstream
-#     chokes the unbounded upload-pack stream at zero bytes when it's in a
-#     bad mood. Tier 2 (only on tier-1 failure): git-free tarball download
-#     — big GETs occasionally stall mid-transfer too (silently: --retry
-#     never fires), so the fallback carries a speed watchdog (--speed-limit
-#     aborts a stalled crawl so --retry reconnects), a github.com/archive
-#     second endpoint, and a per-sha cache on /var/lib/cumora-ci-cache/
-#     tarballs — reruns of a failed run and the sibling job read the cached
-#     tarball without re-rolling the network dice.
+#     chokes the unbounded upload-pack stream when in a bad mood. Tier 2a
+#     (on tier-1 failure): tarball download with a speed watchdog
+#     (--speed-limit aborts a silent mid-transfer stall so --retry can
+#     reconnect; --http1.1 — the proxy's h2 framing layer breaks sustained
+#     streams, curl exit 16 in the 06:51 UTC incident log), a
+#     github.com/archive second endpoint, and a per-sha cache on
+#     /var/lib/cumora-ci-cache/tarballs. Tier 2b (when not even the ~14MB
+#     single stream survives — a bad node kills every connection after
+#     1-3MB): ci/fetch-tree lists the tree once via the API and pulls all
+#     ~714 files as parallel short GETs from the raw CDN (median 7.5KB —
+#     inside the short-connection safety zone), then backfills the
+#     tarball cache so later runs hit tier-2a's cache instead.
 #
 # ALL jobs run in containers: PR code never executes as the host runner
 # user (runner is docker-group = host-root-equivalent). pgvector is
@@ -85,7 +89,10 @@ jobs:
         - /var/lib/cumora-ci-cache/gocache:/go/cache
         - /var/lib/cumora-ci-cache/gomodcache:/go/modcache
         - /var/lib/cumora-ci-cache/tarballs:/cache/tarballs
-    timeout-minutes: 10
+    # 13min budget: 3min tier-1 + 8min tier-2/2b source pickup + ~2min
+    # compile — the old 10min cap killed the job mid-tier-2 with nothing
+    # cached (first live firing of the layered pickup, 2026-08-29).
+    timeout-minutes: 13
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'MaskedKM/cumora'
     env:
       # Egress via the host's Mihomo (see header). Lowercase-only on
@@ -118,42 +125,64 @@ jobs:
         uses: actions/checkout@v4
         timeout-minutes: 3
         continue-on-error: true
-      # Tier 2 — git-free tarball fallback, only when tier 1 failed. The
-      # upstream also chokes big GETs mid-transfer silently (connect-timeout
-      # never fires, --retry never sees an error — run 33235987868), so the
-      # download carries a speed watchdog (--speed-limit aborts a stalled
-      # crawl so --retry reconnects fresh), a github.com/archive second
-      # endpoint, and a per-sha cache on the persistent volume. Anonymous on
-      # purpose: codeload rejects Authorization-carrying requests, and the
-      # fork is public anyway. The workspace wipe clears tier 1's half-cloned
-      # leftovers before extracting. Unique per-PID .part + atomic mv keep
-      # parallel runner slots from interleaving streams into one cache entry;
-      # gzip -t on the hit path evicts a poisoned entry instead of failing
-      # every rerun on it. (alpine ships no curl — apk add is itself a
-      # GET-class fetch through the same proxy.)
-      - name: Download source (tarball, git-free — tier 2)
+      # Tier 2 — layered git-free fallback, only when tier 1 failed.
+      # ① per-sha cache (gzip-validated, poison-evicting); ② tarball single
+      # stream (speed watchdog + retry + github.com/archive second endpoint,
+      # all on --http1.1); ③ ci/fetch-tree walk — 714 parallel short GETs
+      # from the raw CDN when no single connection survives long enough for
+      # the ~14MB tarball (each bad-node connection dies after 1-3MB),
+      # backfilling the cache on success. Anonymous throughout: codeload
+      # rejects Authorization-carrying requests and the fork is public.
+      # The workspace wipe clears tier-1's half-cloned leftovers. Unique
+      # per-PID .part + atomic mv keep parallel slots from interleaving.
+      # (alpine ships no curl — apk is GET-class and retried by timeout;
+      # when even apk dies, tier ② is skipped, not failed, and ③ proceeds
+      # via wget + go, both present in the image.)
+      - name: Download source (git-free, layered — tier 2)
         if: steps.git_checkout.outcome == 'failure'
         timeout-minutes: 8
         run: |
-          timeout 90 apk add -q --no-cache curl
-          TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
+          echo "::warning::tier-1 git checkout 失败 — 分层兜底接管(#166)"
+          CACHE=/cache/tarballs
+          TARBALL="$CACHE/${GITHUB_SHA}.tar.gz"
           PART="${TARBALL}.$$.part"
-          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
-          find /cache/tarballs -name '*.part' -mmin +120 -delete
+          CURLFLAGS="-fsSL --http1.1 --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
+          mkdir -p "$CACHE"
+          find "$CACHE" -name '*.part' -mmin +120 -delete
+          ok=0
           if [ -s "$TARBALL" ] && gzip -t "$TARBALL" 2>/dev/null; then
-            echo "[src] cache hit: $TARBALL"
-          else
+            echo "[src] ① cache hit: $TARBALL"; ok=1
+          fi
+          if [ "$ok" = 0 ] && { command -v curl >/dev/null 2>&1 || timeout 90 apk add -q --no-cache curl; }; then
             rm -f "$TARBALL"
-            echo "[src] cache miss — fetching ${GITHUB_SHA}"
-            curl $CURLFLAGS -o "$PART" \
-              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
-            || curl $CURLFLAGS -o "$PART" \
-              "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
-            mv "$PART" "$TARBALL"
-            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
+            echo "[src] ② tarball 直下 ${GITHUB_SHA}"
+            if curl $CURLFLAGS -o "$PART" \
+                 "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+               || curl $CURLFLAGS -o "$PART" \
+                 "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"; then
+              mv "$PART" "$TARBALL"; ok=1
+              ls -t "$CACHE"/*.tar.gz | tail -n +11 | xargs -r rm -f
+            else
+              rm -f "$PART"; echo "[src] ② 单流被掐 — 降级③逐文件"
+            fi
+          else
+            [ "$ok" = 0 ] && echo "[src] curl 不可用(apk 失败)——直接走③"
           fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-          tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
+          if [ "$ok" = 1 ]; then
+            tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
+          else
+            echo "[src] ③ tree-walk 模式(短连接逐文件)"
+            curl -fsSL --http1.1 --connect-timeout 15 --retry 3 -o /tmp/fetch-tree.go \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/ci/fetch-tree/main.go" \
+            || wget -q -T 30 -t 3 -O /tmp/fetch-tree.go \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/ci/fetch-tree/main.go"
+            go run /tmp/fetch-tree.go "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKSPACE"
+            ( cd "$(dirname "$GITHUB_WORKSPACE")" \
+              && tar czf "$PART" "$(basename "$GITHUB_WORKSPACE")" ) \
+              && mv "$PART" "$TARBALL" \
+              || echo "[src] 缓存回填失败(不影响本次构建)"
+          fi
       - name: gofmt check
         run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
       # #133: server-go 已有 httpx/contacts/runtime 单测,与 build 同容器
@@ -265,37 +294,61 @@ jobs:
         uses: actions/checkout@v4
         timeout-minutes: 3
         continue-on-error: true
-      # Tier 2 — same hardened tarball fallback as the go job (bookworm
-      # ships curl, so no apk step). On THIS path only, the workspace has
-      # no .git afterwards, so contract-check.sh (#48 guard — regenerates
-      # and diffs against HEAD) needs a synthesized baseline: a fresh
-      # commit of the pristine tarball makes "committed state" == branch
-      # head content. safe.directory bootstrap first: the workspace root
-      # is the host runner user's bind mount, and container-root git
-      # refuses repos owned by another uid. When tier 1 succeeds the real
-      # checkout's HEAD is used instead — nothing extra runs.
-      - name: Download source (tarball, git-free — tier 2)
+      # Tier 2 — same layered fallback as the go job (①cache ②tarball
+      # ③fetch-tree walk; bookworm ships curl+go so the apk/wget legs are
+      # inert here, kept identical for copy-paste maintenance). On THIS
+      # path only, the workspace has no .git afterwards, so
+      # contract-check.sh (#48 guard — regenerates and diffs against HEAD)
+      # needs a synthesized baseline: a fresh commit of the pristine tree
+      # makes "committed state" == branch head content. safe.directory
+      # bootstrap first: the workspace root is the host runner user's bind
+      # mount, and container-root git refuses repos owned by another uid.
+      # When tier 1 succeeds the real checkout's HEAD is used instead.
+      - name: Download source (git-free, layered — tier 2)
         if: steps.git_checkout.outcome == 'failure'
         timeout-minutes: 8
         run: |
-          TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
+          echo "::warning::tier-1 git checkout 失败 — 分层兜底接管(#166)"
+          CACHE=/cache/tarballs
+          TARBALL="$CACHE/${GITHUB_SHA}.tar.gz"
           PART="${TARBALL}.$$.part"
-          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
-          find /cache/tarballs -name '*.part' -mmin +120 -delete
+          CURLFLAGS="-fsSL --http1.1 --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
+          mkdir -p "$CACHE"
+          find "$CACHE" -name '*.part' -mmin +120 -delete
+          ok=0
           if [ -s "$TARBALL" ] && gzip -t "$TARBALL" 2>/dev/null; then
-            echo "[src] cache hit: $TARBALL"
-          else
+            echo "[src] ① cache hit: $TARBALL"; ok=1
+          fi
+          if [ "$ok" = 0 ] && { command -v curl >/dev/null 2>&1 || timeout 90 apk add -q --no-cache curl; }; then
             rm -f "$TARBALL"
-            echo "[src] cache miss — fetching ${GITHUB_SHA}"
-            curl $CURLFLAGS -o "$PART" \
-              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
-            || curl $CURLFLAGS -o "$PART" \
-              "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
-            mv "$PART" "$TARBALL"
-            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
+            echo "[src] ② tarball 直下 ${GITHUB_SHA}"
+            if curl $CURLFLAGS -o "$PART" \
+                 "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+               || curl $CURLFLAGS -o "$PART" \
+                 "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"; then
+              mv "$PART" "$TARBALL"; ok=1
+              ls -t "$CACHE"/*.tar.gz | tail -n +11 | xargs -r rm -f
+            else
+              rm -f "$PART"; echo "[src] ② 单流被掐 — 降级③逐文件"
+            fi
+          else
+            [ "$ok" = 0 ] && echo "[src] curl 不可用(apk 失败)——直接走③"
           fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-          tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
+          if [ "$ok" = 1 ]; then
+            tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
+          else
+            echo "[src] ③ tree-walk 模式(短连接逐文件)"
+            curl -fsSL --http1.1 --connect-timeout 15 --retry 3 -o /tmp/fetch-tree.go \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/ci/fetch-tree/main.go" \
+            || wget -q -T 30 -t 3 -O /tmp/fetch-tree.go \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/ci/fetch-tree/main.go"
+            go run /tmp/fetch-tree.go "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKSPACE"
+            ( cd "$(dirname "$GITHUB_WORKSPACE")" \
+              && tar czf "$PART" "$(basename "$GITHUB_WORKSPACE")" ) \
+              && mv "$PART" "$TARBALL" \
+              || echo "[src] 缓存回填失败(不影响本次构建)"
+          fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git init -q -b main
           git add -A
