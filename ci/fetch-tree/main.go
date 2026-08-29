@@ -37,6 +37,7 @@ type entry struct {
 	Path string `json:"path"`
 	Mode string `json:"mode"`
 	Type string `json:"type"`
+	Size int64  `json:"size"`
 }
 
 type tree struct {
@@ -76,6 +77,72 @@ func get(c *http.Client, u string) []byte {
 		time.Sleep(time.Duration(try) * time.Second)
 	}
 	return nil
+}
+
+// 大文件(>512KB)是微缩版单流问题:整文件 GET 同样会被掐。
+// raw CDN 支持 Range(实测 206),按 256KB 分块并行取,每块独立重试。
+const (
+	chunkThreshold = 512 << 10
+	chunkSize      = 256 << 10
+)
+
+func getBig(c *http.Client, u string, total int64) []byte {
+	buf := make([]byte, total)
+	n := (total + chunkSize - 1) / chunkSize
+	var wg sync.WaitGroup
+	var failed int64
+	sem := make(chan struct{}, 6)
+	for i := int64(0); i < n; i++ {
+		i := i
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			lo := i * chunkSize
+			hi := lo + chunkSize - 1
+			if hi > total-1 {
+				hi = total - 1
+			}
+			var err error
+			for try := 1; try <= 3; try++ {
+				req, rerr := http.NewRequest("GET", u, nil)
+				if rerr != nil {
+					err = rerr
+					break
+				}
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", lo, hi))
+				resp, derr := c.Do(req)
+				if derr == nil {
+					b, rderr := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if rderr == nil {
+						if resp.StatusCode == 206 && int64(len(b)) == hi-lo+1 {
+							copy(buf[lo:], b)
+							return
+						}
+						// 服务器无视 Range 回了整文件:整块接受
+						if resp.StatusCode == 200 && int64(len(b)) == total {
+							copy(buf, b)
+							return
+						}
+						derr = fmt.Errorf("chunk#%d status=%d len=%d", i, resp.StatusCode, len(b))
+					} else {
+						derr = fmt.Errorf("chunk#%d read=%v", i, rderr)
+					}
+				}
+				err = derr
+				time.Sleep(time.Duration(try) * time.Second)
+			}
+			fmt.Fprintf(os.Stderr, "[fetch-tree] %s chunk#%d 放弃: %v\n", u, i, err)
+			atomic.AddInt64(&failed, 1)
+		}()
+	}
+	wg.Wait()
+	if failed > 0 {
+		return nil
+	}
+	return buf
 }
 
 // urlPath 逐段转义,保留 / 结构。
@@ -124,7 +191,7 @@ func main() {
 	fmt.Printf("[fetch-tree] %d 条目 / %d 文件\n", len(tr.Tree), blobs)
 
 	var failed, done int64
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, 12)
 	var wg sync.WaitGroup
 	for _, e := range tr.Tree {
 		if e.Type != "blob" {
@@ -137,7 +204,12 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			u := fmt.Sprintf("%s/%s/%s/%s", rawBase, repo, sha, urlPath(e.Path))
-			b := get(c, u)
+			var b []byte
+			if e.Size > chunkThreshold {
+				b = getBig(c, u, e.Size)
+			} else {
+				b = get(c, u)
+			}
 			if b == nil {
 				atomic.AddInt64(&failed, 1)
 				return
