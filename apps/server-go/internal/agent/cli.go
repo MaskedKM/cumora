@@ -431,10 +431,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdWorkspace(ctx, parsed)
 	case "tasks":
 		return s.cliCmdTasks(ctx, parsed)
-	case "doc":
-		return s.cliCmdDoc(ctx, parsed)
-	case "ship":
-		return s.cliCmdShip(ctx, parsed)
 	case "avatar":
 		return s.cliCmdAvatar(ctx, parsed)
 	case "skills":

@@ -2,7 +2,7 @@
 // verifications / releases / friction_reports / regressions 六表的 CLI 读写
 // (list/show/create/square/friction/regression)。square 的 builder/verifier
 // 分离与 failed → 回归+摩擦的晋升逻辑逐行对齐 TS。
-package agent
+package ship
 
 import (
 	"context"
@@ -12,23 +12,31 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
 
-func (s *Service) cliCmdShip(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
+
+func (s *Domain) CmdShip(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
-	companyID, err := s.cliAgentCompany(ctx, me)
+	companyID, err := s.AgentCompany(ctx, me)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	if companyID == "" {
-		return cliErr(fmt.Sprintf("unknown agent %s (no company)", me))
+		return agent.Err(fmt.Sprintf("unknown agent %s (no company)", me))
 	}
 	action := "list"
-	if len(parsed.positional) > 0 && parsed.positional[0] != "" {
-		action = parsed.positional[0]
+	if len(parsed.Positional()) > 0 && parsed.Positional()[0] != "" {
+		action = parsed.Positional()[0]
 	}
 
 	switch action {
@@ -45,7 +53,7 @@ func (s *Service) cliCmdShip(ctx context.Context, parsed cliParsed) cliResult {
 	case "regression":
 		return s.cliShipRegression(ctx, parsed, me, companyID)
 	}
-	return cliErr("usage: ship list|show|create|square|friction|regression  (run cumora help for details)")
+	return agent.Err("usage: ship list|show|create|square|friction|regression  (run cumora help for details)")
 }
 
 // cliShipListRow:--json 键序 = SELECT 列序。
@@ -60,7 +68,7 @@ type cliShipListRow struct {
 	Failed        int     `json:"failed"`
 }
 
-func (s *Service) cliShipList(ctx context.Context, parsed cliParsed, companyID string) cliResult {
+func (s *Domain) cliShipList(ctx context.Context, parsed agent.Parsed, companyID string) agent.Result {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT f.id, f.title, f.status, f.priority, f.release_target,
 		       count(v.id) FILTER (WHERE v.required)::int AS required,
@@ -70,7 +78,7 @@ func (s *Service) cliShipList(ctx context.Context, parsed cliParsed, companyID s
 		 WHERE f.company_id=$1 AND f.status <> 'archived'
 		 GROUP BY f.id ORDER BY f.updated_at DESC`, companyID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	defer rows.Close()
 	list := []cliShipListRow{}
@@ -81,15 +89,15 @@ func (s *Service) cliShipList(ctx context.Context, parsed cliParsed, companyID s
 		}
 		list = append(list, r)
 	}
-	if parsed.flagTruey("json") {
-		txt, jerr := cliJSONList(list)
+	if parsed.FlagTruey("json") {
+		txt, jerr := agent.JSONList(list)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	if len(list) == 0 {
-		return cliOK("(no active shipping contracts)")
+		return agent.OK("(no active shipping contracts)")
 	}
 	blocks := make([]string, 0, len(list))
 	for _, row := range list {
@@ -102,7 +110,7 @@ func (s *Service) cliShipList(ctx context.Context, parsed cliParsed, companyID s
 		}
 		blocks = append(blocks, line)
 	}
-	return cliOK(strings.Join(blocks, "\n"))
+	return agent.OK(strings.Join(blocks, "\n"))
 }
 
 /* ───────────── show ───────────── */
@@ -164,7 +172,7 @@ type cliShipShowSnapshot struct {
 	Priority       string              `json:"priority"`
 	RiskLevel      string              `json:"risk_level"`
 	ReleaseTarget  *string             `json:"release_target"`
-	BuilderIDs     cliStrArr           `json:"builder_ids"`
+	BuilderIDs     agent.StrArr        `json:"builder_ids"`
 	Invariants     []cliShipInvariant  `json:"invariants"`
 	Squares        []cliShipSquare     `json:"squares"`
 	Releases       []cliShipRelease    `json:"releases"`
@@ -172,13 +180,13 @@ type cliShipShowSnapshot struct {
 	Regressions    []cliShipRegression `json:"regressions"`
 }
 
-func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID string) cliResult {
+func (s *Domain) cliShipShow(ctx context.Context, parsed agent.Parsed, companyID string) agent.Result {
 	featureID := ""
-	if len(parsed.positional) > 1 {
-		featureID = parsed.positional[1]
+	if len(parsed.Positional()) > 1 {
+		featureID = parsed.Positional()[1]
 	}
 	if featureID == "" {
-		return cliErr("usage: ship show <feature_id>")
+		return agent.Err("usage: ship show <feature_id>")
 	}
 	var snap cliShipShowSnapshot
 	err := s.DB.QueryRowContext(ctx, `
@@ -188,13 +196,13 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 		&snap.ID, &snap.Title, &snap.Problem, &snap.DesiredOutcome, &snap.Status,
 		&snap.Priority, &snap.RiskLevel, &snap.ReleaseTarget, &snap.BuilderIDs)
 	if err != nil {
-		return cliErr(fmt.Sprintf("shipping feature not found: %s", featureID))
+		return agent.Err(fmt.Sprintf("shipping feature not found: %s", featureID))
 	}
 
 	invRows, err := s.DB.QueryContext(ctx,
 		`SELECT id,title,description,kind,required FROM shipping_invariants WHERE feature_id=$1 ORDER BY position`, featureID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	snap.Invariants = []cliShipInvariant{}
 	for invRows.Next() {
@@ -208,7 +216,7 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	sqRows, err := s.DB.QueryContext(ctx,
 		`SELECT id,title,method,required,status,owner_id,verified_by_id,evidence,notes FROM shipping_verifications WHERE feature_id=$1 ORDER BY position`, featureID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	snap.Squares = []cliShipSquare{}
 	for sqRows.Next() {
@@ -222,7 +230,7 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	relRows, err := s.DB.QueryContext(ctx,
 		`SELECT id,environment,status,version,commit_sha,readback_status,readback_due_at FROM shipping_releases WHERE feature_id=$1 ORDER BY created_at DESC`, featureID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	snap.Releases = []cliShipRelease{}
 	for relRows.Next() {
@@ -240,7 +248,7 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	frRows, err := s.DB.QueryContext(ctx,
 		`SELECT id,title,severity,frequency,status,occurrence_count FROM shipping_friction_reports WHERE feature_id=$1 ORDER BY last_seen_at DESC`, featureID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	snap.Friction = []cliShipFriction{}
 	for frRows.Next() {
@@ -254,7 +262,7 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	rgRows, err := s.DB.QueryContext(ctx,
 		`SELECT id,title,kind,status,command,last_result FROM shipping_regressions WHERE feature_id=$1 ORDER BY updated_at DESC`, featureID)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	snap.Regressions = []cliShipRegression{}
 	for rgRows.Next() {
@@ -265,12 +273,12 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	}
 	rgRows.Close()
 
-	if parsed.flagTruey("json") {
-		txt, jerr := cliJSONStringify(snap)
+	if parsed.FlagTruey("json") {
+		txt, jerr := agent.JSONStringify(snap)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	problem := snap.Problem
 	if problem == "" {
@@ -319,7 +327,7 @@ func (s *Service) cliShipShow(ctx context.Context, parsed cliParsed, companyID s
 	}
 	lines = append(lines, "",
 		fmt.Sprintf("Releases: %d · Friction: %d · Regressions: %d", len(snap.Releases), len(snap.Friction), len(snap.Regressions)))
-	return cliOK(strings.Join(lines, "\n"))
+	return agent.OK(strings.Join(lines, "\n"))
 }
 
 // cliSQLTimeISO:timestamptz → JSON.stringify(Date) 的 ISO 形态。
@@ -345,16 +353,16 @@ func (t *cliSQLTimeISO) Scan(src any) error {
 
 /* ───────────── create ───────────── */
 
-func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliShipCreate(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	title := ""
-	if len(parsed.positional) > 1 {
-		title = strings.TrimSpace(parsed.positional[1])
+	if len(parsed.Positional()) > 1 {
+		title = strings.TrimSpace(parsed.Positional()[1])
 	}
 	if title == "" {
-		return cliErr(`usage: ship create "<title>" --problem "..." --outcome "..." --contract "..." [--builders a,b]`)
+		return agent.Err(`usage: ship create "<title>" --problem "..." --outcome "..." --contract "..." [--builders a,b]`)
 	}
 	var builderIDs []string
-	if raw, ok := parsed.flagStr("builders"); ok {
+	if raw, ok := parsed.FlagStr("builders"); ok {
 		seen := map[string]bool{}
 		for _, id := range strings.Split(raw, ",") {
 			if t := strings.TrimSpace(id); t != "" && !seen[t] {
@@ -370,7 +378,7 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 		`SELECT id FROM participants WHERE company_id=$1 AND id=ANY($2::text[]) AND departed_at IS NULL`,
 		companyID, builderIDs)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	found := map[string]bool{}
 	for rows.Next() {
@@ -381,24 +389,24 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 	}
 	rows.Close()
 	if len(found) != len(builderIDs) {
-		return cliErr("one or more --builders are not active participants in this company")
+		return agent.Err("one or more --builders are not active participants in this company")
 	}
-	id := "ship-" + uuidHex()
+	id := "ship-" + agent.UUIDHex()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	defer tx.Rollback()
-	problem, _ := parsed.flagStr("problem")
-	outcome, _ := parsed.flagStr("outcome")
-	contract, _ := parsed.flagStr("contract")
-	buildersJSON, _ := jsonMarshalStrings(builderIDs)
+	problem, _ := parsed.FlagStr("problem")
+	outcome, _ := parsed.FlagStr("outcome")
+	contract, _ := parsed.FlagStr("contract")
+	buildersJSON, _ := agent.MarshalStrings(builderIDs)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO shipping_features
 		  (id,company_id,title,problem,desired_outcome,contract_summary,builder_ids,created_by,updated_by)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$8)`,
 		id, companyID, title, problem, outcome, contract, buildersJSON, me); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	for _, seed := range []struct {
 		title    string
@@ -412,69 +420,69 @@ func (s *Service) cliShipCreate(ctx context.Context, parsed cliParsed, me, compa
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO shipping_verifications (id,feature_id,title,method,required,builder_ids,position,created_by)
 			VALUES ($1,$2,$3,$4,TRUE,$5::jsonb,$6,$7)`,
-			"sv-"+uuidHex(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			"sv-"+agent.UUIDHex(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 	}
 	eventJSON, _ := json.Marshal(map[string]any{"title": title, "source": "agent-cli"})
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data)
 		 VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
-		"se-"+uuidHex(), companyID, id, me, string(eventJSON)); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		"se-"+agent.UUIDHex(), companyID, id, me, string(eventJSON)); err != nil {
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	if err := tx.Commit(); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
-	return cliOK(fmt.Sprintf("Created shipping contract %s for “%s”. Three required evidence squares were seeded. Add invariants and assign independent verifiers in the Ship panel.", id, title))
+	return agent.OK(fmt.Sprintf("Created shipping contract %s for “%s”. Three required evidence squares were seeded. Add invariants and assign independent verifiers in the Ship panel.", id, title))
 }
 
 /* ───────────── square ───────────── */
 
-func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliShipSquare(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	var featureID, squareID, status string
-	if len(parsed.positional) > 3 {
-		featureID, squareID, status = parsed.positional[1], parsed.positional[2], parsed.positional[3]
+	if len(parsed.Positional()) > 3 {
+		featureID, squareID, status = parsed.Positional()[1], parsed.Positional()[2], parsed.Positional()[3]
 	}
 	if featureID == "" || squareID == "" ||
 		(status != "running" && status != "passed" && status != "failed" && status != "waived") {
-		return cliErr(`usage: ship square <feature_id> <square_id> <running|passed|failed|waived> [--evidence "..."] [--notes "..."]`)
+		return agent.Err(`usage: ship square <feature_id> <square_id> <running|passed|failed|waived> [--evidence "..."] [--notes "..."]`)
 	}
-	var builderIDs cliStrArr
+	var builderIDs agent.StrArr
 	var squareTitle string
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT v.builder_ids,v.title FROM shipping_verifications v JOIN shipping_features f ON f.id=v.feature_id
 		 WHERE v.id=$1 AND v.feature_id=$2 AND f.company_id=$3`, squareID, featureID, companyID).
 		Scan(&builderIDs, &squareTitle)
 	if err != nil {
-		return cliErr("verification square not found")
+		return agent.Err("verification square not found")
 	}
 	completing := status != "running"
-	if completing && containsString(builderIDs, me) {
-		return cliErr("builder/verifier separation: you cannot complete a square for work you built")
+	if completing && agent.ContainsString(builderIDs, me) {
+		return agent.Err("builder/verifier separation: you cannot complete a square for work you built")
 	}
 	evidence := ""
-	if v, ok := parsed.flagStr("evidence"); ok {
+	if v, ok := parsed.FlagStr("evidence"); ok {
 		evidence = strings.TrimSpace(v)
 	}
 	notes := ""
-	if v, ok := parsed.flagStr("notes"); ok {
+	if v, ok := parsed.FlagStr("notes"); ok {
 		notes = strings.TrimSpace(v)
 	}
 	if (status == "passed" || status == "failed") && evidence == "" {
-		return cliErr(fmt.Sprintf("%s requires --evidence", status))
+		return agent.Err(fmt.Sprintf("%s requires --evidence", status))
 	}
 	if status == "waived" && notes == "" {
-		return cliErr("waived requires --notes with the written reason")
+		return agent.Err("waived requires --notes with the written reason")
 	}
 	proof, _ := json.Marshal([]map[string]any{{
 		"note":       evidence,
-		"capturedAt": isoNowMs(),
+		"capturedAt": agent.ISONowMs(),
 		"via":        "agent-cli",
 	}})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
@@ -483,7 +491,7 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 		       completed_at=CASE WHEN $3 THEN NOW() ELSE NULL END,updated_at=NOW()
 		 WHERE id=$7 AND feature_id=$8`,
 		status, me, completing, evidence, string(proof), notes, squareID, featureID); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	if status == "failed" {
 		if _, err := tx.ExecContext(ctx, `
@@ -492,9 +500,9 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 			 VALUES ($1,$2,$3,$4,'manual_replay',$5,'failing',$6)
 			 ON CONFLICT (source_verification_id) WHERE source_verification_id IS NOT NULL
 			 DO UPDATE SET status='failing',updated_at=NOW()`,
-			"rg-"+uuidHex(), featureID, squareID, "Replay failed square: "+squareTitle,
+			"rg-"+agent.UUIDHex(), featureID, squareID, "Replay failed square: "+squareTitle,
 			"The behavior proven by this square remains true", me); err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 		frictionProof := string(proof)
 		if _, err := tx.ExecContext(ctx, `
@@ -504,37 +512,37 @@ func (s *Service) cliShipSquare(ctx context.Context, parsed cliParsed, me, compa
 			 ON CONFLICT (company_id,source_key) WHERE source_key IS NOT NULL
 			 DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
 			               last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
-			"fr-"+uuidHex(), companyID, featureID, me, "verification:"+squareID,
+			"fr-"+agent.UUIDHex(), companyID, featureID, me, "verification:"+squareID,
 			"Verification failed: "+squareTitle,
 			"An agent-reported proof failed and was promoted into friction plus a replayable regression.", frictionProof); err != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 		}
 	}
 	sqEvent, _ := json.Marshal(map[string]any{"id": squareID, "status": status, "via": "agent-cli"})
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data) VALUES ($1,$2,$3,$4,'verification.updated',$5::jsonb)`,
-		"se-"+uuidHex(), companyID, featureID, me, string(sqEvent)); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		"se-"+agent.UUIDHex(), companyID, featureID, me, string(sqEvent)); err != nil {
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	if err := tx.Commit(); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	suffix := ""
 	if evidence != "" {
 		suffix = " with evidence recorded"
 	}
-	return cliOK(fmt.Sprintf("%s (%s) → %s%s.", squareID, squareTitle, status, suffix))
+	return agent.OK(fmt.Sprintf("%s (%s) → %s%s.", squareID, squareTitle, status, suffix))
 }
 
 /* ───────────── friction / regression ───────────── */
 
-func (s *Service) cliShipFriction(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliShipFriction(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	featureRaw, title := "", ""
-	if len(parsed.positional) > 2 {
-		featureRaw, title = parsed.positional[1], strings.TrimSpace(parsed.positional[2])
+	if len(parsed.Positional()) > 2 {
+		featureRaw, title = parsed.Positional()[1], strings.TrimSpace(parsed.Positional()[2])
 	}
 	if featureRaw == "" || title == "" {
-		return cliErr(`usage: ship friction <feature_id|none> "<title>" [--description "..."] [--severity low|medium|high|critical]`)
+		return agent.Err(`usage: ship friction <feature_id|none> "<title>" [--description "..."] [--severity low|medium|high|critical]`)
 	}
 	var featureID *string
 	if featureRaw != "none" {
@@ -542,66 +550,66 @@ func (s *Service) cliShipFriction(ctx context.Context, parsed cliParsed, me, com
 		err := s.DB.QueryRowContext(ctx,
 			`SELECT 1 FROM shipping_features WHERE id=$1 AND company_id=$2`, featureRaw, companyID).Scan(&exists)
 		if err != nil {
-			return cliErr("shipping feature not found")
+			return agent.Err("shipping feature not found")
 		}
 		featureID = &featureRaw
 	}
 	severity := "medium"
-	if v, ok := parsed.flagStr("severity"); ok {
+	if v, ok := parsed.FlagStr("severity"); ok {
 		switch v {
 		case "low", "medium", "high", "critical":
 			severity = v
 		}
 	}
-	description, _ := parsed.flagStr("description")
+	description, _ := parsed.FlagStr("description")
 	if description == "" {
 		description = title
 	}
-	id := "fr-" + uuidHex()
+	id := "fr-" + agent.UUIDHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO shipping_friction_reports (id,company_id,feature_id,reporter_id,source,title,description,severity)
 		 VALUES ($1,$2,$3,$4,'agent-cli',$5,$6,$7)`,
 		id, companyID, featureID, me, title, description, severity); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	onTxt := ""
 	if featureID != nil {
 		onTxt = fmt.Sprintf(" on %s", *featureID)
 	}
-	return cliOK(fmt.Sprintf("Captured friction %s%s. It is now visible in the Ship panel.", id, onTxt))
+	return agent.OK(fmt.Sprintf("Captured friction %s%s. It is now visible in the Ship panel.", id, onTxt))
 }
 
-func (s *Service) cliShipRegression(ctx context.Context, parsed cliParsed, me, companyID string) cliResult {
+func (s *Domain) cliShipRegression(ctx context.Context, parsed agent.Parsed, me, companyID string) agent.Result {
 	featureID, title := "", ""
-	if len(parsed.positional) > 2 {
-		featureID, title = parsed.positional[1], strings.TrimSpace(parsed.positional[2])
+	if len(parsed.Positional()) > 2 {
+		featureID, title = parsed.Positional()[1], strings.TrimSpace(parsed.Positional()[2])
 	}
 	if featureID == "" || title == "" {
-		return cliErr(`usage: ship regression <feature_id> "<title>" [--command "..."] [--expected "..."]`)
+		return agent.Err(`usage: ship regression <feature_id> "<title>" [--command "..."] [--expected "..."]`)
 	}
 	var exists string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT 1 FROM shipping_features WHERE id=$1 AND company_id=$2`, featureID, companyID).Scan(&exists)
 	if err != nil {
-		return cliErr("shipping feature not found")
+		return agent.Err("shipping feature not found")
 	}
-	command, hasCommand := parsed.flagStr("command")
+	command, hasCommand := parsed.FlagStr("command")
 	kind := "manual_replay"
 	var commandArg any
 	if hasCommand && command != "" {
 		kind = "automated"
 		commandArg = command
 	}
-	expected, _ := parsed.flagStr("expected")
+	expected, _ := parsed.FlagStr("expected")
 	if expected == "" {
 		expected = "Previously verified behavior remains true"
 	}
-	id := "rg-" + uuidHex()
+	id := "rg-" + agent.UUIDHex()
 	if _, err := s.DB.ExecContext(ctx, `
 		INSERT INTO shipping_regressions (id,feature_id,title,kind,command,expected,status,created_by)
 		 VALUES ($1,$2,$3,$4,$5,$6,'active',$7)`,
 		id, featureID, title, kind, commandArg, expected, me); err != nil {
-		return cliErrCode(fmt.Sprintf("error: %v", err), 2)
+		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
-	return cliOK(fmt.Sprintf("Created regression asset %s on %s.", id, featureID))
+	return agent.OK(fmt.Sprintf("Created regression asset %s on %s.", id, featureID))
 }

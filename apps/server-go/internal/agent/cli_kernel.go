@@ -96,6 +96,7 @@ func ISOMilli(t time.Time) string         { return isoMilli(t) }
 func NodeDateToString(t time.Time) string { return nodeDateToString(t) }
 func JSFloorNumber(v any) (int, bool)     { return jsFloorNumber(v) }
 func JSFloor(f float64) float64           { return floorJS(f) }
+func ISONowMs() string                    { return isoNowMs() }
 
 /* ───────── 共享件归位(#140 4/9:原居 cli_mailbox,内核文件同用)───────── */
 
