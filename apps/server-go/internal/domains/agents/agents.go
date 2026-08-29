@@ -378,10 +378,13 @@ func autoCreateDirect(ctx context.Context, db *sql.DB, uid, tenant, agentID, nam
 		"direct-"+agentID+"-"+randHex6(), name, `["`+uid+`","`+agentID+`"]`, tenant)
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO conversation_counters (conversation_id, next_sequence)
-		SELECT id, 1 FROM conversations
-		 WHERE kind = 'direct' AND company_id = $2
-		   AND members @> to_jsonb(ARRAY[$1::text]) AND members @> to_jsonb(ARRAY[$3::text])
-		   AND jsonb_array_length(members) = 2
+		SELECT c.id, 1
+		  FROM conversation_members ca
+		  JOIN conversation_members cb ON cb.conversation_id = ca.conversation_id
+		  JOIN conversations c ON c.id = ca.conversation_id
+		 WHERE ca.participant_id = $1 AND cb.participant_id = $3
+		   AND c.kind = 'direct' AND c.company_id = $2
+		   AND jsonb_array_length(c.members) = 2
 		 ON CONFLICT (conversation_id) DO NOTHING`, uid, tenant, agentID)
 }
 

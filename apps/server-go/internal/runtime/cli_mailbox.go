@@ -85,7 +85,7 @@ func (s *Service) cliLoadInbox(ctx context.Context, agentID string) ([]cliInboxR
        FROM messages m
        JOIN conversations c ON c.id = m.conversation_id
        LEFT JOIN participants p ON p.id = m.author_id AND p.company_id = c.company_id
-      WHERE c.members @> to_jsonb(ARRAY[$1::text])
+      WHERE EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $1)
         AND m.author_id <> $1
         AND m.created_at > COALESCE(
           (SELECT last_read_at FROM conversation_reads

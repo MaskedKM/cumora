@@ -1,8 +1,8 @@
 // runtime 包 client —— inproc-client.ts 的读/写数据面:未读收件箱、
 // 上下文历史、climate、头像、成员判定、系统通知、读游标推进。
-// SQL 与 TS 版逐字对齐(含 enable_seqscan=off 的 GIN 强制——规划器对
-// members @> 误估价会全表扫约 2s 饿死连接池;会话级 GUC、无事务、出错
-// 即销毁连接防 GUC 泄漏)。
+// #137:"我的会话"定位已从 members GIN containment(规划器误估价,
+// 曾靠 enable_seqscan=off 会话级 GUC 强制索引,见退役的 withSeqscanOff)
+// 切到 conversation_members 的 (participant_id, conversation_id) 索引。
 package runtime
 
 import (
@@ -48,47 +48,6 @@ func (s *Service) NextConversationSequence(ctx context.Context, conversationID s
 	return seq, err
 }
 
-// withSeqscanOff:独占连接上 SET enable_seqscan=off → 查询 → RESET。
-// GUC 泄漏防护(TS release(true) 语义的池化等价物):database/sql 的
-// Conn.Close 只会把连接归还池、无法销毁——而 pgx stdlib 的默认
-// ResetSession 是 noop,带 GUC 残留的"健康"连接回池后会长期毒化后续
-// 查询。因此错误路径必须用不受请求取消影响的独立 ctx 尽力 RESET:
-// RESET 成功 → 连接干净归还;RESET 失败 → 连接本身已坏,池的下一次
-// 使用/健康检查会将其丢弃。成功路径的 RESET 同样走独立 ctx——查询行
-// 读完但请求 ctx 恰被取消(客户端中途断开)时,取消信号不该中断复位。
-func (s *Service) withSeqscanOff(ctx context.Context, run func(conn *sql.Conn) error) error {
-	conn, err := s.DB.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	failed := false
-	defer func() {
-		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if failed {
-			// 尽力复位;失败即连接已坏,归还后由池的下次使用淘汰。
-			_, _ = conn.ExecContext(resetCtx, `RESET enable_seqscan`)
-		}
-		_ = conn.Close()
-	}()
-	if _, err := conn.ExecContext(ctx, `SET enable_seqscan = off`); err != nil {
-		return err
-	}
-	// SET 已生效:从此直到 RESET 成功,一律视为可能残留——run 闭包若
-	// panic,defer 里的尽力 RESET 同样覆盖(评审复审 MINOR#1)。
-	failed = true
-	if err := run(conn); err != nil {
-		return err
-	}
-	resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := conn.ExecContext(resetCtx, `RESET enable_seqscan`); err != nil {
-		return err
-	}
-	failed = false
-	return nil
-}
-
 // jsonbCol → any:sql 里 jsonb 列扫为 []byte 后解成 any(nil 保持 nil)。
 func jsonbCol(raw []byte) any {
 	if raw == nil {
@@ -101,7 +60,7 @@ func jsonbCol(raw []byte) any {
 	return v
 }
 
-// loadInboxSQL:members GIN 定位会话 + LATERAL 沿 idx_messages_convo_created
+// loadInboxSQL:conversation_members(participant 前导索引)定位会话 + LATERAL 沿 idx_messages_convo_created
 // 取每会话未读尾(ROW(created_at,id) > 游标,last_read_message_id 作同瞬
 // 消息的决胜);静音会话只放行 direct / 被点名 / 被引用的消息。上限 200。
 const loadInboxSQL = `
@@ -116,10 +75,11 @@ WITH convos AS (
             WHERE mu.user_id = $1 AND mu.conversation_id = c.id
               AND (mu.muted_until IS NULL OR mu.muted_until > NOW())
          ) AS muted
-    FROM conversations c
+    FROM conversation_members cmv
+    JOIN conversations c ON c.id = cmv.conversation_id
     LEFT JOIN conversation_reads cr ON cr.user_id = $1 AND cr.conversation_id = c.id
     LEFT JOIN projects pr ON pr.id = c.project_id
-   WHERE c.members @> to_jsonb(ARRAY[$1::text])
+   WHERE cmv.participant_id = $1
 )
 SELECT
   m.id, m.conversation_id, co.company_id,
@@ -169,16 +129,12 @@ SELECT
 // 跳过),避免 maybeSteer 式探测污染基线放走重复碰撞(bram-a520 事故)。
 func (s *Service) LoadInbox(ctx context.Context, agentID string) ([]map[string]any, error) {
 	var out []map[string]any
-	err := s.withSeqscanOff(ctx, func(conn *sql.Conn) error {
-		rows, err := conn.QueryContext(ctx, loadInboxSQL, agentID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		out, err = scanMessageRows(rows)
-		return err
-	})
+	rows, err := s.DB.QueryContext(ctx, loadInboxSQL, agentID)
 	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if out, err = scanMessageRows(rows); err != nil {
 		return nil, err
 	}
 	if out == nil {
@@ -287,7 +243,7 @@ recent AS (
    ) m ON true
    LEFT JOIN participants p ON p.id = m.author_id AND p.company_id = c.company_id
   WHERE c.id = ANY($2::text[])
-    AND c.members @> to_jsonb(ARRAY[$1::text])
+    AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $1)
     AND ($3::text IS NULL OR c.company_id = $3)
 )
 SELECT id, conversation_id, company_id, conversation_title, conversation_kind, conversation_topic,
@@ -522,10 +478,10 @@ func (s *Service) HumanRecentlyActive(ctx context.Context, companyID string, win
 func (s *Service) IsConversationMember(ctx context.Context, conversationID, agentID string, companyID *string) (bool, error) {
 	var one int
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT 1 AS ok FROM conversations
-		 WHERE id = $1
-		   AND ($3::text IS NULL OR company_id = $3)
-		   AND members @> to_jsonb(ARRAY[$2::text])
+		SELECT 1 AS ok FROM conversations c
+		 WHERE c.id = $1
+		   AND ($3::text IS NULL OR c.company_id = $3)
+		   AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 		 LIMIT 1`, conversationID, agentID, companyID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil

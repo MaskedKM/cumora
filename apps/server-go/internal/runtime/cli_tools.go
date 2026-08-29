@@ -490,16 +490,17 @@ func (s *Service) cliStartPrivateChat(ctx context.Context, instigatorID, partner
 }
 
 func (s *Service) cliFindOrCreateDirect(ctx context.Context, aID, bID, companyID, topic, aName string) (string, error) {
-	membersA, _ := jsonMarshalStrings([]string{aID})
-	membersB, _ := jsonMarshalStrings([]string{bID})
-	var existing string
+		var existing string
 	query := `
-		SELECT id FROM conversations
-		  WHERE kind = 'direct'
-		    AND members @> $1::jsonb
-		    AND members @> $2::jsonb
-		    AND jsonb_array_length(members) = 2`
-	args := []any{membersA, membersB}
+		SELECT c.id
+		  FROM conversation_members ca
+		  JOIN conversation_members cb ON cb.conversation_id = ca.conversation_id
+		  JOIN conversations c ON c.id = ca.conversation_id
+		 WHERE c.kind = 'direct'
+		   AND ca.participant_id = $1
+		   AND cb.participant_id = $2
+		   AND jsonb_array_length(c.members) = 2`
+	args := []any{aID, bID}
 	if companyID != "" {
 		query += ` AND company_id = $3 ORDER BY created_at DESC LIMIT 1`
 		args = append(args, companyID)

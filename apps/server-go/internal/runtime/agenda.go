@@ -439,16 +439,16 @@ func (s *Service) loadDueEvents(ctx context.Context, agentID, companyID string) 
 }
 
 // loadStalledConversations:成员会话中"最后一条文本消息"落在静默窗
-// [STALL_MIN_MS, STALL_MAX_MS] 内者。members GIN + LATERAL 取每会话
-// 最新消息;enable_seqscan=off 会话级强制 GIN(同 loadInbox)。
+// [STALL_MIN_MS, STALL_MAX_MS] 内者。conversation_members 索引定位
+// 会话 + LATERAL 取每会话最新消息(#137 前为 GIN + enable_seqscan=off)。
 func (s *Service) loadStalledConversations(ctx context.Context, agentID, companyID string) ([]StalledConvo, error) {
 	var out []StalledConvo
-	err := s.withSeqscanOff(ctx, func(conn *sql.Conn) error {
-		rows, err := conn.QueryContext(ctx, `
+	rows, err := s.DB.QueryContext(ctx, `
 			WITH convos AS (
 			  SELECT c.id, c.kind, c.title
-			    FROM conversations c
-			   WHERE c.company_id = $2 AND c.members @> to_jsonb(ARRAY[$1::text])
+			    FROM conversation_members cmv
+			    JOIN conversations c ON c.id = cmv.conversation_id
+			   WHERE cmv.participant_id = $1 AND c.company_id = $2
 			)
 			SELECT co.id AS conversation_id, co.kind, co.title,
 			       m.id AS last_message_id, m.author_id AS last_author_id,
@@ -479,33 +479,34 @@ func (s *Service) loadStalledConversations(ctx context.Context, agentID, company
 			   AND m.created_at >= NOW() - ($4::double precision * INTERVAL '1 millisecond')
 			 ORDER BY m.created_at DESC
 			 LIMIT 10`,
-			agentID, companyID, stallMinMS(), stallMaxMS())
-		if err != nil {
-			return err
+		agentID, companyID, stallMinMS(), stallMaxMS())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			st                StalledConvo
+			title             sql.NullString
+			minutesSilentText string
+			recentTail        sql.NullString
+		)
+		if err := rows.Scan(&st.ConversationID, &st.Kind, &title, &st.LastMessageID, &st.LastAuthorID,
+			&st.LastAuthorName, &st.LastAuthorIsSelf, &st.LastBody, &minutesSilentText, &recentTail); err != nil {
+			return nil, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var (
-				st                StalledConvo
-				title             sql.NullString
-				minutesSilentText string
-				recentTail        sql.NullString
-			)
-			if err := rows.Scan(&st.ConversationID, &st.Kind, &title, &st.LastMessageID, &st.LastAuthorID,
-				&st.LastAuthorName, &st.LastAuthorIsSelf, &st.LastBody, &minutesSilentText, &recentTail); err != nil {
-				return err
-			}
-			if title.Valid {
-				t := title.String
-				st.Title = &t
-			}
-			st.MinutesSilent = int(parseInt(minutesSilentText))
-			st.RecentTail = recentTail.String
-			out = append(out, st)
+		if title.Valid {
+			t := title.String
+			st.Title = &t
 		}
-		return rows.Err()
-	})
-	return out, err
+		st.MinutesSilent = int(parseInt(minutesSilentText))
+		st.RecentTail = recentTail.String
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 /* ───────── brief 渲染 + 终判(agenda.ts server 侧) ───────── */

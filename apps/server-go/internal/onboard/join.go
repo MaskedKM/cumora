@@ -37,7 +37,7 @@ func JoinAllHands(ctx context.Context, db *sql.DB, companyID, participantID stri
 	res, err := db.ExecContext(ctx, `
 		UPDATE conversations
 		   SET members = members || to_jsonb(ARRAY[$2::text]), updated_at = NOW()
-		 WHERE id = $1 AND NOT (members @> to_jsonb(ARRAY[$2::text]))`, convID.String, participantID)
+		 WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = conversations.id AND cm.participant_id = $2)`, convID.String, participantID)
 	if err != nil {
 		return
 	}
