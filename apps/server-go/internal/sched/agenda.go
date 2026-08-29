@@ -1,8 +1,8 @@
-// runtime 包 agenda —— agenda.ts + agenda-triage-core.ts + cerebellum-route.ts
+// sched 包 agenda —— agenda.ts + agenda-triage-core.ts + cerebellum-route.ts
 // 的心跳议程面:收集 agent 可行动面(看板卡/日历槽/停摆会话)、组分类器
 // prompt(纯函数)、确定性回退、停摆 nudge 认领、brief 渲染、按 agent
 // 解析 cerebellum 路由。
-package runtime
+package sched
 
 import (
 	"context"
@@ -28,6 +28,8 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 func getenv(name string) string           { return os.Getenv(name) }
@@ -183,7 +185,7 @@ func RenderAgendaForClassifier(agenda AgentAgenda, nowMS int64) string {
 		for _, e := range agenda.Events {
 			prompt := ""
 			if e.AgentPrompt != nil && *e.AgentPrompt != "" {
-				prompt = " — prompt: " + sliceUTF16(*e.AgentPrompt, 140)
+				prompt = " — prompt: " + httpx.UTF16Cap(*e.AgentPrompt, 140)
 			}
 			lines = append(lines, fmt.Sprintf(`- "%s" at %s (%s)%s`, e.Title, e.StartAt, relativeAge(e.StartAt, nowMS), prompt))
 		}
@@ -315,8 +317,8 @@ func nudgeCooldownFallbackMS() int64 {
 // agent 间)拿到 true;其余人——含同 agent 后续心跳——冷期内 false。
 // fallback 来源用短 TTL:被唤醒的大脑若婉拒,45min 锁不应永久封死其他
 // 成员;另配 declines 计数(≥3 次无后续发帖即停)防 5min 重烧 token。
-func (s *Service) ClaimStallNudge(conversationID string, source string) bool {
-	rdb := s.redis()
+func (s *S) ClaimStallNudge(conversationID string, source string) bool {
+	rdb := s.RDB
 	if rdb == nil {
 		return false
 	}
@@ -360,7 +362,7 @@ func parseInt(s string) int64 {
 
 // GatherAgentAgenda:公开入口。空结果 = 该 agent 盘上无事,调用方回退
 // 通用 idle 行为。stalls 查询失败按空处理(不拖垮卡/事件)。
-func (s *Service) GatherAgentAgenda(ctx context.Context, agentID, companyID string) (AgentAgenda, error) {
+func (s *S) GatherAgentAgenda(ctx context.Context, agentID, companyID string) (AgentAgenda, error) {
 	agenda := AgentAgenda{Cards: []AgendaCard{}, Events: []AgendaEvent{}, Stalls: []StalledConvo{}}
 	cards, err := s.loadAssignedCards(ctx, agentID, companyID)
 	if err != nil {
@@ -383,7 +385,7 @@ func (s *Service) GatherAgentAgenda(ctx context.Context, agentID, companyID stri
 
 // loadAssignedCards:非 done 列里指派给/点名该 agent 的卡。紧上限——
 // 绝不喂分类器一面墙;30 天未动的卡视作弃置忽略。
-func (s *Service) loadAssignedCards(ctx context.Context, agentID, companyID string) ([]AgendaCard, error) {
+func (s *S) loadAssignedCards(ctx context.Context, agentID, companyID string) ([]AgendaCard, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT c.id, c.board_id, b.title AS board_title,
 		       c.column_id, col.title AS column_title,
@@ -421,7 +423,7 @@ func (s *Service) loadAssignedCards(ctx context.Context, agentID, companyID stri
 
 // loadDueEvents:当前槽窗内的日历事件(不含 recurrence 规则语义——
 // 分类器只需下一个具体时刻,真正的派发数学在日历派发器)。
-func (s *Service) loadDueEvents(ctx context.Context, agentID, companyID string) ([]AgendaEvent, error) {
+func (s *S) loadDueEvents(ctx context.Context, agentID, companyID string) ([]AgendaEvent, error) {
 	now := time.Now()
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, title, description, start_at::text AS start_at,
@@ -452,7 +454,7 @@ func (s *Service) loadDueEvents(ctx context.Context, agentID, companyID string) 
 // loadStalledConversations:成员会话中"最后一条文本消息"落在静默窗
 // [STALL_MIN_MS, STALL_MAX_MS] 内者。conversation_members 索引定位
 // 会话 + LATERAL 取每会话最新消息(#137 前为 GIN + enable_seqscan=off)。
-func (s *Service) loadStalledConversations(ctx context.Context, agentID, companyID string) ([]StalledConvo, error) {
+func (s *S) loadStalledConversations(ctx context.Context, agentID, companyID string) ([]StalledConvo, error) {
 	var out []StalledConvo
 	rows, err := s.DB.QueryContext(ctx, `
 			WITH convos AS (
@@ -545,7 +547,7 @@ func RenderAgendaBrief(agenda AgentAgenda, focus string) string {
 				// TS .replace(/\n/g, ' ').slice(0,200):只换行折叠(空白/制表保留),
 				// UTF-16 码元截断。
 				d := strings.ReplaceAll(*c.Description, "\n", " ")
-				lines = append(lines, "    "+sliceUTF16(d, 200))
+				lines = append(lines, "    "+httpx.UTF16Cap(d, 200))
 			}
 		}
 		lines = append(lines, "")
@@ -559,7 +561,7 @@ func RenderAgendaBrief(agenda AgentAgenda, focus string) string {
 		for _, e := range agenda.Events {
 			lines = append(lines, fmt.Sprintf("- %s  at %s  %s", e.ID, e.StartAt, e.Title))
 			if e.AgentPrompt != nil && *e.AgentPrompt != "" {
-				lines = append(lines, "    prompt: "+sliceUTF16(*e.AgentPrompt, 240))
+				lines = append(lines, "    prompt: "+httpx.UTF16Cap(*e.AgentPrompt, 240))
 			}
 		}
 	}
@@ -607,7 +609,7 @@ type AgendaOutcome struct {
 // agent 去 nudge、同一停摆态绝不两次),只留本 agent 赢到的 stall;
 // 卡/事件 per-agent 无竞态直通。分类器错误来源按 fallback 短冷却。
 // 停摆是唯一动因且全被别人认走 → 不值得叫大脑。
-func (s *Service) FinalizeAgendaVerdict(ctx context.Context, agenda AgentAgenda, verdict AgendaVerdict) AgendaOutcome {
+func (s *S) FinalizeAgendaVerdict(ctx context.Context, agenda AgentAgenda, verdict AgendaVerdict) AgendaOutcome {
 	if !verdict.Actionable {
 		return AgendaOutcome{
 			Actionable: false,
@@ -655,7 +657,7 @@ type CerebellumSettings struct {
 	Model       string
 }
 
-func (s *Service) GetCerebellumSettings(ctx context.Context) CerebellumSettings {
+func (s *S) GetCerebellumSettings(ctx context.Context) CerebellumSettings {
 	def := CerebellumSettings{Route: "remote", LocalEngine: "claude", Provider: "", BaseURL: "", Model: ""}
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT key, value FROM app_settings WHERE key = ANY($1::text[])`,
@@ -695,7 +697,7 @@ func (s *Service) GetCerebellumSettings(ctx context.Context) CerebellumSettings 
 // ResolveCerebellumRouteForAgent:部署默认(byoa?)→ 该 agent 的 Computer
 // 在线且宣告 localEngine 才落 byoa;其余一律 remote——暂时不可用的本地
 // 引擎不得无声饿死 agent 的 cerebellum 调用。
-func (s *Service) ResolveCerebellumRouteForAgent(ctx context.Context, agentID string) string {
+func (s *S) ResolveCerebellumRouteForAgent(ctx context.Context, agentID string) string {
 	settings := s.GetCerebellumSettings(ctx)
 	if settings.Route != "byoa" {
 		return "remote"
@@ -730,7 +732,7 @@ func (s *Service) ResolveCerebellumRouteForAgent(ctx context.Context, agentID st
 // 解密("iv.tag.ciphertext" 各 base64;主键 = sha256(CUMORA_SECRETS_KEY))。
 // 任何失败(缺主键/主键轮换/坏数据)都返回 "" —— 按 ADR 0001,丢失主键
 // 只是让配置"看起来未设置",绝不抛错。
-func (s *Service) CerebellumApiKeyPlaintext(ctx context.Context) string {
+func (s *S) CerebellumApiKeyPlaintext(ctx context.Context) string {
 	master := os.Getenv("CUMORA_SECRETS_KEY")
 	if master == "" {
 		return ""
@@ -775,7 +777,7 @@ func (s *Service) CerebellumApiKeyPlaintext(ctx context.Context) string {
 }
 
 // cerebellumRemoteConfigured:适配器可达的最小配置(baseUrl + apiKey)。
-func (s *Service) cerebellumRemoteConfigured(ctx context.Context) (baseURL, apiKey string, ok bool) {
+func (s *S) cerebellumRemoteConfigured(ctx context.Context) (baseURL, apiKey string, ok bool) {
 	settings := s.GetCerebellumSettings(ctx)
 	apiKey = s.CerebellumApiKeyPlaintext(ctx)
 	return settings.BaseURL, apiKey, settings.BaseURL != "" && apiKey != ""
@@ -855,7 +857,7 @@ func jsStringClamp(v any, max int) string {
 	case nil:
 		return ""
 	case string:
-		return sliceUTF16(t, max)
+		return httpx.UTF16Cap(t, max)
 	case []any:
 		parts := make([]string, 0, len(t))
 		for _, e := range t {
@@ -865,21 +867,21 @@ func jsStringClamp(v any, max int) string {
 			}
 			parts = append(parts, jsStringClamp(e, 1<<30))
 		}
-		return sliceUTF16(strings.Join(parts, ","), max)
+		return httpx.UTF16Cap(strings.Join(parts, ","), max)
 	case float64:
 		// JS Number→String:整数值不带小数点;Go %v 同形。
-		return sliceUTF16(strconv.FormatFloat(t, 'g', -1, 64), max)
+		return httpx.UTF16Cap(strconv.FormatFloat(t, 'g', -1, 64), max)
 	case bool:
-		return sliceUTF16(strconv.FormatBool(t), max)
+		return httpx.UTF16Cap(strconv.FormatBool(t), max)
 	default:
-		return sliceUTF16(fmt.Sprint(t), max)
+		return httpx.UTF16Cap(fmt.Sprint(t), max)
 	}
 }
 
 // ClassifyAgendaActionable:remote 路由的云分类 —— 通用 cerebellum 适配器
 // (任意 Chat-Completions 兼容供应商)或 legacy tracked OpenAI 客户端;
 // 任何失败退确定性回退,分类器断供绝不烧脑调用。
-func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *agent.Persona, companyID, agentID string, agenda AgentAgenda, nowMS int64) AgendaVerdict {
+func (s *S) ClassifyAgendaActionable(ctx context.Context, persona *agent.Persona, companyID, agentID string, agenda AgentAgenda, nowMS int64) AgendaVerdict {
 	built := BuildAgendaClassifierRequest(persona, agenda, nowMS)
 	if built.Verdict != nil {
 		return *built.Verdict
@@ -947,7 +949,7 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *agent.P
 
 // cerebellumResponsesCreate:Responses 参数 → Chat-Completions 翻译
 // (cerebellum-adapter.ts 的非流式分支;模型名原样透传)。
-func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args agent.CliResponsesArgs) (string, *costing.TokenUsage, error) {
+func (s *S) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args agent.CliResponsesArgs) (string, *costing.TokenUsage, error) {
 	body := map[string]any{
 		"model":    args.Model,
 		"messages": agent.NovitaChatMessages(args.Instructions, args.Input),

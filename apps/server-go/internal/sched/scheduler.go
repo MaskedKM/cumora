@@ -1,10 +1,10 @@
-// runtime 包 scheduler —— 唤醒调度(#62):scheduler.ts 的 Go 等价。
+// sched 包 scheduler —— 唤醒调度(#62):scheduler.ts 的 Go 等价。
 // 事件驱动面:订阅 cumora:msg.new(claimAndWake 多副本去重 → 成员唤醒
 // + steer 轮中注入)与 cumora:polls(投票/关闭 → 唤醒投票发起 agent)。
 // 预算面:低优先级合成唤醒 20/min 进程级滚动窗;agent 驱动唤醒的
 // turn-rate 地板(30/min,内容盲);steer 每 agent 30/min。
 // #82 时代的 WakeAgent/WakeMentionedAgents(看板 manual 唤醒)保持原签名。
-package runtime
+package sched
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 )
 
 // WakeAgent 已迁 agent 包(#140):agent.Service.WakeAgent 经 SetWakeHook
-// 钩子回到本包 wakeOne(runtime.New 接线),调用点签名不变。
+// 钩子回到本包 WakeOne(runtime.New 接线),调用点签名不变。
 
 /* ───────── 唤醒载荷 ───────── */
 
@@ -111,8 +111,8 @@ const agentTurnRatePerMinute = 30
 
 // ConsumeAgentTurnToken: 每 agent 滚动 60s 激活预算(仅 agent 驱动唤醒
 // 消费;人类驱动永不节流)。Redis 错误 fail-open。
-func (s *Service) ConsumeAgentTurnToken(agentID string) bool {
-	rdb := s.redis()
+func (s *S) ConsumeAgentTurnToken(agentID string) bool {
+	rdb := s.RDB
 	if rdb == nil {
 		return true
 	}
@@ -130,8 +130,8 @@ func (s *Service) ConsumeAgentTurnToken(agentID string) bool {
 
 const steerRatePerMinute = 30
 
-func (s *Service) consumeSteerRateToken(agentID string) bool {
-	rdb := s.redis()
+func (s *S) consumeSteerRateToken(agentID string) bool {
+	rdb := s.RDB
 	if rdb == nil {
 		return true
 	}
@@ -155,7 +155,7 @@ func steerEnabled() bool {
 
 // wakeOne: scheduler.wakeOne 等价——预算闸 → Deliver(wake)→ busy 时
 // 补发 steer(+steer-ack typing)→ 0 接收者记日志(inbox 持久兜底)。
-func (s *Service) wakeOne(agentID, reason string, conversationID *string, steer *SteerPayload, opts *WakeOpts) {
+func (s *S) WakeOne(agentID, reason string, conversationID *string, steer *SteerPayload, opts *WakeOpts) {
 	if s.Bus == nil {
 		slog.Info("[scheduler] daemon offline — wake deferred to reconnect", "agent", agentID, "reason", reason)
 		return
@@ -192,7 +192,7 @@ func (s *Service) wakeOne(agentID, reason string, conversationID *string, steer 
 	// 轮中注入:busy 租约存在 → 同内容补发 steer;steer-ack typing 让
 	// 人类立刻看到"<agent> 正在输入"(内容要等下一 hop 边界才真正入上下文)。
 	if steer != nil && delivered > 0 && steerEnabled() {
-		if s.IsAgentBusy(agentID) {
+		if s.busy(agentID) {
 			allowed := s.consumeSteerRateToken(agentID)
 			if !allowed {
 				slog.Warn("[scheduler] steer rate-limited; falling back to wake-only", "agent", agentID)
@@ -301,7 +301,7 @@ var authorNameCache = map[string]cachedName{}
 var authorNameOrder []string // 插入序,容量裁剪时淘汰最旧(TS Map 迭代序等价)
 
 // resolveAuthorName: steer 前缀的显示名;DB 错误不缓存、回落 id。
-func (s *Service) resolveAuthorName(ctx context.Context, authorID string) string {
+func (s *S) resolveAuthorName(ctx context.Context, authorID string) string {
 	now := time.Now()
 	authorNameMu.Lock()
 	if hit, ok := authorNameCache[authorID]; ok && hit.expiresAt.After(now) {
@@ -349,7 +349,7 @@ func cacheAuthorNameLocked(id, name string, now time.Time) {
 }
 
 // resolveParticipantNames: 批量显示名(poll brief 用);未解析回落 id。
-func (s *Service) resolveParticipantNames(ctx context.Context, ids []string) map[string]string {
+func (s *S) resolveParticipantNames(ctx context.Context, ids []string) map[string]string {
 	out := map[string]string{}
 	if len(ids) == 0 {
 		return out
@@ -429,8 +429,8 @@ type schedulerMsgNew struct {
 
 // claimAndWake: 多副本去重——SETNX per message id(TTL 60s),抢到的副本
 // 才 fan-out;Redis 错误视为他副本持有(TS .catch(()=>null) 平价)。
-func (s *Service) claimAndWake(payload schedulerMsgNew) {
-	rdb := s.redis()
+func (s *S) claimAndWake(payload schedulerMsgNew) {
+	rdb := s.RDB
 	if rdb == nil {
 		return
 	}
@@ -444,7 +444,7 @@ func (s *Service) claimAndWake(payload schedulerMsgNew) {
 // wakeFromMessage: scheduler.wake 等价——steer 载荷构建(非 system 且
 // 有正文)、成员+静音查询、静音豁免、agent 作者的 turn-rate 地板、
 // 并行 fan-out。
-func (s *Service) wakeFromMessage(payload schedulerMsgNew) {
+func (s *S) wakeFromMessage(payload schedulerMsgNew) {
 	ctx := ctxBG
 	conversationID := payload.ConversationID
 	authorID := payload.Message.AuthorID
@@ -545,7 +545,7 @@ func (s *Service) wakeFromMessage(payload schedulerMsgNew) {
 }
 
 // IsAgent: personas.isAgent 等价(getPersona ≠ null;含进程内缓存)。
-func (s *Service) IsAgent(ctx context.Context, id string) bool {
+func (s *S) IsAgent(ctx context.Context, id string) bool {
 	p, err := s.GetPersona(ctx, id)
 	return err == nil && p != nil
 }
@@ -553,7 +553,7 @@ func (s *Service) IsAgent(ctx context.Context, id string) bool {
 var wakeFanoutOnce sync.Once
 var wakeFanoutSem chan struct{}
 
-func (s *Service) fanOutSem() chan struct{} {
+func (s *S) fanOutSem() chan struct{} {
 	wakeFanoutOnce.Do(func() {
 		n := 6
 		if v, ok := envIntRaw("WAKE_FANOUT_CONCURRENCY"); ok {
@@ -568,7 +568,7 @@ func (s *Service) fanOutSem() chan struct{} {
 }
 
 // fanOutWake: 有界并发扇出;单个失败只告警,绝不冒泡进 Redis 回调。
-func (s *Service) fanOutWake(recipients []string, conversationID string, steer *SteerPayload) {
+func (s *S) fanOutWake(recipients []string, conversationID string, steer *SteerPayload) {
 	var wg sync.WaitGroup
 	for _, m := range recipients {
 		wg.Add(1)
@@ -582,7 +582,7 @@ func (s *Service) fanOutWake(recipients []string, conversationID string, steer *
 			s.fanOutSem() <- struct{}{}
 			defer func() { <-s.fanOutSem() }()
 			convo := conversationID
-			s.wakeOne(agentID, "message.new", &convo, steer, nil)
+			s.WakeOne(agentID, "message.new", &convo, steer, nil)
 		}(m)
 	}
 	wg.Wait()
@@ -594,9 +594,9 @@ var schedulerStarted sync.Once
 
 // StartScheduler: 订阅 cumora:msg.new + cumora:polls;幂等。消息事件 →
 // claimAndWake(fire-and-forget,断言不逃逸);poll 事件 → handlePollUpdated。
-func (s *Service) StartScheduler() {
+func (s *S) StartScheduler() {
 	schedulerStarted.Do(func() {
-		rdb := s.redis()
+		rdb := s.RDB
 		if rdb == nil {
 			slog.Info("[scheduler] redis unavailable — mailbox scheduler idle")
 			return
@@ -614,7 +614,7 @@ func (s *Service) StartScheduler() {
 	})
 }
 
-func (s *Service) pumpScheduler(rdb redis.UniversalClient) error {
+func (s *S) pumpScheduler(rdb redis.UniversalClient) error {
 	sub := rdb.Subscribe(ctxBG, events.ChMessageNew, chPolls)
 	defer sub.Close()
 	slog.Info("[scheduler] mailbox scheduler listening", "channels", []string{events.ChMessageNew, chPolls}, "runtime", "byoa-only")
@@ -683,7 +683,7 @@ type pollUpdatedEvent struct {
 
 // handlePollUpdated: 投票/关闭 → 唤醒发起 poll 的 agent(自己操作不
 // 自唤);投票 8s 去重、关闭 600s 幂等;构建实时票数简报随唤醒携带。
-func (s *Service) handlePollUpdated(event pollUpdatedEvent) {
+func (s *S) handlePollUpdated(event pollUpdatedEvent) {
 	ctx := ctxBG
 	if event.CompanyID == "" {
 		return
@@ -715,7 +715,7 @@ func (s *Service) handlePollUpdated(event pollUpdatedEvent) {
 		claimKey = "cumora:poll-close-wake-claim:" + event.MessageID
 		claimTTL = pollCloseWakeClaimSec * time.Second
 	}
-	if rdb := s.redis(); rdb != nil {
+	if rdb := s.RDB; rdb != nil {
 		claimed, err := rdb.SetNX(ctx, claimKey, "1", claimTTL).Result()
 		if err != nil || !claimed {
 			return
@@ -798,7 +798,7 @@ func (s *Service) handlePollUpdated(event pollUpdatedEvent) {
 		"phase":          phase,
 	}
 	convo := event.ConversationID
-	s.wakeOne(authorID, "poll.updated", &convo, nil, &WakeOpts{PollBrief: brief})
+	s.WakeOne(authorID, "poll.updated", &convo, nil, &WakeOpts{PollBrief: brief})
 }
 
 // TalliesVoterIDs: 简报名字解析收集的辅助(去重前的全量 voter id)。
@@ -816,7 +816,7 @@ func (e pollUpdatedEvent) TalliesVoterIDs() []string {
 // (对齐 router.ts wakeMentionedAgents)。过滤发起者自己,只留本租户的
 // 在册 agent;逐个 goroutine 投递,单点失败只告警——看板请求路径绝不被
 // 唤醒基建拖挂(TS void + catch 的对等物 + defer recover)。
-func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
+func (s *S) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
 	if len(mentions) == 0 {
 		return
 	}

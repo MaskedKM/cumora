@@ -1,8 +1,8 @@
-// runtime 包 triage —— triage-core.ts 的纯函数心脏:组 cerebellum 的
+// sched 包 triage —— triage-core.ts 的纯函数心脏:组 cerebellum 的
 // prompt(instructions+input)并解析其 JSON 判定。无 LLM、无 DB、无 env。
 // AI 原则:这里的每个"决策"都由小模型做,绝无按内容分类的正则;仅有的
 // 非模型短路是"收件箱空"(计数不是分类)与对模型自身 JSON 答案的解析。
-package runtime
+package sched
 
 import (
 	"encoding/json"
@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 // dmAgentTriageEvery:agent↔agent DM 的回环检查节奏。DM 默认 ENGAGE
@@ -29,12 +31,12 @@ const hardLoopCap = 20
 
 /* ───────── map 行访问器(inbox/context 行来自 LoadInbox/LoadContext) ───────── */
 
-func rowStr(m map[string]any, key string) string {
+func RowStr(m map[string]any, key string) string {
 	v, _ := m[key].(string)
 	return v
 }
 
-func rowInt(m map[string]any, key string) int64 {
+func RowInt(m map[string]any, key string) int64 {
 	switch v := m[key].(type) {
 	case int64:
 		return v
@@ -71,26 +73,26 @@ func compactMessages(rows []map[string]any) string {
 		if v, ok := m["is_unread"].(bool); ok && v {
 			unread = "NEW "
 		}
-		if v := rowStr(m, "human_reacted_at"); v != "" {
+		if v := RowStr(m, "human_reacted_at"); v != "" {
 			reacted = "HUMAN-REACTED "
 		}
 		if v, ok := m["is_self"].(bool); ok && v {
 			selfMark = "▸YOU "
 		}
-		convo := fmt.Sprintf("%s [%s]", rowStr(m, "conversation_id"), rowStr(m, "conversation_kind"))
-		authorKind := rowStr(m, "author_kind")
+		convo := fmt.Sprintf("%s [%s]", RowStr(m, "conversation_id"), RowStr(m, "conversation_kind"))
+		authorKind := RowStr(m, "author_kind")
 		if authorKind == "" {
 			authorKind = "unknown"
 		}
-		author := fmt.Sprintf("%s (%s)", rowStr(m, "author_name"), authorKind)
-		body := rowStr(m, "body")
-		if rowStr(m, "kind") == "system" {
+		author := fmt.Sprintf("%s (%s)", RowStr(m, "author_name"), authorKind)
+		body := RowStr(m, "body")
+		if RowStr(m, "kind") == "system" {
 			body = "[system]"
 		}
 		body = collapseWhitespace(body)
-		body = sliceUTF16(body, 500) // TS .slice(0,500) 按 UTF-16 码元
+		body = httpx.UTF16Cap(body, 500) // TS .slice(0,500) 按 UTF-16 码元
 		lines = append(lines, fmt.Sprintf("%s%s%s #%d %s%s: %s",
-			unread, reacted, convo, rowInt(m, "sequence"), selfMark, author, body))
+			unread, reacted, convo, RowInt(m, "sequence"), selfMark, author, body))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -113,10 +115,10 @@ func agentRunByConvo(context []map[string]any) map[string]*agentRun {
 	rowsByConvo := map[string][]map[string]any{}
 	var convoOrder []string
 	for _, m := range context {
-		if rowStr(m, "kind") == "system" {
+		if RowStr(m, "kind") == "system" {
 			continue
 		}
-		cid := rowStr(m, "conversation_id")
+		cid := RowStr(m, "conversation_id")
 		if _, ok := rowsByConvo[cid]; !ok {
 			convoOrder = append(convoOrder, cid)
 		}
@@ -129,16 +131,16 @@ func agentRunByConvo(context []map[string]any) map[string]*agentRun {
 		sawHuman := false
 		lastAttentionAt := int64(0)
 		for _, m := range rows {
-			if rowStr(m, "author_kind") == "human" {
+			if RowStr(m, "author_kind") == "human" {
 				runRows = nil
 				sawHuman = true
 			} else {
 				runRows = append(runRows, m)
 			}
-			if t := parseISOms(rowStr(m, "human_reacted_at")); t > lastAttentionAt {
+			if t := parseISOms(RowStr(m, "human_reacted_at")); t > lastAttentionAt {
 				lastAttentionAt = t
 			}
-			if t := parseISOms(rowStr(m, "human_last_read_at")); t > lastAttentionAt {
+			if t := parseISOms(RowStr(m, "human_last_read_at")); t > lastAttentionAt {
 				lastAttentionAt = t
 			}
 		}
@@ -146,7 +148,7 @@ func agentRunByConvo(context []map[string]any) map[string]*agentRun {
 			sawHuman = true
 			filtered := runRows[:0]
 			for _, m := range runRows {
-				if parseISOms(rowStr(m, "created_at")) > lastAttentionAt {
+				if parseISOms(RowStr(m, "created_at")) > lastAttentionAt {
 					filtered = append(filtered, m)
 				}
 			}
@@ -154,7 +156,7 @@ func agentRunByConvo(context []map[string]any) map[string]*agentRun {
 		}
 		run := &agentRun{sinceHuman: len(runRows), sawHuman: sawHuman, agents: map[string]bool{}}
 		for _, m := range runRows {
-			run.agents[rowStr(m, "author_id")] = true
+			run.agents[RowStr(m, "author_id")] = true
 		}
 		out[cid] = run
 	}
@@ -275,10 +277,10 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	// JSON 是服务器写的),非内容分类;指派他人的仍落入仅系统闸。
 	var dueAlarm map[string]any
 	for _, m := range inbox {
-		if rowStr(m, "kind") != "system" {
+		if RowStr(m, "kind") != "system" {
 			continue
 		}
-		p := systemPayloadOf(rowStr(m, "body"))
+		p := systemPayloadOf(RowStr(m, "body"))
 		if p == nil || p["kind"] != "calendar_event" {
 			continue
 		}
@@ -289,7 +291,7 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 		}
 	}
 	if dueAlarm != nil {
-		p := systemPayloadOf(rowStr(dueAlarm, "body"))
+		p := systemPayloadOf(RowStr(dueAlarm, "body"))
 		var noteParts []string
 		if t, ok := p["title"].(string); ok && t != "" {
 			noteParts = append(noteParts, t)
@@ -311,7 +313,7 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	}
 	allSystem := true
 	for _, m := range inbox {
-		if rowStr(m, "kind") != "system" {
+		if RowStr(m, "kind") != "system" {
 			allSystem = false
 			break
 		}
@@ -326,7 +328,7 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	}
 	var realUnread []map[string]any
 	for _, m := range inbox {
-		if rowStr(m, "kind") != "system" {
+		if RowStr(m, "kind") != "system" {
 			realUnread = append(realUnread, m)
 		}
 	}
@@ -334,14 +336,14 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	// 为其付小脑费纯属浪费延迟,且行为不安全的闸门可能摔落人类消息。
 	var humanUnread []map[string]any
 	for _, m := range realUnread {
-		if rowStr(m, "author_kind") == "human" {
+		if RowStr(m, "author_kind") == "human" {
 			humanUnread = append(humanUnread, m)
 		}
 	}
 	if len(humanUnread) > 0 {
 		anyDm := false
 		for _, m := range humanUnread {
-			if rowStr(m, "conversation_kind") == "direct" {
+			if RowStr(m, "conversation_kind") == "direct" {
 				anyDm = true
 				break
 			}
@@ -368,11 +370,11 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 		allDirectAgent := true
 		latestSeq := int64(0)
 		for _, m := range realUnread {
-			if rowStr(m, "conversation_kind") != "direct" || rowStr(m, "author_kind") != "agent" {
+			if RowStr(m, "conversation_kind") != "direct" || RowStr(m, "author_kind") != "agent" {
 				allDirectAgent = false
 				break
 			}
-			if s := rowInt(m, "sequence"); s > latestSeq {
+			if s := RowInt(m, "sequence"); s > latestSeq {
 				latestSeq = s
 			}
 		}
@@ -395,10 +397,10 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	unreadSet := map[string]bool{}
 	var unreadConvos []string
 	for _, m := range inbox {
-		if rowStr(m, "kind") == "system" {
+		if RowStr(m, "kind") == "system" {
 			continue
 		}
-		cid := rowStr(m, "conversation_id")
+		cid := RowStr(m, "conversation_id")
 		if !unreadSet[cid] {
 			unreadSet[cid] = true
 			unreadConvos = append(unreadConvos, cid)
@@ -443,7 +445,7 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 	input := buildTriageInput(agentID, persona, inbox, context, claims, humanActiveInCompany)
 	failClosed := true
 	for _, m := range inbox {
-		if rowStr(m, "kind") != "system" && rowStr(m, "author_kind") == "human" {
+		if RowStr(m, "kind") != "system" && RowStr(m, "author_kind") == "human" {
 			failClosed = false
 			break
 		}
