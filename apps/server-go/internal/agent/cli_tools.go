@@ -1,8 +1,8 @@
-// runtime 包 runTool 面 —— cli.ts 的 react/dm/pull-group/palette 四个
+// agent 包 runTool 面 —— cli.ts 的 react/dm/pull-group/palette 四个
 // "动作"子命令:buildToolArgs 组参 → executeTool(tools.ts)→ CLI 渲染。
 // executeTool 落 tool_calls 行(先 pending 后回填),三个 DB 型工具的
 // 广播(reactions/group.pulled/message.new)与展示文本逐字对齐 TS。
-package runtime
+package agent
 
 import (
 	"context"
@@ -37,8 +37,8 @@ type cliToolResult struct {
 	Display    cliToolDisplay
 }
 
-// supportModelEnv:OPENAI_MODEL_SUPPORT(TS 缺省 gpt-5.4-mini)。
-func supportModelEnv() string {
+// SupportModelEnv:OPENAI_MODEL_SUPPORT(TS 缺省 gpt-5.4-mini)。
+func SupportModelEnv() string {
 	if m := os.Getenv("OPENAI_MODEL_SUPPORT"); m != "" {
 		return m
 	}
@@ -106,7 +106,7 @@ func (s *Service) cliDispatchTool(ctx context.Context, name string, args map[str
 	if err != nil {
 		argPreview := ""
 		if b, jerr := json.Marshal(args); jerr == nil {
-			argPreview = truncateRunesSimple(string(b), 80)
+			argPreview = TruncateRunesSimple(string(b), 80)
 		}
 		// TS catch 用 String(err) —— Error 对象即 "Error: <msg>"。
 		strErr := "Error: " + err.Error()
@@ -273,7 +273,7 @@ func (s *Service) cliRunTool(ctx context.Context, toolName string, parsed cliPar
 }
 
 // cliToolSideEffects:react/dm_with/pull_group 的副作用事件。
-func cliToolSideEffects(toolName string, output any, agentID string) []cliSideEffect {
+func cliToolSideEffects(toolName string, output any, agentID string) []CliSideEffect {
 	m, ok := output.(map[string]any)
 	if !ok {
 		return nil
@@ -284,7 +284,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []cliSideEf
 	}
 	switch toolName {
 	case "react":
-		return []cliSideEffect{{
+		return []CliSideEffect{{
 			"event":         "reaction.updated",
 			"command":       "react",
 			"visibleToUser": true,
@@ -294,7 +294,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []cliSideEf
 			"action":        str("action"),
 		}}
 	case "dm_with":
-		return []cliSideEffect{{
+		return []CliSideEffect{{
 			"event":          "conversation.created",
 			"command":        "dm",
 			"actorId":        agentID,
@@ -310,7 +310,7 @@ func cliToolSideEffects(toolName string, output any, agentID string) []cliSideEf
 				members = append(members, fmt.Sprint(v))
 			}
 		}
-		return []cliSideEffect{{
+		return []CliSideEffect{{
 			"event":          "conversation.created",
 			"command":        "pull-group",
 			"actorId":        agentID,
@@ -329,16 +329,16 @@ var paletteHexRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
 func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID string, t0 time.Time) (cliToolResult, error) {
 	brief := strings.TrimSpace(fmt.Sprint(args["brief"]))
-	model := supportModelEnv()
+	model := SupportModelEnv()
 	agentArg, tenantArg := agentID, (*string)(nil)
 	record := func(status string, errMsg *string, usage *costing.TokenUsage) {
 		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose: "palette", CompanyID: tenantArg, AgentID: &agentArg, Source: "cloud",
 			Model: model, Usage: usage, LatencyMS: msSince(t0), Status: status, Error: errMsg,
-			Extras: map[string]any{"brief": truncateRunesSimple(brief, 120)},
+			Extras: map[string]any{"brief": TruncateRunesSimple(brief, 120)},
 		})
 	}
-	res, err := s.cliResponsesCreate(ctx, "", cliResponsesArgs{
+	res, err := s.ResponsesCreate(ctx, "", CliResponsesArgs{
 		Model:           model,
 		Instructions:    `You produce 5-color hex palettes. Reply ONLY with JSON: {"colors":["#RRGGBB", ...]}. No prose.`,
 		Input:           fmt.Sprintf("Design brief: %s\n\nReply with JSON only.", brief),
@@ -376,7 +376,7 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 		DurationMS: msSince(t0),
 		Display: cliToolDisplay{
 			Name:   "palette",
-			Arg:    truncateRunesSimple(brief, 60),
+			Arg:    TruncateRunesSimple(brief, 60),
 			Status: fmt.Sprintf("%d colors", len(colors)),
 			Detail: strings.Join(colors, "  "),
 			Icon:   &icon,
@@ -411,9 +411,9 @@ func (s *Service) cliTDmWith(ctx context.Context, args map[string]any, agentID s
 		DurationMS: msSince(t0),
 		Display: cliToolDisplay{
 			Name:   "dm_with",
-			Arg:    fmt.Sprintf("%s · %s", partnerID, truncateRunesSimple(topic, 40)),
+			Arg:    fmt.Sprintf("%s · %s", partnerID, TruncateRunesSimple(topic, 40)),
 			Status: fmt.Sprintf("opened · %s", utf16Slice(convoID, 12)),
-			Detail: fmt.Sprintf("→ \"%s\"\n\nDirect conversation opened with %s. Same shape as any 1-on-1 chat — your partner will see it in their mailbox and reply naturally.", truncateRunesSimple(opening, 200), partnerID),
+			Detail: fmt.Sprintf("→ \"%s\"\n\nDirect conversation opened with %s. Same shape as any 1-on-1 chat — your partner will see it in their mailbox and reply naturally.", TruncateRunesSimple(opening, 200), partnerID),
 			Icon:   &icon,
 		},
 	}, nil
@@ -583,7 +583,7 @@ func (s *Service) cliTPullGroup(ctx context.Context, args map[string]any, agentI
 			Name:   "pull_group",
 			Arg:    title,
 			Status: fmt.Sprintf("created · %s", utf16Slice(convoID, 12)),
-			Detail: fmt.Sprintf("members: %s\nreason: %s\n\n→ \"%s\"", strings.Join(members, ", "), reason, truncateRunesSimple(opening, 200)),
+			Detail: fmt.Sprintf("members: %s\nreason: %s\n\n→ \"%s\"", strings.Join(members, ", "), reason, TruncateRunesSimple(opening, 200)),
 			Icon:   &icon,
 		},
 	}, nil

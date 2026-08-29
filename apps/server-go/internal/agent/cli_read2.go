@@ -1,7 +1,7 @@
 // /runtime/cli 读命令组二(#89):messages / thread / convening / search /
 // tools-log / participants-status。时间渲染镜像 Node 无 LANG 环境的
 // en-US 缺省(CI 容器行为;生产容器同环境,双跑等价以它为准)。
-package runtime
+package agent
 
 import (
 	"bytes"

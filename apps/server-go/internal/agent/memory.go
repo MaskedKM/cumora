@@ -1,7 +1,7 @@
-// runtime 包 memory —— inproc-client.ts loadMemory + memory-scope.ts +
+// agent 包 memory —— inproc-client.ts loadMemory + memory-scope.ts +
 // embeddings.ts:混合检索(pinned + 语义 + 近期)与 pgvector 探测、
 // OpenAI text-embedding-3-small 嵌入(尽力而为,失败退化为仅按近期)。
-package runtime
+package agent
 
 import (
 	"bytes"

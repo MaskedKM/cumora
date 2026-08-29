@@ -1,41 +1,38 @@
-// runtime 包 service —— #60 运行时服务面的依赖容器。
-// 对齐 server/src/agents/runtime/(server.ts + inproc-client.ts + wake-bus.ts)
-// 的服务端:HTTP 面 + 数据面 + 唤醒总线。
+// runtime 包 service —— #140 拆包后的 HTTP/调度壳:真身(agent 面 +
+// client 数据面)在 internal/agent,本包经嵌入承接全部既有方法,并保留
+// 唤醒调度、agenda、扫描、presence、/runtime/* 路由面。
 package runtime
 
 import (
 	"context"
 	"database/sql"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/wakebus"
 	"github.com/redis/go-redis/v9"
 )
 
-// Service:一个进程一份。DB 为 pg 池;Redis 客户端可能为 nil(单机无
-// Redis 降级——wake-bus/typing/busy 等 Redis 面会按各自策略降级);
-// Bus 在无 Redis 时不可用(wake-stream 直接 503,不做半开)。
+// Service:一个进程一份。方法面在 agent.Service(嵌入提升,既有调用点
+// 零改动);调度/扫描/presence/路由方法定义在本包。
 type Service struct {
-	DB  *sql.DB
-	RDB redis.UniversalClient
-	Bus *wakebus.Bus
-	// Relay:Yjs sidecar 客户端(doc read/agent-edit 走它)。nil 时 doc
-	// 命令按 sidecar 不可用报错。
-	Relay *docrelay.Relay
+	*agent.Service
 }
 
 func New(db *sql.DB, rdb redis.UniversalClient) *Service {
-	var bus *wakebus.Bus
-	if rdb != nil {
-		bus = wakebus.New(rdb)
-	}
-	return &Service{DB: db, RDB: rdb, Bus: bus}
+	core := agent.New(db, rdb)
+	svc := &Service{Service: core}
+	// 唤醒钩子:agent 面(cli boards manual 唤醒)→ 本包 wakeOne
+	// (预算/steer/bus 投递住在这里)。
+	core.SetWakeHook(func(agentID, reason string, conversationID *string) {
+		svc.wakeOne(agentID, reason, conversationID, nil, nil)
+	})
+	return svc
 }
 
 // SetRelay:main 在 relay 构造后注入(避免构造环)。
-func (s *Service) SetRelay(r *docrelay.Relay) { s.Relay = r }
+func (s *Service) SetRelay(r *docrelay.Relay) { s.Service.SetRelay(r) }
 
-// rdbOrNil:子功能取 Redis 客户端(nil = 降级路径)。
+// redisOrNil:子功能取 Redis 客户端(nil = 降级路径)。
 func (s *Service) redis() redis.UniversalClient { return s.RDB }
 
 // ctxBG:fire-and-forget 后台写共用的父上下文。

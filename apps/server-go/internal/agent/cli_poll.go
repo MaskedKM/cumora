@@ -1,7 +1,7 @@
 // cli_poll —— agent CLI 的 poll 命令面(#89)。引擎已固化到
 // internal/polls(#121,HTTP/CLI/清扫器三路共用);本文件只做参数整理、
 // 输出格式化与本地类型(pollPayload 等,cli_read2 读路径共用)的桥接。
-package runtime
+package agent
 
 import (
 	"context"
@@ -188,7 +188,7 @@ func (s *Service) cliPollCreate(ctx context.Context, parsed cliParsed, me, compa
 	if created.Poll.ExpiresAt != nil {
 		head += fmt.Sprintf("\nexpires: %s", *created.Poll.ExpiresAt)
 	}
-	return cliOK(fmt.Sprintf("%s\noptions:\n%s", head, strings.Join(opts, "\n")), cliSideEffect{
+	return cliOK(fmt.Sprintf("%s\noptions:\n%s", head, strings.Join(opts, "\n")), CliSideEffect{
 		"event":          "message.posted",
 		"command":        "poll",
 		"conversationId": convoID,

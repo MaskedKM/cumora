@@ -1,10 +1,10 @@
-// runtime 包 seen —— 对齐 server/src/agents/seen-boundary.ts。
+// agent 包 seen —— 对齐 server/src/agents/seen-boundary.ts。
 // 每 (agent, 会话) 的"已见 seq"边界(Redis 短 TTL):cumora reply 的新鲜度
 // 预检靠它发现"compose 窗口期间同伴发了言"。为什么用 Redis 而非
 // conversation_reads:last_read_at 同时是 loadInbox 的游标,动它会清空
 // inbox(a6e69aa 事故);Redis 在事务图之外、Lua 原子单调、TTL 自清。
 // 全部 fail-open:这是协调信号不是正确性不变量。
-package runtime
+package agent
 
 import (
 	"log/slog"
@@ -218,9 +218,9 @@ func (s *Service) ClearHold(agentID, scope string) {
 	_ = rdb.Del(ctxBG, holdKey(agentID, scope)).Err()
 }
 
-// consumeAgentTurnToken:对齐 scheduler.ts 的内容无关成本地板。60s 滚动
+// ConsumeTurnToken:对齐 scheduler.ts 的内容无关成本地板。60s 滚动
 // 窗口内每 agent 最多 30 次激活;Redis 错误 fail-open(放行)。
-func (s *Service) consumeAgentTurnToken(agentID string) bool {
+func (s *Service) ConsumeTurnToken(agentID string) bool {
 	rdb := s.redis()
 	if rdb == nil {
 		return true

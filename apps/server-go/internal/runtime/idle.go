@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"strconv"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
 
 // 间隔/阈值 env 用 envIntRaw:TS 语义 0=禁用(IDLE_INTERVAL_MS=0 关
@@ -74,7 +76,7 @@ func (s *Service) pickIdleAgent(ctx context.Context, companyID string) *idleCand
 		}
 		// PG ::text 形态由 parseJSDate 家族消化(timestamptz 各漂移布局)。
 		// 不可解析 = TS 的 NaN < cutoff(恒 false)→ 该候选不算安静,跳过。
-		t, ok := parseJSDate(c.lastSpoke.String)
+		t, ok := agent.ParseJSDate(c.lastSpoke.String)
 		if !ok || t.After(cutoff) {
 			continue
 		}

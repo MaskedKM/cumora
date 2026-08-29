@@ -1,8 +1,8 @@
-// runtime 包 ship 面 —— cli.ts cmdShip:shipping_features / invariants /
+// agent 包 ship 面 —— cli.ts cmdShip:shipping_features / invariants /
 // verifications / releases / friction_reports / regressions 六表的 CLI 读写
 // (list/show/create/square/friction/regression)。square 的 builder/verifier
 // 分离与 failed → 回归+摩擦的晋升逻辑逐行对齐 TS。
-package runtime
+package agent
 
 import (
 	"context"

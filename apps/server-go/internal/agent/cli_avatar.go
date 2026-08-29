@@ -1,7 +1,7 @@
-// runtime 包 avatar/image 面 —— cli.ts cmdAvatar(show/set/regen)+
+// agent 包 avatar/image 面 —— cli.ts cmdAvatar(show/set/regen)+
 // setAgentAvatarFromUrl + router.ts generateAndPersistAvatar(确定性视觉
 // 签名 + 性别分类 + image API + CH_STATUS 广播)+ cmdImage generate。
-package runtime
+package agent
 
 import (
 	"context"
@@ -336,11 +336,11 @@ func (s *Service) cliInferAgentGender(ctx context.Context, name, role, systemPro
 	agentArg, tenantArg := name, tenant
 	obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 		Purpose: "gender", CompanyID: &tenantArg, AgentID: nil, Source: "cloud",
-		Model: supportModelEnv(), LatencyMS: 0, Status: "ok",
-		Extras: map[string]any{"agentName": agentArg, "role": truncateRunesSimple(role, 60)},
+		Model: SupportModelEnv(), LatencyMS: 0, Status: "ok",
+		Extras: map[string]any{"agentName": agentArg, "role": TruncateRunesSimple(role, 60)},
 	})
-	res, err := s.cliResponsesCreate(ctx, tenant, cliResponsesArgs{
-		Model: supportModelEnv(),
+	res, err := s.ResponsesCreate(ctx, tenant, CliResponsesArgs{
+		Model: SupportModelEnv(),
 		Instructions: `Reply with strict JSON only: {"gender": "feminine" | "masculine"}, or "androgynous" only in the rare case below.
 
 Strongly prefer feminine or masculine. Decide primarily by the NAME's cultural convention (e.g. "Atlas" / "Bram" → masculine; "Iris" / "Maya" → feminine). If the name is unisex (e.g. "Quinn", "Sky", "Riley"), use the persona / role text to break the tie. If it still leans either way at all, pick that side.
@@ -349,7 +349,7 @@ Only return "androgynous" when the name is an abstract / brand-style codename wi
 
 No prose, no explanation.`,
 		Input: fmt.Sprintf("Classify the agent below and reply as JSON.\n\nName: %s\nRole: %s\nPersona / style:\n%s",
-			name, orNone(role), orNone(truncateRunesSimple(systemPrompt, 500))),
+			name, orNone(role), orNone(TruncateRunesSimple(systemPrompt, 500))),
 		MaxOutputTokens: 200,
 		JSONMode:        true,
 		ReasoningEffort: "low",
@@ -419,7 +419,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	}
 	styleHint := ""
 	if systemPrompt.Valid {
-		styleHint = truncateRunesSimple(systemPrompt.String, 500)
+		styleHint = TruncateRunesSimple(systemPrompt.String, 500)
 	}
 	roleStr := ""
 	if role.Valid {
@@ -461,7 +461,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 		promptLines = append(promptLines, fmt.Sprintf("• Their role: %s", roleTxt))
 	}
 	if styleHint != "" {
-		promptLines = append(promptLines, fmt.Sprintf("• Inner essence the face should hint at: %s", truncateRunesSimple(styleHint, 240)))
+		promptLines = append(promptLines, fmt.Sprintf("• Inner essence the face should hint at: %s", TruncateRunesSimple(styleHint, 240)))
 	}
 	promptLines = append(promptLines,
 		"",
@@ -545,7 +545,7 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 	if err != nil {
 		return "", err
 	}
-	resp, err := httpClientLLM.Do(req)
+	resp, err := HTTPClientLLM.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -674,7 +674,7 @@ func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult 
 		if serr != nil {
 			return cliErr(fmt.Sprintf("avatar set failed: %s", serr.Error()))
 		}
-		return cliOK(fmt.Sprintf("portrait set → %s", resultURL), cliSideEffect{
+		return cliOK(fmt.Sprintf("portrait set → %s", resultURL), CliSideEffect{
 			"event":     "avatar.updated",
 			"command":   "avatar set",
 			"agentId":   me,
@@ -687,7 +687,7 @@ func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult 
 		if gerr != nil {
 			return cliErr(fmt.Sprintf("avatar regen failed: %s", gerr.Error()))
 		}
-		return cliOK(fmt.Sprintf("new portrait → %s", resultURL), cliSideEffect{
+		return cliOK(fmt.Sprintf("new portrait → %s", resultURL), CliSideEffect{
 			"event":     "avatar.updated",
 			"command":   "avatar regen",
 			"agentId":   me,

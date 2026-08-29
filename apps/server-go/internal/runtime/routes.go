@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
@@ -153,9 +154,9 @@ func bodyStrSlice(body map[string]any, key string) []string {
 	return out
 }
 
-// sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元 —— cli_read.go 的
-// utf16Slice 别名(同包双名,#94 合并;代理对计 2 码元)。
-func sliceUTF16(s string, n int) string { return utf16Slice(s, n) }
+// sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元(#94;cli_read 的
+// utf16Slice 已随 agent 包拆出 #140,此处直用 httpx.UTF16Cap 同算法)。
+func sliceUTF16(s string, n int) string { return httpx.UTF16Cap(s, n) }
 
 // uuidHex:httpx.UUIDHex 的本包别名(#140 observability 拆包后,cli 面
 // 的既有调用点零改动)。
@@ -192,22 +193,19 @@ func (s *Service) handleCli(w http.ResponseWriter, r *http.Request, agentID stri
 			argv = append(argv, str)
 		}
 	}
-	res := s.RunCli(r.Context(), cliBuildRuntimeArgv(agentID, argv))
-	sideEffects := res.sideEffects
-	if sideEffects == nil {
-		sideEffects = []cliSideEffect{}
-	}
+	res := s.RunCli(r.Context(), agent.BuildRuntimeArgv(agentID, argv))
+	ok2, text, exitCode, sideEffects := res.HTTPShape()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"text":        res.text,
-		"exitCode":    res.exitCode,
-		"ok":          res.ok,
+		"text":        text,
+		"exitCode":    exitCode,
+		"ok":          ok2,
 		"sideEffects": sideEffects,
 	})
 }
 
 /* ───────── 读面 ───────── */
 
-func personaJSON(p *Persona) map[string]any {
+func personaJSON(p *agent.Persona) map[string]any {
 	if p == nil {
 		return nil
 	}
@@ -287,7 +285,7 @@ func (s *Service) handleInbox(w http.ResponseWriter, r *http.Request, agentID st
 // ("此处有真工作"权威信号),scopeKey = conversation_id——cumora claim
 // --in <convo> 写的同一 scope。逐会话尽力而为,一个会话的 Redis 打嗝
 // 不饿死整个闸门。
-func (s *Service) gatherClaimsByConvo(inbox []map[string]any) map[string][]WorklogEntry {
+func (s *Service) gatherClaimsByConvo(inbox []map[string]any) map[string][]agent.WorklogEntry {
 	seen := map[string]bool{}
 	var convos []string
 	for _, m := range inbox {
@@ -300,7 +298,7 @@ func (s *Service) gatherClaimsByConvo(inbox []map[string]any) map[string][]Workl
 			convos = append(convos, cid)
 		}
 	}
-	out := map[string][]WorklogEntry{}
+	out := map[string][]agent.WorklogEntry{}
 	for _, cid := range convos {
 		if held := s.PeekWorklog(cid); len(held) > 0 {
 			out[cid] = held
@@ -341,7 +339,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	// 内容无关成本地板(不是回环判定)。daemon 每 20s 自轮询、绕过调度
 	// 器扇出的限速,失控会无界转本地模型——用与 wake 路径相同的激活
 	// 预算封顶。是否回复仍 100% 是小模型的事,这里只防成本失控。
-	if len(convoIDs) > 0 && !s.consumeAgentTurnToken(agentID) {
+	if len(convoIDs) > 0 && !s.ConsumeTurnToken(agentID) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"verdict": map[string]any{
 			"actionable": false,
 			"reason":     "turn-rate floor: over activation budget this minute — deferring (the next minute or a human revives it)",

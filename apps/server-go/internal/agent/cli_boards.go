@@ -1,6 +1,6 @@
 // /runtime/cli 看板组(#89):kanban(板/列 CRUD+mentions 游标)、card
 // (卡 CRUD+原子 claim)、claim/unclaim(泛化声明已废,提示语平价)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -432,7 +432,7 @@ func (s *Service) cliBoardCreate(ctx context.Context, parsed cliParsed, me, comp
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "board.created", id, nil, nil, nil, nil, me)
-	return cliOK("created board "+id+": "+title, cliSideEffect{
+	return cliOK("created board "+id+": "+title, CliSideEffect{
 		"event":         "kanban.board_created",
 		"command":       "kanban create",
 		"boardId":       id,
@@ -495,7 +495,7 @@ func (s *Service) cliBoardRename(ctx context.Context, parsed cliParsed, op, me, 
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "board.updated", boardID, nil, nil, nil, nil, me)
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":         "kanban.board_updated",
 		"command":       "kanban " + op,
 		"boardId":       boardID,
@@ -569,7 +569,7 @@ func (s *Service) cliBoardAddColumn(ctx context.Context, parsed cliParsed, me, c
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "column.created", boardID, nil, &id, nil, nil, me)
-	return cliOK("added column "+id+": "+title, cliSideEffect{
+	return cliOK("added column "+id+": "+title, CliSideEffect{
 		"event":         "kanban.column_created",
 		"command":       "kanban add-column",
 		"boardId":       boardID,
@@ -630,7 +630,7 @@ func (s *Service) cliBoardEditColumn(ctx context.Context, parsed cliParsed, op, 
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "column.updated", boardID, nil, &columnID, nil, nil, me)
-	return cliOK("updated column "+columnID+": "+rowTitle, cliSideEffect{
+	return cliOK("updated column "+columnID+": "+rowTitle, CliSideEffect{
 		"event":         "kanban.column_updated",
 		"command":       "kanban " + op,
 		"boardId":       boardID,
@@ -661,7 +661,7 @@ func (s *Service) cliBoardDeleteColumn(ctx context.Context, parsed cliParsed, op
 		return cliErr("column " + columnID + " not in board " + boardID)
 	}
 	s.publishBoardCli(companyID, "column.deleted", boardID, nil, &columnID, nil, nil, me)
-	return cliOK("deleted column "+columnID, cliSideEffect{
+	return cliOK("deleted column "+columnID, CliSideEffect{
 		"event":         "kanban.column_deleted",
 		"command":       "kanban " + op,
 		"boardId":       boardID,
@@ -687,7 +687,7 @@ func (s *Service) cliBoardDelete(ctx context.Context, parsed cliParsed, me, comp
 		return cliErr("board " + boardID + " not found")
 	}
 	s.publishBoardCli(companyID, "board.deleted", boardID, nil, nil, nil, nil, me)
-	return cliOK("deleted board "+boardID, cliSideEffect{
+	return cliOK("deleted board "+boardID, CliSideEffect{
 		"event":         "kanban.board_deleted",
 		"command":       "kanban delete",
 		"boardId":       boardID,
@@ -1121,7 +1121,7 @@ func (s *Service) cliCardAdd(ctx context.Context, parsed cliParsed, me, companyI
 	if a, ok := assignee.(string); ok && a != "" && a != me {
 		s.wakeMentionedAgentsCli(companyID, []string{a}, me)
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":         "kanban.card_created",
 		"command":       "card add",
 		"boardId":       boardID,
@@ -1185,7 +1185,7 @@ func (s *Service) cliCardMove(ctx context.Context, parsed cliParsed, me, company
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "card.moved", home.boardID, &cardID, &toCol, nil, nil, me)
-	return cliOK("moved card "+cardID+" → "+toCol, cliSideEffect{
+	return cliOK("moved card "+cardID+" → "+toCol, CliSideEffect{
 		"event":         "kanban.card_moved",
 		"command":       "card move",
 		"boardId":       home.boardID,
@@ -1227,7 +1227,7 @@ func (s *Service) cliCardAssign(ctx context.Context, parsed cliParsed, me, compa
 		s.wakeMentionedAgentsCli(companyID, []string{a}, me)
 	}
 	if a, ok := assignee.(string); ok && a != "" {
-		return cliOK("assigned card "+cardID+" → @"+a, cliSideEffect{
+		return cliOK("assigned card "+cardID+" → @"+a, CliSideEffect{
 			"event":         "kanban.card_assigned",
 			"command":       "card assign",
 			"boardId":       home.boardID,
@@ -1238,7 +1238,7 @@ func (s *Service) cliCardAssign(ctx context.Context, parsed cliParsed, me, compa
 			"visibleToUser": true,
 		})
 	}
-	return cliOK("unassigned card "+cardID, cliSideEffect{
+	return cliOK("unassigned card "+cardID, CliSideEffect{
 		"event":         "kanban.card_assigned",
 		"command":       "card assign",
 		"boardId":       home.boardID,
@@ -1286,7 +1286,7 @@ func (s *Service) cliCardClaim(ctx context.Context, parsed cliParsed, me, compan
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "card.updated", home.boardID, &cardID, nil, nil, nil, me)
-	return cliOK("claimed card "+cardID+" — it's yours. Do the work, post progress with `card comment`, move it with `card move`, and release with `card assign "+cardID+" null` (or move to a done column) when finished.", cliSideEffect{
+	return cliOK("claimed card "+cardID+" — it's yours. Do the work, post progress with `card comment`, move it with `card move`, and release with `card assign "+cardID+" null` (or move to a done column) when finished.", CliSideEffect{
 		"event":         "kanban.card_claimed",
 		"command":       "card claim",
 		"boardId":       home.boardID,
@@ -1361,7 +1361,7 @@ func (s *Service) cliCardRename(ctx context.Context, parsed cliParsed, op, me, c
 	if op != "rename" {
 		command = "card edit"
 	}
-	return cliOK("updated card "+cardID+mentionsNote(mentions), cliSideEffect{
+	return cliOK("updated card "+cardID+mentionsNote(mentions), CliSideEffect{
 		"event":         "kanban.card_updated",
 		"command":       command,
 		"boardId":       home.boardID,
@@ -1412,7 +1412,7 @@ func (s *Service) cliCardComment(ctx context.Context, parsed cliParsed, me, comp
 	}
 	s.publishBoardCli(companyID, "comment.created", home.boardID, &cardID, nil, &id, mentions, me)
 	s.wakeMentionedAgentsCli(companyID, mentions, me)
-	return cliOK("commented on "+cardID+mentionsNote(mentions), cliSideEffect{
+	return cliOK("commented on "+cardID+mentionsNote(mentions), CliSideEffect{
 		"event":         "kanban.comment_created",
 		"command":       "card comment",
 		"boardId":       home.boardID,
@@ -1448,7 +1448,7 @@ func (s *Service) cliCardDeleteComment(ctx context.Context, parsed cliParsed, op
 		return cliErr("comment " + commentID + " not found or not authored by " + me)
 	}
 	s.publishBoardCli(companyID, "comment.deleted", home.boardID, &cardID, nil, &commentID, nil, me)
-	return cliOK("deleted comment "+commentID, cliSideEffect{
+	return cliOK("deleted comment "+commentID, CliSideEffect{
 		"event":         "kanban.comment_deleted",
 		"command":       "card " + op,
 		"boardId":       home.boardID,
@@ -1476,7 +1476,7 @@ func (s *Service) cliCardDelete(ctx context.Context, parsed cliParsed, me, compa
 		return cliErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "card.deleted", home.boardID, &cardID, nil, nil, nil, me)
-	return cliOK("deleted card "+cardID, cliSideEffect{
+	return cliOK("deleted card "+cardID, CliSideEffect{
 		"event":         "kanban.card_deleted",
 		"command":       "card delete",
 		"boardId":       home.boardID,

@@ -1,9 +1,9 @@
-// runtime 包 client —— inproc-client.ts 的读/写数据面:未读收件箱、
+// agent 包 client —— inproc-client.ts 的读/写数据面:未读收件箱、
 // 上下文历史、climate、头像、成员判定、系统通知、读游标推进。
 // #137:"我的会话"定位已从 members GIN containment(规划器误估价,
 // 曾靠 enable_seqscan=off 会话级 GUC 强制索引,见退役的 withSeqscanOff)
 // 切到 conversation_members 的 (participant_id, conversation_id) 索引。
-package runtime
+package agent
 
 import (
 	"context"

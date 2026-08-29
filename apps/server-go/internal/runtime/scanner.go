@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
 
 const scannerMinMessages = 8
@@ -178,7 +180,7 @@ func renderActivitySummary(rows []scanRecentMessage) string {
 			byConvo[r.convoID] = v
 			order = append(order, r.convoID)
 		}
-		v.lines = append(v.lines, "["+r.messageID+"] "+r.authorName+": "+truncateRunesSimple(r.body, 240))
+		v.lines = append(v.lines, "["+r.messageID+"] "+r.authorName+": "+agent.TruncateRunesSimple(r.body, 240))
 	}
 	parts := make([]string, 0, len(order))
 	for _, id := range order {

@@ -1,7 +1,7 @@
 // /runtime/cli 读命令组(#89):whoami / participants / conversations /
 // groups / directs / members。SQL 与文本输出逐项对齐 TS cli.ts 同名
 // cmd*(mirror 测试为准)。
-package runtime
+package agent
 
 import (
 	"bytes"

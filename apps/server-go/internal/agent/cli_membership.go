@@ -1,6 +1,6 @@
 // /runtime/cli 群成员组(#89):leave / invite / kick + 成员变更系统消息
 // (membership.ts postMembershipSystemMessage 等价)。
-package runtime
+package agent
 
 import (
 	"context"
@@ -147,7 +147,7 @@ func (s *Service) cliCmdLeave(ctx context.Context, parsed cliParsed) cliResult {
 	if err := s.cliUpdateMembers(ctx, convoID, next); err != nil {
 		return cliErrThrow(err)
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "leave",
 		"action":          "left",
@@ -226,7 +226,7 @@ func (s *Service) cliCmdInvite(ctx context.Context, parsed cliParsed) cliResult 
 	if err != nil {
 		return cliErrThrow(err)
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "invite",
 		"action":          "joined",
@@ -287,7 +287,7 @@ func (s *Service) cliCmdKick(ctx context.Context, parsed cliParsed) cliResult {
 	if err := s.cliUpdateMembers(ctx, convoID, next); err != nil {
 		return cliErrThrow(err)
 	}
-	effect := cliSideEffect{
+	effect := CliSideEffect{
 		"event":           "conversation.membership_changed",
 		"command":         "kick",
 		"action":          "kicked",

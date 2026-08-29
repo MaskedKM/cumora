@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
 
 // dmAgentTriageEvery:agent↔agent DM 的回环检查节奏。DM 默认 ENGAGE
@@ -161,7 +163,7 @@ func agentRunByConvo(context []map[string]any) map[string]*agentRun {
 
 // threadWorkState:"开工作状态"块——把 per-会话的 agent-only 跑动 + claim
 // 事实喂给模型,让"engage 还是抑制"的判断基于事实而非措辞猜测。
-func threadWorkState(context []map[string]any, claims map[string][]WorklogEntry) string {
+func threadWorkState(context []map[string]any, claims map[string][]agent.WorklogEntry) string {
 	var lines []string
 	runs := agentRunByConvo(context)
 	// TS 用 Map 迭代(插入序);此处按会话 id 排序取得稳定序——
@@ -226,8 +228,8 @@ Reply ONLY as strict JSON: {"actionable": boolean, "reason": "short factual reas
 Output ONLY the JSON object — no markdown fences, no text before or after. Keep "reason" to ONE short sentence.`
 }
 
-func buildTriageInput(agentID string, persona *Persona, inbox, context []map[string]any,
-	claims map[string][]WorklogEntry, humanActiveInCompany bool) string {
+func buildTriageInput(agentID string, persona *agent.Persona, inbox, context []map[string]any,
+	claims map[string][]agent.WorklogEntry, humanActiveInCompany bool) string {
 	workState := threadWorkState(context, claims)
 	lines := []string{
 		fmt.Sprintf("Agent: %s (%s)", persona.Name, agentID),
@@ -258,8 +260,8 @@ func systemPayloadOf(raw string) map[string]any {
 
 // BuildTriageRequest:组 triage 请求。非模型短路:空箱、仅系统、人类
 // 未读(人类神圣)、agent↔agent DM 节奏检查、硬回环上限。其余全交小脑。
-func BuildTriageRequest(agentID string, persona *Persona, inbox, context []map[string]any,
-	claims map[string][]WorklogEntry, humanActiveInCompany bool) TriageRequest {
+func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context []map[string]any,
+	claims map[string][]agent.WorklogEntry, humanActiveInCompany bool) TriageRequest {
 	if len(inbox) == 0 {
 		return TriageRequest{Verdict: map[string]any{
 			"actionable": false,

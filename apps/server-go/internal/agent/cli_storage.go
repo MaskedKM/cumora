@@ -2,7 +2,7 @@
 // UPLOAD_DIR,URL /uploads/<key>(与 TS 静态处理器同形;R2 模式待存储
 // 抽象票接入,镜像测试走本地模式)。附件对象进 messages.attachment
 // (jsonb 列,PG 自行按键长排序,序列化键序无对齐负担)。
-package runtime
+package agent
 
 import (
 	"crypto/rand"

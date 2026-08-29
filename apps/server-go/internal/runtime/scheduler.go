@@ -21,10 +21,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// WakeAgent: Boards 面的 legacy 形态(#82)——无 steer、无附加选项。
-func (s *Service) WakeAgent(agentID, reason string, conversationID *string) {
-	s.wakeOne(agentID, reason, conversationID, nil, nil)
-}
+// WakeAgent 已迁 agent 包(#140):agent.Service.WakeAgent 经 SetWakeHook
+// 钩子回到本包 wakeOne(runtime.New 接线),调用点签名不变。
 
 /* ───────── 唤醒载荷 ───────── */
 

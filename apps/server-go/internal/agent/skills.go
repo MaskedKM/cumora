@@ -1,8 +1,8 @@
-// runtime 包 skills —— skills.ts 的渐进披露索引面:只加载每个已装
+// agent 包 skills —— skills.ts 的渐进披露索引面:只加载每个已装
 // 技能的 name+description+path(~100 token/技能),完整 SKILL.md 由引擎
 // 按需拉取。frontmatter 解析刻意只覆盖规范实际定义的子集(标量字段 +
 // 扁平 metadata 映射)。
-package runtime
+package agent
 
 import (
 	"context"

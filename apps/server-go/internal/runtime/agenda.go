@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
@@ -203,7 +204,7 @@ func RenderAgendaForClassifier(agenda AgentAgenda, nowMS int64) string {
 }
 
 // BuildAgendaClassifierRequest:空议程即决;否则组 {instructions, input}。
-func BuildAgendaClassifierRequest(persona *Persona, agenda AgentAgenda, nowMS int64) AgendaClassifierRequest {
+func BuildAgendaClassifierRequest(persona *agent.Persona, agenda AgentAgenda, nowMS int64) AgendaClassifierRequest {
 	if len(agenda.Cards) == 0 && len(agenda.Events) == 0 && len(agenda.Stalls) == 0 {
 		return AgendaClassifierRequest{Verdict: &AgendaVerdict{Actionable: false, Focus: "", Reason: "empty agenda"}}
 	}
@@ -236,6 +237,13 @@ Reply ONLY as strict JSON: {"actionable": boolean, "focus": "one-line focus for 
 		persona.Name, role, styleHint, isoNow(nowMS), rendered)
 	return AgendaClassifierRequest{Instructions: instructions, Input: input}
 }
+
+// msSince:自 agent/cli_tools.go 同名助手平移的副本(#140 拆包)。
+func msSince(t0 time.Time) int64 { return time.Since(t0).Milliseconds() }
+
+// pqArray:自 agent/client.go 同名恒等助手平移的副本(#140 拆包;
+// pgx v5 原生支持 []string 直传)。
+func pqArray(xs []string) []string { return xs }
 
 func isoNow(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z")
@@ -871,7 +879,7 @@ func jsStringClamp(v any, max int) string {
 // ClassifyAgendaActionable:remote 路由的云分类 —— 通用 cerebellum 适配器
 // (任意 Chat-Completions 兼容供应商)或 legacy tracked OpenAI 客户端;
 // 任何失败退确定性回退,分类器断供绝不烧脑调用。
-func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona, companyID, agentID string, agenda AgentAgenda, nowMS int64) AgendaVerdict {
+func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *agent.Persona, companyID, agentID string, agenda AgentAgenda, nowMS int64) AgendaVerdict {
 	built := BuildAgendaClassifierRequest(persona, agenda, nowMS)
 	if built.Verdict != nil {
 		return *built.Verdict
@@ -882,11 +890,11 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 	}
 	adapterBase, adapterKey, useAdapter := s.cerebellumRemoteConfigured(ctx)
 	settings := s.GetCerebellumSettings(ctx)
-	model := supportModelEnv()
+	model := agent.SupportModelEnv()
 	if useAdapter && settings.Model != "" {
 		model = settings.Model
 	}
-	args := cliResponsesArgs{
+	args := agent.CliResponsesArgs{
 		Model:           model,
 		Instructions:    built.Instructions,
 		Input:           built.Input,
@@ -916,8 +924,8 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 				},
 			})
 		}
-		var res cliResponsesResult
-		res, err = s.cliResponsesCreate(ctx, companyID, args)
+		var res agent.CliResponsesResult
+		res, err = s.ResponsesCreate(ctx, companyID, args)
 		if err != nil {
 			msg := err.Error()
 			record("failed", &msg)
@@ -939,10 +947,10 @@ func (s *Service) ClassifyAgendaActionable(ctx context.Context, persona *Persona
 
 // cerebellumResponsesCreate:Responses 参数 → Chat-Completions 翻译
 // (cerebellum-adapter.ts 的非流式分支;模型名原样透传)。
-func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args cliResponsesArgs) (string, *costing.TokenUsage, error) {
+func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey string, args agent.CliResponsesArgs) (string, *costing.TokenUsage, error) {
 	body := map[string]any{
 		"model":    args.Model,
-		"messages": novitaChatMessages(args.Instructions, args.Input),
+		"messages": agent.NovitaChatMessages(args.Instructions, args.Input),
 		"stream":   false,
 	}
 	if args.MaxOutputTokens > 0 {
@@ -959,16 +967,16 @@ func (s *Service) cerebellumResponsesCreate(ctx context.Context, baseURL, apiKey
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("authorization", "Bearer "+apiKey)
-	resp, err := httpClientLLM.Do(req)
+	resp, err := agent.HTTPClientLLM.Do(req)
 	if err != nil {
 		return "", nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("%d %s", resp.StatusCode, truncateRunesSimple(string(raw), 400))
+		return "", nil, fmt.Errorf("%d %s", resp.StatusCode, agent.TruncateRunesSimple(string(raw), 400))
 	}
-	out, err := parseNovitaChatCompletion(raw)
+	out, err := agent.ParseNovitaChatCompletion(raw)
 	if err != nil {
 		return "", nil, err
 	}

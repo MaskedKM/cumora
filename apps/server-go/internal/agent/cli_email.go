@@ -1,7 +1,7 @@
-// runtime 包 email 面 —— cli.ts 的 cmdEmail 六子命令(whoami/contacts/
+// agent 包 email 面 —— cli.ts 的 cmdEmail 六子命令(whoami/contacts/
 // inbox/show/send/reply)+ listEmailContacts/listAgentEmailThreads 收件人
 // 与线程面。Provider/持久层复用 internal/email(已与 email.ts 对齐)。
-package runtime
+package agent
 
 import (
 	"bytes"
@@ -428,7 +428,7 @@ func (s *Service) cliEmailInbox(ctx context.Context, parsed cliParsed, me, compa
 		snippet = emailSnippetFlatten.ReplaceAllString(snippet, " \\n ")
 		at := ""
 		if t.LastAt != nil && *t.LastAt != "" {
-			if ts, ok := parseJSDate(*t.LastAt); ok {
+			if ts, ok := ParseJSDate(*t.LastAt); ok {
 				at = strings.ReplaceAll(ts.UTC().Format("2006-01-02T15:04:05.000Z"), "T", " ")[:16]
 			}
 		}
@@ -529,7 +529,7 @@ func (s *Service) cliEmailShow(ctx context.Context, parsed cliParsed, me, compan
 	lines := []string{fmt.Sprintf("thread %s  \"%s\"", convoID, title), ""}
 	for _, m := range msgs {
 		at := ""
-		if ts, ok := parseJSDate(m.CreatedAt); ok {
+		if ts, ok := ParseJSDate(m.CreatedAt); ok {
 			at = strings.ReplaceAll(ts.UTC().Format("2006-01-02T15:04:05.000Z"), "T", " ")[:16]
 		}
 		arrow := "↑ out"
@@ -789,7 +789,7 @@ func (s *Service) cliEmailSend(ctx context.Context, parsed cliParsed, me, compan
 	for _, r := range ccResolved {
 		ccAddrs = append(ccAddrs, r.Addr)
 	}
-	return cliOK(fmt.Sprintf("sent%s · %s · thread %s", mockTag, persistedID, convoID), cliSideEffect{
+	return cliOK(fmt.Sprintf("sent%s · %s · thread %s", mockTag, persistedID, convoID), CliSideEffect{
 		"event":           "email.sent",
 		"command":         "email send",
 		"conversationId":  convoID,
@@ -978,7 +978,7 @@ func (s *Service) cliEmailReplyCmd(ctx context.Context, parsed cliParsed, me, co
 	if sendRes.Mock {
 		mockTag = " (mock)"
 	}
-	return cliOK(fmt.Sprintf("replied%s · %s · thread %s", mockTag, persistedID, oConvo), cliSideEffect{
+	return cliOK(fmt.Sprintf("replied%s · %s · thread %s", mockTag, persistedID, oConvo), CliSideEffect{
 		"event":            "email.sent",
 		"command":          "email reply",
 		"conversationId":   oConvo,
