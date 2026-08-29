@@ -22,8 +22,8 @@
  *     work and Chinese at home.
  */
 import { create } from 'zustand'
+import { useShallow } from 'zustand/react/shallow'
 import { en } from '@/locales/en'
-import { zhCN } from '@/locales/zh-CN'
 
 export type Locale = 'en' | 'zh-CN'
 export type MessageKey = keyof typeof en
@@ -36,9 +36,26 @@ export const LOCALES: Array<{ code: Locale; label: string; english: string }> = 
   { code: 'zh-CN', label: '简体中文', english: 'Chinese (Simplified)' },
 ]
 
-const DICTS: Record<Locale, Partial<Record<MessageKey, string>>> = {
-  en,
-  'zh-CN': zhCN,
+// zh-CN ships as a lazy chunk (#144b): `en` stays eager because it is the
+// compile-time source of truth for MessageKey and the fallback for every
+// missing key. Until the zh-CN chunk resolves, a zh-CN reader sees
+// English — exactly the partial-locale fallback `translate` already
+// defines for untranslated keys.
+let zhCN: Partial<Record<MessageKey, string>> | undefined
+let zhCNPending = false
+
+function ensureDict(locale: Locale): void {
+  if (locale !== 'zh-CN' || zhCN !== undefined || zhCNPending) return
+  zhCNPending = true
+  void import('@/locales/zh-CN').then((m) => {
+    zhCN = m.zhCN
+    useLocaleStore.setState((s) => ({ dictRev: s.dictRev + 1 }))
+  }).catch(() => {
+    // Chunk fetch failed — allow a later retry (next setLocale / store
+    // init) instead of latching pending forever; English fallback keeps
+    // the UI functional meanwhile.
+    zhCNPending = false
+  })
 }
 
 const STORAGE_KEY = 'cumora.locale'
@@ -85,15 +102,22 @@ function syncDocumentLang(locale: Locale): void {
 
 interface LocaleState {
   locale: Locale
+  /** Bumped when the lazy zh-CN dictionary finishes loading — see useT,
+   *  which subscribes so already-rendered text flips to Chinese without
+   *  a locale "change". */
+  dictRev: number
   setLocale(next: Locale): void
 }
 
 export const useLocaleStore = create<LocaleState>((set) => {
   const initial = readInitialLocale()
   syncDocumentLang(initial)
+  ensureDict(initial)
   return {
     locale: initial,
+    dictRev: 0,
     setLocale(next) {
+      ensureDict(next)
       set({ locale: next })
       syncDocumentLang(next)
       try { window.localStorage.setItem(STORAGE_KEY, next) } catch { /* ignore */ }
@@ -117,13 +141,17 @@ export function translate(
   key: MessageKey,
   vars?: Record<string, string | number>,
 ): string {
-  const template = DICTS[locale][key] ?? en[key] ?? key
+  const template = (locale === 'zh-CN' ? zhCN?.[key] : undefined) ?? en[key] ?? key
   return interpolate(template, vars)
 }
 
-/** Reactive translator for components — re-renders on a locale switch. */
+/** Reactive translator for components — re-renders on a locale switch
+ *  AND when the lazy zh-CN dictionary lands (dictRev rides along in the
+ *  shallow-compared snapshot). useShallow is load-bearing: zustand v5
+ *  feeds the selector straight into useSyncExternalStore, where a fresh
+ *  object per call breaks the Object.is snapshot contract and loops. */
 export function useT(): (key: MessageKey, vars?: Record<string, string | number>) => string {
-  const locale = useLocaleStore((s) => s.locale)
+  const locale = useLocaleStore(useShallow((s) => ({ locale: s.locale, rev: s.dictRev }))).locale
   return (key, vars) => translate(locale, key, vars)
 }
 

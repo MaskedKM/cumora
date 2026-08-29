@@ -1,5 +1,3 @@
-import posthog from 'posthog-js'
-import { PostHogProvider as PHProvider } from 'posthog-js/react'
 import type { PostHogConfig, PostHogInterface } from 'posthog-js'
 import { isElectron, isNotificationWindow, isWebAppHost } from '@/lib/runtime'
 
@@ -24,13 +22,6 @@ export function getAnalyticsSurface(): 'electron' | 'web' | 'admin' | 'notificat
   return 'browser'
 }
 
-export async function initObservability(): Promise<void> {
-  // Keep an Alma-compatible init seam. PostHog itself is initialized by
-  // PostHogProvider so telemetry never starts unless the provider mounts.
-}
-
-export { posthog, PHProvider as PostHogProvider }
-
 export function isPostHogConfigured(): boolean {
   return !!import.meta.env.VITE_PUBLIC_POSTHOG_KEY
 }
@@ -54,4 +45,16 @@ export function getPostHogConfig(): { apiKey: string; options: Partial<PostHogCo
       },
     },
   }
+}
+
+/** The posthog-js singleton, loaded on demand (#144b). posthog-js is a
+ *  heavyweight client that self-hosted builds (no
+ *  VITE_PUBLIC_POSTHOG_KEY) never initialize — returning null there keeps
+ *  the chunk off the wire entirely. When configured, the provider's
+ *  dynamic import inits this same module singleton, so later callers see
+ *  the initialized client. */
+export async function getPostHogAsync(): Promise<PostHogInterface | null> {
+  if (!isPostHogConfigured()) return null
+  const m = await import('posthog-js')
+  return m.default
 }

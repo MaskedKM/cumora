@@ -15,19 +15,9 @@
  */
 import { useState } from 'react'
 import { useT } from '@/lib/i18n'
+import './admin.css'
 
 interface CarriedSuspension { email: string | null; reason: string | null }
-
-export function consumeSuspendedFragment(): CarriedSuspension | null {
-  const hash = location.hash.replace(/^#/, '')
-  if (!hash) return null
-  const params = new URLSearchParams(hash)
-  if (params.get('suspended') !== '1') return null
-  const email = params.get('email')
-  const reason = params.get('reason')
-  history.replaceState(null, '', location.pathname + location.search)
-  return { email, reason }
-}
 
 export function SuspendedScreen({ email, reason }: { email: string | null; reason: string | null }) {
   const t = useT()

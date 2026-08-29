@@ -1,23 +1,33 @@
-import { StrictMode } from 'react'
+import { StrictMode, lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { ConditionalPostHogProvider } from './components/ConditionalPostHogProvider'
-import { PostHogAppTracker } from './components/PostHogAppTracker'
-import { initObservability } from './lib/observability'
-import { isElectron } from './lib/runtime'
+import { isPostHogConfigured } from './lib/observability'
+import { isElectron, isNotificationWindow } from './lib/runtime'
+
+// #144b: the tracker statically imports posthog-js/react's usePostHog, so
+// it rides the same lazy chunk as the provider — and is skipped entirely
+// (never rendered) when telemetry is unconfigured.
+const PostHogAppTracker = lazy(() =>
+  import('./components/PostHogAppTracker').then((m) => ({ default: m.PostHogAppTracker })))
 import { bootNative, isNativePlatform } from './lib/native'
 import './styles/globals.css'
+
+const telemetryEnabled = isPostHogConfigured() && !isNotificationWindow
 
 if (isElectron) document.body.classList.add('electron')
 if (isNativePlatform()) document.body.classList.add('native', `native-${typeof window !== 'undefined' && (window as { Capacitor?: { getPlatform?: () => string } }).Capacitor?.getPlatform?.() || ''}`)
 
-void initObservability()
 void bootNative()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ConditionalPostHogProvider>
-      <PostHogAppTracker />
+      {telemetryEnabled ? (
+        <Suspense fallback={null}>
+          <PostHogAppTracker />
+        </Suspense>
+      ) : null}
       <App />
     </ConditionalPostHogProvider>
   </StrictMode>,

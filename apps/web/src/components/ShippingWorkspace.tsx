@@ -4,7 +4,7 @@ import { useShipping } from '@/stores/shipping'
 import { useParticipants } from '@/stores/participants'
 import { IBack, IPlus, IShip } from '@/components/icons'
 import { cn } from '@/lib/utils'
-import { posthog } from '@/lib/observability'
+import { getPostHogAsync } from '@/lib/observability'
 import { useT, type MessageKey } from '@/lib/i18n'
 
 const STATUS_LABEL_KEY: Record<ShippingFeatureStatus, MessageKey> = {
@@ -26,7 +26,11 @@ const NEXT_STATUS: Partial<Record<ShippingFeatureStatus, ShippingFeatureStatus>>
 }
 
 function event(name: string, properties?: Record<string, unknown>) {
-  try { posthog.capture(name, properties) } catch { /* analytics never blocks shipping */ }
+  void getPostHogAsync().then((ph) => {
+    // analytics never blocks shipping — failures and the unconfigured
+    // null client are both swallowed
+    try { ph?.capture(name, properties) } catch { /* ignore */ }
+  }).catch(() => { /* ignore */ })
 }
 
 /** Store mutations already surface failures in the workspace alert. Event

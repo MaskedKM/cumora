@@ -9,28 +9,9 @@
 import { useState } from 'react'
 import { GetDesktopAppLink } from '@/components/GetDesktopAppLink'
 import { useT } from '@/lib/i18n'
+import './admin.css'
 
 interface CarriedWaitlist { email: string | null }
-
-export function consumeWaitlistFragment(): CarriedWaitlist | null {
-  const search = new URLSearchParams(location.search)
-  const hash = new URLSearchParams(location.hash.replace(/^#/, ''))
-  // Query string is the new shape (survives cross-origin redirects that
-  // drop fragments); hash kept as a fallback for older server builds.
-  const fromQuery = search.get('waitlist') === '1'
-  const fromHash = hash.get('waitlist') === '1'
-  if (!fromQuery && !fromHash) return null
-  const email = (fromQuery ? search.get('email') : hash.get('email'))
-  // Scrub both the waitlist params and any leftover hash so a refresh
-  // lands the user back on the normal sign-in flow.
-  if (fromQuery) {
-    search.delete('waitlist')
-    search.delete('email')
-  }
-  const q = search.toString()
-  history.replaceState(null, '', location.pathname + (q ? `?${q}` : ''))
-  return { email }
-}
 
 export function WaitlistConfirmedScreen({ email }: { email: string | null }) {
   const t = useT()

@@ -1,6 +1,5 @@
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import hljs from 'highlight.js/lib/common'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -171,6 +170,32 @@ function MentionCard({ p, x, y }: { p: Participant; x: number; y: number }) {
   )
 }
 
+// highlight.js's common-language build is a large tokenizer most message
+// lists never tokenize anything with; load it off the critical path
+// (#144b). Every CodeBlock shares the single in-flight request, and
+// blocks render as plain (React-escaped) text for the moment before the
+// module resolves.
+type Hljs = typeof import('highlight.js/lib/common')['default']
+let hljsModule: Hljs | null = null
+let hljsPromise: Promise<Hljs> | null = null
+
+function useHljs(): Hljs | null {
+  const [hljs, setHljs] = useState<Hljs | null>(hljsModule)
+  useEffect(() => {
+    if (hljsModule) return
+    let alive = true
+    if (!hljsPromise) {
+      hljsPromise = import('highlight.js/lib/common').then((m) => {
+        hljsModule = m.default
+        return m.default
+      })
+    }
+    hljsPromise.then((h) => { if (alive) setHljs(h) }).catch(() => { /* chunk failed — plain text stays */ })
+    return () => { alive = false }
+  }, [])
+  return hljs
+}
+
 /** Restrained, paper-toned code block matching Cumora's overall light
  *  palette. Token colors map onto the brand: keywords use --skype-deep,
  *  strings use --coral-deep, numbers --gold-deep, types --whisper-deep,
@@ -178,6 +203,7 @@ function MentionCard({ p, x, y }: { p: Participant; x: number; y: number }) {
  *  inside the bubble as a calm inset instead. */
 export function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false)
+  const hljs = useHljs()
   const onCopy = () => {
     void navigator.clipboard?.writeText(code).then(() => {
       setCopied(true)
@@ -186,8 +212,10 @@ export function CodeBlock({ lang, code }: { lang: string; code: string }) {
   }
   // Tokenize with highlight.js. Common-lang build covers ts/js/py/go/rust/
   // json/bash/sql/css/html/md/etc. Unknown lang → auto-detect rather than
-  // refuse, so unannotated fences still get color.
+  // refuse, so unannotated fences still get color. Null until the lazy
+  // module lands — plain text in the meantime.
   const html = useMemo(() => {
+    if (!hljs) return null
     try {
       if (lang && hljs.getLanguage(lang)) {
         return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
@@ -199,7 +227,7 @@ export function CodeBlock({ lang, code }: { lang: string; code: string }) {
       div.textContent = code
       return div.innerHTML
     }
-  }, [code, lang])
+  }, [code, lang, hljs])
 
   return (
     <div
@@ -238,7 +266,7 @@ export function CodeBlock({ lang, code }: { lang: string; code: string }) {
             highlight.js output over the message's own code text — hljs
             HTML-escapes the source, and the catch fallback escapes via
             textContent→innerHTML. No untrusted raw HTML reaches the DOM. */}
-        <code dangerouslySetInnerHTML={{ __html: html }} />
+        {html === null ? <code>{code}</code> : <code dangerouslySetInnerHTML={{ __html: html }} />}
       </pre>
     </div>
   )
