@@ -11,9 +11,11 @@
 #      container-root-owned files the runner user cannot clean at the next
 #      job's workspace cleanup.
 #   3. CI host caches (#115): pr.yml bind-mounts /var/lib/cumora-ci-cache
-#      (Go build/mod + npm) into job containers — they grow across runs
+#      (Go build/mod + npm + source tarballs) into job containers — they
+#      grow across runs
 #      by design. Expected magnitude is a few GB (Go build cache <2GB,
-#      npm <1GB); the before/after `du` below surfaces the trend so it
+#      npm <1GB, tarballs <0.5GB capped at 10 newest); the `du` below
+#      surfaces the trend so it
 #      never becomes a second 240GB surprise. `docker prune` never
 #      touches these (they're plain host directories, not docker
 #      resources).

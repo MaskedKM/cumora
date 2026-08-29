@@ -21,17 +21,16 @@
 #     Redis DB indexes would still cross-talk). Shards stay internally
 #     serial (--test-concurrency=1 — concurrent TRUNCATEs on a shared
 #     DB deadlock at the catalog-lock level).
-#   - Source arrives as a codeload tarball, not actions/checkout (#166):
-#     the git smart-HTTP exchange (POST /git-upload-pack — unbounded
-#     streaming body) is what the flaky upstream chokes on; big GETs
-#     occasionally stall mid-transfer too, so the download carries a
-#     speed watchdog (--speed-limit aborts a stalled crawl so --retry
-#     can reconnect), an api.github.com fallback endpoint, and a
-#     per-sha cache on /var/lib/cumora-ci-cache/tarballs — only the
-#     first download of a run touches the network; the sibling job and
-#     any rerun read the cached tarball. No .git dir — nothing in this
-#     workflow runs git; the download step keeps a fail-fast ceiling
-#     like the old checkout timeout did.
+#   - Two-tier source pickup (#166). Tier 1: the official actions/checkout
+#     (git smart-HTTP) with a 3-minute fail-fast ceiling — the upstream
+#     chokes the unbounded upload-pack stream at zero bytes when it's in a
+#     bad mood. Tier 2 (only on tier-1 failure): git-free tarball download
+#     — big GETs occasionally stall mid-transfer too (silently: --retry
+#     never fires), so the fallback carries a speed watchdog (--speed-limit
+#     aborts a stalled crawl so --retry reconnects), a github.com/archive
+#     second endpoint, and a per-sha cache on /var/lib/cumora-ci-cache/
+#     tarballs — reruns of a failed run and the sibling job read the cached
+#     tarball without re-rolling the network dice.
 #
 # ALL jobs run in containers: PR code never executes as the host runner
 # user (runner is docker-group = host-root-equivalent). pgvector is
@@ -102,47 +101,56 @@ jobs:
       GOMODCACHE: /go/modcache
       CGO_ENABLED: '0'
       # `go build` embeds VCS info by default when a .git dir exists; the
-      # tarball pickup (#166) ships none, so auto would skip stamping on
-      # its own — the flag stays as a belt against checkout ever coming
-      # back (its root-owned .git trips "dubious ownership", exit 128).
-      # The check binary is never shipped — no VCS stamping needed.
+      # tier-1 checkout leaves one whose ownership the container-root git
+      # refuses ("dubious ownership", exit 128) — checkout's safe.directory
+      # lives in the host runner's gitconfig, invisible inside the job
+      # container. The check binary is never shipped — no VCS stamping
+      # needed.
       GOFLAGS: -buildvcs=false
     steps:
-      # git-free source pickup (#166): codeload tarball over a plain GET —
-      # the smart-HTTP POST streams without Content-Length and is what the
-      # upstream stalls on. Anonymous on purpose: codeload rejects requests
-      # carrying an Authorization header (the api.github.com /tarball
-      # redirect path 401s because of it), and the fork is public anyway.
-      # The workspace wipe matters: the runner reuses _work across runs and
-      # checkout used to clean it — without this, files deleted in later
-      # commits would linger and poison builds. (alpine ships no curl —
-      # apk add is itself a GET-class fetch through the same proxy.)
-      # Hardening (2026-08-29 flake): big GETs also stall mid-transfer
-      # silently — connect-timeout never fires, --retry never sees an
-      # error, only the step timeout kills it. --speed-limit/-speed-time
-      # aborts a stalled crawl (<20KB/s over 30s) as a transient error so
-      # --retry reconnects fresh; --max-time caps each attempt; the
-      # api.github.com endpoint is the fallback edge. The per-sha cache
-      # makes the sibling job (runner is single-slot serial) and any
-      # rerun of this run read the tarball from the persistent volume
-      # instead of re-rolling the network dice.
-      - name: Download source (tarball, git-free)
+      # Two-tier source pickup (#166). Tier 1 — the official actions/checkout
+      # (git smart-HTTP): standard machinery, full .git, works whenever the
+      # flaky upstream is in a good mood. The 3-minute ceiling fail-fasts a
+      # stalled fetch stream (the known failure mode), and continue-on-error
+      # hands the job over to tier 2 instead of failing it.
+      - name: Checkout (git — tier 1)
+        id: git_checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 3
+        continue-on-error: true
+      # Tier 2 — git-free tarball fallback, only when tier 1 failed. The
+      # upstream also chokes big GETs mid-transfer silently (connect-timeout
+      # never fires, --retry never sees an error — run 33235987868), so the
+      # download carries a speed watchdog (--speed-limit aborts a stalled
+      # crawl so --retry reconnects fresh), a github.com/archive second
+      # endpoint, and a per-sha cache on the persistent volume. Anonymous on
+      # purpose: codeload rejects Authorization-carrying requests, and the
+      # fork is public anyway. The workspace wipe clears tier 1's half-cloned
+      # leftovers before extracting. Unique per-PID .part + atomic mv keep
+      # parallel runner slots from interleaving streams into one cache entry;
+      # gzip -t on the hit path evicts a poisoned entry instead of failing
+      # every rerun on it. (alpine ships no curl — apk add is itself a
+      # GET-class fetch through the same proxy.)
+      - name: Download source (tarball, git-free — tier 2)
+        if: steps.git_checkout.outcome == 'failure'
         timeout-minutes: 8
         run: |
-          apk add -q --no-cache curl
+          timeout 90 apk add -q --no-cache curl
           TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
-          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 120 --retry 2 --retry-delay 2"
-          if [ ! -s "$TARBALL" ]; then
-            echo "[src] cache miss — fetching ${GITHUB_SHA}"
-            curl $CURLFLAGS -o "${TARBALL}.part" \
-              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
-            || curl $CURLFLAGS -o "${TARBALL}.part" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
-            mv "${TARBALL}.part" "$TARBALL"
-            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
-            rm -f /cache/tarballs/*.part
-          else
+          PART="${TARBALL}.$$.part"
+          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
+          find /cache/tarballs -name '*.part' -mmin +120 -delete
+          if [ -s "$TARBALL" ] && gzip -t "$TARBALL" 2>/dev/null; then
             echo "[src] cache hit: $TARBALL"
+          else
+            rm -f "$TARBALL"
+            echo "[src] cache miss — fetching ${GITHUB_SHA}"
+            curl $CURLFLAGS -o "$PART" \
+              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            || curl $CURLFLAGS -o "$PART" \
+              "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
+            mv "$PART" "$TARBALL"
+            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
           fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
           tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
@@ -251,35 +259,43 @@ jobs:
       CUMORA_SECRETS_KEY: ci-test-secrets-key
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      # Same git-free pickup as the go job (#166) — bookworm ships curl,
-      # so no apk step. Same hardening: speed watchdog + retry + endpoint
-      # fallback + per-sha cache (single-slot runner runs the jobs serially,
-      # so whichever job goes second usually finds the tarball cached).
-      - name: Download source (tarball, git-free)
+      # Tier 1 of the two-tier pickup (#166) — identical to the go job.
+      - name: Checkout (git — tier 1)
+        id: git_checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 3
+        continue-on-error: true
+      # Tier 2 — same hardened tarball fallback as the go job (bookworm
+      # ships curl, so no apk step). On THIS path only, the workspace has
+      # no .git afterwards, so contract-check.sh (#48 guard — regenerates
+      # and diffs against HEAD) needs a synthesized baseline: a fresh
+      # commit of the pristine tarball makes "committed state" == branch
+      # head content. safe.directory bootstrap first: the workspace root
+      # is the host runner user's bind mount, and container-root git
+      # refuses repos owned by another uid. When tier 1 succeeds the real
+      # checkout's HEAD is used instead — nothing extra runs.
+      - name: Download source (tarball, git-free — tier 2)
+        if: steps.git_checkout.outcome == 'failure'
         timeout-minutes: 8
         run: |
           TARBALL="/cache/tarballs/${GITHUB_SHA}.tar.gz"
-          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 120 --retry 2 --retry-delay 2"
-          if [ ! -s "$TARBALL" ]; then
-            echo "[src] cache miss — fetching ${GITHUB_SHA}"
-            curl $CURLFLAGS -o "${TARBALL}.part" \
-              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
-            || curl $CURLFLAGS -o "${TARBALL}.part" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
-            mv "${TARBALL}.part" "$TARBALL"
-            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
-            rm -f /cache/tarballs/*.part
-          else
+          PART="${TARBALL}.$$.part"
+          CURLFLAGS="-fsSL --connect-timeout 15 --speed-limit 20480 --speed-time 30 --max-time 60 --retry 2 --retry-delay 2"
+          find /cache/tarballs -name '*.part' -mmin +120 -delete
+          if [ -s "$TARBALL" ] && gzip -t "$TARBALL" 2>/dev/null; then
             echo "[src] cache hit: $TARBALL"
+          else
+            rm -f "$TARBALL"
+            echo "[src] cache miss — fetching ${GITHUB_SHA}"
+            curl $CURLFLAGS -o "$PART" \
+              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            || curl $CURLFLAGS -o "$PART" \
+              "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
+            mv "$PART" "$TARBALL"
+            ls -t /cache/tarballs/*.tar.gz | tail -n +11 | xargs -r rm -f
           fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
           tar xzf "$TARBALL" -C "$GITHUB_WORKSPACE" --strip-components=1
-          # contract-check.sh (#48 guard) regenerates and diffs against
-          # HEAD; with no checkout there is no HEAD — synthesize one from
-          # the pristine tarball so "committed state" == branch head content.
-          # safe.directory bootstrap first: the workspace root is the host
-          # runner user's bind mount, and container-root git refuses repos
-          # owned by another uid (same dance checkout/contract-check do).
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git init -q -b main
           git add -A
