@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 // Contact 对齐 EmailContact 形状。
@@ -41,11 +43,8 @@ func sanitize(s string, allowed func(r rune) bool, trimSet string, max int) stri
 			b.WriteByte('-')
 		}
 	}
-	out := strings.Trim(b.String(), trimSet)
-	if runes := []rune(out); len(runes) > max {
-		out = string(runes[:max])
-	}
-	return out
+	// 产物恒 ASCII(allowed 白名单),rune==码元;走 UTF16Cap 统一 TS slice 语义。
+	return httpx.UTF16Cap(strings.Trim(b.String(), trimSet), max)
 }
 
 // safeLocalPart:id 小写,非 [a-z0-9_-] 转 '-',去首尾 -_,截 64。

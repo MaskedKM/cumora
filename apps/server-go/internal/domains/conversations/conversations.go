@@ -850,6 +850,37 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 			}
 			body.ClientID = s
 		}
+		// attachment 形状对齐 baseline:要求 url+name 为字符串;kind 非白名单
+		// 强转 'img'(从不拒绝)——见 router.ts:3264-3281 的内联 coerce 语义;
+		// 畸形视同无附件(attachment=null 同款)。
+		var attachmentJSON any
+		if len(body.Attachment) > 0 && string(body.Attachment) != "null" {
+			var att struct {
+				URL  *string `json:"url"`
+				Name *string `json:"name"`
+				Kind string  `json:"kind"`
+			}
+			if json.Unmarshal(body.Attachment, &att) == nil && att.URL != nil && att.Name != nil {
+				switch att.Kind {
+				case "img", "pdf", "file", "fig":
+				default:
+					var fixed map[string]any
+					_ = json.Unmarshal(body.Attachment, &fixed)
+					fixed["kind"] = "img"
+					if b, err := json.Marshal(fixed); err == nil {
+						body.Attachment = b
+					}
+				}
+				attachmentJSON = json.RawMessage(body.Attachment)
+			}
+		}
+		// 双空门对齐 TS 次序与文案(router.ts:3284:coerce 后、email 分支前,
+		// 恒 'empty message';Go 曾漂移 'body required' 且门在 email 分支后,
+		// 空 body 进 email 会话会先吃到 'email replies require a body')。
+		if body.Body == "" && attachmentJSON == nil {
+			httpx.WriteError(w, http.StatusBadRequest, "empty message")
+			return
+		}
 		// email 会话升格(#70 补线):聊天式回复代发真邮件——原语在
 		// email.ReplyInEmailConversation(email.ts replyInEmailConversation
 		// 的 Go 等价),TS router 在此分支代调;漏接则聊天框打字只落
@@ -868,7 +899,10 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				ConversationID: convID, CompanyID: companyID, AuthorID: uid, Body: body.Body,
 			})
 			if err != nil {
-				httpx.WriteInternalError(w, r, err)
+				// TS router.ts:3344 显式 catch:console.error + 500 无条件透传
+				// msg(非 errorHandler 面)——不进 WriteInternalError。
+				slog.Warn("email auto-promote failed", "conv", convID, "err", err)
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			status := http.StatusBadGateway
@@ -884,41 +918,6 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				"transportStatus": result.TransportStatus, "mock": result.Mock,
 				"error": errAny,
 			})
-			return
-		}
-		// attachment 形状对齐 baseline:要求 url+name 为字符串;kind 非白名单
-		// 强转 'img'(从不拒绝)——见 router.ts readAttachment 的 coerce 语义。
-		var attachmentJSON any
-		if len(body.Attachment) > 0 && string(body.Attachment) != "null" {
-			var att struct {
-				URL  *string `json:"url"`
-				Name *string `json:"name"`
-				Kind string  `json:"kind"`
-			}
-			malformed := json.Unmarshal(body.Attachment, &att) != nil || att.URL == nil || att.Name == nil
-			if malformed {
-				// baseline:畸形附件降级为纯文本(仅双缺才 400 'empty message')
-				if strings.TrimSpace(body.Body) == "" {
-					httpx.WriteError(w, http.StatusBadRequest, "empty message")
-					return
-				}
-				body.Attachment = nil
-			} else {
-				switch att.Kind {
-				case "img", "pdf", "file", "fig":
-				default:
-					var fixed map[string]any
-					_ = json.Unmarshal(body.Attachment, &fixed)
-					fixed["kind"] = "img"
-					if b, err := json.Marshal(fixed); err == nil {
-						body.Attachment = b
-					}
-				}
-				attachmentJSON = json.RawMessage(body.Attachment)
-			}
-		}
-		if strings.TrimSpace(body.Body) == "" && attachmentJSON == nil {
-			httpx.WriteError(w, http.StatusBadRequest, "body required")
 			return
 		}
 		// quoted 同会话校验(防跨房间泄漏;未知静默丢弃)

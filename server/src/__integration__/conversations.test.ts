@@ -134,4 +134,14 @@ test('[mirror] #118 coercion: sendMessage String(body) + clientId gate + createG
     assert.equal(bad.status, 400)
     assert.equal(((await bad.json()) as { error: string }).error, 'invalid clientId')
   }
+
+  // #141 rider:双空恒 'empty message'(TS router.ts:3284;Go 曾漂移
+  // 'body required');畸形附件(缺 url/name)视同无附件,同落此门。
+  for (const payload of [{}, { attachment: { url: 1 } }, { body: '   ' }]) {
+    const bad = await fetch(`${baseUrl}/api/conversations/${gBody.id}/messages`, {
+      method: 'POST', headers: H, body: JSON.stringify(payload),
+    })
+    assert.equal(bad.status, 400)
+    assert.equal(((await bad.json()) as { error: string }).error, 'empty message')
+  }
 })

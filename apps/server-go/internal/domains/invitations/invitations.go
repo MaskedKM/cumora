@@ -287,7 +287,7 @@ func create(db *sql.DB) http.HandlerFunc {
 		}
 		var note any
 		if s, ok := strOf("note"); ok {
-			t := strings.TrimSpace(utf16Cap(s, 280))
+			t := strings.TrimSpace(httpx.UTF16Cap(s, 280))
 			if t != "" {
 				note = t
 			}
@@ -734,7 +734,7 @@ func conveneStart(db *sql.DB) http.HandlerFunc {
 		// 既有 live(被新会话取代),恢复 TS 编排自然结束时的终态。
 		sweepStaleConvene(r.Context(), db, id, true)
 		sessionID := "cs-" + randUUID()
-		flair := utf16Cap(topic, 80)
+		flair := httpx.UTF16Cap(topic, 80)
 		startedAt := time.Now().UTC()
 		_, _ = db.ExecContext(r.Context(), `
 			INSERT INTO convene_sessions (id, conversation_id, title, flair, started_by, started_at, state)
@@ -957,19 +957,4 @@ func randHex6() string {
 func mustMJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
-}
-
-func utf16Cap(s string, n int) string {
-	count := 0
-	for i, r := range s {
-		w := 1
-		if r > 0xFFFF {
-			w = 2
-		}
-		if count+w > n {
-			return s[:i]
-		}
-		count += w
-	}
-	return s
 }

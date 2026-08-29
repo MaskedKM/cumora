@@ -496,14 +496,26 @@ func oauthFindOrCreate(ctx context.Context, db *sql.DB, p string, profile *oauth
 		seed := oauthSlugSeed(local)
 		slug := seed
 		for attempt := 0; attempt < 3; attempt++ {
+			// 唯一键冲突会 abort 整个事务,tx 内重试必死于 25P02(TS 同款
+			// 潜伏 bug,#141 rider 修)——SAVEPOINT 包住单次 INSERT,
+			// 冲突回滚到检查点再换 slug 重试。
+			if _, spErr := tx.ExecContext(ctx, `SAVEPOINT slug_insert`); spErr != nil {
+				return nil, spErr
+			}
 			_, err = tx.ExecContext(ctx,
 				`INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
 				companyID, profile.displayName+"'s team", slug, userID)
 			if err == nil {
+				if _, relErr := tx.ExecContext(ctx, `RELEASE SAVEPOINT slug_insert`); relErr != nil {
+					return nil, relErr
+				}
 				break
 			}
 			if !oauthIsDupKey(err) {
 				return nil, err
+			}
+			if _, rbErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT slug_insert`); rbErr != nil {
+				return nil, rbErr
 			}
 			slug = fmt.Sprintf("%s-%s", seed, oauthRandHex(4))
 		}
@@ -808,10 +820,7 @@ func oauthCallback(deps oauthDeps) http.HandlerFunc {
 }
 
 // oauthCut120:重定向 URL 的错误文案截断 —— TS slice(0,120) 按 UTF-16
-// 码元,Go 以 rune 切近似(代理对边界不劈半个字符;审计侧不截)。
+// 码元(#141 rider 换 UTF16Cap 精确对齐;审计侧不截)。
 func oauthCut120(s string) string {
-	if runes := []rune(s); len(runes) > 120 {
-		return string(runes[:120])
-	}
-	return s
+	return httpx.UTF16Cap(s, 120)
 }

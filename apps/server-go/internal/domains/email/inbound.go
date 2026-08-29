@@ -279,36 +279,34 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 		}
 		uploads := []uploaded{}
 		for _, a := range payload.Attachments {
-			filename := []rune(a.Filename)
-			if len(filename) == 0 {
-				filename = []rune("attachment")
+			// TS inbound-email.ts:326-327 `.slice(0, 200/120)` 按 UTF-16
+			// 码元(#185 评审 P2:出站点已换,入站孪生点补齐)。
+			filename := a.Filename
+			if filename == "" {
+				filename = "attachment"
 			}
-			if len(filename) > 200 {
-				filename = filename[:200]
+			filename = httpx.UTF16Cap(filename, 200)
+			mimeType := a.MimeType
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
 			}
-			mimeType := []rune(a.MimeType)
-			if len(mimeType) == 0 {
-				mimeType = []rune("application/octet-stream")
-			}
-			if len(mimeType) > 120 {
-				mimeType = mimeType[:120]
-			}
+			mimeType = httpx.UTF16Cap(mimeType, 120)
 			size := a.SizeBytes
 			if size < 0 {
 				size = 0
 			}
 			if a.Truncated || a.ContentBase64 == "" {
-				uploads = append(uploads, uploaded{string(filename), string(mimeType), size, nil, true})
+				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
 				continue
 			}
 			bytes, err := base64Decode(a.ContentBase64)
 			if err != nil {
-				uploads = append(uploads, uploaded{string(filename), string(mimeType), size, nil, true})
+				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
 				continue
 			}
 			ext := ""
-			if i := strings.LastIndex(string(filename), "."); i > 0 {
-				ext = extSanRe.ReplaceAllString(strings.ToLower(string(filename)[i+1:]), "")
+			if i := strings.LastIndex(filename, "."); i > 0 {
+				ext = extSanRe.ReplaceAllString(strings.ToLower(filename[i+1:]), "")
 				if len(ext) > 8 {
 					ext = ext[:8]
 				}
@@ -319,11 +317,11 @@ func MountInbound(mux *http.ServeMux, db *sql.DB) {
 			if ext != "" {
 				key += "." + ext
 			}
-			if err := putAttachment(key, bytes, string(mimeType)); err != nil {
-				uploads = append(uploads, uploaded{string(filename), string(mimeType), size, nil, true})
+			if err := putAttachment(key, bytes, mimeType); err != nil {
+				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
 				continue
 			}
-			uploads = append(uploads, uploaded{string(filename), string(mimeType), size, &key, false})
+			uploads = append(uploads, uploaded{filename, mimeType, size, &key, false})
 		}
 		// 扇出:每个可解析到租户的收件人一条投递。
 		type delivery struct {

@@ -44,11 +44,8 @@ func sanitizePart(s string, allowed func(rune) bool, trimSet string, max int) st
 			b.WriteByte('-')
 		}
 	}
-	out := strings.Trim(b.String(), trimSet)
-	if runes := []rune(out); len(runes) > max {
-		out = string(runes[:max])
-	}
-	return out
+	// 产物恒 ASCII(allowed 白名单),rune==码元;走 UTF16Cap 统一 TS slice 语义。
+	return httpx.UTF16Cap(strings.Trim(b.String(), trimSet), max)
 }
 
 func SafeLocalPart(id string) string { return sanitizePart(id, localPartAllowed, "-_", 64) }
@@ -830,9 +827,8 @@ func ResolveAttachments(raw []any) ([]ResolvedAttachment, string) {
 		filename, _ := a["filename"].(string)
 		filename = Utf16Cap(filename, 200)
 		mimeType, _ := a["mimeType"].(string)
-		if runes := []rune(mimeType); len(runes) > 120 {
-			mimeType = string(runes[:120])
-		}
+		// TS a.mimeType.slice(0, 120) 按 UTF-16 码元(#141 rider)。
+		mimeType = httpx.UTF16Cap(mimeType, 120)
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
