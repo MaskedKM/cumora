@@ -1026,7 +1026,10 @@ export function ObservabilityView() {
       if (document.visibilityState === 'hidden') return
       void loadRuns()
       void loadEvents(selectedId)
-    }, 3000)
+      // 15s (#144a): each tick re-fetches runs (up to 80) + the selected
+      // run's events — 3s was ~20 req/min against the server for a panel
+      // that rarely changes that fast. Manual refresh stays instant.
+    }, 15_000)
     return () => window.clearInterval(id)
   }, [autoRefresh, loadEvents, loadRuns, selectedId])
 
