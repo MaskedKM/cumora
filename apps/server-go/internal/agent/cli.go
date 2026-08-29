@@ -443,14 +443,6 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdTasks(ctx, parsed)
 	case "calendar":
 		return s.cliCmdCalendar(ctx, parsed)
-	case "kanban":
-		return s.cliCmdBoard(ctx, parsed)
-	case "card":
-		return s.cliCmdCard(ctx, parsed)
-	case "claim":
-		return s.cliCmdClaim(ctx, parsed, "claim")
-	case "unclaim":
-		return s.cliCmdClaim(ctx, parsed, "unclaim")
 	case "doc":
 		return s.cliCmdDoc(ctx, parsed)
 	case "ship":
@@ -476,6 +468,13 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 	case "image":
 		return s.cliCmdImage(ctx, parsed)
 	default:
+		// 域子包命令(#140 刀法):boards/email/… 居 agent/<domain>,
+		// 由 runtime 接线注入(本包不得 import 子包——防环)。
+		if s.domainDispatch != nil {
+			if res, ok := s.domainDispatch(sub, ctx, parsed); ok {
+				return res
+			}
+		}
 		return cliErr("unknown subcommand: " + sub + "\nrun \"cumora help\" for usage")
 	}
 }
