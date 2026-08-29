@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"io"
 	"log/slog"
 	"net/http"
@@ -150,7 +152,7 @@ func (s *Service) cliGenerateAndUploadImage(prompt, size, tenant, agentID string
 	agentIDArg := agentID
 	tenantArg := tenant
 	record := func(status string, errMsg *string) {
-		s.RecordLlmCall(LlmCallRecord{
+		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose:   "agent-image",
 			CompanyID: &tenantArg,
 			AgentID:   &agentIDArg,
@@ -209,7 +211,7 @@ type cliResponsesArgs struct {
 // cliResponsesResult:output_text + 用量(台账用)。
 type cliResponsesResult struct {
 	OutputText string
-	Usage      *TokenUsage
+	Usage      *costing.TokenUsage
 }
 
 var novitaUnconfiguredWarned atomic.Bool
@@ -338,7 +340,7 @@ func parseResponsesOutput(raw []byte) (cliResponsesResult, error) {
 	}
 	out := cliResponsesResult{OutputText: b.String()}
 	if parsed.Usage != nil {
-		u := TokenUsage{
+		u := costing.TokenUsage{
 			InputTokens:  parsed.Usage.InputTokens,
 			OutputTokens: parsed.Usage.OutputTokens,
 		}
@@ -375,7 +377,7 @@ func parseNovitaChatCompletion(raw []byte) (cliResponsesResult, error) {
 		out.OutputText = parsed.Choices[0].Message.Content
 	}
 	if parsed.Usage != nil {
-		u := TokenUsage{
+		u := costing.TokenUsage{
 			InputTokens:  parsed.Usage.PromptTokens,
 			OutputTokens: parsed.Usage.CompletionTokens,
 		}

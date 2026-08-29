@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"os"
 	"regexp"
 	"strings"
@@ -328,8 +330,8 @@ func (s *Service) cliTPalette(ctx context.Context, args map[string]any, agentID 
 	brief := strings.TrimSpace(fmt.Sprint(args["brief"]))
 	model := supportModelEnv()
 	agentArg, tenantArg := agentID, (*string)(nil)
-	record := func(status string, errMsg *string, usage *TokenUsage) {
-		s.RecordLlmCall(LlmCallRecord{
+	record := func(status string, errMsg *string, usage *costing.TokenUsage) {
+		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose: "palette", CompanyID: tenantArg, AgentID: &agentArg, Source: "cloud",
 			Model: model, Usage: usage, LatencyMS: msSince(t0), Status: status, Error: errMsg,
 			Extras: map[string]any{"brief": truncateRunesSimple(brief, 120)},

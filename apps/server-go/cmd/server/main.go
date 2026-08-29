@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -116,7 +118,7 @@ func main() {
 	runtimeSvc.StartScheduler()
 	runtimeSvc.StartScanner()
 	runtimeSvc.StartIdleScheduler()
-	runtimeSvc.StartLlmRollupRefresher()
+	costing.StartLlmRollupRefresher(runtimeSvc.DB)
 
 	// 投票过期清扫器(#121):POLL_SWEEP_INTERVAL_MS(默认 60s;0=禁用,
 	// 须透传——envInt 的 0→fallback 会吞掉 kill-switch,#62 教训)。
@@ -180,7 +182,7 @@ func main() {
 
 	// 观察面(#68):runs/triage 经济学/llm-spend(runtime 包自有实现,
 	// 挂 coreRouter 吃 authMiddleware 链)。
-	runtimeSvc.MountObservabilityApi(coreRouter)
+	obs.MountObservabilityApi(coreRouter, runtimeSvc.DB)
 	invitations.Mount(coreRouter, pool)
 	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
 	// 回读/回归/摩擦,16 路由。

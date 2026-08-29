@@ -13,6 +13,8 @@ package runtime
 import (
 	"encoding/json"
 	"errors"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"io"
 	"log/slog"
 	"net/http"
@@ -153,6 +155,10 @@ func bodyStrSlice(body map[string]any, key string) []string {
 // sliceUTF16:TS String.slice(0,n) 按 UTF-16 码元 —— cli_read.go 的
 // utf16Slice 别名(同包双名,#94 合并;代理对计 2 码元)。
 func sliceUTF16(s string, n int) string { return utf16Slice(s, n) }
+
+// uuidHex:httpx.UUIDHex 的本包别名(#140 observability 拆包后,cli 面
+// 的既有调用点零改动)。
+func uuidHex() string { return httpx.UUIDHex() }
 
 /* ───────── wake-stream / cli ───────── */
 
@@ -648,7 +654,7 @@ func (s *Service) handleCreateRun(w http.ResponseWriter, r *http.Request, agentI
 	if fpRaw, ok := body["fingerprint"].(string); ok {
 		fingerprint = &fpRaw
 	}
-	runID, err := s.CreateAgentRun(r.Context(), struct {
+	runID, err := obs.CreateAgentRun(r.Context(), s.DB, struct {
 		AgentID         string
 		CompanyID       *string
 		Trigger         map[string]any
@@ -680,7 +686,7 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request, agen
 		stage = &st
 	}
 	// 观测事件尽力而为:DB 打嗝不得打断轮(inproc recordEvent 同策略)。
-	if err := s.RecordAgentEvent(r.Context(), struct {
+	if err := obs.RecordAgentEvent(r.Context(), s.DB, struct {
 		RunID     string
 		AgentID   string
 		CompanyID *string
@@ -696,7 +702,7 @@ func (s *Service) handleRecordEvent(w http.ResponseWriter, r *http.Request, agen
 }
 
 // usageFromWire:RuntimeTokenUsage 宽松解析(缺字段按 0)。
-func usageFromWire(v any) *TokenUsage {
+func usageFromWire(v any) *costing.TokenUsage {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return nil
@@ -705,7 +711,7 @@ func usageFromWire(v any) *TokenUsage {
 		f, _ := m[k].(float64)
 		return int64(f)
 	}
-	return &TokenUsage{
+	return &costing.TokenUsage{
 		InputTokens:         get("inputTokens"),
 		CachedInputTokens:   get("cachedInputTokens"),
 		CacheCreationTokens: get("cacheCreationTokens"),
@@ -730,7 +736,7 @@ func (s *Service) handleRecordTriage(w http.ResponseWriter, r *http.Request, age
 	reason := strPtrOfRaw(body, "reason")
 	usage := usageFromWire(body["usage"])
 	daemonVersion := normalizeDaemonVersion(bodyStr(body, "daemonVersion"))
-	s.RecordTriage(agentID, companyID, &source, model, actionable, reason, usage)
+	obs.RecordTriage(s.DB, agentID, companyID, &source, model, actionable, reason, usage)
 	// 同时镜像进通用台账:BYOA 本地 triage 与云侧花费同页可见。
 	// agent_triages 行保判定/理由(triage 经济学视图);llm_calls 只存
 	// 原始调用形状。与 recordTriage 同样的 fire-and-forget 纪律。
@@ -747,7 +753,7 @@ func (s *Service) handleRecordTriage(w http.ResponseWriter, r *http.Request, age
 		if model != nil {
 			modelName = *model // TS `body.model ?? '<unknown>'`:空串保留
 		}
-		s.RecordLlmCall(LlmCallRecord{
+		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose:       "inbox-triage",
 			CompanyID:     companyID,
 			AgentID:       &agentID,
@@ -800,7 +806,7 @@ func (s *Service) handleLlmCalls(w http.ResponseWriter, r *http.Request, agentID
 		// purpose 白名单——未来 daemon 版本的新名字 coerce 成 agent-turn,
 		// 不走私自由串进 rollup。
 		purpose := "agent-turn"
-		if p := bodyStr(hop, "purpose"); knownPurposes[p] {
+		if p := bodyStr(hop, "purpose"); obs.KnownPurposes[p] {
 			purpose = p
 		}
 		model := bodyStr(hop, "model")
@@ -827,7 +833,7 @@ func (s *Service) handleLlmCalls(w http.ResponseWriter, r *http.Request, agentID
 		}
 		extras, _ := hop["extras"].(map[string]any)
 		agent := agentID
-		s.RecordLlmCall(LlmCallRecord{
+		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose:        purpose,
 			CompanyID:      companyID,
 			AgentID:        &agent,
@@ -849,7 +855,7 @@ func (s *Service) handleLlmCalls(w http.ResponseWriter, r *http.Request, agentID
 // handleRunHeartbeat:长引擎轮心跳,10 分钟陈旧清扫不误收。尽力而为。
 func (s *Service) handleRunHeartbeat(w http.ResponseWriter, r *http.Request, _ string, _ *string) {
 	runID := r.PathValue("runId")
-	if err := s.TouchAgentRun(r.Context(), runID); err != nil {
+	if err := obs.TouchAgentRun(r.Context(), s.DB, runID); err != nil {
 		// 已被清扫/不存在都没关系。
 		slog.Debug("[runtime] touchAgentRun no-op", "run", runID, "err", err)
 	}
@@ -885,7 +891,7 @@ func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ stri
 		tokenCount = &n
 	}
 	// finishRun 尽力而为(inproc 同策略)。
-	if err := s.FinishAgentRun(r.Context(), r.PathValue("runId"), status, summary, errMsg,
+	if err := obs.FinishAgentRun(r.Context(), s.DB, r.PathValue("runId"), status, summary, errMsg,
 		toolCallCount, tokenCount, usageFromWire(body["usage"]), model); err != nil {
 		slog.Warn("[runtime] finishRun failed — dropping", "run", r.PathValue("runId"), "status", status, "err", err)
 	}

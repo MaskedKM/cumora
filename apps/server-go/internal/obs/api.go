@@ -1,12 +1,14 @@
-// runtime 包 observability_api —— /api/agents/observability 三面(#68):
+// obs 包 api —— /api/agents/observability 三面(#68):
 // runs 列表、triage 经济学(缓存感知真账)、llm-spend rollup。挂在
 // coreRouter(authMiddleware 链内),门禁=devtools 头+角色(devtools 域
-// 同语义;本包内联实现避免跨域依赖)。价表复用 cost.go。
-package runtime
+// 同语义;本包内联实现避免跨域依赖)。价表复用 costing 包
+// (#140 自 runtime 拆出,纯移动——方法挂到 API{DB} 小接收器上)。
+package obs
 
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,8 +16,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
+
+// API:observability 三面的接收器——只带 DB,方法体与拆包前逐字对齐。
+type API struct {
+	DB *sql.DB
+}
 
 const stalledInterval = "5 minutes"
 
@@ -24,7 +32,7 @@ var agentRunStatuses = map[string]bool{
 }
 
 // obsRequireDevtools:NODE_ENV≠production 恒开;否则 dev 头 + owner/admin。
-func (s *Service) obsRequireDevtools(w http.ResponseWriter, r *http.Request) (string, bool) {
+func (s *API) obsRequireDevtools(w http.ResponseWriter, r *http.Request) (string, bool) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
 		return "", false
@@ -51,13 +59,14 @@ func (s *Service) obsRequireDevtools(w http.ResponseWriter, r *http.Request) (st
 }
 
 // MountObservabilityApi:coreRouter 挂载(main.go 调;authMiddleware 链内)。
-func (s *Service) MountObservabilityApi(mux *http.ServeMux) {
+func MountObservabilityApi(mux *http.ServeMux, db *sql.DB) {
+	s := &API{DB: db}
 	mux.HandleFunc("GET /api/agents/observability/runs", s.handleObsRuns)
 	mux.HandleFunc("GET /api/agents/observability/triage", s.handleObsTriage)
 	mux.HandleFunc("GET /api/agents/observability/llm-spend", s.handleObsSpend)
 }
 
-func (s *Service) handleObsRuns(w http.ResponseWriter, r *http.Request) {
+func (s *API) handleObsRuns(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
@@ -162,7 +171,7 @@ type triAcc struct {
 	cacheRead, totalInput             int64
 }
 
-func (s *Service) handleObsTriage(w http.ResponseWriter, r *http.Request) {
+func (s *API) handleObsTriage(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
@@ -187,7 +196,7 @@ func (s *Service) handleObsTriage(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, body)
 }
 
-func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID string, sinceHours int) (map[string]any, error) {
+func (s *API) buildTriageEconomics(ctx context.Context, tenant, agentID string, sinceHours int) (map[string]any, error) {
 	ms := float64(sinceHours) * 3_600_000
 	agentFilter := ""
 	runAgentFilter := ""
@@ -277,7 +286,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 		if t.model.Valid {
 			modelsSeen[t.model.String] = true
 		}
-		cost, _ := EffectiveCostUsd(t.model.String, TokenUsage{
+		cost, _ := costing.EffectiveCostUsd(t.model.String, costing.TokenUsage{
 			InputTokens: t.inputTok, CachedInputTokens: t.cachedTok,
 			CacheCreationTokens: t.cacheCreateTok, OutputTokens: t.outputTok,
 		})
@@ -297,11 +306,11 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 		if rr.model.Valid {
 			modelsSeen[rr.model.String] = true
 		}
-		u := TokenUsage{
+		u := costing.TokenUsage{
 			InputTokens: rr.inputTok, CachedInputTokens: rr.cachedTok,
 			CacheCreationTokens: rr.cacheCreateTok, OutputTokens: rr.outputTok,
 		}
-		cost, _ := EffectiveCostUsd(rr.model.String, u)
+		cost, _ := costing.EffectiveCostUsd(rr.model.String, u)
 		a.turnCostUsd += cost
 		a.turnCount += rr.turnN
 		a.cacheRead += u.CachedInputTokens
@@ -371,11 +380,11 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 		if err := rows.Scan(&rr.id, &rr.agentID, &rr.agentName, &rr.source, &rr.model,
 			&rr.actionable, &rr.reason, &rr.inputTok, &rr.cachedTok, &rr.cacheCreateTok,
 			&rr.outputTok, &rr.measured, &rr.createdAt); err == nil {
-			u := TokenUsage{
+			u := costing.TokenUsage{
 				InputTokens: rr.inputTok, CachedInputTokens: rr.cachedTok,
 				CacheCreationTokens: rr.cacheCreateTok, OutputTokens: rr.outputTok,
 			}
-			priced, est := EffectiveCostUsd(rr.model.String, u)
+			priced, est := costing.EffectiveCostUsd(rr.model.String, u)
 			cost := 0.0
 			if rr.measured {
 				cost = priced
@@ -410,7 +419,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 			return
 		}
 		seenUnit[key] = true
-		pr := priceFor(model)
+		pr := costing.PriceFor(model)
 		unitPrices = append(unitPrices, map[string]any{
 			"role": role, "model": model,
 			"inPer1M": pr.InPer1M, "cachedInPer1M": pr.CachedInPer1M, "outPer1M": pr.OutPer1M,
@@ -459,7 +468,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 	}
 	costEstimated := false
 	for m := range modelsSeen {
-		if !priceFor(m).Verified {
+		if !costing.PriceFor(m).Verified {
 			costEstimated = true
 		}
 	}
@@ -489,7 +498,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 		"costEstimated":          costEstimated,
 		"byoaShare":              ratio(float64(byoaTri), float64(triageCount)),
 		"unitPrices":             unitPrices,
-		"priceTable":             modelPriceTableRows(),
+		"priceTable":             costing.ModelPriceTableRows(),
 		"perAgent":               perAgentAny,
 		"recent":                 recent,
 	}, nil
@@ -497,7 +506,7 @@ func (s *Service) buildTriageEconomics(ctx context.Context, tenant, agentID stri
 
 /* ───────── llm-spend rollup ───────── */
 
-func (s *Service) handleObsSpend(w http.ResponseWriter, r *http.Request) {
+func (s *API) handleObsSpend(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
@@ -550,7 +559,7 @@ func (s *Service) handleObsSpend(w http.ResponseWriter, r *http.Request) {
 		var costEstimated bool
 		if err := rows.Scan(&purpose, &model, &source, &calls, &okCalls, &failedCalls, &rateLimited,
 			&inputTok, &cachedTok, &cacheCreateTok, &outputTok, &reasoningTok, &costUsd, &costEstimated); err == nil {
-			price := priceFor(model)
+			price := costing.PriceFor(model)
 			gap := price.InPer1M - price.CachedInPer1M
 			if gap < 0 {
 				gap = 0
@@ -597,30 +606,14 @@ func jsonUnmarshalToAny(b []byte, v *any) error {
 	if b == nil {
 		return nil
 	}
-	return jsonUnmarshal(b, v)
+	return json.Unmarshal(b, v) // 自 runtime/agenda.go 的同名包装平移
 }
 
-// modelPriceTableRows:cost.ts modelPriceTable()——env 覆盖在前、种子在后,
-// 去重保序;estimated = !verified。
-func modelPriceTableRows() []map[string]any {
-	envOverridesOnce.Do(loadEnvOverrides)
-	out := []map[string]any{}
-	seen := map[string]bool{}
-	add := func(id string, p ModelPrice) {
-		if seen[id] {
-			return
-		}
-		seen[id] = true
-		out = append(out, map[string]any{
-			"model": id, "inPer1M": p.InPer1M, "cachedInPer1M": p.CachedInPer1M,
-			"cacheWritePer1M": p.CacheWritePer, "outPer1M": p.OutPer1M, "estimated": !p.Verified,
-		})
+// nullStrAny:sql.NullString → JSON any(runtime/cli_calendar.go 同名助手
+// 的本包副本;#141 横切统一票再议合并)。
+func nullStrAny(ns sql.NullString) any {
+	if !ns.Valid {
+		return nil
 	}
-	for _, kv := range envOverrides {
-		add(kv.id, kv.price)
-	}
-	for _, kv := range seedPrices {
-		add(kv.id, kv.price)
-	}
-	return out
+	return ns.String
 }

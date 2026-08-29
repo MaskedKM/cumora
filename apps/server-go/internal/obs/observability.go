@@ -1,27 +1,22 @@
-// runtime 包 observability —— 对齐 server/src/agents/observability.ts 的
-// 写面(runs/events/triage/touch)+ llm-ledger.ts 的 recordLlmCall。
+// obs 包 observability —— 对齐 server/src/agents/observability.ts 的
+// 写面(runs/events/triage/touch)+ llm-ledger.ts 的 recordLlmCall
+// (#140 自 runtime 拆出,纯移动——Service 方法改吃 *sql.DB)。
 // 台账是观测面不是调用路径的硬依赖:一切插入尽力而为,失败只记日志。
-package runtime
+package obs
 
 import (
 	"context"
-	crand "crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
-// uuidHex:crypto/rand 16 字节 → 8-4-4-4-12(与 TS randomUUID 同形)。
-func uuidHex() string {
-	var b [16]byte
-	if _, err := crand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%016x", time.Now().UnixNano())
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
+// ctxBG:fire-and-forget 后台写共用的父上下文。
+var ctxBG = context.Background()
 
 const (
 	maxStringChars = 24_000
@@ -100,7 +95,7 @@ func jsonForDB(v any) string {
 }
 
 // CreateAgentRun:开一行 agent_runs,返回 runId。
-func (s *Service) CreateAgentRun(ctx context.Context, args struct {
+func CreateAgentRun(ctx context.Context, db *sql.DB, args struct {
 	AgentID         string
 	CompanyID       *string
 	Trigger         map[string]any
@@ -108,7 +103,7 @@ func (s *Service) CreateAgentRun(ctx context.Context, args struct {
 	InboxCount      int64
 	Fingerprint     *string
 }) (string, error) {
-	id := "run-" + uuidHex()
+	id := "run-" + httpx.UUIDHex()
 	inboxCount := args.InboxCount
 	var trigger any = args.Trigger
 	if trigger == nil {
@@ -118,7 +113,7 @@ func (s *Service) CreateAgentRun(ctx context.Context, args struct {
 	if inputIDs == nil {
 		inputIDs = []any{}
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO agent_runs (
 		  id, agent_id, company_id, trigger, status, stage,
 		  input_message_ids, inbox_count, fingerprint
@@ -132,7 +127,7 @@ func (s *Service) CreateAgentRun(ctx context.Context, args struct {
 }
 
 // RecordAgentEvent:追加 agent_events 并顺带推进 run 的 stage。
-func (s *Service) RecordAgentEvent(ctx context.Context, args struct {
+func RecordAgentEvent(ctx context.Context, db *sql.DB, args struct {
 	RunID     string
 	AgentID   string
 	CompanyID *string
@@ -149,14 +144,14 @@ func (s *Service) RecordAgentEvent(ctx context.Context, args struct {
 	if data == nil {
 		data = map[string]any{}
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO agent_events (id, run_id, agent_id, company_id, kind, level, title, data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
-		"evt-"+uuidHex(), args.RunID, args.AgentID, args.CompanyID, args.Kind, args.Level, args.Title, jsonForDB(data))
+		"evt-"+httpx.UUIDHex(), args.RunID, args.AgentID, args.CompanyID, args.Kind, args.Level, args.Title, jsonForDB(data))
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, `
+	_, err = db.ExecContext(ctx, `
 		UPDATE agent_runs SET updated_at = NOW(), stage = COALESCE($2, stage) WHERE id = $1`,
 		args.RunID, args.Stage)
 	return err
@@ -165,8 +160,8 @@ func (s *Service) RecordAgentEvent(ctx context.Context, args struct {
 // FinishAgentRun:收尾 run(status/汇总/计数/usage 分解+成本)。usage 为
 // nil 时仅写遗留字段(COALESCE 保住成本列默认)。tokenCount 优先于
 // usage 求和(遗留 token_count = input+output 合,保后向兼容)。
-func (s *Service) FinishAgentRun(ctx context.Context, runID, status string, summary, errMsg *string,
-	toolCallCount, tokenCount *int64, usage *TokenUsage, model *string) error {
+func FinishAgentRun(ctx context.Context, db *sql.DB, runID, status string, summary, errMsg *string,
+	toolCallCount, tokenCount *int64, usage *costing.TokenUsage, model *string) error {
 	var tokenCountV int64
 	var cost *float64
 	var costEstimated *bool
@@ -176,7 +171,7 @@ func (s *Service) FinishAgentRun(ctx context.Context, runID, status string, summ
 		tokenCountV = usage.InputTokens + usage.CachedInputTokens + usage.CacheCreationTokens + usage.OutputTokens
 	}
 	if usage != nil {
-		usd, estimated := EffectiveCostUsd(deref(model), *usage)
+		usd, estimated := costing.EffectiveCostUsd(deref(model), *usage)
 		cost = &usd
 		costEstimated = &estimated
 	}
@@ -188,7 +183,7 @@ func (s *Service) FinishAgentRun(ctx context.Context, runID, status string, summ
 	if usage != nil {
 		in, cached, cacheW, out = usage.InputTokens, usage.CachedInputTokens, usage.CacheCreationTokens, usage.OutputTokens
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		UPDATE agent_runs
 		   SET status = $2,
 		       stage = $2,
@@ -212,21 +207,21 @@ func (s *Service) FinishAgentRun(ctx context.Context, runID, status string, summ
 
 // TouchAgentRun:长引擎轮的心跳——只 bump updated_at 且只碰 running 行,
 // 10 分钟陈旧清扫不会误收长轮,也不会复活已完结的行。
-func (s *Service) TouchAgentRun(ctx context.Context, runID string) error {
-	_, err := s.DB.ExecContext(ctx,
+func TouchAgentRun(ctx context.Context, db *sql.DB, runID string) error {
+	_, err := db.ExecContext(ctx,
 		`UPDATE agent_runs SET updated_at = NOW() WHERE id = $1 AND status = 'running'`, runID)
 	return err
 }
 
 // RecordTriage:记一笔 inbox-triage(小脑门)及其缓存感知成本。尽力而为。
-func (s *Service) RecordTriage(agentID string, companyID *string, source, model *string,
-	actionable bool, reason *string, usage *TokenUsage) {
+func RecordTriage(db *sql.DB, agentID string, companyID *string, source, model *string,
+	actionable bool, reason *string, usage *costing.TokenUsage) {
 	measured := usage != nil
-	u := emptyUsage
+	u := costing.EmptyUsage
 	if usage != nil {
 		u = *usage
 	}
-	usd, estimated := EffectiveCostUsd(deref(model), u)
+	usd, estimated := costing.EffectiveCostUsd(deref(model), u)
 	var cost float64
 	if measured {
 		cost = usd
@@ -234,16 +229,16 @@ func (s *Service) RecordTriage(agentID string, companyID *string, source, model 
 	var reasonStr any
 	if reason != nil {
 		r := *reason
-		r = sliceUTF16(r, 500) // TS (reason ?? '').slice(0,500)
+		r = httpx.UTF16Cap(r, 500) // TS (reason ?? '').slice(0,500)
 		reasonStr = r
 	}
-	if _, err := s.DB.ExecContext(ctxBG, `
+	if _, err := db.ExecContext(ctxBG, `
 		INSERT INTO agent_triages (
 		  id, agent_id, company_id, source, model, actionable, reason,
 		  input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens,
 		  cost_usd, cost_estimated, measured
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		"tri-"+uuidHex(), agentID, companyID, source, model, actionable, reasonStr,
+		"tri-"+httpx.UUIDHex(), agentID, companyID, source, model, actionable, reasonStr,
 		u.InputTokens, u.CachedInputTokens, u.CacheCreationTokens, u.OutputTokens,
 		cost, estimated, measured); err != nil {
 		slog.Warn("[observability] recordTriage failed — dropping", "err", err)
@@ -259,7 +254,7 @@ type LlmCallRecord struct {
 	ConversationID *string
 	Source         string
 	Model          string
-	Usage          *TokenUsage
+	Usage          *costing.TokenUsage
 	LatencyMS      int64
 	Status         string
 	Error          *string
@@ -267,9 +262,10 @@ type LlmCallRecord struct {
 	DaemonVersion  *string
 }
 
-// knownPurposes:daemon 可申报的 purpose 白名单,其余一律 coerce 成
+// KnownPurposes:daemon 可申报的 purpose 白名单,其余一律 coerce 成
 // agent-turn——未来 daemon 版本的新名字不得走私自由串进 rollup。
-var knownPurposes = map[string]bool{
+// (routes.go 的 llm-calls 批量录入面共用。)
+var KnownPurposes = map[string]bool{
 	"agent-turn": true, "inbox-triage": true, "synthetic-wake-gate": true, "agenda": true,
 	"compaction": true, "completion-verify": true, "steer-summary": true,
 }
@@ -277,13 +273,13 @@ var knownPurposes = map[string]bool{
 // RecordLlmCall:llm_calls 单行 INSERT。永不抛错——台账不是调用路径的
 // 硬依赖。BYOA 本地引擎调用也经 /runtime/llm-calls 走到这里(镜像进
 // 通用台账,agent_triages 保留判定侧视图)。
-func (s *Service) RecordLlmCall(rec LlmCallRecord) {
+func RecordLlmCall(db *sql.DB, rec LlmCallRecord) {
 	measured := rec.Usage != nil
-	u := emptyUsage
+	u := costing.EmptyUsage
 	if rec.Usage != nil {
 		u = *rec.Usage
 	}
-	usd, estimated := EffectiveCostUsd(rec.Model, u)
+	usd, estimated := costing.EffectiveCostUsd(rec.Model, u)
 	var cost float64
 	if measured {
 		cost = usd
@@ -297,7 +293,7 @@ func (s *Service) RecordLlmCall(rec LlmCallRecord) {
 	var errStr any
 	if rec.Error != nil {
 		e := *rec.Error
-		e = sliceUTF16(e, 500) // TS error.slice(0,500) 按 UTF-16 码元
+		e = httpx.UTF16Cap(e, 500) // TS error.slice(0,500) 按 UTF-16 码元
 		errStr = e
 	}
 	// llm_calls.extras 原样存储(TS JSON.stringify verbatim,#94);
@@ -307,7 +303,7 @@ func (s *Service) RecordLlmCall(rec LlmCallRecord) {
 		b, _ := json.Marshal(rec.Extras)
 		extras = string(b)
 	}
-	if _, err := s.DB.ExecContext(ctxBG, `
+	if _, err := db.ExecContext(ctxBG, `
 		INSERT INTO llm_calls (
 		  id, company_id, agent_id, run_id, conversation_id,
 		  purpose, source, model,
@@ -316,7 +312,7 @@ func (s *Service) RecordLlmCall(rec LlmCallRecord) {
 		  cost_usd, cost_estimated, measured,
 		  latency_ms, status, error, extras, daemon_version
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,$13,$14,$15,$16,$17,$18,$19::jsonb,$20)`,
-		"llm-"+uuidHex(), rec.CompanyID, rec.AgentID, rec.RunID, rec.ConversationID,
+		"llm-"+httpx.UUIDHex(), rec.CompanyID, rec.AgentID, rec.RunID, rec.ConversationID,
 		rec.Purpose, rec.Source, rec.Model,
 		u.InputTokens, u.CachedInputTokens, u.CacheCreationTokens, u.OutputTokens,
 		cost, estimated, measured,

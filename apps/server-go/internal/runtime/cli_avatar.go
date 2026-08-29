@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 	"io"
 	"net/http"
 	"strings"
@@ -332,7 +333,7 @@ func (s *Service) cliInferAgentGender(ctx context.Context, name, role, systemPro
 		hashFallback = genderFeminine
 	}
 	agentArg, tenantArg := name, tenant
-	s.RecordLlmCall(LlmCallRecord{
+	obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 		Purpose: "gender", CompanyID: &tenantArg, AgentID: nil, Source: "cloud",
 		Model: supportModelEnv(), LatencyMS: 0, Status: "ok",
 		Extras: map[string]any{"agentName": agentArg, "role": truncateRunesSimple(role, 60)},
@@ -488,7 +489,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	t0 := time.Now()
 	agentArg, tenantArg := agentID, tenant
 	record := func(status string, errMsg *string) {
-		s.RecordLlmCall(LlmCallRecord{
+		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose: "avatar-image", CompanyID: &tenantArg, AgentID: &agentArg, Source: "cloud",
 			Model: imageModelEnv(), LatencyMS: msSince(t0), Status: status, Error: errMsg,
 			Extras: map[string]any{"gender": string(gender), "kind": kind},
