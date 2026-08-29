@@ -899,7 +899,10 @@ func sendMessage(db *sql.DB) http.HandlerFunc {
 				ConversationID: convID, CompanyID: companyID, AuthorID: uid, Body: body.Body,
 			})
 			if err != nil {
-				httpx.WriteInternalError(w, r, err)
+				// TS router.ts:3344 显式 catch:console.error + 500 无条件透传
+				// msg(非 errorHandler 面)——不进 WriteInternalError。
+				slog.Warn("email auto-promote failed", "conv", convID, "err", err)
+				httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			status := http.StatusBadGateway
