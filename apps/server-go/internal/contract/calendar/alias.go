@@ -6,5 +6,4 @@ package calendarcontract
 import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 
 type ListCalendarEventsParams = contract.ListCalendarEventsParams
-
 const SessionBearerScopes = contract.SessionBearerScopes
