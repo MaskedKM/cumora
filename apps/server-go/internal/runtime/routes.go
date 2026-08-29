@@ -25,6 +25,8 @@ import (
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
 // Mount:挂全部 /runtime 路由。
@@ -266,11 +268,11 @@ func (s *Service) handleInbox(w http.ResponseWriter, r *http.Request, agentID st
 		perConvoMaxSeq := map[string]int64{}
 		var convos []string
 		for _, row := range rows {
-			cid := rowStr(row, "conversation_id")
+			cid := sched.RowStr(row, "conversation_id")
 			if _, seen := perConvoMaxSeq[cid]; !seen {
 				convos = append(convos, cid)
 			}
-			if seq := rowInt(row, "sequence"); seq > perConvoMaxSeq[cid] {
+			if seq := sched.RowInt(row, "sequence"); seq > perConvoMaxSeq[cid] {
 				perConvoMaxSeq[cid] = seq
 			}
 		}
@@ -289,10 +291,10 @@ func (s *Service) gatherClaimsByConvo(inbox []map[string]any) map[string][]agent
 	seen := map[string]bool{}
 	var convos []string
 	for _, m := range inbox {
-		if rowStr(m, "kind") == "system" {
+		if sched.RowStr(m, "kind") == "system" {
 			continue
 		}
-		cid := rowStr(m, "conversation_id")
+		cid := sched.RowStr(m, "conversation_id")
 		if !seen[cid] {
 			seen[cid] = true
 			convos = append(convos, cid)
@@ -330,7 +332,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	convoSet := map[string]bool{}
 	var convoIDs []string
 	for _, m := range inbox {
-		cid := rowStr(m, "conversation_id")
+		cid := sched.RowStr(m, "conversation_id")
 		if !convoSet[cid] {
 			convoSet[cid] = true
 			convoIDs = append(convoIDs, cid)
@@ -358,7 +360,7 @@ func (s *Service) handleInboxTriagePayload(w http.ResponseWriter, r *http.Reques
 	if persona.CompanyID != "" {
 		humanActive, _ = s.HumanRecentlyActive(ctx, persona.CompanyID, 10)
 	}
-	req := BuildTriageRequest(agentID, persona, inbox, contextRows, claimsByConvo, humanActive)
+	req := sched.BuildTriageRequest(agentID, persona, inbox, contextRows, claimsByConvo, humanActive)
 	if req.Verdict != nil {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"verdict": req.Verdict})
 		return
@@ -382,7 +384,7 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"actionable": false})
 		return
 	}
-	agenda, err := s.GatherAgentAgenda(ctx, agentID, *companyID)
+	agenda, err := s.Sched.GatherAgentAgenda(ctx, agentID, *companyID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -400,11 +402,11 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"actionable": false})
 		return
 	}
-	route := s.ResolveCerebellumRouteForAgent(ctx, agentID)
-	built := BuildAgendaClassifierRequest(persona, agenda, time.Now().UnixMilli())
+	route := s.Sched.ResolveCerebellumRouteForAgent(ctx, agentID)
+	built := sched.BuildAgendaClassifierRequest(persona, agenda, time.Now().UnixMilli())
 	if route == "byoa" {
 		if built.Verdict != nil {
-			httpx.WriteJSON(w, http.StatusOK, s.FinalizeAgendaVerdict(ctx, agenda, *built.Verdict))
+			httpx.WriteJSON(w, http.StatusOK, s.Sched.FinalizeAgendaVerdict(ctx, agenda, *built.Verdict))
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -417,8 +419,8 @@ func (s *Service) handleAgenda(w http.ResponseWriter, r *http.Request, agentID s
 	// remote 路由:云分类同步跑在这里(classifyAgendaActionable ——
 	// cerebellum 适配器或 legacy tracked OpenAI),失败退确定性回退;
 	// finalize 与 /agenda/verdict 共用同一尾部保证字节同形。
-	verdict := s.ClassifyAgendaActionable(ctx, persona, *companyID, agentID, agenda, time.Now().UnixMilli())
-	httpx.WriteJSON(w, http.StatusOK, s.FinalizeAgendaVerdict(ctx, agenda, verdict))
+	verdict := s.Sched.ClassifyAgendaActionable(ctx, persona, *companyID, agentID, agenda, time.Now().UnixMilli())
+	httpx.WriteJSON(w, http.StatusOK, s.Sched.FinalizeAgendaVerdict(ctx, agenda, verdict))
 }
 
 // handleAgendaVerdict:daemon 本地 classify(或其确定性回退)后的判定
@@ -437,13 +439,13 @@ func (s *Service) handleAgendaVerdict(w http.ResponseWriter, r *http.Request, ag
 	}
 	focus := sliceUTF16(bodyStr(body, "focus"), 240)
 	reason := sliceUTF16(bodyStr(body, "reason"), 240)
-	verdict := AgendaVerdict{Actionable: bodyBool(body, "actionable"), Focus: focus, Reason: reason}
-	agenda, err := s.GatherAgentAgenda(ctx, agentID, *companyID)
+	verdict := sched.AgendaVerdict{Actionable: bodyBool(body, "actionable"), Focus: focus, Reason: reason}
+	agenda, err := s.Sched.GatherAgentAgenda(ctx, agentID, *companyID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, s.FinalizeAgendaVerdict(ctx, agenda, verdict))
+	httpx.WriteJSON(w, http.StatusOK, s.Sched.FinalizeAgendaVerdict(ctx, agenda, verdict))
 }
 
 /* ───────── 读面(续) ───────── */

@@ -6,9 +6,13 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -16,15 +20,20 @@ import (
 // 零改动);调度/扫描/presence/路由方法定义在本包。
 type Service struct {
 	*agent.Service
+
+	// Sched:唤醒调度/议程域(#140 收官刀自本包拆出,构造时接线)。
+	Sched *sched.S
 }
 
 func New(db *sql.DB, rdb redis.UniversalClient) *Service {
 	core := agent.New(db, rdb)
-	svc := &Service{Service: core}
-	// 唤醒钩子:agent 面(cli boards manual 唤醒)→ 本包 wakeOne
-	// (预算/steer/bus 投递住在这里)。
+	schedS := sched.New(core)
+	svc := &Service{Service: core, Sched: schedS}
+	// busy 探针:调度域的 steer 判定经此读 presence 租约(防反向依赖)。
+	schedS.SetBusyProbe(svc.IsAgentBusy)
+	// 唤醒钩子:agent 面(cli boards manual 唤醒)→ 调度域 WakeOne。
 	core.SetWakeHook(func(agentID, reason string, conversationID *string) {
-		svc.wakeOne(agentID, reason, conversationID, nil, nil)
+		schedS.WakeOne(agentID, reason, conversationID, nil, nil)
 	})
 	wireDomainDispatch(core)
 	return svc
@@ -36,5 +45,29 @@ func (s *Service) SetRelay(r *docrelay.Relay) { s.Service.SetRelay(r) }
 // redisOrNil:子功能取 Redis 客户端(nil = 降级路径)。
 func (s *Service) redis() redis.UniversalClient { return s.RDB }
 
+// StartScheduler / StartIdleScheduler / WakeMentionedAgents:main.go 与
+// 域挂载的启动/回调入口(调度域实装的壳代理)。
+func (s *Service) StartScheduler()     { s.Sched.StartScheduler() }
+func (s *Service) StartIdleScheduler() { s.Sched.StartIdleScheduler() }
+func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
+	s.Sched.WakeMentionedAgents(companyID, mentions, actorID)
+}
+
 // ctxBG:fire-and-forget 后台写共用的父上下文。
 var ctxBG = context.Background()
+
+// envIntRaw / getenv:调度/议程面(#140 拆出)同名助手的本包副本
+// (scanner 的间隔/门控 env 仍在此读)。
+func envIntRaw(name string) (int64, bool) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func getenv(name string) string { return os.Getenv(name) }

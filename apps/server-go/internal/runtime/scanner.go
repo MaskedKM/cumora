@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
 const scannerMinMessages = 8
@@ -260,7 +262,7 @@ func (s *Service) recordScanWake(ctx context.Context, agent scanAgentRow, finger
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO agent_log (id, agent_id, company_id, kind, body, ref)
 		VALUES ($1, $2, $3, 'note', $4, $5::jsonb)`,
-		"log-"+randHex12(), agent.id, agent.companyID,
+		"log-"+sched.RandHex12(), agent.id, agent.companyID,
 		"background scan wake queued for "+agent.name, string(ref))
 	return err
 }
@@ -296,8 +298,8 @@ func (s *Service) RunBackgroundScans(ctx context.Context) {
 				return
 			}
 			roster := s.loadScanRoster(ctx, a.companyID)
-			s.wakeOne(a.id, "background_scan", nil, nil, &WakeOpts{
-				BackgroundBrief: &BackgroundBrief{
+			s.Sched.WakeOne(a.id, "background_scan", nil, nil, &sched.WakeOpts{
+				BackgroundBrief: &sched.BackgroundBrief{
 					Source: "background_scanner",
 					Title:  "Recent company activity scan",
 					Body:   buildBackgroundScanBrief(a, roster, recent),

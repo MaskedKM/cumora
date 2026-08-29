@@ -1,9 +1,9 @@
-// runtime 包 idle —— idle/heartbeat 调度(#62):idle.ts 的 Go 等价。
+// sched 包 idle —— idle/heartbeat 调度(#62):idle.ts 的 Go 等价。
 // 每租户挑一个安静 agent 合成唤醒;有 agenda 卡/事件时先问廉价分类器
 // (remote 路由才问;byoa 路由由 daemon 自己的 /runtime/agenda 轮询负责,
 // 本循环直接跳过该租户 tick)。分类器说 skip = 省脑;分类器故障 = 回落
 // 通用 idle 唤醒(持续故障不许把带卡 agent 静默成 no-op)。
-package runtime
+package sched
 
 import (
 	"context"
@@ -46,7 +46,7 @@ type idleCandidate struct {
 // pickIdleAgent: 先随机挑 5 个 avail/resting agent,只对这 5 个算 last_spoke
 // (旧形态对全量 agent 跑相关子查询 + 无索引全扫,曾 503 API)。安静 =
 // 从未发言或最近 IDLE_MIN_QUIET_MIN 分钟内未发言。
-func (s *Service) pickIdleAgent(ctx context.Context, companyID string) *idleCandidate {
+func (s *S) pickIdleAgent(ctx context.Context, companyID string) *idleCandidate {
 	rows, err := s.DB.QueryContext(ctx, `
 		WITH picked AS (
 		   SELECT p.id, p.name, p.status, p.company_id
@@ -87,12 +87,12 @@ func (s *Service) pickIdleAgent(ctx context.Context, companyID string) *idleCand
 
 // recordIdleWake: agent_log 落一行 note(company_id 让租户索引直取)。
 // 上抛错误:TS 的 await INSERT 在 per-tenant try 内,失败即跳过唤醒。
-func (s *Service) recordIdleWake(agent idleCandidate, ref map[string]any) error {
+func (s *S) recordIdleWake(agent idleCandidate, ref map[string]any) error {
 	refJSON, _ := json.Marshal(ref)
 	_, err := s.DB.ExecContext(ctxBG, `
 		INSERT INTO agent_log (id, agent_id, company_id, kind, body, ref)
 		VALUES ($1, $2, $3, 'note', $4, $5::jsonb)`,
-		"log-"+randHex12(), agent.id, agent.companyID,
+		"log-"+RandHex12(), agent.id, agent.companyID,
 		"idle wake queued for "+agent.name, string(refJSON))
 	return err
 }
@@ -116,7 +116,7 @@ func idleRef(agent idleCandidate, cards, events int, verdict string) map[string]
 func idleMinQuietString() string { return strconv.FormatInt(idleMinQuietMin(), 10) }
 
 // RunIdleTick: 一轮——遍历租户,挑人,agenda 判定,唤醒。
-func (s *Service) RunIdleTick(ctx context.Context) {
+func (s *S) RunIdleTick(ctx context.Context) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM companies`)
 	if err != nil {
 		slog.Warn("[idle] tenant list failed", "err", err)
@@ -154,7 +154,7 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 					slog.Warn("[idle] record wake failed", "agent", agent.id, "err", err)
 					return
 				}
-				s.wakeOne(agent.id, "idle", nil, nil, &WakeOpts{
+				s.WakeOne(agent.id, "idle", nil, nil, &WakeOpts{
 					IdleReason: "idle heartbeat after at least " + idleMinQuietString() + " quiet minute(s)",
 				})
 				return
@@ -183,7 +183,7 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 				// 健康分类器说 skip = 省脑;分类器 ERROR(网络/配额)不得
 				// 静默 agent——回落通用 idle 唤醒。
 				if verdictLabel == "classifier_error" {
-					s.wakeOne(agent.id, "idle", nil, nil, &WakeOpts{
+					s.WakeOne(agent.id, "idle", nil, nil, &WakeOpts{
 						IdleReason: "idle heartbeat after at least " + idleMinQuietString() + " quiet minute(s) (agenda triage unavailable)",
 					})
 				}
@@ -203,7 +203,7 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 			if focus == "" {
 				focus = "Heartbeat agenda"
 			}
-			s.wakeOne(agent.id, "background_scan", nil, nil, &WakeOpts{
+			s.WakeOne(agent.id, "background_scan", nil, nil, &WakeOpts{
 				BackgroundBrief: &BackgroundBrief{
 					Source: "agenda_scheduler",
 					Title:  focus,
@@ -214,7 +214,7 @@ func (s *Service) RunIdleTick(ctx context.Context) {
 	}
 }
 
-func randHex12() string {
+func RandHex12() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
@@ -222,7 +222,7 @@ func randHex12() string {
 
 // StartIdleScheduler: 周期 tick;ENABLE_IDLE='false' 或 IDLE_INTERVAL_MS<=0
 // 关闭(nil = 未启动)。TS 门控是字面 !== 'false'。
-func (s *Service) StartIdleScheduler() (stop func()) {
+func (s *S) StartIdleScheduler() (stop func()) {
 	if getenv("ENABLE_IDLE") == "false" {
 		return nil
 	}
