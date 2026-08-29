@@ -18,6 +18,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/admin"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -348,84 +349,82 @@ func obsLlmDaemonVersions(db *sql.DB, sinceDays int, companyFilter string) ([]ma
 // llmObservability:GET /api/admin/observability/llm —— 一次挂载取全
 // 页四形;summary 的 topPurpose/savableUsd 从已取 rollup 派生(不另扫
 // 表,且随 model 过滤联动)。tenants 恒全局(选择器要全量租户清单)。
-func llmObservability(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		sinceDays := obsSinceDays(r.URL.Query().Get("sinceDays"))
-		model := trimmedNonEmpty(r.URL.Query().Get("model"))
-		companyFilter := trimmedNonEmpty(r.URL.Query().Get("companyId"))
-		fresh := r.URL.Query().Get("fresh") == "1" || r.URL.Query().Get("fresh") == "true"
-
-		cacheKey := fmt.Sprintf("obs-llm|%d|%s|%s", sinceDays, model, companyFilterOr(companyFilter))
-		payload, err := cachedAgg(cacheKey, 30*time.Second, fresh, func() (any, error) {
-			rollup, err := obsLlmRollup(db, sinceDays, model, companyFilter)
-			if err != nil {
-				return nil, err
-			}
-			summary, err := obsLlmSummary(db, sinceDays, companyFilter)
-			if err != nil {
-				return nil, err
-			}
-			trend, err := obsLlmTrend(db, sinceDays, companyFilter)
-			if err != nil {
-				return nil, err
-			}
-			topAgents, err := obsLlmTopAgents(db, sinceDays, 20, companyFilter)
-			if err != nil {
-				return nil, err
-			}
-			tenants, err := obsLlmTenants(db, sinceDays, 200)
-			if err != nil {
-				return nil, err
-			}
-			daemonVersions, err := obsLlmDaemonVersions(db, sinceDays, companyFilter)
-			if err != nil {
-				return nil, err
-			}
-			// 派生 topPurpose / savableUsd(映射保插入序,首最大者胜出
-			// 同 TS for-of 语义)。
-			costByPurpose := map[string]float64{}
-			var order []string
-			savableUsd := 0.0
-			for _, row := range rollup {
-				purpose, _ := row["purpose"].(string)
-				cost, _ := row["costUsd"].(float64)
-				if _, seen := costByPurpose[purpose]; !seen {
-					order = append(order, purpose)
-				}
-				costByPurpose[purpose] += cost
-				if sv, ok := row["savableUsd"].(float64); ok {
-					savableUsd += sv
-				}
-			}
-			var topPurpose any
-			for _, p := range order {
-				c := costByPurpose[p]
-				if topPurpose == nil {
-					topPurpose = map[string]any{"purpose": p, "costUsd": c}
-					continue
-				}
-				if prev, ok := topPurpose.(map[string]any); ok {
-					if prevCost, _ := prev["costUsd"].(float64); c > prevCost {
-						topPurpose = map[string]any{"purpose": p, "costUsd": c}
-					}
-				}
-			}
-			summary["topPurpose"] = topPurpose
-			summary["savableUsd"] = savableUsd
-			return map[string]any{
-				"summary": summary, "rollup": rollup, "trend": trend,
-				"topAgents": topAgents, "tenants": tenants, "daemonVersions": daemonVersions,
-			}, nil
-		})
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, payload)
+func (s *Server) AdminLlmSummary(w http.ResponseWriter, r *http.Request, params contract.AdminLlmSummaryParams) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	sinceDays := obsSinceDays(r.URL.Query().Get("sinceDays"))
+	model := trimmedNonEmpty(r.URL.Query().Get("model"))
+	companyFilter := trimmedNonEmpty(r.URL.Query().Get("companyId"))
+	fresh := r.URL.Query().Get("fresh") == "1" || r.URL.Query().Get("fresh") == "true"
+
+	cacheKey := fmt.Sprintf("obs-llm|%d|%s|%s", sinceDays, model, companyFilterOr(companyFilter))
+	payload, err := cachedAgg(cacheKey, 30*time.Second, fresh, func() (any, error) {
+		rollup, err := obsLlmRollup(s.DB, sinceDays, model, companyFilter)
+		if err != nil {
+			return nil, err
+		}
+		summary, err := obsLlmSummary(s.DB, sinceDays, companyFilter)
+		if err != nil {
+			return nil, err
+		}
+		trend, err := obsLlmTrend(s.DB, sinceDays, companyFilter)
+		if err != nil {
+			return nil, err
+		}
+		topAgents, err := obsLlmTopAgents(s.DB, sinceDays, 20, companyFilter)
+		if err != nil {
+			return nil, err
+		}
+		tenants, err := obsLlmTenants(s.DB, sinceDays, 200)
+		if err != nil {
+			return nil, err
+		}
+		daemonVersions, err := obsLlmDaemonVersions(s.DB, sinceDays, companyFilter)
+		if err != nil {
+			return nil, err
+		}
+		// 派生 topPurpose / savableUsd(映射保插入序,首最大者胜出
+		// 同 TS for-of 语义)。
+		costByPurpose := map[string]float64{}
+		var order []string
+		savableUsd := 0.0
+		for _, row := range rollup {
+			purpose, _ := row["purpose"].(string)
+			cost, _ := row["costUsd"].(float64)
+			if _, seen := costByPurpose[purpose]; !seen {
+				order = append(order, purpose)
+			}
+			costByPurpose[purpose] += cost
+			if sv, ok := row["savableUsd"].(float64); ok {
+				savableUsd += sv
+			}
+		}
+		var topPurpose any
+		for _, p := range order {
+			c := costByPurpose[p]
+			if topPurpose == nil {
+				topPurpose = map[string]any{"purpose": p, "costUsd": c}
+				continue
+			}
+			if prev, ok := topPurpose.(map[string]any); ok {
+				if prevCost, _ := prev["costUsd"].(float64); c > prevCost {
+					topPurpose = map[string]any{"purpose": p, "costUsd": c}
+				}
+			}
+		}
+		summary["topPurpose"] = topPurpose
+		summary["savableUsd"] = savableUsd
+		return map[string]any{
+			"summary": summary, "rollup": rollup, "trend": trend,
+			"topAgents": topAgents, "tenants": tenants, "daemonVersions": daemonVersions,
+		}, nil
+	})
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, payload)
 }
 
 func companyFilterOr(f string) string {
@@ -438,128 +437,126 @@ func companyFilterOr(f string) string {
 // llmCallsDrilldown:GET /api/admin/observability/llm/calls —— 桶(purpose
 // /model/source)或跨桶(runId/agentId)钻取;run/agent 路径默认时间正
 // 序,桶路径默认花费倒序。
-func llmCallsDrilldown(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireAdmin(w, r, db); !ok {
-			return
-		}
-		q := r.URL.Query()
-		sinceDays := obsSinceDays(q.Get("sinceDays"))
-		limit := int(math.Min(200, math.Max(1, numOrDefault(q.Get("limit"), 50))))
-		purpose := trimmedNonEmpty(q.Get("purpose"))
-		model := trimmedNonEmpty(q.Get("model"))
-		source := trimmedNonEmpty(q.Get("source"))
-		runID := trimmedNonEmpty(q.Get("runId"))
-		agentID := trimmedNonEmpty(q.Get("agentId"))
-		companyFilter := trimmedNonEmpty(q.Get("companyId"))
-		sortBy := ""
-		switch q.Get("sortBy") {
-		case "cost", "latency", "hop", "created":
-			sortBy = q.Get("sortBy")
-		}
-
-		params := []any{sinceDays}
-		where := []string{`l.created_at > NOW() - ($1::int * INTERVAL '1 day')`}
-		add := func(clause string, v any) {
-			params = append(params, v)
-			where = append(where, strings.Replace(clause, "$$", fmt.Sprintf("$%d", len(params)), 1))
-		}
-		if purpose != "" {
-			add(`l.purpose = $$`, purpose)
-		}
-		if model != "" {
-			add(`l.model = $$`, model)
-		}
-		if source != "" {
-			add(`l.source = $$`, source)
-		}
-		if runID != "" {
-			add(`l.run_id = $$`, runID)
-		}
-		if agentID != "" {
-			add(`l.agent_id = $$`, agentID)
-		}
-		if companyFilter != "" {
-			add(`l.company_id = $$`, companyFilter)
-		}
-		if sortBy == "" {
-			if runID != "" || agentID != "" {
-				sortBy = "created"
-			} else {
-				sortBy = "cost"
-			}
-		}
-		orderBy := map[string]string{
-			"cost":    `l.cost_usd DESC NULLS LAST`,
-			"latency": `l.latency_ms DESC NULLS LAST`,
-			"hop":     `(l.extras->>'hopIndex')::int ASC NULLS LAST, l.created_at ASC`,
-			"created": `l.created_at ASC`,
-		}[sortBy]
-		params = append(params, limit)
-		rows, err := db.Query(`
-			SELECT l.id, l.created_at, l.company_id, l.agent_id, p.name,
-			       l.run_id, l.conversation_id, l.purpose, l.source, l.model,
-			       l.input_tokens, l.cached_input_tokens, l.cache_creation_tokens,
-			       l.output_tokens, l.reasoning_tokens,
-			       l.cost_usd, l.cost_estimated, l.measured,
-			       l.latency_ms, l.status, l.error, l.extras, l.daemon_version
-			  FROM llm_calls l
-			  LEFT JOIN participants p
-			         ON p.id = l.agent_id
-			        AND (p.company_id = l.company_id OR (p.company_id IS NULL AND l.company_id IS NULL))
-			 WHERE `+strings.Join(where, " AND ")+`
-			 ORDER BY `+orderBy+`
-			 LIMIT $`+fmt.Sprint(len(params)), params...)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var id, createdAt string
-			var companyID, agentID, agentName, runID, convoID sql.NullString
-			var purpose, source, mdl string
-			var inTok, cachedIn, cacheCre, outTok, reasonTok int64
-			var costUsd float64
-			var costEstimated, measured bool
-			var latency sql.NullInt64
-			var status string
-			var errStr sql.NullString
-			var extras sql.NullString
-			var daemonVersion sql.NullString
-			if rows.Scan(&id, &createdAt, &companyID, &agentID, &agentName, &runID, &convoID,
-				&purpose, &source, &mdl, &inTok, &cachedIn, &cacheCre, &outTok, &reasonTok,
-				&costUsd, &costEstimated, &measured, &latency, &status, &errStr, &extras, &daemonVersion) != nil {
-				continue
-			}
-			var extrasWire any
-			if extras.Valid && extras.String != "" {
-				var v any
-				if json.Unmarshal([]byte(extras.String), &v) == nil {
-					extrasWire = v
-				} else {
-					extrasWire = map[string]any{}
-				}
-			}
-			out = append(out, map[string]any{
-				"id": id, "createdAt": createdAt,
-				"companyId": nullStrAny(companyID), "agentId": nullStrAny(agentID), "agentName": nullStrAny(agentName),
-				"runId": nullStrAny(runID), "conversationId": nullStrAny(convoID),
-				"purpose": purpose, "source": source, "model": mdl,
-				"inputTokens": inTok, "cachedInputTokens": cachedIn, "cacheCreationTokens": cacheCre,
-				"outputTokens": outTok, "reasoningTokens": reasonTok,
-				"costUsd": costUsd, "costEstimated": costEstimated, "measured": measured,
-				"latencyMs": nullIntAny(latency), "status": status, "error": nullStrAny(errStr),
-				"extras": extrasWire, "daemonVersion": nullStrAny(daemonVersion),
-			})
-		}
-		if err := rows.Err(); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+func (s *Server) AdminLlmCalls(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(w, r, s.DB); !ok {
+		return
 	}
+	q := r.URL.Query()
+	sinceDays := obsSinceDays(q.Get("sinceDays"))
+	limit := int(math.Min(200, math.Max(1, numOrDefault(q.Get("limit"), 50))))
+	purpose := trimmedNonEmpty(q.Get("purpose"))
+	model := trimmedNonEmpty(q.Get("model"))
+	source := trimmedNonEmpty(q.Get("source"))
+	runID := trimmedNonEmpty(q.Get("runId"))
+	agentID := trimmedNonEmpty(q.Get("agentId"))
+	companyFilter := trimmedNonEmpty(q.Get("companyId"))
+	sortBy := ""
+	switch q.Get("sortBy") {
+	case "cost", "latency", "hop", "created":
+		sortBy = q.Get("sortBy")
+	}
+
+	params := []any{sinceDays}
+	where := []string{`l.created_at > NOW() - ($1::int * INTERVAL '1 day')`}
+	add := func(clause string, v any) {
+		params = append(params, v)
+		where = append(where, strings.Replace(clause, "$$", fmt.Sprintf("$%d", len(params)), 1))
+	}
+	if purpose != "" {
+		add(`l.purpose = $$`, purpose)
+	}
+	if model != "" {
+		add(`l.model = $$`, model)
+	}
+	if source != "" {
+		add(`l.source = $$`, source)
+	}
+	if runID != "" {
+		add(`l.run_id = $$`, runID)
+	}
+	if agentID != "" {
+		add(`l.agent_id = $$`, agentID)
+	}
+	if companyFilter != "" {
+		add(`l.company_id = $$`, companyFilter)
+	}
+	if sortBy == "" {
+		if runID != "" || agentID != "" {
+			sortBy = "created"
+		} else {
+			sortBy = "cost"
+		}
+	}
+	orderBy := map[string]string{
+		"cost":    `l.cost_usd DESC NULLS LAST`,
+		"latency": `l.latency_ms DESC NULLS LAST`,
+		"hop":     `(l.extras->>'hopIndex')::int ASC NULLS LAST, l.created_at ASC`,
+		"created": `l.created_at ASC`,
+	}[sortBy]
+	params = append(params, limit)
+	rows, err := s.DB.Query(`
+		SELECT l.id, l.created_at, l.company_id, l.agent_id, p.name,
+		       l.run_id, l.conversation_id, l.purpose, l.source, l.model,
+		       l.input_tokens, l.cached_input_tokens, l.cache_creation_tokens,
+		       l.output_tokens, l.reasoning_tokens,
+		       l.cost_usd, l.cost_estimated, l.measured,
+		       l.latency_ms, l.status, l.error, l.extras, l.daemon_version
+		  FROM llm_calls l
+		  LEFT JOIN participants p
+		         ON p.id = l.agent_id
+		        AND (p.company_id = l.company_id OR (p.company_id IS NULL AND l.company_id IS NULL))
+		 WHERE `+strings.Join(where, " AND ")+`
+		 ORDER BY `+orderBy+`
+		 LIMIT $`+fmt.Sprint(len(params)), params...)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, createdAt string
+		var companyID, agentID, agentName, runID, convoID sql.NullString
+		var purpose, source, mdl string
+		var inTok, cachedIn, cacheCre, outTok, reasonTok int64
+		var costUsd float64
+		var costEstimated, measured bool
+		var latency sql.NullInt64
+		var status string
+		var errStr sql.NullString
+		var extras sql.NullString
+		var daemonVersion sql.NullString
+		if rows.Scan(&id, &createdAt, &companyID, &agentID, &agentName, &runID, &convoID,
+			&purpose, &source, &mdl, &inTok, &cachedIn, &cacheCre, &outTok, &reasonTok,
+			&costUsd, &costEstimated, &measured, &latency, &status, &errStr, &extras, &daemonVersion) != nil {
+			continue
+		}
+		var extrasWire any
+		if extras.Valid && extras.String != "" {
+			var v any
+			if json.Unmarshal([]byte(extras.String), &v) == nil {
+				extrasWire = v
+			} else {
+				extrasWire = map[string]any{}
+			}
+		}
+		out = append(out, map[string]any{
+			"id": id, "createdAt": createdAt,
+			"companyId": nullStrAny(companyID), "agentId": nullStrAny(agentID), "agentName": nullStrAny(agentName),
+			"runId": nullStrAny(runID), "conversationId": nullStrAny(convoID),
+			"purpose": purpose, "source": source, "model": mdl,
+			"inputTokens": inTok, "cachedInputTokens": cachedIn, "cacheCreationTokens": cacheCre,
+			"outputTokens": outTok, "reasoningTokens": reasonTok,
+			"costUsd": costUsd, "costEstimated": costEstimated, "measured": measured,
+			"latencyMs": nullIntAny(latency), "status": status, "error": nullStrAny(errStr),
+			"extras": extrasWire, "daemonVersion": nullStrAny(daemonVersion),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 func nullIntAny(ni sql.NullInt64) any {
