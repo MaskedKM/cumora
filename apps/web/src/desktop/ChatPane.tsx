@@ -4,7 +4,7 @@ import { useApp } from '@/stores/app'
 import { useMe } from '@/stores/auth'
 import { useConversations } from '@/stores/conversations'
 import { useParticipants } from '@/stores/participants'
-import { useMessages, sendUserMessage, messagesFor, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
+import { useMessages, sendUserMessage, messagesFor, useStreamingFor, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
 import type { MessagesState } from '@/stores/messages'
 import { api, type ApiAttachment } from '@/api/client'
 import { Avatar, AvatarStack } from '@/components/Avatar'
@@ -1684,7 +1684,7 @@ export function ChatPane() {
   const setView = useApp((s) => s.setView)
   // Atomic selectors — primitive / stable refs
   const byConvo = useMessages((s) => (convoId ? s.byConvo[convoId] : undefined))
-  const streaming = useMessages((s) => s.streaming)
+  const streaming = useStreamingFor(convoId)
   const typingIds = useMessages((s) => (convoId ? s.typing[convoId] ?? null : null))
   const isLoading = useMessages((s) => (convoId ? s.loading.has(convoId) : false))
   // ThreadLoader visibility — the textbook loader-flicker pattern, with
