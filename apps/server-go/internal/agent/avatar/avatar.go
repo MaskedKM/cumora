@@ -1,7 +1,7 @@
 // agent 包 avatar/image 面 —— cli.ts cmdAvatar(show/set/regen)+
 // setAgentAvatarFromUrl + router.ts generateAndPersistAvatar(确定性视觉
 // 签名 + 性别分类 + image API + CH_STATUS 广播)+ cmdImage generate。
-package agent
+package avatar
 
 import (
 	"context"
@@ -12,10 +12,17 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
+
+	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
+
+// Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
+// 对齐(#140 刀法)。
+type Domain struct {
+	*agent.Service
+}
 
 // 从 router.ts VISUAL_DIMENSIONS 程序化提取(2026-08-27)—— 请勿手改。
 var visualAge = []string{
@@ -258,16 +265,6 @@ var visualHeadAngle = []string{
 
 /* ───────────── hash / 选择器 ───────────── */
 
-// hashStrJS:FNV-1a 32 位,按 UTF-16 code unit(charCodeAt 语义)。
-func hashStrJS(s string) uint32 {
-	h := uint32(2166136261)
-	for _, u := range utf16.Encode([]rune(s)) {
-		h ^= uint32(u)
-		h *= 16777619
-	}
-	return h
-}
-
 func pickFromHash[T any](arr []T, h uint32, salt uint32) T {
 	return arr[(h^salt)%uint32(len(arr))]
 }
@@ -298,7 +295,7 @@ type visualSignature struct {
 }
 
 func visualSignatureFor(agentID string, gender avatarGender) visualSignature {
-	h := hashStrJS(agentID)
+	h := agent.HashStrJS(agentID)
 	var presentationPool, hairStylePool, wardrobePool []string
 	switch gender {
 	case genderFeminine:
@@ -328,19 +325,19 @@ func visualSignatureFor(agentID string, gender avatarGender) visualSignature {
 
 // inferAgentGender:小模型分类器决定性别呈现;失败退回按名字哈希的
 // 确定性二选一(绝不默认 androgynous —— 该分支刻意稀有)。
-func (s *Service) cliInferAgentGender(ctx context.Context, name, role, systemPrompt string, tenant string) avatarGender {
+func (s *Domain) cliInferAgentGender(ctx context.Context, name, role, systemPrompt string, tenant string) avatarGender {
 	hashFallback := genderMasculine
-	if hashStrJS(name)&1 == 0 {
+	if agent.HashStrJS(name)&1 == 0 {
 		hashFallback = genderFeminine
 	}
 	agentArg, tenantArg := name, tenant
 	obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 		Purpose: "gender", CompanyID: &tenantArg, AgentID: nil, Source: "cloud",
-		Model: SupportModelEnv(), LatencyMS: 0, Status: "ok",
-		Extras: map[string]any{"agentName": agentArg, "role": TruncateRunesSimple(role, 60)},
+		Model: agent.SupportModelEnv(), LatencyMS: 0, Status: "ok",
+		Extras: map[string]any{"agentName": agentArg, "role": agent.TruncateRunesSimple(role, 60)},
 	})
-	res, err := s.ResponsesCreate(ctx, tenant, CliResponsesArgs{
-		Model: SupportModelEnv(),
+	res, err := s.ResponsesCreate(ctx, tenant, agent.CliResponsesArgs{
+		Model: agent.SupportModelEnv(),
 		Instructions: `Reply with strict JSON only: {"gender": "feminine" | "masculine"}, or "androgynous" only in the rare case below.
 
 Strongly prefer feminine or masculine. Decide primarily by the NAME's cultural convention (e.g. "Atlas" / "Bram" → masculine; "Iris" / "Maya" → feminine). If the name is unisex (e.g. "Quinn", "Sky", "Riley"), use the persona / role text to break the tie. If it still leans either way at all, pick that side.
@@ -349,7 +346,7 @@ Only return "androgynous" when the name is an abstract / brand-style codename wi
 
 No prose, no explanation.`,
 		Input: fmt.Sprintf("Classify the agent below and reply as JSON.\n\nName: %s\nRole: %s\nPersona / style:\n%s",
-			name, orNone(role), orNone(TruncateRunesSimple(systemPrompt, 500))),
+			name, orNone(role), orNone(agent.TruncateRunesSimple(systemPrompt, 500))),
 		MaxOutputTokens: 200,
 		JSONMode:        true,
 		ReasoningEffort: "low",
@@ -390,7 +387,7 @@ func orNone(s string) string {
 // boards 的 WakeMentioned 同款依赖倒置)。退化图像分支文本按 admin 路径
 // 的 TS 语义翻译:router.ts 抛 'image API returned no image',而共享的
 // CLI 生成器沿 cli.ts 说 'no data'(#107 评审 NIT4)。
-func (s *Service) GenerateAgentAvatar(ctx context.Context, agentID, tenant string) (string, error) {
+func (s *Domain) GenerateAgentAvatar(ctx context.Context, agentID, tenant string) (string, error) {
 	url, err := s.cliGenerateAndPersistAvatar(ctx, agentID, tenant)
 	if err != nil && err.Error() == "image API returned no data" {
 		return "", fmt.Errorf("image API returned no image")
@@ -398,7 +395,7 @@ func (s *Service) GenerateAgentAvatar(ctx context.Context, agentID, tenant strin
 	return url, err
 }
 
-func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tenant string) (string, error) {
+func (s *Domain) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tenant string) (string, error) {
 	var name string
 	var role sql.NullString
 	var systemPrompt sql.NullString
@@ -419,7 +416,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	}
 	styleHint := ""
 	if systemPrompt.Valid {
-		styleHint = TruncateRunesSimple(systemPrompt.String, 500)
+		styleHint = agent.TruncateRunesSimple(systemPrompt.String, 500)
 	}
 	roleStr := ""
 	if role.Valid {
@@ -461,7 +458,7 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 		promptLines = append(promptLines, fmt.Sprintf("• Their role: %s", roleTxt))
 	}
 	if styleHint != "" {
-		promptLines = append(promptLines, fmt.Sprintf("• Inner essence the face should hint at: %s", TruncateRunesSimple(styleHint, 240)))
+		promptLines = append(promptLines, fmt.Sprintf("• Inner essence the face should hint at: %s", agent.TruncateRunesSimple(styleHint, 240)))
 	}
 	promptLines = append(promptLines,
 		"",
@@ -492,19 +489,19 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 	record := func(status string, errMsg *string) {
 		obs.RecordLlmCall(s.DB, obs.LlmCallRecord{
 			Purpose: "avatar-image", CompanyID: &tenantArg, AgentID: &agentArg, Source: "cloud",
-			Model: imageModelEnv(), LatencyMS: msSince(t0), Status: status, Error: errMsg,
+			Model: agent.ImageModelEnv(), LatencyMS: agent.MsSince(t0), Status: status, Error: errMsg,
 			Extras: map[string]any{"gender": string(gender), "kind": kind},
 		})
 	}
-	buf, err := s.cliImagesGenerate(ctx, tenant, imageModelEnv(), prompt, "1024x1024")
+	buf, err := s.ImagesGenerate(ctx, tenant, agent.ImageModelEnv(), prompt, "1024x1024")
 	if err != nil {
 		msg := err.Error()
 		record("failed", &msg)
 		return "", err
 	}
 	record("ok", nil)
-	key := fmt.Sprintf("avatars/avatar-%s-%s.png", agentID, uuidHex()[:8])
-	url, err := cliStoragePut(key, buf)
+	key := fmt.Sprintf("avatars/avatar-%s-%s.png", agentID, agent.UUIDHex()[:8])
+	url, err := agent.StoragePut(key, buf)
 	if err != nil {
 		return "", err
 	}
@@ -512,8 +509,8 @@ func (s *Service) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tena
 		`UPDATE participants SET avatar_url = $2 WHERE id = $1 AND company_id = $3`, agentID, url, tenant); err != nil {
 		return "", err
 	}
-	InvalidatePersonaCache(agentID)
-	_ = s.publishRaw("cumora:status", mustJSON(map[string]any{
+	agent.InvalidatePersonaCache(agentID)
+	_ = s.PublishRaw("cumora:status", agent.MustJSON(map[string]any{
 		"type":          "participants.avatar",
 		"participantId": agentID,
 		"avatarUrl":     url,
@@ -534,8 +531,8 @@ func filterTruthy(xs []string) []string {
 
 // cliSetAgentAvatarFromUrl:抓取任意 http(s) 图片,校验后转存到我们的
 // avatars/ 存储再落 avatar_url(规范副本永远住自家存储)。
-func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant, sourceURL string) (string, error) {
-	if !httpPrefixRe.MatchString(sourceURL) {
+func (s *Domain) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant, sourceURL string) (string, error) {
+	if !agent.HTTPPrefixRe.MatchString(sourceURL) {
 		return "", fmt.Errorf("avatar source must be an http(s) URL")
 	}
 	const maxBytes = 8 * 1024 * 1024
@@ -545,7 +542,7 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 	if err != nil {
 		return "", err
 	}
-	resp, err := HTTPClientLLM.Do(req)
+	resp, err := agent.HTTPClientLLM.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -582,8 +579,8 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 	case "image/svg+xml":
 		ext = "svg"
 	}
-	key := fmt.Sprintf("avatars/avatar-%s-%s.%s", agentID, uuidHex()[:8], ext)
-	url, err := cliStoragePut(key, buf)
+	key := fmt.Sprintf("avatars/avatar-%s-%s.%s", agentID, agent.UUIDHex()[:8], ext)
+	url, err := agent.StoragePut(key, buf)
 	if err != nil {
 		return "", err
 	}
@@ -591,8 +588,8 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 		`UPDATE participants SET avatar_url = $2 WHERE id = $1 AND company_id = $3`, agentID, url, tenant); err != nil {
 		return "", err
 	}
-	InvalidatePersonaCache(agentID)
-	_ = s.publishRaw("cumora:status", mustJSON(map[string]any{
+	agent.InvalidatePersonaCache(agentID)
+	_ = s.PublishRaw("cumora:status", agent.MustJSON(map[string]any{
 		"type":          "participants.avatar",
 		"participantId": agentID,
 		"avatarUrl":     url,
@@ -603,42 +600,42 @@ func (s *Service) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant,
 
 /* ───────────── 命令面 ───────────── */
 
-func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult {
+func (s *Domain) CmdAvatar(ctx context.Context, parsed agent.Parsed) agent.Result {
 	op := ""
-	if len(parsed.positional) > 0 {
-		op = parsed.positional[0]
+	if len(parsed.Positional()) > 0 {
+		op = parsed.Positional()[0]
 	}
 	if op != "regen" && op != "regenerate" && op != "set" && op != "show" {
-		return cliErr(strings.Join([]string{
+		return agent.Err(strings.Join([]string{
 			"usage:",
 			`  avatar show <participant_id>        view a teammate's portrait URL (download + open it to actually see the image)`,
 			`  avatar regen [--as <id>]            regenerate your portrait from your persona`,
 			`  avatar set <image_url> [--as <id>]  adopt an existing image URL as your portrait`,
 		}, "\n"))
 	}
-	me, err := cliResolveAs(parsed)
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	var tenant, kind string
 	qerr := s.DB.QueryRowContext(ctx,
 		`SELECT company_id, kind FROM participants WHERE id = $1`, me).Scan(&tenant, &kind)
 	if qerr != nil {
-		return cliErr(fmt.Sprintf("unknown participant %s", me))
+		return agent.Err(fmt.Sprintf("unknown participant %s", me))
 	}
 	// show 只读且对 human 开放;regen/set 改自己的头像,仅 agent。
 	if op != "show" && kind != "agent" {
-		return cliErr("avatar ops are only for agents")
+		return agent.Err("avatar ops are only for agents")
 	}
 
 	switch op {
 	case "show":
 		target := ""
-		if len(parsed.positional) > 1 {
-			target = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			target = parsed.Positional()[1]
 		}
 		if target == "" {
-			return cliErr("usage: avatar show <participant_id>")
+			return agent.Err("usage: avatar show <participant_id>")
 		}
 		var id, name string
 		var role sql.NullString
@@ -649,32 +646,32 @@ func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult 
 			 WHERE id = $1 AND company_id = $2 AND departed_at IS NULL`, target, tenant).
 			Scan(&id, &name, &role, &tKind, &avatarURL)
 		if err != nil {
-			return cliErr(fmt.Sprintf("unknown participant %s in this workspace", target))
+			return agent.Err(fmt.Sprintf("unknown participant %s in this workspace", target))
 		}
 		who := fmt.Sprintf("%s (%s) — %s", name, id, tKind)
 		if role.Valid && role.String != "" {
 			who += fmt.Sprintf(", %s", role.String)
 		}
 		if !avatarURL.Valid || avatarURL.String == "" {
-			return cliOK(fmt.Sprintf("%s\n(no avatar set)", who))
+			return agent.OK(fmt.Sprintf("%s\n(no avatar set)", who))
 		}
-		return cliOK(fmt.Sprintf(
+		return agent.OK(fmt.Sprintf(
 			"%s\navatar URL: %s\n\nTo actually SEE the image, save it locally then open it with your image-reading tool:\n  curl -sL '%s' -o /tmp/%s-avatar\nthen open `/tmp/%s-avatar` with your Read / view-image tool.",
 			who, avatarURL.String, avatarURL.String, id, id))
 
 	case "set":
 		url := ""
-		if len(parsed.positional) > 1 {
-			url = parsed.positional[1]
+		if len(parsed.Positional()) > 1 {
+			url = parsed.Positional()[1]
 		}
 		if url == "" {
-			return cliErr("usage: avatar set <image_url> [--as <id>]")
+			return agent.Err("usage: avatar set <image_url> [--as <id>]")
 		}
 		resultURL, serr := s.cliSetAgentAvatarFromUrl(ctx, me, tenant, url)
 		if serr != nil {
-			return cliErr(fmt.Sprintf("avatar set failed: %s", serr.Error()))
+			return agent.Err(fmt.Sprintf("avatar set failed: %s", serr.Error()))
 		}
-		return cliOK(fmt.Sprintf("portrait set → %s", resultURL), CliSideEffect{
+		return agent.OK(fmt.Sprintf("portrait set → %s", resultURL), agent.CliSideEffect{
 			"event":     "avatar.updated",
 			"command":   "avatar set",
 			"agentId":   me,
@@ -685,9 +682,9 @@ func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult 
 	default: // regen / regenerate
 		resultURL, gerr := s.cliGenerateAndPersistAvatar(ctx, me, tenant)
 		if gerr != nil {
-			return cliErr(fmt.Sprintf("avatar regen failed: %s", gerr.Error()))
+			return agent.Err(fmt.Sprintf("avatar regen failed: %s", gerr.Error()))
 		}
-		return cliOK(fmt.Sprintf("new portrait → %s", resultURL), CliSideEffect{
+		return agent.OK(fmt.Sprintf("new portrait → %s", resultURL), agent.CliSideEffect{
 			"event":     "avatar.updated",
 			"command":   "avatar regen",
 			"agentId":   me,
@@ -701,23 +698,23 @@ func (s *Service) cliCmdAvatar(ctx context.Context, parsed cliParsed) cliResult 
 
 // cliCmdImage:`image generate` —— 生成图不进会话,先给 agent 看结果,
 // 满意再 --attach 进 reply。租户级 claim 防同伴重复烧同一想法。
-func (s *Service) cliCmdImage(ctx context.Context, parsed cliParsed) cliResult {
-	me, err := cliResolveAs(parsed)
+func (s *Domain) CmdImage(ctx context.Context, parsed agent.Parsed) agent.Result {
+	me, err := agent.ResolveAs(parsed)
 	if err != nil {
-		return cliErr(err.Error())
+		return agent.Err(err.Error())
 	}
 	op := ""
-	if len(parsed.positional) > 0 {
-		op = parsed.positional[0]
+	if len(parsed.Positional()) > 0 {
+		op = parsed.Positional()[0]
 	}
 	if op != "generate" {
-		return cliErr(`usage: image generate "<prompt>" [--size square|wide|tall] [--as <id>] [--json]`)
+		return agent.Err(`usage: image generate "<prompt>" [--size square|wide|tall] [--as <id>] [--json]`)
 	}
-	prompt := strings.TrimSpace(strings.Join(parsed.positional[1:], " "))
+	prompt := strings.TrimSpace(strings.Join(parsed.Positional()[1:], " "))
 	if prompt == "" {
-		return cliErr("image generate requires a non-empty prompt")
+		return agent.Err("image generate requires a non-empty prompt")
 	}
-	size := parsed.flagStrOr("size", "square")
+	size := parsed.FlagStrOr("size", "square")
 
 	var tenant sql.NullString
 	_ = s.DB.QueryRowContext(ctx,
@@ -727,7 +724,7 @@ func (s *Service) cliCmdImage(ctx context.Context, parsed cliParsed) cliResult {
 		tenantID = tenant.String
 	}
 	if tenantID != "" {
-		if blocked := s.cliTryClaimTenantWork(tenantID, me, "image-generate", prompt); blocked != nil {
+		if blocked := s.TryClaimTenantWork(tenantID, me, "image-generate", prompt); blocked != nil {
 			return *blocked
 		}
 	}
@@ -737,16 +734,16 @@ func (s *Service) cliCmdImage(ctx context.Context, parsed cliParsed) cliResult {
 		}
 	}()
 
-	att, gerr := s.cliGenerateAndUploadImage(prompt, size, tenantID, me)
+	att, gerr := s.GenerateAndUploadImage(prompt, size, tenantID, me)
 	if gerr != nil {
-		return cliErr(fmt.Sprintf("image generation failed: %s", gerr.Error()))
+		return agent.Err(fmt.Sprintf("image generation failed: %s", gerr.Error()))
 	}
-	if parsed.flagTruey("json") {
-		txt, jerr := cliJSONStringify(att)
+	if parsed.FlagTruey("json") {
+		txt, jerr := agent.JSONStringify(att)
 		if jerr != nil {
-			return cliErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
 		}
-		return cliOK(txt)
+		return agent.OK(txt)
 	}
 	dim := "1024×1024"
 	if size == "wide" {
@@ -761,11 +758,11 @@ func (s *Service) cliCmdImage(ctx context.Context, parsed cliParsed) cliResult {
 			kb++
 		}
 	}
-	return cliOK(strings.Join([]string{
-		fmt.Sprintf("generated %s · %dKB · %s", dim, kb, imageModelEnv()),
+	return agent.OK(strings.Join([]string{
+		fmt.Sprintf("generated %s · %dKB · %s", dim, kb, agent.ImageModelEnv()),
 		fmt.Sprintf("name: %s", att.Name),
 		fmt.Sprintf("url:  %s", att.URL),
-		fmt.Sprintf("key:  %s", derefStr(att.Key)),
+		fmt.Sprintf("key:  %s", agent.DerefStr(att.Key)),
 		"",
 		"attach to a reply with:",
 		fmt.Sprintf("  cumora reply <convo_id> \"<body>\" --attach \"%s\" --attach-name \"%s\"", att.URL, att.Name),

@@ -7,8 +7,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf16"
 )
 
 // Parsed / Result / StrArr:内核 cliParsed/cliResult/cliStrArr 的导出别名。
@@ -46,6 +49,14 @@ func (p cliParsed) Positional() []string { return p.positional }
 func (p cliParsed) WithPositional(pos []string) cliParsed {
 	p.positional = pos
 	return p
+}
+
+// FlagsMap:cliParsed.flags 的整表只读访问(域子包遍历形)。
+func (p cliParsed) FlagsMap() map[string]any { return p.flags }
+
+// OKWithEffects:带副作用的成功结果构造(域子包的 Result 字面量等价)。
+func OKWithEffects(text string, sides []CliSideEffect) Result {
+	return cliResult{ok: true, text: text, exitCode: 0, sideEffects: sides}
 }
 
 // FlagValue:cliParsed.flags 的按键取值(域子包的 `v, ok :=` 形)。
@@ -153,6 +164,8 @@ func NewJSONEncoderNoEscape(w *bytes.Buffer) *json.Encoder {
 func NodeHM(t time.Time) string                 { return nodeHM(t) }
 func JSONUnmarshal(b []byte, v any) error       { return jsonUnmarshal(b, v) }
 func ContainsString(list StrArr, s string) bool { return containsString(list, s) }
+func MustJSON(v any) []byte                     { return mustJSON(v) }
+func MsSince(t0 time.Time) int64                { return msSince(t0) }
 
 // Present:cliPoll.present 字段的只读访问器(域子包判 poll 有效)。
 func (p cliPoll) Present() bool { return p.present }
@@ -198,3 +211,52 @@ func floorJS(f float64) float64 {
 	}
 	return float64(int(f))
 }
+
+func msSince(t0 time.Time) int64 { return time.Since(t0).Milliseconds() }
+
+// SupportModelEnv:OPENAI_MODEL_SUPPORT(TS 缺省 gpt-5.4-mini)。
+func SupportModelEnv() string {
+	if m := os.Getenv("OPENAI_MODEL_SUPPORT"); m != "" {
+		return m
+	}
+	return "gpt-5.4-mini"
+}
+
+// hashStrJS:FNV-1a 32 位,按 UTF-16 code unit(charCodeAt 语义)。
+func hashStrJS(s string) uint32 {
+	h := uint32(2166136261)
+	for _, u := range utf16.Encode([]rune(s)) {
+		h ^= uint32(u)
+		h *= 16777619
+	}
+	return h
+}
+
+// AgentAttachment:agentAttachment(生成图像附件,storage 面)的导出别名。
+type AgentAttachment = agentAttachment
+
+// EventsPublishMessageNew / StripLoneSurrogates / DerefStr / ImageModelEnv /
+// HashStrJS:内核散件导出包装。
+func EventsPublishMessageNew(ctx context.Context, companyID *string, convID string, msg map[string]any) {
+	eventsPublishMessageNew(ctx, companyID, convID, msg)
+}
+func StripLoneSurrogates(s string) string { return cliStripLoneSurrogates(s) }
+func HashStrJS(s string) uint32           { return hashStrJS(s) }
+func DerefStr(p *string) string           { return derefStr(p) }
+func ImageModelEnv() string               { return imageModelEnv() }
+
+// ImagesGenerate / GenerateAndUploadImage:图像生成内核方法(cli_llm 定义)
+// 的导出包装(avatar 域共用)。
+func (s *Service) ImagesGenerate(ctx context.Context, tenant, model, prompt, size string) ([]byte, error) {
+	return s.cliImagesGenerate(ctx, tenant, model, prompt, size)
+}
+
+func (s *Service) GenerateAndUploadImage(prompt, size, tenant, agentID string) (AgentAttachment, error) {
+	return s.cliGenerateAndUploadImage(prompt, size, tenant, agentID)
+}
+
+// NodeLocaleString:时间件导出包装。
+func NodeLocaleString(t time.Time) string { return nodeLocaleString(t) }
+
+// HTTPPrefixRe:http(s) 前缀正则(skills/avatar 两域共用)。
+var HTTPPrefixRe = regexp.MustCompile(`^https?://`)
