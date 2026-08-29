@@ -10,9 +10,10 @@ import { isElectron, isNotificationWindow } from './lib/runtime'
 // (never rendered) when telemetry is unconfigured.
 const PostHogAppTracker = lazy(() =>
   import('./components/PostHogAppTracker').then((m) => ({ default: m.PostHogAppTracker })))
-const telemetryEnabled = isPostHogConfigured() && !isNotificationWindow
 import { bootNative, isNativePlatform } from './lib/native'
 import './styles/globals.css'
+
+const telemetryEnabled = isPostHogConfigured() && !isNotificationWindow
 
 if (isElectron) document.body.classList.add('electron')
 if (isNativePlatform()) document.body.classList.add('native', `native-${typeof window !== 'undefined' && (window as { Capacitor?: { getPlatform?: () => string } }).Capacitor?.getPlatform?.() || ''}`)

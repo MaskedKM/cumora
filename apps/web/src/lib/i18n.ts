@@ -22,6 +22,7 @@
  *     work and Chinese at home.
  */
 import { create } from 'zustand'
+import { useShallow } from 'zustand/react/shallow'
 import { en } from '@/locales/en'
 
 export type Locale = 'en' | 'zh-CN'
@@ -49,6 +50,11 @@ function ensureDict(locale: Locale): void {
   void import('@/locales/zh-CN').then((m) => {
     zhCN = m.zhCN
     useLocaleStore.setState((s) => ({ dictRev: s.dictRev + 1 }))
+  }).catch(() => {
+    // Chunk fetch failed — allow a later retry (next setLocale / store
+    // init) instead of latching pending forever; English fallback keeps
+    // the UI functional meanwhile.
+    zhCNPending = false
   })
 }
 
@@ -140,11 +146,12 @@ export function translate(
 }
 
 /** Reactive translator for components — re-renders on a locale switch
- *  AND when the lazy zh-CN dictionary lands (dictRev in the selector
- *  snapshot; this store only ever sets on those two events, so the
- *  fresh-object selector is not a re-render hazard). */
+ *  AND when the lazy zh-CN dictionary lands (dictRev rides along in the
+ *  shallow-compared snapshot). useShallow is load-bearing: zustand v5
+ *  feeds the selector straight into useSyncExternalStore, where a fresh
+ *  object per call breaks the Object.is snapshot contract and loops. */
 export function useT(): (key: MessageKey, vars?: Record<string, string | number>) => string {
-  const locale = useLocaleStore((s) => ({ locale: s.locale, rev: s.dictRev })).locale
+  const locale = useLocaleStore(useShallow((s) => ({ locale: s.locale, rev: s.dictRev }))).locale
   return (key, vars) => translate(locale, key, vars)
 }
 

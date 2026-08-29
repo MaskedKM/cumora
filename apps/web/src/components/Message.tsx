@@ -190,7 +190,7 @@ function useHljs(): Hljs | null {
         return m.default
       })
     }
-    hljsPromise.then((h) => { if (alive) setHljs(h) })
+    hljsPromise.then((h) => { if (alive) setHljs(h) }).catch(() => { /* chunk failed — plain text stays */ })
     return () => { alive = false }
   }, [])
   return hljs
