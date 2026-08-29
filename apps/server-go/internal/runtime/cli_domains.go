@@ -8,21 +8,41 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/boards"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/email"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent/mailbox"
 )
 
-// wireDomainDispatch:boards(看板)面——kanban/card/claim/unclaim。
+// wireDomainDispatch:域子包命令接线——boards(看板:kanban/card/
+// claim/unclaim)、email(email/contacts)、mailbox(inbox/glance/ack/
+// mute/follow)。
 func wireDomainDispatch(core *agent.Service) {
+	b := boards.Domain{Service: core}
+	e := email.Domain{Service: core}
+	m := mailbox.Domain{Service: core}
 	core.SetDomainDispatcher(func(sub string, ctx context.Context, p agent.Parsed) (agent.Result, bool) {
-		d := boards.Domain{Service: core}
 		switch sub {
 		case "kanban":
-			return d.CmdBoard(ctx, p), true
+			return b.CmdBoard(ctx, p), true
 		case "card":
-			return d.CmdCard(ctx, p), true
+			return b.CmdCard(ctx, p), true
 		case "claim":
-			return d.CmdClaim(ctx, p, "claim"), true
+			return b.CmdClaim(ctx, p, "claim"), true
 		case "unclaim":
-			return d.CmdClaim(ctx, p, "unclaim"), true
+			return b.CmdClaim(ctx, p, "unclaim"), true
+		case "email":
+			return e.CmdEmail(ctx, p), true
+		case "contacts":
+			return e.CmdContacts(ctx, p), true
+		case "inbox":
+			return m.CmdInbox(ctx, p), true
+		case "glance":
+			return m.CmdGlance(ctx, p), true
+		case "ack":
+			return m.CmdAck(ctx, p), true
+		case "mute":
+			return m.CmdMute(ctx, p), true
+		case "follow":
+			return m.CmdFollow(ctx, p), true
 		}
 		return agent.Result{}, false
 	})
