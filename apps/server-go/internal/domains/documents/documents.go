@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/contract"
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -223,11 +223,11 @@ func (s *Server) SetDocumentCollaborators(w http.ResponseWriter, r *http.Request
 	seen := map[string]bool{}
 	ids := []string{}
 	for _, v := range body.ParticipantIDs {
-		s, ok := v.(string)
+		sv, ok := v.(string)
 		if !ok {
 			continue
 		}
-		t := strings.TrimSpace(s)
+		t := strings.TrimSpace(sv)
 		if t == "" || seen[t] {
 			continue
 		}

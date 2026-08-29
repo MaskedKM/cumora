@@ -98,10 +98,13 @@ runtime and dependency pains).
   Go 侧唯一约束是 coverage 脚本的正则路由对账——#117 正是从这条缝
   漏进生产的。
 - 落地形态(分阶段):生成管线搬进 apps/server-go(`internal/contract`
-  = 全量 types + 按 tag 的 std-http ServerInterface;`contract-gen-go.sh`
-  的 `SERVER_TAGS` 清单即迁移进度表),域包实现接口后路由注册串由
-  规范生成(pattern 即契约),`var _ contract.ServerInterface = …`
-  编译期强制每个 operation 有实现。documents 为首个试点域。
+  = 根包全量 types + 每 tag 独立子包的 std-http ServerInterface —— 同包
+  多 tag 会重复声明共享符号,子包经一行生成式常量别名 glue 引根包;
+  `contract-gen-go.sh` 的 `SERVER_TAGS` 清单即迁移进度表),域包实现
+  接口后路由注册串由规范生成(pattern 即契约),`var _ …ServerInterface`
+  编译期强制每个 operation 有实现。documents 为首个试点域。生成器双
+  执行面:本机 docker 跑、CI checks 容器(无 docker)直跑 go run,Go 侧
+  对账两侧都真生效。
 - 请求体解码暂留手写:TS 的 `String(x ?? '')`/typeof-filter 强转与
   生成类型的指针/严格解码语义不兼容(CreateDocumentJSONBody 是
   `*string`、SetDocumentCollaboratorsJSONBody 是严格 `[]string`),
