@@ -1339,7 +1339,8 @@ paths:
       operationId: listAgentWorkspace
       summary: agent 私有区文件清单
       parameters:
-        - { name: agentId, in: query, required: true, schema: { type: string } }
+        # 校验与文案在 handler('agentId required'),保持宽松声明
+        - { name: agentId, in: query, schema: { type: string } }
       responses:
         '200':
           description: ok
@@ -1354,8 +1355,9 @@ paths:
       operationId: readAgentWorkspaceFile
       summary: 读 agent 私有区文件
       parameters:
-        - { name: agentId, in: query, required: true, schema: { type: string } }
-        - { name: path, in: query, required: true, schema: { type: string } }
+        # 校验与文案在 handler('agentId and path required'),保持宽松声明
+        - { name: agentId, in: query, schema: { type: string } }
+        - { name: path, in: query, schema: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/AgentWorkspaceFileContent' } } } }
   /api/agents/observability/runs:
@@ -2067,7 +2069,8 @@ paths:
       operationId: removeWorkspaceAssociation
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: kind, in: path, required: true, schema: { type: string, enum: [project, board_card, document] } }
+        # 枚举校验与文案在 handler('kind must be one of project, board_card, document')
+        - { name: kind, in: path, required: true, schema: { type: string } }
         - { name: targetId, in: path, required: true, schema: { type: string } }
       summary: 解除关联
       responses:
@@ -2078,7 +2081,8 @@ paths:
       operationId: listWorkspaceFiles
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: path, in: query, required: true, schema: { type: string } }
+        # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
+        - { name: path, in: query, schema: { type: string } }
       summary: 范围制列目录
       responses:
         '200':
@@ -2099,7 +2103,8 @@ paths:
       operationId: readWorkspaceFile
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: path, in: query, required: true, schema: { type: string } }
+        # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
+        - { name: path, in: query, schema: { type: string } }
       summary: 读文件
       responses:
         '200':
@@ -2119,7 +2124,8 @@ paths:
       operationId: writeWorkspaceFile
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: path, in: query, required: true, schema: { type: string } }
+        # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
+        - { name: path, in: query, schema: { type: string } }
       summary: 写文件
       requestBody:
         content:

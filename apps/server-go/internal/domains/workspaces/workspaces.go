@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -42,18 +43,15 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// Server:workspaces tag 的域实现(#187 机械迁移,documents 范式)。
+// 方法体自原闭包工厂原样搬运;文件面的查询参数宽容读法保留在
+// handler(规范已如实化为可选,校验文案是契约的一部分)。
+type Server struct{ DB *sql.DB }
+
+var _ contract.ServerInterface = (*Server)(nil)
+
 func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("POST /api/workspaces", create(db))
-	mux.HandleFunc("GET /api/workspaces", list(db))
-	mux.HandleFunc("GET /api/workspaces/{id}", detail(db))
-	mux.HandleFunc("POST /api/workspaces/{id}/members", addMember(db))
-	mux.HandleFunc("DELETE /api/workspaces/{id}/members/{participantId}", removeMember(db))
-	mux.HandleFunc("POST /api/workspaces/{id}/associations", addAssociation(db))
-	mux.HandleFunc("DELETE /api/workspaces/{id}/associations/{kind}/{targetId}", removeAssociation(db))
-	mux.HandleFunc("GET /api/workspaces/{id}/files", listFiles(db))
-	mux.HandleFunc("GET /api/workspaces/{id}/file", readFile(db))
-	mux.HandleFunc("PUT /api/workspaces/{id}/file", writeFile(db))
-	mux.HandleFunc("POST /api/workspaces/{id}/unbind", unbind(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
 type wsRow struct {
@@ -208,256 +206,250 @@ func text(v string, max int) string {
 
 /* handlers */
 
-func create(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompanyRole(w, r, db, uid)
-		if !ok {
-			return
-		}
-		var body struct {
-			Name       string `json:"name"`
-			FolderPath string `json:"folderPath"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		name := text(body.Name, 80)
-		if name == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "name required")
-			return
-		}
-		rawPath := text(body.FolderPath, 4096)
-		if rawPath == "" || !filepath.IsAbs(rawPath) {
-			httpx.WriteError(w, http.StatusBadRequest, "folderPath must be an absolute path")
-			return
-		}
-		folder, err := filepath.EvalSymlinks(rawPath)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "folder not found")
-			return
-		}
-		if st, serr := os.Stat(folder); serr != nil || !st.IsDir() {
-			httpx.WriteError(w, http.StatusBadRequest, "folderPath must be a directory")
-			return
-		}
-		var bound string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT id FROM workspaces WHERE folder_path = $1 LIMIT 1`, folder).Scan(&bound)
-		if bound != "" {
+func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
+	}
+	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name       string `json:"name"`
+		FolderPath string `json:"folderPath"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	name := text(body.Name, 80)
+	if name == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	rawPath := text(body.FolderPath, 4096)
+	if rawPath == "" || !filepath.IsAbs(rawPath) {
+		httpx.WriteError(w, http.StatusBadRequest, "folderPath must be an absolute path")
+		return
+	}
+	folder, err := filepath.EvalSymlinks(rawPath)
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "folder not found")
+		return
+	}
+	if st, serr := os.Stat(folder); serr != nil || !st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "folderPath must be a directory")
+		return
+	}
+	var bound string
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT id FROM workspaces WHERE folder_path = $1 LIMIT 1`, folder).Scan(&bound)
+	if bound != "" {
+		httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
+		return
+	}
+	id := "ws-" + shortID()
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "tx failed")
+		return
+	}
+	defer tx.Rollback()
+	var createdAt time.Time
+	if err := tx.QueryRowContext(r.Context(), `
+		INSERT INTO workspaces (id, company_id, name, folder_path)
+		VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
+		if isUniqueViolation(err) {
 			httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 			return
 		}
-		id := "ws-" + shortID()
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "tx failed")
-			return
-		}
-		defer tx.Rollback()
-		var createdAt time.Time
-		if err := tx.QueryRowContext(r.Context(), `
-			INSERT INTO workspaces (id, company_id, name, folder_path)
-			VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
-			if isUniqueViolation(err) {
-				httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
-				return
-			}
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
-			return
-		}
-		if _, err := tx.ExecContext(r.Context(), `
-			INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
-			id, uid); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "member insert failed")
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-			"id": id, "name": name, "folderPath": folder, "isDefault": false, "createdAt": createdAt.UTC(),
-		})
+		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		return
 	}
+	if _, err := tx.ExecContext(r.Context(), `
+		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+		id, uid); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "member insert failed")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"id": id, "name": name, "folderPath": folder, "isDefault": false, "createdAt": createdAt.UTC(),
+	})
 }
 
-func list(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
+func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	_, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	if err := ensureDefault(r.Context(), s.DB, companyID); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "default workspace provisioning failed")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT w.id, w.name, w.is_default, w.created_at, count(m.participant_id)::int
+		  FROM workspaces w LEFT JOIN workspace_members m ON m.workspace_id = w.id
+		 WHERE w.company_id = $1 AND w.unbound_at IS NULL
+		 GROUP BY w.id ORDER BY w.created_at ASC`, companyID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, name string
+		var isDefault bool
+		var createdAt time.Time
+		var count int
+		if rows.Scan(&id, &name, &isDefault, &createdAt, &count) == nil {
+			out = append(out, map[string]any{
+				"id": id, "name": name, "isDefault": isDefault,
+				"createdAt": createdAt.UTC(), "explicitMemberCount": count,
+			})
 		}
-		if err := ensureDefault(r.Context(), db, companyID); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "default workspace provisioning failed")
-			return
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string) {
+	uid, companyID, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	// 显式成员。slice 必须 make:删光成员后 nil 会序列化成 null,
+	// 而 TS 的 spread 永远给数组(契约 members: type array required)。
+	type member struct {
+		ParticipantID string `json:"participantId"`
+		Name          string `json:"name"`
+		Kind          string `json:"kind"`
+		AddedAt       any    `json:"addedAt"`
+		Source        string `json:"source"`
+	}
+	explicit := make([]member, 0)
+	explicitSet := map[string]bool{}
+	explicitRows, err := s.DB.QueryContext(r.Context(), `
+		SELECT m.participant_id, p.name, p.kind, m.created_at
+		  FROM workspace_members m JOIN participants p
+		    ON p.id = m.participant_id AND p.company_id = $2
+		 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "members query failed")
+		return
+	}
+	defer explicitRows.Close()
+	for explicitRows.Next() {
+		var m member
+		var added sql.NullTime
+		if explicitRows.Scan(&m.ParticipantID, &m.Name, &m.Kind, &added) == nil {
+			m.Source = "explicit"
+			if added.Valid {
+				m.AddedAt = added.Time.UTC()
+			} else {
+				m.AddedAt = nil
+			}
+			explicit = append(explicit, m)
+			explicitSet[m.ParticipantID] = true
 		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT w.id, w.name, w.is_default, w.created_at, count(m.participant_id)::int
-			  FROM workspaces w LEFT JOIN workspace_members m ON m.workspace_id = w.id
-			 WHERE w.company_id = $1 AND w.unbound_at IS NULL
-			 GROUP BY w.id ORDER BY w.created_at ASC`, companyID)
+	}
+	// 隐式成员(关联推导;默认区并全员)
+	implicitSet := implicitMembers(r.Context(), s.DB, ws.id, companyID)
+	if ws.isDefault {
+		allRows, err := s.DB.QueryContext(r.Context(),
+			`SELECT id FROM participants WHERE company_id = $1 AND departed_at IS NULL`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			httpx.WriteError(w, http.StatusInternalServerError, "participants query failed")
+			return
+		}
+		defer allRows.Close()
+		for allRows.Next() {
+			var pid string
+			if allRows.Scan(&pid) == nil {
+				implicitSet[pid] = true
+			}
+		}
+	}
+	var derivedOnly []string
+	for pid := range implicitSet {
+		if !explicitSet[pid] {
+			derivedOnly = append(derivedOnly, pid)
+		}
+	}
+	implicit := make([]member, 0)
+	if len(derivedOnly) > 0 {
+		// 单条查询(参数数组)
+		args := make([]string, len(derivedOnly))
+		placeholders := make([]string, len(derivedOnly))
+		for i, pid := range derivedOnly {
+			args[i] = pid
+			placeholders[i] = fmt.Sprintf("$%d", i+2)
+		}
+		rows, err := s.DB.QueryContext(r.Context(), fmt.Sprintf(`
+			SELECT p.id, p.name, p.kind FROM participants p
+			 WHERE p.company_id = $1 AND p.id = ANY(%s) AND p.departed_at IS NULL`,
+			"ARRAY["+strings.Join(placeholders, ",")+"]::text[]"),
+			append([]any{companyID}, toAny(derivedOnly)...)...)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "implicit members query failed")
 			return
 		}
 		defer rows.Close()
-		out := []map[string]any{}
 		for rows.Next() {
-			var id, name string
-			var isDefault bool
-			var createdAt time.Time
-			var count int
-			if rows.Scan(&id, &name, &isDefault, &createdAt, &count) == nil {
-				out = append(out, map[string]any{
-					"id": id, "name": name, "isDefault": isDefault,
-					"createdAt": createdAt.UTC(), "explicitMemberCount": count,
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
-	}
-}
-
-func detail(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, companyID, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		// 显式成员。slice 必须 make:删光成员后 nil 会序列化成 null,
-		// 而 TS 的 spread 永远给数组(契约 members: type array required)。
-		type member struct {
-			ParticipantID string `json:"participantId"`
-			Name          string `json:"name"`
-			Kind          string `json:"kind"`
-			AddedAt       any    `json:"addedAt"`
-			Source        string `json:"source"`
-		}
-		explicit := make([]member, 0)
-		explicitSet := map[string]bool{}
-		explicitRows, err := db.QueryContext(r.Context(), `
-			SELECT m.participant_id, p.name, p.kind, m.created_at
-			  FROM workspace_members m JOIN participants p
-			    ON p.id = m.participant_id AND p.company_id = $2
-			 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "members query failed")
-			return
-		}
-		defer explicitRows.Close()
-		for explicitRows.Next() {
 			var m member
-			var added sql.NullTime
-			if explicitRows.Scan(&m.ParticipantID, &m.Name, &m.Kind, &added) == nil {
-				m.Source = "explicit"
-				if added.Valid {
-					m.AddedAt = added.Time.UTC()
-				} else {
-					m.AddedAt = nil
-				}
-				explicit = append(explicit, m)
-				explicitSet[m.ParticipantID] = true
+			if rows.Scan(&m.ParticipantID, &m.Name, &m.Kind) == nil {
+				m.Source = "implicit"
+				m.AddedAt = nil
+				implicit = append(implicit, m)
 			}
 		}
-		// 隐式成员(关联推导;默认区并全员)
-		implicitSet := implicitMembers(r.Context(), db, ws.id, companyID)
-		if ws.isDefault {
-			allRows, err := db.QueryContext(r.Context(),
-				`SELECT id FROM participants WHERE company_id = $1 AND departed_at IS NULL`, companyID)
-			if err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, "participants query failed")
-				return
-			}
-			defer allRows.Close()
-			for allRows.Next() {
-				var pid string
-				if allRows.Scan(&pid) == nil {
-					implicitSet[pid] = true
-				}
-			}
-		}
-		var derivedOnly []string
-		for pid := range implicitSet {
-			if !explicitSet[pid] {
-				derivedOnly = append(derivedOnly, pid)
-			}
-		}
-		implicit := make([]member, 0)
-		if len(derivedOnly) > 0 {
-			// 单条查询(参数数组)
-			args := make([]string, len(derivedOnly))
-			placeholders := make([]string, len(derivedOnly))
-			for i, pid := range derivedOnly {
-				args[i] = pid
-				placeholders[i] = fmt.Sprintf("$%d", i+2)
-			}
-			rows, err := db.QueryContext(r.Context(), fmt.Sprintf(`
-				SELECT p.id, p.name, p.kind FROM participants p
-				 WHERE p.company_id = $1 AND p.id = ANY(%s) AND p.departed_at IS NULL`,
-				"ARRAY["+strings.Join(placeholders, ",")+"]::text[]"),
-				append([]any{companyID}, toAny(derivedOnly)...)...)
-			if err != nil {
-				httpx.WriteError(w, http.StatusInternalServerError, "implicit members query failed")
-				return
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var m member
-				if rows.Scan(&m.ParticipantID, &m.Name, &m.Kind) == nil {
-					m.Source = "implicit"
-					m.AddedAt = nil
-					implicit = append(implicit, m)
-				}
-			}
-		}
-		// 关联
-		type assoc struct {
-			Kind      string `json:"kind"`
-			TargetID  string `json:"targetId"`
-			CreatedAt any    `json:"createdAt"`
-		}
-		associations := []assoc{}
-		assocRows, err := db.QueryContext(r.Context(), `
-			SELECT target_kind, target_id, created_at FROM workspace_associations
-			 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "associations query failed")
-			return
-		}
-		defer assocRows.Close()
-		for assocRows.Next() {
-			var a assoc
-			var ca sql.NullTime
-			if assocRows.Scan(&a.Kind, &a.TargetID, &ca) == nil {
-				if ca.Valid {
-					a.CreatedAt = ca.Time.UTC()
-				}
-				associations = append(associations, a)
-			}
-		}
-		// folderPath 仅特权成员
-		var role string
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
-			companyID, uid).Scan(&role)
-		privileged := role == "owner" || role == "admin"
-		resp := map[string]any{
-			"id": ws.id, "name": ws.name, "isDefault": ws.isDefault,
-			"createdAt": ws.createdAt.UTC(), "unboundAt": nullTime(ws.unboundAt), "unboundBy": nullStr(ws.unboundBy),
-			"members": append(explicit, implicit...), "associations": associations,
-		}
-		if privileged {
-			resp["folderPath"] = ws.folderPath
-		}
-		httpx.WriteJSON(w, http.StatusOK, resp)
 	}
+	// 关联
+	type assoc struct {
+		Kind      string `json:"kind"`
+		TargetID  string `json:"targetId"`
+		CreatedAt any    `json:"createdAt"`
+	}
+	associations := []assoc{}
+	assocRows, err := s.DB.QueryContext(r.Context(), `
+		SELECT target_kind, target_id, created_at FROM workspace_associations
+		 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "associations query failed")
+		return
+	}
+	defer assocRows.Close()
+	for assocRows.Next() {
+		var a assoc
+		var ca sql.NullTime
+		if assocRows.Scan(&a.Kind, &a.TargetID, &ca) == nil {
+			if ca.Valid {
+				a.CreatedAt = ca.Time.UTC()
+			}
+			associations = append(associations, a)
+		}
+	}
+	// folderPath 仅特权成员
+	var role string
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
+		companyID, uid).Scan(&role)
+	privileged := role == "owner" || role == "admin"
+	resp := map[string]any{
+		"id": ws.id, "name": ws.name, "isDefault": ws.isDefault,
+		"createdAt": ws.createdAt.UTC(), "unboundAt": nullTime(ws.unboundAt), "unboundBy": nullStr(ws.unboundBy),
+		"members": append(explicit, implicit...), "associations": associations,
+	}
+	if privileged {
+		resp["folderPath"] = ws.folderPath
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 func nullTime(nt sql.NullTime) any {
@@ -517,151 +509,145 @@ func implicitMembers(ctx context.Context, db *sql.DB, wsID, companyID string) ma
 	return out
 }
 
-func addMember(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompanyRole(w, r, db, uid)
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		if ws.unboundAt.Valid {
-			httpx.WriteError(w, http.StatusGone, "workspace is unbound")
-			return
-		}
-		var body struct {
-			ParticipantID string `json:"participantId"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		pid := text(body.ParticipantID, 100)
-		if pid == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "participantId required")
-			return
-		}
-		var exists bool
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND departed_at IS NULL LIMIT 1`,
-			pid, companyID).Scan(&exists)
-		if !exists {
-			httpx.WriteError(w, http.StatusNotFound, "participant not found in this company")
-			return
-		}
-		res, err := db.ExecContext(r.Context(), `
-			INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $3)
-			ON CONFLICT DO NOTHING`, ws.id, pid, uid)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusConflict, "already a member of this workspace")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true})
+func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id string) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if ws.unboundAt.Valid {
+		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
+		return
+	}
+	var body struct {
+		ParticipantID string `json:"participantId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	pid := text(body.ParticipantID, 100)
+	if pid == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "participantId required")
+		return
+	}
+	var exists bool
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND departed_at IS NULL LIMIT 1`,
+		pid, companyID).Scan(&exists)
+	if !exists {
+		httpx.WriteError(w, http.StatusNotFound, "participant not found in this company")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `
+		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING`, ws.id, pid, uid)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusConflict, "already a member of this workspace")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true})
 }
 
-func removeMember(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompanyRole(w, r, db, uid)
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		if ws.unboundAt.Valid {
-			httpx.WriteError(w, http.StatusGone, "workspace is unbound")
-			return
-		}
-		res, err := db.ExecContext(r.Context(),
-			`DELETE FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
-			ws.id, r.PathValue("participantId"))
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusNotFound, "not an explicit member of this workspace")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, id string, participantId string) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if ws.unboundAt.Valid {
+		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(),
+		`DELETE FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
+		ws.id, participantId)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "not an explicit member of this workspace")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 var assocKinds = map[string]bool{"project": true, "board_card": true, "document": true}
 
-func addAssociation(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Kind     string `json:"kind"`
-			TargetID string `json:"targetId"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		kind := text(body.Kind, 20)
-		targetID := text(body.TargetID, 100)
-		if !assocKinds[kind] {
-			httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
-			return
-		}
-		if targetID == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "targetId required")
-			return
-		}
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		var companyID string
-		if kind == "document" {
-			companyID, ok = httpx.ResolveCompany(w, r, db, uid)
-		} else {
-			companyID, ok = httpx.ResolveCompanyRole(w, r, db, uid)
-		}
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		if ws.unboundAt.Valid {
-			httpx.WriteError(w, http.StatusGone, "workspace is unbound")
-			return
-		}
-		if !targetExists(r.Context(), db, companyID, kind, targetID) {
-			httpx.WriteError(w, http.StatusNotFound, "associated "+kind+" not found in this company")
-			return
-		}
-		id := "wa-" + shortID()
-		res, err := db.ExecContext(r.Context(), `
-			INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
-			id, ws.id, companyID, kind, targetID, uid)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusConflict, "already associated with this workspace")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true, "kind": kind, "targetId": targetID})
+func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Kind     string `json:"kind"`
+		TargetID string `json:"targetId"`
 	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	kind := text(body.Kind, 20)
+	targetID := text(body.TargetID, 100)
+	if !assocKinds[kind] {
+		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
+		return
+	}
+	if targetID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "targetId required")
+		return
+	}
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
+	}
+	var companyID string
+	if kind == "document" {
+		companyID, ok = httpx.ResolveCompany(w, r, s.DB, uid)
+	} else {
+		companyID, ok = httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	}
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if ws.unboundAt.Valid {
+		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
+		return
+	}
+	if !targetExists(r.Context(), s.DB, companyID, kind, targetID) {
+		httpx.WriteError(w, http.StatusNotFound, "associated "+kind+" not found in this company")
+		return
+	}
+	assocID := "wa-" + shortID()
+	res, err := s.DB.ExecContext(r.Context(), `
+		INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
+		assocID, ws.id, companyID, kind, targetID, uid)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusConflict, "already associated with this workspace")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true, "kind": kind, "targetId": targetID})
 }
 
 func targetExists(ctx context.Context, db *sql.DB, companyID, kind, targetID string) bool {
@@ -679,48 +665,45 @@ func targetExists(ctx context.Context, db *sql.DB, companyID, kind, targetID str
 	return exists
 }
 
-func removeAssociation(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		kind := r.PathValue("kind")
-		if !assocKinds[kind] {
-			httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
-			return
-		}
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		var companyID string
-		if kind == "document" {
-			companyID, ok = httpx.ResolveCompany(w, r, db, uid)
-		} else {
-			companyID, ok = httpx.ResolveCompanyRole(w, r, db, uid)
-		}
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		if ws.unboundAt.Valid {
-			httpx.WriteError(w, http.StatusGone, "workspace is unbound")
-			return
-		}
-		res, err := db.ExecContext(r.Context(), `
-			DELETE FROM workspace_associations WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
-			ws.id, companyID, kind, r.PathValue("targetId"))
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			httpx.WriteError(w, http.StatusNotFound, "no such association on this workspace")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string, kind string, targetId string) {
+	if !assocKinds[kind] {
+		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
+		return
 	}
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
+	}
+	var companyID string
+	if kind == "document" {
+		companyID, ok = httpx.ResolveCompany(w, r, s.DB, uid)
+	} else {
+		companyID, ok = httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	}
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if ws.unboundAt.Valid {
+		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `
+		DELETE FROM workspace_associations WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
+		ws.id, companyID, kind, targetId)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "no such association on this workspace")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func requireMember(w http.ResponseWriter, r *http.Request, db *sql.DB) (wsRow, bool) {
@@ -740,183 +723,175 @@ func requireMember(w http.ResponseWriter, r *http.Request, db *sql.DB) (wsRow, b
 	return ws, true
 }
 
-func listFiles(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ws, ok := requireMember(w, r, db)
-		if !ok {
-			return
-		}
-		abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
-		if code != 0 {
-			httpx.WriteError(w, code, msg)
-			return
-		}
-		st, err := os.Stat(abs)
-		if err != nil || !st.IsDir() {
-			httpx.WriteError(w, http.StatusBadRequest, "path is not a directory inside the workspace folder")
-			return
-		}
-		entries, err := os.ReadDir(abs)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "readdir failed")
-			return
-		}
-		if len(entries) > 500 {
-			entries = entries[:500]
-		}
-		out := []map[string]any{}
-		for _, e := range entries {
-			var size any
-			var modAt any
-			if s, serr := os.Stat(filepath.Join(abs, e.Name())); serr == nil {
-				size = s.Size()
-				modAt = s.ModTime().UTC()
-			} else {
-				size = nil
-				modAt = nil
-			}
-			out = append(out, map[string]any{
-				"name": e.Name(), "dir": e.IsDir(), "size": size, "modifiedAt": modAt,
-			})
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"path": rel, "entries": out})
+func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id string, params contract.ListWorkspaceFilesParams) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
 	}
-}
-
-func readFile(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ws, ok := requireMember(w, r, db)
-		if !ok {
-			return
+	abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	st, err := os.Stat(abs)
+	if err != nil || !st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is not a directory inside the workspace folder")
+		return
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "readdir failed")
+		return
+	}
+	if len(entries) > 500 {
+		entries = entries[:500]
+	}
+	out := []map[string]any{}
+	for _, e := range entries {
+		var size any
+		var modAt any
+		if s, serr := os.Stat(filepath.Join(abs, e.Name())); serr == nil {
+			size = s.Size()
+			modAt = s.ModTime().UTC()
+		} else {
+			size = nil
+			modAt = nil
 		}
-		abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
-		if code != 0 {
-			httpx.WriteError(w, code, msg)
-			return
-		}
-		if rel == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "path required")
-			return
-		}
-		st, err := os.Stat(abs)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "file not found")
-			return
-		}
-		if st.IsDir() {
-			httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
-			return
-		}
-		if st.Size() > maxFileBytes {
-			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
-			return
-		}
-		content, err := os.ReadFile(abs)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "read failed")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"path": rel, "body": string(content), "size": st.Size(), "modifiedAt": st.ModTime().UTC(),
+		out = append(out, map[string]any{
+			"name": e.Name(), "dir": e.IsDir(), "size": size, "modifiedAt": modAt,
 		})
 	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"path": rel, "entries": out})
 }
 
-func writeFile(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ws, ok := requireMember(w, r, db)
-		if !ok {
-			return
-		}
-		abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
-		if code != 0 {
-			httpx.WriteError(w, code, msg)
-			return
-		}
-		if rel == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "path required")
-			return
-		}
-		// 严格解码:baseline 只接受字符串 body(express.json 解析失败即 400,
-		// typeof body !== 'string' 即 400)。用 RawMessage 逐键判型,杜绝
-		// 「非字符串 body → 空文件 200」静默截断既有文件。
-		raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
-		if err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid body")
-			return
-		}
-		if len(raw) > maxBodyBytes {
-			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
-			return
-		}
-		var payload map[string]json.RawMessage
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &payload); err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
-				return
-			}
-		}
-		token, hasKey := payload["body"]
-		if !hasKey || len(token) == 0 || token[0] != '"' {
-			httpx.WriteError(w, http.StatusBadRequest, "body required (string)")
-			return
-		}
-		var content string
-		if err := json.Unmarshal(token, &content); err != nil {
+func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params contract.ReadWorkspaceFileParams) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if st.Size() > maxFileBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "read failed")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"path": rel, "body": string(content), "size": st.Size(), "modifiedAt": st.ModTime().UTC(),
+	})
+}
+
+func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params contract.WriteWorkspaceFileParams) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	// 严格解码:baseline 只接受字符串 body(express.json 解析失败即 400,
+	// typeof body !== 'string' 即 400)。用 RawMessage 逐键判型,杜绝
+	// 「非字符串 body → 空文件 200」静默截断既有文件。
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(raw) > maxBodyBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+	var payload map[string]json.RawMessage
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if len(content) > maxFileBytes {
-			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
-			return
-		}
-		if st, err := os.Stat(abs); err == nil && st.IsDir() {
-			httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "mkdir failed")
-			return
-		}
-		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "write failed")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
 	}
+	token, hasKey := payload["body"]
+	if !hasKey || len(token) == 0 || token[0] != '"' {
+		httpx.WriteError(w, http.StatusBadRequest, "body required (string)")
+		return
+	}
+	var content string
+	if err := json.Unmarshal(token, &content); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(content) > maxFileBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "mkdir failed")
+		return
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "write failed")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
 }
 
-func unbind(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompanyRole(w, r, db, uid)
-		if !ok {
-			return
-		}
-		ws, ok := loadWorkspace(r.Context(), db, companyID, r.PathValue("id"))
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-			return
-		}
-		if ws.isDefault {
-			httpx.WriteError(w, http.StatusForbidden, "the default workspace cannot be unbound")
-			return
-		}
-		var unboundAt time.Time
-		err := db.QueryRowContext(r.Context(), `
-			UPDATE workspaces SET unbound_at = NOW(), unbound_by = $2
-			 WHERE id = $1 AND unbound_at IS NULL RETURNING unbound_at`, ws.id, uid).Scan(&unboundAt)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
-				return
-			}
-			httpx.WriteError(w, http.StatusInternalServerError, "unbind failed")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
+func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id string) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
+	if !ok {
+		return
+	}
+	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if ws.isDefault {
+		httpx.WriteError(w, http.StatusForbidden, "the default workspace cannot be unbound")
+		return
+	}
+	var unboundAt time.Time
+	err := s.DB.QueryRowContext(r.Context(), `
+		UPDATE workspaces SET unbound_at = NOW(), unbound_by = $2
+		 WHERE id = $1 AND unbound_at IS NULL RETURNING unbound_at`, ws.id, uid).Scan(&unboundAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, "unbind failed")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
 }

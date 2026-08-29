@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -23,10 +24,15 @@ const devtoolsHeader = "x-cumora-dev-mode"
 // boards 的 WakeMentioned 同款依赖倒置,域包不反向 import runtime)。
 type AvatarGen func(ctx context.Context, agentID, tenant string) (string, error)
 
+// Server:devtools tag(3 路由)的域实现(#187 机械迁移)。
+type Server struct{ DB *sql.DB }
+
+var _ contract.ServerInterface = (*Server)(nil)
+
+// Mount:devtools tag 走契约生成物;其余 4 路由分属 observability(run
+// events/peek×2)与 agents(avatar)tag,跨包设计另批收编。
 func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
-	mux.HandleFunc("GET /api/devtools/agent-workspace/file", workspaceFile(db))
-	mux.HandleFunc("GET /api/devtools/capabilities", capabilities(db))
-	mux.HandleFunc("GET /api/devtools/agent-workspace", workspaceIndex(db))
+	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
 	mux.HandleFunc("GET /api/agents/observability/runs/{id}/events", runEvents(db))
 	mux.HandleFunc("GET /api/peek/agent-chats/{id}/messages", peekAgentChat(db))
 	mux.HandleFunc("GET /api/peek/agent-chats", peekAgentChatsList(db))
@@ -90,43 +96,41 @@ func requireCompanyRole(w http.ResponseWriter, r *http.Request, db *sql.DB, owne
 
 /* ───────── GET /devtools/agent-workspace/file ───────── */
 
-func workspaceFile(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireDevtools(w, r, db)
-		if !ok {
-			return
-		}
-		agentID := strings.TrimSpace(r.URL.Query().Get("agentId"))
-		path := strings.TrimSpace(r.URL.Query().Get("path"))
-		if agentID == "" || path == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "agentId and path required")
-			return
-		}
-		var body string
-		var size, lineCount int
-		var updatedAt time.Time
-		err := db.QueryRowContext(r.Context(), `
-			SELECT
-			    body,
-			    LENGTH(body)::int,
-			    (LENGTH(body) - LENGTH(REPLACE(body, E'\n', '')) + 1)::int,
-			    updated_at
-			  FROM agent_workspace
-			 WHERE agent_id = $1 AND path = $2 AND company_id = $3
-			 LIMIT 1`, agentID, path, tenant).Scan(&body, &size, &lineCount, &updatedAt)
-		if err == sql.ErrNoRows {
-			httpx.WriteError(w, http.StatusNotFound, "file not found")
-			return
-		}
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"path": path, "body": body, "size": size,
-			"lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
-		})
+func (s *Server) ReadAgentWorkspaceFile(w http.ResponseWriter, r *http.Request, params contract.ReadAgentWorkspaceFileParams) {
+	tenant, ok := requireDevtools(w, r, s.DB)
+	if !ok {
+		return
 	}
+	agentID := strings.TrimSpace(r.URL.Query().Get("agentId"))
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if agentID == "" || path == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "agentId and path required")
+		return
+	}
+	var body string
+	var size, lineCount int
+	var updatedAt time.Time
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT
+		    body,
+		    LENGTH(body)::int,
+		    (LENGTH(body) - LENGTH(REPLACE(body, E'\n', '')) + 1)::int,
+		    updated_at
+		  FROM agent_workspace
+		 WHERE agent_id = $1 AND path = $2 AND company_id = $3
+		 LIMIT 1`, agentID, path, tenant).Scan(&body, &size, &lineCount, &updatedAt)
+	if err == sql.ErrNoRows {
+		httpx.WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"path": path, "body": body, "size": size,
+		"lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
+	})
 }
 
 /* ───────── GET /agents/observability/runs/{id}/events ───────── */
@@ -277,70 +281,66 @@ func avatarGenerate(db *sql.DB, gen AvatarGen) http.HandlerFunc {
 /* ───────── capabilities + workspace 索引 + peek 列表(#68 补齐) ───────── */
 
 // capabilities:getDevtoolsState 的客户端通告(不 403——探测端点)。
-func capabilities(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, cid, role, ok := resolveRole(w, r, db)
-		if !ok {
-			return
-		}
-		_ = cid
-		localDev := os.Getenv("NODE_ENV") != "production"
-		h := r.Header.Get(devtoolsHeader)
-		requested := h == "1" || h == "true"
-		priv := privileged(role)
-		canEnable := localDev || priv
-		enabled := localDev || (requested && priv)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"enabled": enabled, "canEnable": canEnable, "localDev": localDev,
-			"productionDevMode": !localDev && requested && enabled, "role": role,
-		})
+func (s *Server) GetDevtoolsCapabilities(w http.ResponseWriter, r *http.Request) {
+	_, cid, role, ok := resolveRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	_ = cid
+	localDev := os.Getenv("NODE_ENV") != "production"
+	h := r.Header.Get(devtoolsHeader)
+	requested := h == "1" || h == "true"
+	priv := privileged(role)
+	canEnable := localDev || priv
+	enabled := localDev || (requested && priv)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"enabled": enabled, "canEnable": canEnable, "localDev": localDev,
+		"productionDevMode": !localDev && requested && enabled, "role": role,
+	})
 }
 
 // workspaceIndex:agent 工作区文件索引(path/size/lineCount/updatedAt)。
-func workspaceIndex(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireDevtools(w, r, db)
-		if !ok {
-			return
-		}
-		agentID := strings.TrimSpace(r.URL.Query().Get("agentId"))
-		if agentID == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "agentId required")
-			return
-		}
-		var one int
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' LIMIT 1`,
-			agentID, tenant).Scan(&one); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT path, LENGTH(body)::int,
-			       (LENGTH(body) - LENGTH(REPLACE(body, E'\n', '')) + 1)::int,
-			       updated_at
-			  FROM agent_workspace
-			 WHERE agent_id = $1 AND company_id = $2
-			 ORDER BY path`, agentID, tenant)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var path string
-			var size, lineCount int
-			var updatedAt time.Time
-			if rows.Scan(&path, &size, &lineCount, &updatedAt) == nil {
-				out = append(out, map[string]any{
-					"path": path, "size": size, "lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+func (s *Server) ListAgentWorkspace(w http.ResponseWriter, r *http.Request, params contract.ListAgentWorkspaceParams) {
+	tenant, ok := requireDevtools(w, r, s.DB)
+	if !ok {
+		return
 	}
+	agentID := strings.TrimSpace(r.URL.Query().Get("agentId"))
+	if agentID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "agentId required")
+		return
+	}
+	var one int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' LIMIT 1`,
+		agentID, tenant).Scan(&one); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT path, LENGTH(body)::int,
+		       (LENGTH(body) - LENGTH(REPLACE(body, E'\n', '')) + 1)::int,
+		       updated_at
+		  FROM agent_workspace
+		 WHERE agent_id = $1 AND company_id = $2
+		 ORDER BY path`, agentID, tenant)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var path string
+		var size, lineCount int
+		var updatedAt time.Time
+		if rows.Scan(&path, &size, &lineCount, &updatedAt) == nil {
+			out = append(out, map[string]any{
+				"path": path, "size": size, "lineCount": lineCount, "updatedAt": httpx.ISOms(updatedAt),
+			})
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // peekAgentChatsList:owner-only 的 agent↔agent 会话观察列表。
