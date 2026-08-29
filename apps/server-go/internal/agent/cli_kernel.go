@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf16"
 )
@@ -260,3 +262,33 @@ func NodeLocaleString(t time.Time) string { return nodeLocaleString(t) }
 
 // HTTPPrefixRe:http(s) 前缀正则(skills/avatar 两域共用)。
 var HTTPPrefixRe = regexp.MustCompile(`^https?://`)
+
+func cliJSONString(s string) []byte {
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			sb.WriteString("\\\"")
+		case '\\':
+			sb.WriteString("\\\\")
+		case '\n':
+			sb.WriteString("\\n")
+		case '\r':
+			sb.WriteString("\\r")
+		case '\t':
+			sb.WriteString("\\t")
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&sb, "\\u%04x", r)
+			} else {
+				sb.WriteRune(r)
+			}
+		}
+	}
+	sb.WriteByte('"')
+	return []byte(sb.String())
+}
+
+// Without:cliStrArr.without(去首个同值成员,不动原切片)的导出包装。
+func (a StrArr) Without(s string) StrArr { return a.without(s) }
