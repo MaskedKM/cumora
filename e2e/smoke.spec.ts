@@ -147,44 +147,20 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
   // ── 5) 打开 Atlas 的 DM,发消息 ──
   // DM 行无 aria-label(快照实测):行内是 img[alt=名] + 文本节点,用
   // 精确文本锚点。.first() 依赖 DOM 顺序(会话列表在 ChatPane 之前)
-  // ——本流程首开无选中会话,列表的 Atlas 是唯一匹配;切回步骤里
-  // ChatPane 头部显示的是 Bram,同样无歧义(评审 P3 留档此约束)。
+  // ——本流程首开无选中会话,列表的 Atlas 是唯一匹配(评审 P3 留档)。
   await page.getByText('Atlas', { exact: true }).first().click({ timeout: 30_000 })
   const composer = page.locator('div[role="textbox"]').first()
   await composer.click()
   await composer.fill(HUMAN_MSG)
   await composer.press('Enter')
   await expect(page.getByText(HUMAN_MSG)).toBeVisible({ timeout: 15_000 })
-  const { rows: dmRows } = await pg.query(
-    `SELECT conversation_id FROM messages WHERE body = $1 LIMIT 1`,
-    [HUMAN_MSG],
-  )
-  const atlasDmId = dmRows[0].conversation_id as string
-  expect(atlasDmId).toBeTruthy()
 
-  // ── 6) agent 回复上屏 ──
-  // 链路断言到 cli reply 落库为止(全链:msg.new→scheduler→wake SSE→
-  // echo runtime→cli reply);呈现面经 REST 重取 —— Go 网关当前是
-  // doc-only(gateway.go "非 doc 帧:消息面归 #60,静默忽略"),聊天
-  // WS 推送面未迁 Go,浏览器侧靠切换会话触发的 refetch 看到新消息
-  // (缺口另开票,补齐后本步可改断言实时上屏)。
-  const deadline = Date.now() + 30_000
-  for (;;) {
-    const { rows: got } = await pg.query(
-      `SELECT 1 FROM messages WHERE conversation_id = $1 AND body = $2 LIMIT 1`,
-      [atlasDmId, REPLY_MSG],
-    )
-    if (got.length > 0) break
-    if (Date.now() > deadline) throw new Error('reply never landed in pg')
-    await page.waitForTimeout(500)
-  }
-  // 切走的真实作用链:选中 Bram → markRead → conversations.reload →
-  // refreshActiveMessagesIfSidebarMoved(见 stores/conversations.ts,比对
-  // lastMessageId 不在缓存即 reload)——切回 Atlas 时新回复经此副作用
-  // 拉进缓存;对 loadConversation/该 helper 的重构会让本步神秘变红。
-  await page.getByText('Bram', { exact: true }).first().click()
-  await page.getByText('Atlas', { exact: true }).first().click()
-  await expect(page.getByText(REPLY_MSG)).toBeVisible({ timeout: 15_000 })
+  // ── 6) agent 回复实时上屏(#202 补齐后:WS 推送面直连)──
+  // 链路:cli reply 落库 → events.MessageNew 发 Redis → 网关桥按租户
+  // 转发 → 浏览器 WS message.new → stores/messages applyEvent 上屏。
+  // 全程停在 Atlas 会话、无 refetch/切会话 —— 断言的就是实时推送面
+  // 本身(REST 重取兜底的旧形态随 #202 关闭)。
+  await expect(page.getByText(REPLY_MSG)).toBeVisible({ timeout: 30_000 })
 
   stopRuntime()
   await pg.end()

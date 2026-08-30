@@ -73,6 +73,42 @@ func (s *Service) HeartbeatStatus(ctx context.Context, participantID, status str
 	return nil
 }
 
+// ResetHumanPresenceOnBoot:对齐 TS resetHumanPresenceOnBoot —— 启动时
+// 把上次运行残留的 'avail' 人类降为 'resting' 并逐租户广播。半开连接
+// (笔记本休眠/网断)的 close 永远不会来,不降就会一直挂"在线";
+// agent 不动(自有租约 + GET /participants 自动过期)。
+func (s *Service) ResetHumanPresenceOnBoot(ctx context.Context) {
+	rows, err := s.DB.QueryContext(ctx, `
+		UPDATE participants
+		   SET status = 'resting', status_updated_at = NOW()
+		 WHERE kind = 'human' AND status = 'avail'
+		 RETURNING id, company_id, status_updated_at`)
+	if err != nil {
+		slog.Warn("[runtime] resetHumanPresenceOnBoot failed", "err", err)
+		return
+	}
+	defer rows.Close()
+	demoted := 0
+	for rows.Next() {
+		var id, companyID string
+		var at time.Time
+		if err := rows.Scan(&id, &companyID, &at); err != nil {
+			continue
+		}
+		demoted++
+		events.PublishRaw(ctx, chStatus, mustJSON(map[string]any{
+			"type":            "participants.status",
+			"participantId":   id,
+			"status":          "resting",
+			"statusUpdatedAt": httpx.ISOms(at),
+			"companyId":       companyID,
+		}))
+	}
+	if demoted > 0 {
+		slog.Info("[runtime] demoted stale 'avail' human(s) to 'resting' on boot", "count", demoted)
+	}
+}
+
 func mustJSON(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {

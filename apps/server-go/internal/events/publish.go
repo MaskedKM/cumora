@@ -10,7 +10,18 @@ import (
 
 const (
 	ChMessageNew = "cumora:msg.new"
-	ChTyping     = "cumora:typing"
+	// 公司域聊天面全集(#202 补齐命名;载荷/通道对齐 redis.ts):
+	ChMessageDelta    = "cumora:msg.delta"
+	ChTyping          = "cumora:typing"
+	ChStatus          = "cumora:status"
+	ChReactions       = "cumora:reactions"
+	ChPolls           = "cumora:polls"
+	ChGroupPulled     = "cumora:group.pulled"
+	ChConvoUpdated    = "cumora:convo.updated"
+	ChConvene         = "cumora:convene"
+	ChBoards          = "cumora:boards"
+	ChCalendarReminder = "cumora:calendar.reminder"
+	ChCalendarEvents   = "cumora:calendar.events"
 	// 文档域(#55):doc.changed 走 CH_DOCS;协同 update/awareness 由
 	// docrelay 直接订阅(sidecar 扇出通道);mention 走 CH_DOC_MENTION。
 	ChDocs       = "cumora:docs"
@@ -18,6 +29,15 @@ const (
 	ChDocAware   = "cumora:doc.awareness"
 	ChDocMention = "cumora:doc.mention"
 )
+
+// CompanyChannels:公司域事件通道全集(#202)——WS 网关的聊天桥订阅后
+// 按连接的租户成员资格过滤转发。对齐 TS ws.ts 的 sub.subscribe 列表;
+// doc.update/doc.awareness 是房间域(docrelay 管),不在其列。
+var CompanyChannels = []string{
+	ChMessageNew, ChMessageDelta, ChTyping, ChStatus, ChReactions, ChPolls,
+	ChGroupPulled, ChConvoUpdated, ChConvene, ChBoards,
+	ChDocs, ChDocMention, ChCalendarReminder, ChCalendarEvents,
+}
 
 // Publisher 抽象 pg 池上的 Redis 客户端;骨架期由 noop 兜底,
 // #60(运行时服务面)引入真实 Redis 连接后注入。
