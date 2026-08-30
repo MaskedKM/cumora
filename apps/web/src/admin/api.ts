@@ -150,161 +150,19 @@ export interface LlmCallRow {
 }
 
 /**
- * Admin API client — talks to /api/admin/*. Mirrors the shape of
- * src/api/client.ts but stays in this folder so the admin bundle can
- * load it without dragging the entire main client (and its zustand
- * stores) along for the ride.
+ * Admin API client — talks to /api/admin/*. 共享骨架(#147 ①)在
+ * @/api/core:origin 解析/Bearer 注入/401 清 session/错误 detail 解析
+ * 与主面 client.ts 合一;本面差异(无 x-company-id/devtools 头、401 恒
+ * 清、路径前缀 /api/admin)经 fetchJson opts 表达。
  *
- * Auth + base URL come from the same auth store + resolveServerOrigin
- * the main client uses, so a token minted by the regular sign-in flow
- * is what authenticates admin calls.
+ * Auth + base URL come from the same auth store the main client uses, so
+ * a token minted by the regular sign-in flow is what authenticates admin
+ * calls.
  */
-import { getAuthToken, useAuth } from '@/stores/auth'
-
-function origin(): string {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem('cumora.serverUrl')
-    if (override) return override.replace(/\/+$/, '')
-  }
-  const baked = import.meta.env.VITE_CUMORA_API_BASE as string | undefined
-  if (baked) return baked.replace(/\/+$/, '')
-  return ''
-}
+import { fetchJson, SERVER_ORIGIN } from '@/api/core'
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  const token = getAuthToken()
-  if (token) headers.authorization = `Bearer ${token}`
-  const res = await fetch(`${origin()}/api/admin${path}`, {
-    headers: { ...headers, ...(init?.headers ?? {}) },
-    ...init,
-  })
-  if (res.status === 401) {
-    useAuth.getState().clear()
-    throw new Error('signed out')
-  }
-  if (!res.ok) {
-    let detail: string | null = null
-    try {
-      const text = await res.text()
-      if (text) {
-        try {
-          const j = JSON.parse(text) as { error?: string }
-          detail = j.error ?? text.slice(0, 200)
-        } catch { detail = text.slice(0, 200) }
-      }
-    } catch { /* ignore */ }
-    throw new Error(detail ? `${detail} (${res.status})` : `${res.status} ${res.statusText}`)
-  }
-  return res.json() as Promise<T>
-}
-
-
-export interface LlmRollupRow {
-  purpose: LlmCallPurpose
-  model: string
-  source: LlmCallSource
-  calls: number
-  okCalls: number
-  failedCalls: number
-  rateLimitedCalls: number
-  inputTokens: number
-  cachedInputTokens: number
-  cacheCreationTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  costUsd: number
-  costEstimated: boolean
-  /** Upper-bound $ saved if this row's input were 100% cached (at the row
-   *  model's own cached rate). 'Money on the table'. */
-  savableUsd: number
-}
-
-export interface LlmTrendBucket {
-  day: string
-  purpose: LlmCallPurpose
-  costUsd: number
-  calls: number
-  /** Uncached input tokens for this (day, purpose) bucket. */
-  inputTokens: number
-  /** Cache-read input tokens for this bucket. */
-  cachedInputTokens: number
-}
-
-export interface LlmTopAgentRow {
-  agentId: string | null
-  companyId: string | null
-  agentName: string | null
-  agentAvatarUrl: string | null
-  agentAvatarBg: string | null
-  agentInitial: string | null
-  companyName: string | null
-  costUsd: number
-  calls: number
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-}
-
-export interface LlmTenantRow {
-  companyId: string
-  name: string | null
-  slug: string | null
-  costUsd: number
-  calls: number
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-}
-
-export interface LlmDaemonVersionRow {
-  daemonVersion: string
-  source: LlmCallSource
-  calls: number
-  costUsd: number
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-  failureRate: number
-  firstSeen: string
-  lastSeen: string
-}
-
-export interface LlmObservabilityPayload {
-  summary: LlmSummary
-  rollup: LlmRollupRow[]
-  trend: LlmTrendBucket[]
-  topAgents: LlmTopAgentRow[]
-  tenants: LlmTenantRow[]
-  daemonVersions: LlmDaemonVersionRow[]
-}
-
-/** One raw call row returned by the drill-down endpoint. Same shape as the
- *  server's LlmCallRow — kept here to avoid a server-only import. */
-export interface LlmCallRow {
-  id: string
-  createdAt: string
-  companyId: string | null
-  agentId: string | null
-  agentName: string | null
-  runId: string | null
-  conversationId: string | null
-  purpose: LlmCallPurpose
-  source: LlmCallSource
-  model: string
-  inputTokens: number
-  cachedInputTokens: number
-  cacheCreationTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  costUsd: number
-  costEstimated: boolean
-  measured: boolean
-  latencyMs: number | null
-  status: LlmCallStatus
-  error: string | null
-  extras: Record<string, unknown> | null
-  daemonVersion: string | null
+  return fetchJson<T>(path, init, { base: `${SERVER_ORIGIN}/api/admin` })
 }
 
 export const adminApi = {
