@@ -94,14 +94,20 @@ func main() {
 	relay := docrelay.New(cfg.YjsSidecarURL, cfg.YjsSidecarToken, cfg.YjsSidecarTimeout, cfg.InstanceID)
 	relay.Boot(ctxBoot, rdb)
 
-	// WS 网关(/ws,自带 ws-ticket 鉴权,不走 /api/ 中间件链)
-	wsx.Mount(mux, pool, relay)
-
 	// /runtime 面(#60):BYOA daemon 服务端(wake-stream SSE + 数据面)。
 	// 自带 agent-runtime JWT 鉴权,不嵌 /api。Redis 不可达时 wake-stream
 	// 直接 503(不做半开会话),其余数据面路由照常。
 	runtimeSvc := runtime.New(pool, rdb)
 	runtimeSvc.SetRelay(relay)
+	// 在场清账(TS resetHumanPresenceOnBoot):先于任何 WS 连接把上次
+	// 运行残留的 'avail' 人类降 'resting'——半开连接的 close 不会来。
+	runtimeSvc.ResetHumanPresenceOnBoot(ctxBoot)
+
+	// WS 网关(/ws,自带 ws-ticket 鉴权,不走 /api/ 中间件链)。#198/#202
+	// 起补齐 TS ws.ts 全语义:hello 握手帧 + 聊天推送桥(Redis→按租户
+	// 过滤转发)+ 人在场 0→1/1→0 翻转。
+	wsx.Mount(mux, pool, relay, rdb, cfg.InstanceID, runtimeSvc)
+
 	runtimeSvc.Mount(mux)
 
 	// 静态托管(#69 切换日):SPA(生产 dist/)与 /uploads 本地目录——

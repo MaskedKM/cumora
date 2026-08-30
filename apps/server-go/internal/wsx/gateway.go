@@ -1,7 +1,8 @@
-// wsx —— WebSocket 网关(#55 起步):/ws 升级(一次性 ws-ticket 鉴权,
-// 对齐 TS ws.ts 的 ?t= 票据面)+ 文档协同帧(doc.*)。消息面帧
-// (message/typing/presence)归 #60 运行时服务面,当前静默忽略——
-// 客户端连上后不受影响,只是收不到会话事件。
+// wsx —— WebSocket 网关:/ws 升级(一次性 ws-ticket 鉴权,对齐 TS
+// ws.ts 的 ?t= 票据面)+ 文档协同帧(doc.*)+ 聊天推送面(#202:公司域
+// Redis 事件按租户成员资格转发,见 bridge.go)+ hello 握手帧(#198,
+// 客户端以收到 hello = 连接(重连)完成,据此重建 doc 订阅)+ 人在场
+// 翻转(presence.go)。
 package wsx
 
 import (
@@ -9,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/coder/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 const maxFrameBytes = 4 * 1024 * 1024 // 对齐 TS WebSocketServer maxPayload
@@ -28,6 +31,13 @@ type conn struct {
 	mu       sync.Mutex // 帧写入串行化
 	// 该连接上的文档订阅;关闭时全部归还(防房间泄漏)。
 	docSubs map[string]*docrelay.Subscriber
+	// 连接时刻的租户成员集(对齐 TS loadMemberships:连接期内不刷新)。
+	// 聊天桥按它过滤;doc 面另有 per-doc 校验。
+	companies map[string]struct{}
+	// 聊天帧出站队列(#202):桥/写协程解耦,慢客户端只堵自己。
+	outbound      chan []byte
+	dropAnnounced uint32 // 背压丢帧只告警一次(atomic)
+	wcancel       context.CancelFunc
 }
 
 func (c *conn) send(payload any) {
@@ -42,13 +52,24 @@ func (c *conn) send(payload any) {
 	_ = c.ws.Write(ctx, websocket.MessageText, raw)
 }
 
-type Gateway struct {
-	db    *sql.DB
-	relay *docrelay.Relay
+// PresenceSetter:在场翻转的落库+广播面(runtime.SetStatus)。
+type PresenceSetter interface {
+	SetStatus(ctx context.Context, participantID, status string) error
 }
 
-func Mount(mux *http.ServeMux, db *sql.DB, relay *docrelay.Relay) {
-	g := &Gateway{db: db, relay: relay}
+type Gateway struct {
+	db         *sql.DB
+	relay      *docrelay.Relay
+	rdb        *redis.Client // nil → 聊天桥停用(协同面同款降级)
+	instanceID string
+	hub        hub
+	presence   PresenceSetter // nil → 不做在场翻转
+	humans     humanCounters
+}
+
+func Mount(mux *http.ServeMux, db *sql.DB, relay *docrelay.Relay, rdb *redis.Client, instanceID string, presence PresenceSetter) {
+	g := &Gateway{db: db, relay: relay, rdb: rdb, instanceID: instanceID, presence: presence}
+	g.bootBridge(context.Background())
 	mux.HandleFunc("GET /ws", g.handle)
 }
 
@@ -79,6 +100,34 @@ func (g *Gateway) docCompanyFor(ctx context.Context, documentID, userID string) 
 	return companyID, true
 }
 
+// loadMemberships 对齐 TS loadMemberships:连接时刻快照,连接期内不
+// 刷新(成员变更由新连接带入)。查询失败按空集处理——聊天面默认拒绝
+// 路由(deny-by-default),doc 面照旧走 per-doc 校验,不受影响。
+func (g *Gateway) loadMemberships(userID string) map[string]struct{} {
+	out := map[string]struct{}{}
+	rows, err := g.db.Query(`SELECT company_id FROM company_members WHERE user_id = $1`, userID)
+	if err != nil {
+		slog.Warn("ws loadMemberships failed — chat push denied for this connection", "user", userID, "err", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var companyID string
+		if err := rows.Scan(&companyID); err != nil {
+			continue
+		}
+		out[companyID] = struct{}{}
+	}
+	return out
+}
+
+// helloFrame 对齐 TS ws.ts:握手完成即发,重连(新连接替换旧连接)
+// 同样发。客户端(WsClient/yjsClient 及各 store)以收到 hello = 连接
+// (重连)完成,据此重放 doc.subscribe、冲刷断线攒批、重引数据。
+func helloFrame(instanceID string) map[string]any {
+	return map[string]any{"type": "hello", "instanceId": instanceID, "ts": time.Now().UnixMilli()}
+}
+
 func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	ticket := r.URL.Query().Get("t")
 	if ticket == "" {
@@ -102,18 +151,33 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(websocket.StatusPolicyViolation, "invalid or expired ticket")
 		return
 	}
-	c := &conn{ws: ws, userID: userID, originID: "ws-" + authn.NewToken()[:12], docSubs: map[string]*docrelay.Subscriber{}}
+	c := &conn{
+		ws: ws, userID: userID, originID: "ws-" + authn.NewToken()[:12],
+		docSubs: map[string]*docrelay.Subscriber{}, companies: g.loadMemberships(userID),
+		outbound: make(chan []byte, outboundCap),
+	}
+	// hello 必须先于注册/写协程发出(TS 单线程下的既成不变量):保证
+	// 它是该连接的首帧,客户端"收到 hello = 连接完成"的语义不被抢先的
+	// 聊天帧打破。c.send 在 mu 下完成写,后续 writer 的帧只能排其后。
+	// 拆链在 readLoop 的 defer 单点完成(hub/在场/doc 订阅/写协程)。
+	c.send(helloFrame(g.instanceID))
+	g.hub.add(c)
+	g.humanConnect(c.userID)
+	c.startWriter()
 	go g.readLoop(c)
 }
 
 func (g *Gateway) readLoop(c *conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// 关闭时归还全部文档订阅。
+	// 关闭时拆链:归还全部文档订阅、注销连接、在场 1→0、停写协程。
 	defer func() {
+		g.hub.remove(c)
+		g.humanDisconnect(c.userID)
 		for docID, s := range c.docSubs {
 			g.relay.Unsubscribe(docID, s)
 		}
+		c.wcancel()
 		_ = c.ws.Close(websocket.StatusNormalClosure, "")
 	}()
 	// 心跳:TS 的 ping/isAlive 半开检测由库内 ping 承担。
