@@ -460,12 +460,6 @@ const (
 	Pro  AdminPatchUserJSONBodyTier = "pro"
 )
 
-// Defines values for AuthStartParamsProvider.
-const (
-	AuthStartParamsProviderGithub AuthStartParamsProvider = "github"
-	AuthStartParamsProviderGoogle AuthStartParamsProvider = "google"
-)
-
 // Defines values for CreateInvitationJSONBodyRole.
 const (
 	Admin  CreateInvitationJSONBodyRole = "admin"
@@ -480,9 +474,9 @@ const (
 
 // Defines values for RegisterPushDeviceJSONBodyPlatform.
 const (
-	Android RegisterPushDeviceJSONBodyPlatform = "android"
-	Ios     RegisterPushDeviceJSONBodyPlatform = "ios"
-	Web     RegisterPushDeviceJSONBodyPlatform = "web"
+	RegisterPushDeviceJSONBodyPlatformAndroid RegisterPushDeviceJSONBodyPlatform = "android"
+	RegisterPushDeviceJSONBodyPlatformIos     RegisterPushDeviceJSONBodyPlatform = "ios"
+	RegisterPushDeviceJSONBodyPlatformWeb     RegisterPushDeviceJSONBodyPlatform = "web"
 )
 
 // Defines values for CreateShippingReleaseJSONBodyEnvironment.
@@ -1796,13 +1790,13 @@ type AdminPatchUserJSONBodyTier string
 type GetAgentRunsParams struct {
 	AgentId *string `form:"agentId,omitempty" json:"agentId,omitempty"`
 	Status  *string `form:"status,omitempty" json:"status,omitempty"`
-	Limit   *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	Limit   *string `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // GetTriageEconomicsParams defines parameters for GetTriageEconomics.
 type GetTriageEconomicsParams struct {
 	AgentId    *string `form:"agentId,omitempty" json:"agentId,omitempty"`
-	SinceHours *int    `form:"sinceHours,omitempty" json:"sinceHours,omitempty"`
+	SinceHours *string `form:"sinceHours,omitempty" json:"sinceHours,omitempty"`
 }
 
 // PutAutonomyJSONBody defines parameters for PutAutonomy.
@@ -1828,9 +1822,6 @@ type AuthStartParams struct {
 	Return *string `form:"return,omitempty" json:"return,omitempty"`
 	Invite *string `form:"invite,omitempty" json:"invite,omitempty"`
 }
-
-// AuthStartParamsProvider defines parameters for AuthStart.
-type AuthStartParamsProvider string
 
 // CreateBoardJSONBody defines parameters for CreateBoard.
 type CreateBoardJSONBody struct {
@@ -2102,7 +2093,7 @@ type UnregisterPushDeviceJSONBody struct {
 
 // SearchParams defines parameters for Search.
 type SearchParams struct {
-	Q string `form:"q" json:"q"`
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
 // CreateShippingFeatureJSONBody defines parameters for CreateShippingFeature.

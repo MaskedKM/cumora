@@ -28,14 +28,6 @@ const inviteTokenBytes = 32
 const inviteMaxLinkUses = 100
 const inviteTTL = 7 * 24 * time.Hour
 
-func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("GET /api/companies/{id}/invitations", list(db))
-	mux.HandleFunc("POST /api/companies/{id}/invitations", create(db))
-	mux.HandleFunc("DELETE /api/companies/{id}/invitations/{inviteId}", revoke(db))
-	mux.HandleFunc("GET /api/invitations/{token}", preview(db))
-	mux.HandleFunc("POST /api/invitations/{token}/accept", accept(db))
-}
-
 /* ───────── 助手 ───────── */
 
 func hashInviteToken(token string) string {
@@ -161,65 +153,63 @@ func nilStr(s string) any {
 
 /* ───────── list ───────── */
 
-func list(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		companyID := r.PathValue("id")
-		if _, ok := requireCompanyAdmin(w, r, db, companyID); !ok {
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT i.token_hash, i.email, i.role, i.note, i.max_uses, i.use_count,
-			       i.created_at, i.expires_at, i.revoked_at,
-			       i.last_accepted_at, i.last_accepted_by, i.invited_by,
-			       u.display_name
-			  FROM company_invitations i
-			  LEFT JOIN users u ON u.id = i.invited_by
-			 WHERE i.company_id = $1
-			 ORDER BY i.created_at DESC
-			 LIMIT 200`, companyID)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		now := time.Now()
-		out := []map[string]any{}
-		for rows.Next() {
-			var tokenHash, role string
-			var email, note, invitedBy sql.NullString
-			var maxUses, useCount int
-			var createdAt, expiresAt time.Time
-			var revokedAt, lastAcceptedAt sql.NullTime
-			var lastAcceptedBy, inviterName sql.NullString
-			if err := rows.Scan(&tokenHash, &email, &role, &note, &maxUses, &useCount,
-				&createdAt, &expiresAt, &revokedAt,
-				&lastAcceptedAt, &lastAcceptedBy, &invitedBy, &inviterName); err == nil {
-				status := "active"
-				switch {
-				case revokedAt.Valid:
-					status = "revoked"
-				case expiresAt.Before(now):
-					status = "expired"
-				case useCount >= maxUses:
-					status = "consumed"
-				}
-				out = append(out, map[string]any{
-					"id": tokenHash, "email": nullTime2Any(email), "role": role,
-					"note":    nullTime2Any(note),
-					"maxUses": maxUses, "useCount": useCount,
-					"createdAt":      httpx.ISOms(createdAt),
-					"expiresAt":      httpx.ISOms(expiresAt),
-					"revokedAt":      nullTimeUTC(revokedAt),
-					"lastAcceptedAt": nullTimeUTC(lastAcceptedAt),
-					"lastAcceptedBy": nullTime2Any(lastAcceptedBy),
-					"invitedBy":      nullTime2Any(invitedBy),
-					"inviterName":    nullTime2Any(inviterName),
-					"status":         status,
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+func List(db *sql.DB, w http.ResponseWriter, r *http.Request, id string) {
+	companyID := id
+	if _, ok := requireCompanyAdmin(w, r, db, companyID); !ok {
+		return
 	}
+	rows, err := db.QueryContext(r.Context(), `
+		SELECT i.token_hash, i.email, i.role, i.note, i.max_uses, i.use_count,
+		       i.created_at, i.expires_at, i.revoked_at,
+		       i.last_accepted_at, i.last_accepted_by, i.invited_by,
+		       u.display_name
+		  FROM company_invitations i
+		  LEFT JOIN users u ON u.id = i.invited_by
+		 WHERE i.company_id = $1
+		 ORDER BY i.created_at DESC
+		 LIMIT 200`, companyID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	now := time.Now()
+	out := []map[string]any{}
+	for rows.Next() {
+		var tokenHash, role string
+		var email, note, invitedBy sql.NullString
+		var maxUses, useCount int
+		var createdAt, expiresAt time.Time
+		var revokedAt, lastAcceptedAt sql.NullTime
+		var lastAcceptedBy, inviterName sql.NullString
+		if err := rows.Scan(&tokenHash, &email, &role, &note, &maxUses, &useCount,
+			&createdAt, &expiresAt, &revokedAt,
+			&lastAcceptedAt, &lastAcceptedBy, &invitedBy, &inviterName); err == nil {
+			status := "active"
+			switch {
+			case revokedAt.Valid:
+				status = "revoked"
+			case expiresAt.Before(now):
+				status = "expired"
+			case useCount >= maxUses:
+				status = "consumed"
+			}
+			out = append(out, map[string]any{
+				"id": tokenHash, "email": nullTime2Any(email), "role": role,
+				"note":    nullTime2Any(note),
+				"maxUses": maxUses, "useCount": useCount,
+				"createdAt":      httpx.ISOms(createdAt),
+				"expiresAt":      httpx.ISOms(expiresAt),
+				"revokedAt":      nullTimeUTC(revokedAt),
+				"lastAcceptedAt": nullTimeUTC(lastAcceptedAt),
+				"lastAcceptedBy": nullTime2Any(lastAcceptedBy),
+				"invitedBy":      nullTime2Any(invitedBy),
+				"inviterName":    nullTime2Any(inviterName),
+				"status":         status,
+			})
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 func nullTime2Any(ns sql.NullString) any {
@@ -246,212 +236,205 @@ func validEmail(s string) bool {
 	return emailValidRe.MatchString(s)
 }
 
-func create(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		companyID := r.PathValue("id")
-		me, ok := requireCompanyAdmin(w, r, db, companyID)
-		if !ok {
-			return
-		}
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		strOf := func(k string) (string, bool) {
-			var v any
-			if json.Unmarshal(body[k], &v) != nil {
-				return "", false
-			}
-			s, isStr := v.(string)
-			if !isStr {
-				return "", false
-			}
-			return s, true
-		}
-		rawEmail, _ := strOf("email")
-		rawEmail = strings.TrimSpace(rawEmail)
-		var email any
-		if rawEmail != "" {
-			lower := strings.ToLower(rawEmail)
-			if !validEmail(lower) {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid email")
-				return
-			}
-			email = lower
-		}
-		role := "member"
-		if s, ok := strOf("role"); ok && (s == "member" || s == "admin") {
-			role = s
-		}
-		var note any
-		if s, ok := strOf("note"); ok {
-			t := strings.TrimSpace(httpx.UTF16Cap(s, 280))
-			if t != "" {
-				note = t
-			}
-		}
-		emailStr := ""
-		if s, ok := email.(string); ok {
-			emailStr = s
-		}
-		maxUses := inviteMaxLinkUses
-		if emailStr != "" {
-			maxUses = 1
-		} else if raw, ok := body["maxUses"]; ok {
-			var v any
-			if json.Unmarshal(raw, &v) == nil {
-				if f, isNum := v.(float64); isNum {
-					n := int(f)
-					if n < 1 {
-						n = 1
-					}
-					if n > inviteMaxLinkUses {
-						n = inviteMaxLinkUses
-					}
-					maxUses = n
-				}
-			}
-		}
-		if emailStr != "" {
-			var one int
-			if err := db.QueryRowContext(r.Context(), `
-				SELECT 1 FROM company_members cm
-				  JOIN users u ON u.id = cm.user_id
-				 WHERE cm.company_id = $1 AND LOWER(u.email) = $2 LIMIT 1`,
-				companyID, emailStr).Scan(&one); err == nil {
-				httpx.WriteError(w, http.StatusConflict, "that email is already a member of this team")
-				return
-			}
-			_, _ = db.ExecContext(r.Context(), `
-				UPDATE company_invitations SET revoked_at = NOW()
-				 WHERE company_id = $1 AND email = $2
-				   AND revoked_at IS NULL AND expires_at > NOW()
-				   AND use_count < max_uses`, companyID, emailStr)
-		}
-		tier := companyPlanTier(r.Context(), db, companyID)
-		var used int
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM company_members WHERE company_id = $1`, companyID).Scan(&used)
-		limit := tierHumans(tier)
-		remaining := limit - used
-		if remaining <= 0 {
-			httpx.WriteError(w, http.StatusForbidden,
-				fmt.Sprintf("%s tier teams can have at most %d human members", tier, limit))
-			return
-		}
-		if maxUses > remaining {
-			maxUses = remaining
-		}
-		token := generateInviteToken()
-		tokenHash := hashInviteToken(token)
-		expiresAt := time.Now().Add(inviteTTL)
-		if _, err := db.ExecContext(r.Context(), `
-			INSERT INTO company_invitations
-			  (token_hash, company_id, invited_by, email, role, note, max_uses, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			tokenHash, companyID, me, email, role, note, maxUses, expiresAt); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		noteDetail := any(nil)
-		if s, ok := note.(string); ok {
-			noteDetail = s
-		}
-		auditInvite(r.Context(), db, "invitation_create", me, companyID,
-			r.RemoteAddr, r.UserAgent(), map[string]any{"email": email, "role": role, "maxUses": maxUses, "note": noteDetail})
-		// F11:sendEmail 分支——email 锁定的邀请可代发信;RESEND_API_KEY
-		// 空时 provider 走 mock;失败只进 emailDelivery,不炸创建(邀请
-		// 行已落库,邀请人手上有 URL)。
-		sendEmail := false
-		if raw, has := body["sendEmail"]; has {
-			var v any
-			if json.Unmarshal(raw, &v) == nil {
-				if b, isBool := v.(bool); isBool {
-					sendEmail = b
-				}
-			}
-		}
-		var emailDelivery any
-		if sendEmail && emailStr != "" {
-			var inviterEmail, displayName string
-			inviterOK := db.QueryRowContext(r.Context(),
-				`SELECT email, display_name FROM users WHERE id = $1`, me).
-				Scan(&inviterEmail, &displayName) == nil
-			var companyName string
-			companyOK := db.QueryRowContext(r.Context(),
-				`SELECT name FROM companies WHERE id = $1`, companyID).Scan(&companyName) == nil
-			if inviterOK && companyOK {
-				inviterName := displayName
-				if inviterName == "" {
-					inviterName = inviterEmail
-				}
-				emailDelivery = sendInvitationEmail(r.Context(), db, invitationEmailArgs{
-					To: emailStr, InviterName: inviterName, InviterEmail: inviterEmail,
-					CompanyName: companyName, Role: role, Note: note, InviteURL: buildInviteURL(token),
-				})
-			} else {
-				emailDelivery = invitationEmailDelivery{Attempted: false, OK: false, Error: "inviter or company row missing", Skipped: nil}
-			}
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-			"id": tokenHash, "token": token, "url": buildInviteURL(token),
-			"email": email, "role": role, "note": note,
-			"maxUses": maxUses, "useCount": 0,
-			"createdAt": httpx.ISOms(time.Now()), "expiresAt": httpx.ISOms(expiresAt),
-			"status": "active", "emailDelivery": emailDelivery,
-		})
+func Create(db *sql.DB, w http.ResponseWriter, r *http.Request, id string) {
+	companyID := id
+	me, ok := requireCompanyAdmin(w, r, db, companyID)
+	if !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	strOf := func(k string) (string, bool) {
+		var v any
+		if json.Unmarshal(body[k], &v) != nil {
+			return "", false
+		}
+		s, isStr := v.(string)
+		if !isStr {
+			return "", false
+		}
+		return s, true
+	}
+	rawEmail, _ := strOf("email")
+	rawEmail = strings.TrimSpace(rawEmail)
+	var email any
+	if rawEmail != "" {
+		lower := strings.ToLower(rawEmail)
+		if !validEmail(lower) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid email")
+			return
+		}
+		email = lower
+	}
+	role := "member"
+	if s, ok := strOf("role"); ok && (s == "member" || s == "admin") {
+		role = s
+	}
+	var note any
+	if s, ok := strOf("note"); ok {
+		t := strings.TrimSpace(httpx.UTF16Cap(s, 280))
+		if t != "" {
+			note = t
+		}
+	}
+	emailStr := ""
+	if s, ok := email.(string); ok {
+		emailStr = s
+	}
+	maxUses := inviteMaxLinkUses
+	if emailStr != "" {
+		maxUses = 1
+	} else if raw, ok := body["maxUses"]; ok {
+		var v any
+		if json.Unmarshal(raw, &v) == nil {
+			if f, isNum := v.(float64); isNum {
+				n := int(f)
+				if n < 1 {
+					n = 1
+				}
+				if n > inviteMaxLinkUses {
+					n = inviteMaxLinkUses
+				}
+				maxUses = n
+			}
+		}
+	}
+	if emailStr != "" {
+		var one int
+		if err := db.QueryRowContext(r.Context(), `
+			SELECT 1 FROM company_members cm
+			  JOIN users u ON u.id = cm.user_id
+			 WHERE cm.company_id = $1 AND LOWER(u.email) = $2 LIMIT 1`,
+			companyID, emailStr).Scan(&one); err == nil {
+			httpx.WriteError(w, http.StatusConflict, "that email is already a member of this team")
+			return
+		}
+		_, _ = db.ExecContext(r.Context(), `
+			UPDATE company_invitations SET revoked_at = NOW()
+			 WHERE company_id = $1 AND email = $2
+			   AND revoked_at IS NULL AND expires_at > NOW()
+			   AND use_count < max_uses`, companyID, emailStr)
+	}
+	tier := companyPlanTier(r.Context(), db, companyID)
+	var used int
+	_ = db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM company_members WHERE company_id = $1`, companyID).Scan(&used)
+	limit := tierHumans(tier)
+	remaining := limit - used
+	if remaining <= 0 {
+		httpx.WriteError(w, http.StatusForbidden,
+			fmt.Sprintf("%s tier teams can have at most %d human members", tier, limit))
+		return
+	}
+	if maxUses > remaining {
+		maxUses = remaining
+	}
+	token := generateInviteToken()
+	tokenHash := hashInviteToken(token)
+	expiresAt := time.Now().Add(inviteTTL)
+	if _, err := db.ExecContext(r.Context(), `
+		INSERT INTO company_invitations
+		  (token_hash, company_id, invited_by, email, role, note, max_uses, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		tokenHash, companyID, me, email, role, note, maxUses, expiresAt); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	noteDetail := any(nil)
+	if s, ok := note.(string); ok {
+		noteDetail = s
+	}
+	auditInvite(r.Context(), db, "invitation_create", me, companyID,
+		r.RemoteAddr, r.UserAgent(), map[string]any{"email": email, "role": role, "maxUses": maxUses, "note": noteDetail})
+	// F11:sendEmail 分支——email 锁定的邀请可代发信;RESEND_API_KEY
+	// 空时 provider 走 mock;失败只进 emailDelivery,不炸创建(邀请
+	// 行已落库,邀请人手上有 URL)。
+	sendEmail := false
+	if raw, has := body["sendEmail"]; has {
+		var v any
+		if json.Unmarshal(raw, &v) == nil {
+			if b, isBool := v.(bool); isBool {
+				sendEmail = b
+			}
+		}
+	}
+	var emailDelivery any
+	if sendEmail && emailStr != "" {
+		var inviterEmail, displayName string
+		inviterOK := db.QueryRowContext(r.Context(),
+			`SELECT email, display_name FROM users WHERE id = $1`, me).
+			Scan(&inviterEmail, &displayName) == nil
+		var companyName string
+		companyOK := db.QueryRowContext(r.Context(),
+			`SELECT name FROM companies WHERE id = $1`, companyID).Scan(&companyName) == nil
+		if inviterOK && companyOK {
+			inviterName := displayName
+			if inviterName == "" {
+				inviterName = inviterEmail
+			}
+			emailDelivery = sendInvitationEmail(r.Context(), db, invitationEmailArgs{
+				To: emailStr, InviterName: inviterName, InviterEmail: inviterEmail,
+				CompanyName: companyName, Role: role, Note: note, InviteURL: buildInviteURL(token),
+			})
+		} else {
+			emailDelivery = invitationEmailDelivery{Attempted: false, OK: false, Error: "inviter or company row missing", Skipped: nil}
+		}
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"id": tokenHash, "token": token, "url": buildInviteURL(token),
+		"email": email, "role": role, "note": note,
+		"maxUses": maxUses, "useCount": 0,
+		"createdAt": httpx.ISOms(time.Now()), "expiresAt": httpx.ISOms(expiresAt),
+		"status": "active", "emailDelivery": emailDelivery,
+	})
 }
 
 /* ───────── revoke ───────── */
 
-func revoke(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		companyID := r.PathValue("id")
-		inviteID := r.PathValue("inviteId")
-		me, ok := requireCompanyAdmin(w, r, db, companyID)
-		if !ok {
-			return
-		}
-		res, err := db.ExecContext(r.Context(), `
-			UPDATE company_invitations SET revoked_at = NOW()
-			 WHERE token_hash = $1 AND company_id = $2 AND revoked_at IS NULL`, inviteID, companyID)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		revoked := false
-		if n, _ := res.RowsAffected(); n > 0 {
-			revoked = true
-			auditInvite(r.Context(), db, "invitation_revoke", me, companyID,
-				r.RemoteAddr, r.UserAgent(), map[string]any{"inviteId": inviteID})
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "revoked": revoked})
+func Revoke(db *sql.DB, w http.ResponseWriter, r *http.Request, id string, inviteId string) {
+	companyID := id
+	inviteID := inviteId
+	me, ok := requireCompanyAdmin(w, r, db, companyID)
+	if !ok {
+		return
 	}
+	res, err := db.ExecContext(r.Context(), `
+		UPDATE company_invitations SET revoked_at = NOW()
+		 WHERE token_hash = $1 AND company_id = $2 AND revoked_at IS NULL`, inviteID, companyID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	revoked := false
+	if n, _ := res.RowsAffected(); n > 0 {
+		revoked = true
+		auditInvite(r.Context(), db, "invitation_revoke", me, companyID,
+			r.RemoteAddr, r.UserAgent(), map[string]any{"inviteId": inviteID})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "revoked": revoked})
 }
 
 /* ───────── preview ───────── */
 
-func preview(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := r.PathValue("token")
-		if len(token) < 8 {
-			httpx.WriteError(w, http.StatusBadRequest, "bad token")
-			return
-		}
-		viewerEmail := ""
-		if uid, ok := httpx.UserID(r); ok && uid != "" {
-			var email string
-			if db.QueryRowContext(r.Context(), `SELECT email FROM users WHERE id = $1`, uid).Scan(&email) == nil {
-				viewerEmail = strings.ToLower(email)
-			}
-		}
-		invite, status := loadInvitation(r, db, token, viewerEmail)
-		// not_found 不带 invitation 键(TS 形状;评审 F9)。
-		if invite == nil {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status})
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status, "invitation": invite})
+func Preview(db *sql.DB, w http.ResponseWriter, r *http.Request, token string) {
+	if len(token) < 8 {
+		httpx.WriteError(w, http.StatusBadRequest, "bad token")
+		return
 	}
+	viewerEmail := ""
+	if uid, ok := httpx.UserID(r); ok && uid != "" {
+		var email string
+		if db.QueryRowContext(r.Context(), `SELECT email FROM users WHERE id = $1`, uid).Scan(&email) == nil {
+			viewerEmail = strings.ToLower(email)
+		}
+	}
+	invite, status := loadInvitation(r, db, token, viewerEmail)
+	// not_found 不带 invitation 键(TS 形状;评审 F9)。
+	if invite == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": status, "invitation": invite})
 }
 
 // loadInvitation:状态机 not_found/revoked/expired/consumed/already_member/
@@ -513,135 +496,132 @@ func loadInvitation(r *http.Request, db *sql.DB, token, viewerEmail string) (map
 
 /* ───────── accept ───────── */
 
-func accept(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, ok := requireAuth(w, r)
-		if !ok {
-			return
-		}
-		token := r.PathValue("token")
-		if len(token) < 8 {
-			httpx.WriteError(w, http.StatusBadRequest, "bad token")
-			return
-		}
-		tokenHash := hashInviteToken(token)
-		var email, displayName string
-		var avatarURL sql.NullString
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT email, display_name, avatar_url FROM users WHERE id = $1`, me).
-			Scan(&email, &displayName, &avatarURL); err != nil {
-			httpx.WriteError(w, http.StatusUnauthorized, "session points to missing user")
-			return
-		}
-		viewerEmail := strings.ToLower(email)
-		userAvatar := gravatarURL(email)
-		if avatarURL.Valid && avatarURL.String != "" {
-			userAvatar = avatarURL.String
-		}
-		// 事务:F OR UPDATE 防两单用邀请并发双赢。
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		rollback := func() { _ = tx.Rollback() }
-		var companyID, role string
-		var invEmail sql.NullString
-		var maxUses, useCount int
-		var expiresAt time.Time
-		var revokedAt sql.NullTime
-		err = tx.QueryRowContext(r.Context(), `
-			SELECT company_id, email, role, max_uses, use_count, expires_at, revoked_at
-			  FROM company_invitations WHERE token_hash = $1 FOR UPDATE`, tokenHash).
-			Scan(&companyID, &invEmail, &role, &maxUses, &useCount, &expiresAt, &revokedAt)
-		_ = revokedAt
-		if err == sql.ErrNoRows {
-			rollback()
-			httpx.WriteError(w, http.StatusNotFound, "invitation not found")
-			return
-		}
-		if err != nil {
-			rollback()
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		if revokedAt.Valid {
-			rollback()
-			httpx.WriteError(w, http.StatusGone, "invitation revoked")
-			return
-		}
-		if expiresAt.Before(time.Now()) {
-			rollback()
-			httpx.WriteError(w, http.StatusGone, "invitation expired")
-			return
-		}
-		if useCount >= maxUses {
-			rollback()
-			httpx.WriteError(w, http.StatusGone, "invitation already used")
-			return
-		}
-		if invEmail.Valid && strings.ToLower(invEmail.String) != viewerEmail {
-			rollback()
-			httpx.WriteError(w, http.StatusForbidden,
-				"this invitation is reserved for "+invEmail.String+" — sign in with that email to accept")
-			return
-		}
-		var one int
-		isMember := tx.QueryRowContext(r.Context(),
-			`SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
-			companyID, me).Scan(&one) == nil
-		if isMember {
-			rollback()
-			writeAcceptOK(w, r, db, companyID, me, true)
-			return
-		}
-		// 用户公司数 tier 限。
-		var tier string
-		_ = tx.QueryRowContext(r.Context(), `SELECT COALESCE(tier,'free') FROM users WHERE id=$1`, me).Scan(&tier)
-		var nCompanies int
-		_ = tx.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM company_members WHERE user_id = $1`, me).Scan(&nCompanies)
-		if nCompanies >= tierCompaniesPerUser(tier) {
-			rollback()
-			httpx.WriteError(w, http.StatusForbidden,
-				fmt.Sprintf("%s tier users can belong to at most %d companies", tier, tierCompaniesPerUser(tier)))
-			return
-		}
-		coTier := companyPlanTier(r.Context(), db, companyID)
-		var used int
-		_ = tx.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM company_members WHERE company_id = $1`, companyID).Scan(&used)
-		if used >= tierHumans(coTier) {
-			rollback()
-			httpx.WriteError(w, http.StatusForbidden,
-				fmt.Sprintf("%s tier teams can have at most %d human members", coTier, tierHumans(coTier)))
-			return
-		}
-		_, _ = tx.ExecContext(r.Context(), `
-			INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, $3)
-			ON CONFLICT (company_id, user_id) DO NOTHING`, companyID, me, role)
-		initial := strings.ToUpper(firstRune(displayName))
-		_, _ = tx.ExecContext(r.Context(), `
-			INSERT INTO participants (id, kind, name, role, initial, avatar_bg, avatar_url, status, company_id)
-			VALUES ($1, 'human', $2, NULL, $3, '#FF8870', $4, 'avail', $5)
-			ON CONFLICT (id, company_id) DO NOTHING`, me, displayName, initial, userAvatar, companyID)
-		_, _ = tx.ExecContext(r.Context(), `
-			UPDATE company_invitations
-			   SET use_count = use_count + 1, last_accepted_at = NOW(), last_accepted_by = $2
-			 WHERE token_hash = $1`, tokenHash, me)
-		if err := tx.Commit(); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		onboard.JoinAllHands(r.Context(), db, companyID, me)
-		seedMemberDms(r.Context(), db, companyID, me)
-		var invitedBy sql.NullString
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT invited_by FROM company_invitations WHERE token_hash = $1`, tokenHash).Scan(&invitedBy)
-		auditInvite(r.Context(), db, "invitation_accept", me, companyID,
-			r.RemoteAddr, r.UserAgent(), map[string]any{"role": role, "invitedBy": nullTime2Any(invitedBy)})
-		writeAcceptOK(w, r, db, companyID, me, false)
+func Accept(db *sql.DB, w http.ResponseWriter, r *http.Request, token string) {
+	me, ok := requireAuth(w, r)
+	if !ok {
+		return
 	}
+	if len(token) < 8 {
+		httpx.WriteError(w, http.StatusBadRequest, "bad token")
+		return
+	}
+	tokenHash := hashInviteToken(token)
+	var email, displayName string
+	var avatarURL sql.NullString
+	if err := db.QueryRowContext(r.Context(),
+		`SELECT email, display_name, avatar_url FROM users WHERE id = $1`, me).
+		Scan(&email, &displayName, &avatarURL); err != nil {
+		httpx.WriteError(w, http.StatusUnauthorized, "session points to missing user")
+		return
+	}
+	viewerEmail := strings.ToLower(email)
+	userAvatar := gravatarURL(email)
+	if avatarURL.Valid && avatarURL.String != "" {
+		userAvatar = avatarURL.String
+	}
+	// 事务:F OR UPDATE 防两单用邀请并发双赢。
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	rollback := func() { _ = tx.Rollback() }
+	var companyID, role string
+	var invEmail sql.NullString
+	var maxUses, useCount int
+	var expiresAt time.Time
+	var revokedAt sql.NullTime
+	err = tx.QueryRowContext(r.Context(), `
+		SELECT company_id, email, role, max_uses, use_count, expires_at, revoked_at
+		  FROM company_invitations WHERE token_hash = $1 FOR UPDATE`, tokenHash).
+		Scan(&companyID, &invEmail, &role, &maxUses, &useCount, &expiresAt, &revokedAt)
+	_ = revokedAt
+	if err == sql.ErrNoRows {
+		rollback()
+		httpx.WriteError(w, http.StatusNotFound, "invitation not found")
+		return
+	}
+	if err != nil {
+		rollback()
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if revokedAt.Valid {
+		rollback()
+		httpx.WriteError(w, http.StatusGone, "invitation revoked")
+		return
+	}
+	if expiresAt.Before(time.Now()) {
+		rollback()
+		httpx.WriteError(w, http.StatusGone, "invitation expired")
+		return
+	}
+	if useCount >= maxUses {
+		rollback()
+		httpx.WriteError(w, http.StatusGone, "invitation already used")
+		return
+	}
+	if invEmail.Valid && strings.ToLower(invEmail.String) != viewerEmail {
+		rollback()
+		httpx.WriteError(w, http.StatusForbidden,
+			"this invitation is reserved for "+invEmail.String+" — sign in with that email to accept")
+		return
+	}
+	var one int
+	isMember := tx.QueryRowContext(r.Context(),
+		`SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
+		companyID, me).Scan(&one) == nil
+	if isMember {
+		rollback()
+		writeAcceptOK(w, r, db, companyID, me, true)
+		return
+	}
+	// 用户公司数 tier 限。
+	var tier string
+	_ = tx.QueryRowContext(r.Context(), `SELECT COALESCE(tier,'free') FROM users WHERE id=$1`, me).Scan(&tier)
+	var nCompanies int
+	_ = tx.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM company_members WHERE user_id = $1`, me).Scan(&nCompanies)
+	if nCompanies >= tierCompaniesPerUser(tier) {
+		rollback()
+		httpx.WriteError(w, http.StatusForbidden,
+			fmt.Sprintf("%s tier users can belong to at most %d companies", tier, tierCompaniesPerUser(tier)))
+		return
+	}
+	coTier := companyPlanTier(r.Context(), db, companyID)
+	var used int
+	_ = tx.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM company_members WHERE company_id = $1`, companyID).Scan(&used)
+	if used >= tierHumans(coTier) {
+		rollback()
+		httpx.WriteError(w, http.StatusForbidden,
+			fmt.Sprintf("%s tier teams can have at most %d human members", coTier, tierHumans(coTier)))
+		return
+	}
+	_, _ = tx.ExecContext(r.Context(), `
+		INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, $3)
+		ON CONFLICT (company_id, user_id) DO NOTHING`, companyID, me, role)
+	initial := strings.ToUpper(firstRune(displayName))
+	_, _ = tx.ExecContext(r.Context(), `
+		INSERT INTO participants (id, kind, name, role, initial, avatar_bg, avatar_url, status, company_id)
+		VALUES ($1, 'human', $2, NULL, $3, '#FF8870', $4, 'avail', $5)
+		ON CONFLICT (id, company_id) DO NOTHING`, me, displayName, initial, userAvatar, companyID)
+	_, _ = tx.ExecContext(r.Context(), `
+		UPDATE company_invitations
+		   SET use_count = use_count + 1, last_accepted_at = NOW(), last_accepted_by = $2
+		 WHERE token_hash = $1`, tokenHash, me)
+	if err := tx.Commit(); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	onboard.JoinAllHands(r.Context(), db, companyID, me)
+	seedMemberDms(r.Context(), db, companyID, me)
+	var invitedBy sql.NullString
+	_ = db.QueryRowContext(r.Context(),
+		`SELECT invited_by FROM company_invitations WHERE token_hash = $1`, tokenHash).Scan(&invitedBy)
+	auditInvite(r.Context(), db, "invitation_accept", me, companyID,
+		r.RemoteAddr, r.UserAgent(), map[string]any{"role": role, "invitedBy": nullTime2Any(invitedBy)})
+	writeAcceptOK(w, r, db, companyID, me, false)
 }
 
 func writeAcceptOK(w http.ResponseWriter, r *http.Request, db *sql.DB, companyID, me string, already bool) {

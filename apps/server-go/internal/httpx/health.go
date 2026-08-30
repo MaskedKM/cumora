@@ -45,21 +45,34 @@ func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
 
 // MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)。
 // 形状对齐 TS baseline:{ok, ts(ms)};池耗尽时 1s 超时兜底返回确定性 503。
+// #187 批次 8:两 handler 导出为 Livez/Health(core tag 经 ServerInterface
+// 委托到此;根 mux 特定 pattern 优先于 /api/ 子树,绕过 auth 的既有
+// 语义不变 —— 单一函数体,双注册)。
 func MountHealth(mux *http.ServeMux, pool interface {
 	PingContext(ctx context.Context) error
 }) {
-	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, _ *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
+	mux.HandleFunc("GET /api/livez", Livez)
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		Health(pool, w, r)
 	})
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := pool.PingContext(ctx); err != nil {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
-	})
+}
+
+// Livez:无依赖活探。
+func Livez(w http.ResponseWriter, _ *http.Request) {
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
+}
+
+// Health:pg 探活;池耗尽时 1s 超时兜底返回确定性 503。
+func Health(pool interface {
+	PingContext(ctx context.Context) error
+}, w http.ResponseWriter, _ *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pool.PingContext(ctx); err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
 }
 
 // ISOms 对齐 JS Date.toISOString():恒为 UTC + 毫秒三位小数

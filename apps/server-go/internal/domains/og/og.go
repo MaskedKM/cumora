@@ -52,37 +52,34 @@ type ogError struct {
 
 func (e *ogError) Error() string { return e.msg }
 
-func Mount(mux *http.ServeMux, rdb *redis.Client) {
-	mux.HandleFunc("GET /api/og", handler(rdb))
-}
+// 原 handler 工厂的一次性构造(client/resolver)提为包级 var —— 保持
+// 跨请求共享连接池的既有语义(#187 批次 8)。
+var ogClient = &http.Client{Timeout: fetchTimeout}
+var ogResolver = net.DefaultResolver
 
-func handler(rdb *redis.Client) http.HandlerFunc {
-	client := &http.Client{Timeout: fetchTimeout}
-	resolver := net.DefaultResolver
-	return func(w http.ResponseWriter, r *http.Request) {
-		raw := r.URL.Query().Get("url")
-		if raw == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "url required")
-			return
-		}
-		result, err := preview(r.Context(), rdb, client, resolver, raw)
-		if err != nil {
-			if oe, ok := err.(*ogError); ok {
-				httpx.WriteError(w, oe.status, oe.msg)
-				return
-			}
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		// 5min 浏览器/CDN 缓存:同会话的兄弟客户端不重复打 Redis;
-		// Redis 仍持有 7 天服务端缓存。
-		w.Header().Set("Cache-Control", cacheHeader)
-		if result == nil {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"url": raw, "empty": true})
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, result)
+func Serve(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "url required")
+		return
 	}
+	result, err := preview(r.Context(), rdb, ogClient, ogResolver, raw)
+	if err != nil {
+		if oe, ok := err.(*ogError); ok {
+			httpx.WriteError(w, oe.status, oe.msg)
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	// 5min 浏览器/CDN 缓存:同会话的兄弟客户端不重复打 Redis;
+	// Redis 仍持有 7 天服务端缓存。
+	w.Header().Set("Cache-Control", cacheHeader)
+	if result == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"url": raw, "empty": true})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 func preview(ctx context.Context, rdb *redis.Client, client *http.Client, resolver *net.Resolver, rawURL string) (*Result, error) {

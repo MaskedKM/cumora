@@ -262,90 +262,89 @@ func resolveTrustedAppleEmail(linkedEmail, tokenEmail string, tokenEmailVerified
 // appleNative:POST /api/auth/apple/native —— 验 JWT、find-or-create、
 // 以 JSON 回会话 token(无浏览器重定向)。错误三态:waitlisted/suspended
 // → 403 携 email;其余(含验签失败)→ 400。对齐 router.ts 718–765。
-func appleNative(deps oauthDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			IdentityToken *string `json:"identityToken"`
-			Name          *string `json:"name"`
-			InviteToken   *string `json:"inviteToken"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.IdentityToken == nil || *body.IdentityToken == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "identityToken required")
-			return
-		}
-		ip := oauthClientIP(r)
-		ua := r.UserAgent()
-		claims, err := verifyAppleIdentityToken(r.Context(), *body.IdentityToken, []string{"io.cumora.app"})
-		if err == nil {
-			// 回头客不需要 email claim;首登只认签名 token 里已验证的
-			// email,绝不认请求体元数据。
-			var knownEmail sql.NullString
-			_ = deps.db.QueryRowContext(r.Context(),
-				`SELECT email_lower FROM user_identities WHERE provider = 'apple' AND provider_id = $1`,
-				claims.sub).Scan(&knownEmail)
-			var email string
-			email, err = resolveTrustedAppleEmail(knownEmail.String, claims.email, claims.emailVerified)
-			if err == nil {
-				// TS (fallbackName ?? email 邮箱前缀 ?? 'You').trim() || 'You'
-				// —— ?? 只认 null/undefined,空串名 trim 后落 'You'。
-				displayName := strings.SplitN(email, "@", 2)[0]
-				if body.Name != nil {
-					displayName = *body.Name
-				}
-				displayName = strings.TrimSpace(displayName)
-				if displayName == "" {
-					displayName = "You"
-				}
-				var inv *string
-				if body.InviteToken != nil && *body.InviteToken != "" {
-					inv = body.InviteToken
-				}
-				var result *oauthCompletion
-				result, err = oauthFindOrCreate(r.Context(), deps.db, "apple", &oauthProfile{
-					providerID: claims.sub, email: email, displayName: displayName, avatarURL: "",
-				}, inv)
-				if err == nil {
-					var token string
-					token, _, err = authn.CreateSession(r.Context(), deps.db, result.userID, ip, ua)
-					if err == nil {
-						oauthAudit(deps.db, "login", result.userID, result.companyID, ip, ua,
-							map[string]any{"provider": "apple", "email": result.email})
-						var companyID any // TS null 语义
-						if result.companyID != "" {
-							companyID = result.companyID
-						}
-						httpx.WriteJSON(w, http.StatusOK, map[string]any{
-							"token":     token,
-							"user":      map[string]any{"id": result.userID, "email": result.email, "displayName": result.displayName},
-							"companyId": companyID,
-						})
-						return
-					}
-				}
-			}
-		}
-		var wl *oauthWaitlistedError
-		if errors.As(err, &wl) {
-			oauthAudit(deps.db, "signup_waitlisted", "", "", ip, ua,
-				map[string]any{"provider": "apple", "email": wl.email})
-			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "waitlisted", "email": wl.email})
-			return
-		}
-		var su *oauthSuspendedError
-		if errors.As(err, &su) {
-			var reason any // TS reason null(无理由时)
-			if su.reason != "" {
-				reason = su.reason
-			}
-			oauthAudit(deps.db, "login_suspended", "", "", ip, ua,
-				map[string]any{"provider": "apple", "email": su.email, "reason": reason})
-			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "suspended", "email": su.email, "reason": reason})
-			return
-		}
-		log.Printf("[auth] apple native sign-in failed: %v", err)
-		// TS baseline:console.warn + 400 透传失败原因(登录面需要理由),
-		// 非 errorHandler 面 —— 不进 WriteInternalError。
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+func (s *Server) AuthAppleNative(w http.ResponseWriter, r *http.Request) {
+	deps := oauthDeps{db: s.DB, rdb: s.RDB}
+	var body struct {
+		IdentityToken *string `json:"identityToken"`
+		Name          *string `json:"name"`
+		InviteToken   *string `json:"inviteToken"`
 	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.IdentityToken == nil || *body.IdentityToken == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "identityToken required")
+		return
+	}
+	ip := oauthClientIP(r)
+	ua := r.UserAgent()
+	claims, err := verifyAppleIdentityToken(r.Context(), *body.IdentityToken, []string{"io.cumora.app"})
+	if err == nil {
+		// 回头客不需要 email claim;首登只认签名 token 里已验证的
+		// email,绝不认请求体元数据。
+		var knownEmail sql.NullString
+		_ = deps.db.QueryRowContext(r.Context(),
+			`SELECT email_lower FROM user_identities WHERE provider = 'apple' AND provider_id = $1`,
+			claims.sub).Scan(&knownEmail)
+		var email string
+		email, err = resolveTrustedAppleEmail(knownEmail.String, claims.email, claims.emailVerified)
+		if err == nil {
+			// TS (fallbackName ?? email 邮箱前缀 ?? 'You').trim() || 'You'
+			// —— ?? 只认 null/undefined,空串名 trim 后落 'You'。
+			displayName := strings.SplitN(email, "@", 2)[0]
+			if body.Name != nil {
+				displayName = *body.Name
+			}
+			displayName = strings.TrimSpace(displayName)
+			if displayName == "" {
+				displayName = "You"
+			}
+			var inv *string
+			if body.InviteToken != nil && *body.InviteToken != "" {
+				inv = body.InviteToken
+			}
+			var result *oauthCompletion
+			result, err = oauthFindOrCreate(r.Context(), deps.db, "apple", &oauthProfile{
+				providerID: claims.sub, email: email, displayName: displayName, avatarURL: "",
+			}, inv)
+			if err == nil {
+				var token string
+				token, _, err = authn.CreateSession(r.Context(), deps.db, result.userID, ip, ua)
+				if err == nil {
+					oauthAudit(deps.db, "login", result.userID, result.companyID, ip, ua,
+						map[string]any{"provider": "apple", "email": result.email})
+					var companyID any // TS null 语义
+					if result.companyID != "" {
+						companyID = result.companyID
+					}
+					httpx.WriteJSON(w, http.StatusOK, map[string]any{
+						"token":     token,
+						"user":      map[string]any{"id": result.userID, "email": result.email, "displayName": result.displayName},
+						"companyId": companyID,
+					})
+					return
+				}
+			}
+		}
+	}
+	var wl *oauthWaitlistedError
+	if errors.As(err, &wl) {
+		oauthAudit(deps.db, "signup_waitlisted", "", "", ip, ua,
+			map[string]any{"provider": "apple", "email": wl.email})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "waitlisted", "email": wl.email})
+		return
+	}
+	var su *oauthSuspendedError
+	if errors.As(err, &su) {
+		var reason any // TS reason null(无理由时)
+		if su.reason != "" {
+			reason = su.reason
+		}
+		oauthAudit(deps.db, "login_suspended", "", "", ip, ua,
+			map[string]any{"provider": "apple", "email": su.email, "reason": reason})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "suspended", "email": su.email, "reason": reason})
+		return
+	}
+	log.Printf("[auth] apple native sign-in failed: %v", err)
+	// TS baseline:console.warn + 400 透传失败原因(登录面需要理由),
+	// 非 errorHandler 面 —— 不进 WriteInternalError。
+	httpx.WriteError(w, http.StatusBadRequest, err.Error())
 }

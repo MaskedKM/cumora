@@ -29,6 +29,8 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
+
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
 )
 
 type oauthDeps struct {
@@ -737,86 +739,82 @@ func oauthClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func oauthStart(deps oauthDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		provider := r.PathValue("provider")
-		if provider != "google" && provider != "github" {
-			httpx.WriteError(w, http.StatusNotFound, "unknown provider")
-			return
-		}
-		if !oauthProviderEnabled(provider) {
-			httpx.WriteError(w, http.StatusServiceUnavailable, provider+" oauth not configured")
-			return
-		}
-		raw := r.URL.Query().Get("return")
-		if raw != "" && !oauthReturnURLAllowed(raw) {
-			httpx.WriteError(w, http.StatusBadRequest, "return URL not allowed")
-			return
-		}
-		var returnURL, inviteToken *string
-		if raw != "" {
-			returnURL = &raw
-		}
-		if inv := r.URL.Query().Get("invite"); len(inv) >= 8 && len(inv) <= 200 {
-			inviteToken = &inv
-		}
-		state, err := oauthCreateState(r.Context(), deps.rdb, provider, returnURL, inviteToken)
-		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "state mint failed")
-			return
-		}
-		http.Redirect(w, r, oauthAuthorizeURL(provider, state), http.StatusFound)
+func (s *Server) AuthStart(w http.ResponseWriter, r *http.Request, provider string, params contract.AuthStartParams) {
+	deps := oauthDeps{db: s.DB, rdb: s.RDB}
+	if provider != "google" && provider != "github" {
+		httpx.WriteError(w, http.StatusNotFound, "unknown provider")
+		return
 	}
+	if !oauthProviderEnabled(provider) {
+		httpx.WriteError(w, http.StatusServiceUnavailable, provider+" oauth not configured")
+		return
+	}
+	raw := r.URL.Query().Get("return")
+	if raw != "" && !oauthReturnURLAllowed(raw) {
+		httpx.WriteError(w, http.StatusBadRequest, "return URL not allowed")
+		return
+	}
+	var returnURL, inviteToken *string
+	if raw != "" {
+		returnURL = &raw
+	}
+	if inv := r.URL.Query().Get("invite"); len(inv) >= 8 && len(inv) <= 200 {
+		inviteToken = &inv
+	}
+	state, err := oauthCreateState(r.Context(), deps.rdb, provider, returnURL, inviteToken)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "state mint failed")
+		return
+	}
+	http.Redirect(w, r, oauthAuthorizeURL(provider, state), http.StatusFound)
 }
 
-func oauthCallback(deps oauthDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		provider := r.PathValue("provider")
-		if provider != "google" && provider != "github" {
-			httpx.WriteError(w, http.StatusNotFound, "unknown provider")
-			return
-		}
-		code := r.URL.Query().Get("code")
-		state := r.URL.Query().Get("state")
-		if code == "" || state == "" {
-			http.Redirect(w, r, oauthErrorURL("", "missing_code_or_state"), http.StatusFound)
-			return
-		}
-		ip := oauthClientIP(r)
-		ua := r.UserAgent()
-		claimed, err := oauthConsumeState(r.Context(), deps.rdb, state)
-		if err != nil {
-			// Redis 故障与业务错误同路:login_failed 审计(全文)+ #error=<截断>。
-			full := err.Error()
-			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
-			http.Redirect(w, r, oauthErrorURL("", oauthCut120(full)), http.StatusFound)
-			return
-		}
-		if claimed == nil || claimed.Provider != provider {
-			http.Redirect(w, r, oauthErrorURL("", "bad_state"), http.StatusFound)
-			return
-		}
-		var returnURL, inviteToken string
-		if claimed.ReturnURL != nil {
-			returnURL = *claimed.ReturnURL
-		}
-		if claimed.InviteToken != nil {
-			inviteToken = *claimed.InviteToken
-		}
-		var inv *string
-		if inviteToken != "" {
-			inv = &inviteToken
-		}
-		target, err := oauthHandleCallback(r.Context(), deps, provider, code, returnURL, ip, ua, inv)
-		if err != nil {
-			// TS:审计存全文,仅 URL 截 120(UTF-16 码元;Go 以 rune 近似)。
-			full := err.Error()
-			oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
-			http.Redirect(w, r, oauthErrorURL(returnURL, oauthCut120(full)), http.StatusFound)
-			return
-		}
-		http.Redirect(w, r, target, http.StatusFound)
+func (s *Server) AuthCallback(w http.ResponseWriter, r *http.Request, provider string) {
+	deps := oauthDeps{db: s.DB, rdb: s.RDB}
+	if provider != "google" && provider != "github" {
+		httpx.WriteError(w, http.StatusNotFound, "unknown provider")
+		return
 	}
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		http.Redirect(w, r, oauthErrorURL("", "missing_code_or_state"), http.StatusFound)
+		return
+	}
+	ip := oauthClientIP(r)
+	ua := r.UserAgent()
+	claimed, err := oauthConsumeState(r.Context(), deps.rdb, state)
+	if err != nil {
+		// Redis 故障与业务错误同路:login_failed 审计(全文)+ #error=<截断>。
+		full := err.Error()
+		oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
+		http.Redirect(w, r, oauthErrorURL("", oauthCut120(full)), http.StatusFound)
+		return
+	}
+	if claimed == nil || claimed.Provider != provider {
+		http.Redirect(w, r, oauthErrorURL("", "bad_state"), http.StatusFound)
+		return
+	}
+	var returnURL, inviteToken string
+	if claimed.ReturnURL != nil {
+		returnURL = *claimed.ReturnURL
+	}
+	if claimed.InviteToken != nil {
+		inviteToken = *claimed.InviteToken
+	}
+	var inv *string
+	if inviteToken != "" {
+		inv = &inviteToken
+	}
+	target, err := oauthHandleCallback(r.Context(), deps, provider, code, returnURL, ip, ua, inv)
+	if err != nil {
+		// TS:审计存全文,仅 URL 截 120(UTF-16 码元;Go 以 rune 近似)。
+		full := err.Error()
+		oauthAudit(deps.db, "login_failed", "", "", ip, ua, map[string]any{"provider": provider, "error": full})
+		http.Redirect(w, r, oauthErrorURL(returnURL, oauthCut120(full)), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // oauthCut120:重定向 URL 的错误文案截断 —— TS slice(0,120) 按 UTF-16

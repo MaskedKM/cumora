@@ -33,10 +33,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
-	ogdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/og"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
 	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
@@ -155,7 +152,6 @@ func main() {
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
 	core.Mount(coreRouter, pool, rdb)
-	ogdomain.Mount(coreRouter, rdb) // og 预览代理(#122):Redis 缓存
 	conversations.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
 	workspaces.Mount(coreRouter, pool)
@@ -169,7 +165,6 @@ func main() {
 	// 事件、纯 agent 房偷看;头像钩子经 domagents 注入 runtime 面)。
 	uploads.Mount(coreRouter, pool)
 	projects.Mount(coreRouter, pool)
-	search.Mount(coreRouter, pool)
 	domagents.Mount(coreRouter, pool,
 		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
 		runtimeSvc.GenerateAgentAvatar)
@@ -179,7 +174,6 @@ func main() {
 	admin.Mount(coreRouter, pool)
 	computers.StartSweepWorker(ctxBoot, pool)
 
-	invitations.Mount(coreRouter, pool)
 	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
 	// 回读/回归/摩擦,16 路由。
 	shipping.Mount(coreRouter, pool)

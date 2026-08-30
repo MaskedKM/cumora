@@ -175,213 +175,222 @@ func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "duplicate key")
 }
 
-// MountInbound 挂 /webhooks/email/inbound(不在 /api 认证链内,自有 HMAC 面)。
-func MountInbound(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("POST /webhooks/email/inbound", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		sig := r.Header.Get("x-cumora-signature")
-		if sig == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
-			return
+// InboundWebhook:/webhooks/email/inbound 的域实现(#187 批次 8 起
+// core tag 经 ServerInterface 委托到此;根 mux 的 MountInbound 同挂
+// 本函数 —— 单一函数体,双注册)。
+func InboundWebhook(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sig := r.Header.Get("x-cumora-signature")
+	if sig == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
+		return
+	}
+	if os.Getenv("EMAIL_INBOUND_HMAC_SECRET") == "" {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "inbound email disabled (EMAIL_INBOUND_HMAC_SECRET unset)")
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, inboundMaxBody+1))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
+		return
+	}
+	if len(raw) > inboundMaxBody {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request entity too large")
+		return
+	}
+	if len(raw) == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
+		return
+	}
+	if !verifySignature(raw, sig) {
+		httpx.WriteError(w, http.StatusUnauthorized, "bad signature")
+		return
+	}
+	var payload inboundPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "bad payload — need messageId + from")
+		return
+	}
+	fromAddr, fromName, ok := core.ParseAddress(payload.From)
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "unparseable from: "+payload.From)
+		return
+	}
+	type rcpt struct{ addr, name string }
+	recipients := []rcpt{}
+	for _, s := range append(append([]string{}, payload.To...), payload.CC...) {
+		if a, n, ok2 := core.ParseAddress(s); ok2 {
+			recipients = append(recipients, rcpt{a, n})
 		}
-		if os.Getenv("EMAIL_INBOUND_HMAC_SECRET") == "" {
-			httpx.WriteError(w, http.StatusServiceUnavailable, "inbound email disabled (EMAIL_INBOUND_HMAC_SECRET unset)")
-			return
-		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, inboundMaxBody+1))
-		if err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
-			return
-		}
-		if len(raw) > inboundMaxBody {
-			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request entity too large")
-			return
-		}
-		if len(raw) == 0 {
-			httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
-			return
-		}
-		if !verifySignature(raw, sig) {
-			httpx.WriteError(w, http.StatusUnauthorized, "bad signature")
-			return
-		}
-		var payload inboundPayload
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "bad payload — need messageId + from")
-			return
-		}
-		fromAddr, fromName, ok := core.ParseAddress(payload.From)
-		if !ok {
-			httpx.WriteError(w, http.StatusBadRequest, "unparseable from: "+payload.From)
-			return
-		}
-		type rcpt struct{ addr, name string }
-		recipients := []rcpt{}
-		for _, s := range append(append([]string{}, payload.To...), payload.CC...) {
-			if a, n, ok2 := core.ParseAddress(s); ok2 {
-				recipients = append(recipients, rcpt{a, n})
-			}
-		}
-		if len(recipients) == 0 {
-			httpx.WriteError(w, http.StatusBadRequest, "no recipients")
-			return
-		}
-		subject := strings.TrimSpace(payload.Subject)
-		body := strings.TrimSpace(payload.Text)
-		var html string
-		if payload.HTML != nil {
-			html = *payload.HTML
-		}
-		if body == "" {
-			body = stripHtml(html)
-		}
-		messageIDNorm := core.NormalizeMessageId(payload.MessageID)
-		if messageIDNorm == "" {
-			// TS:typeof '' === 'string' 过载荷检查,到 normalize 才拒
-			httpx.WriteError(w, http.StatusBadRequest, "invalid messageId")
-			return
-		}
-		// 幂等:同 Message-ID 重投不建重复线程。
-		var dupID string
-		if db.QueryRowContext(ctx,
-			`SELECT message_id FROM email_messages WHERE LOWER(smtp_message_id) = $1 LIMIT 1`,
-			messageIDNorm).Scan(&dupID) == nil {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deduplicated": true, "messageId": dupID})
-			return
-		}
-		// 回声去重:SES 改写 Message-ID 时,10 分钟内同 (from,to,subject)
-		// 的出站行即为我们刚发的那封。
-		subjectKey := subject
-		if subjectKey == "" {
-			subjectKey = "(no subject)"
-		}
-		fromFull := core.FormatAddress(fromAddr, fromName)
-		inboundToJSON := marshalNoEscape(payload.To)
-		var echoID string
-		if db.QueryRowContext(ctx, `
+	}
+	if len(recipients) == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "no recipients")
+		return
+	}
+	subject := strings.TrimSpace(payload.Subject)
+	body := strings.TrimSpace(payload.Text)
+	var html string
+	if payload.HTML != nil {
+		html = *payload.HTML
+	}
+	if body == "" {
+		body = stripHtml(html)
+	}
+	messageIDNorm := core.NormalizeMessageId(payload.MessageID)
+	if messageIDNorm == "" {
+		// TS:typeof '' === 'string' 过载荷检查,到 normalize 才拒
+		httpx.WriteError(w, http.StatusBadRequest, "invalid messageId")
+		return
+	}
+	// 幂等:同 Message-ID 重投不建重复线程。
+	var dupID string
+	if db.QueryRowContext(ctx,
+		`SELECT message_id FROM email_messages WHERE LOWER(smtp_message_id) = $1 LIMIT 1`,
+		messageIDNorm).Scan(&dupID) == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deduplicated": true, "messageId": dupID})
+		return
+	}
+	// 回声去重:SES 改写 Message-ID 时,10 分钟内同 (from,to,subject)
+	// 的出站行即为我们刚发的那封。
+	subjectKey := subject
+	if subjectKey == "" {
+		subjectKey = "(no subject)"
+	}
+	fromFull := core.FormatAddress(fromAddr, fromName)
+	inboundToJSON := marshalNoEscape(payload.To)
+	var echoID string
+	if db.QueryRowContext(ctx, `
 			SELECT message_id FROM email_messages
 			 WHERE direction = 'out' AND created_at > NOW() - INTERVAL '10 minutes'
 			   AND LOWER(subject) = LOWER($1)
 			   AND LOWER(from_addr) = LOWER($2)
 			   AND LOWER(to_addrs::text) = LOWER($3)
 			 ORDER BY created_at DESC LIMIT 1`,
-			subjectKey, fromFull, string(inboundToJSON)).Scan(&echoID) == nil {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deduplicated": true, "echo": true, "messageId": echoID})
-			return
+		subjectKey, fromFull, string(inboundToJSON)).Scan(&echoID) == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deduplicated": true, "echo": true, "messageId": echoID})
+		return
+	}
+	// 附件:一次上传,逐收件人共享 storage key。
+	type uploaded struct {
+		filename  string
+		mimeType  string
+		sizeBytes int64
+		key       *string
+		truncated bool
+	}
+	uploads := []uploaded{}
+	for _, a := range payload.Attachments {
+		// TS inbound-email.ts:326-327 `.slice(0, 200/120)` 按 UTF-16
+		// 码元(#185 评审 P2:出站点已换,入站孪生点补齐)。
+		filename := a.Filename
+		if filename == "" {
+			filename = "attachment"
 		}
-		// 附件:一次上传,逐收件人共享 storage key。
-		type uploaded struct {
-			filename  string
-			mimeType  string
-			sizeBytes int64
-			key       *string
-			truncated bool
+		filename = httpx.UTF16Cap(filename, 200)
+		mimeType := a.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
 		}
-		uploads := []uploaded{}
-		for _, a := range payload.Attachments {
-			// TS inbound-email.ts:326-327 `.slice(0, 200/120)` 按 UTF-16
-			// 码元(#185 评审 P2:出站点已换,入站孪生点补齐)。
-			filename := a.Filename
-			if filename == "" {
-				filename = "attachment"
-			}
-			filename = httpx.UTF16Cap(filename, 200)
-			mimeType := a.MimeType
-			if mimeType == "" {
-				mimeType = "application/octet-stream"
-			}
-			mimeType = httpx.UTF16Cap(mimeType, 120)
-			size := a.SizeBytes
-			if size < 0 {
-				size = 0
-			}
-			if a.Truncated || a.ContentBase64 == "" {
-				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
-				continue
-			}
-			bytes, err := base64Decode(a.ContentBase64)
-			if err != nil {
-				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
-				continue
-			}
-			ext := ""
-			if i := strings.LastIndex(filename, "."); i > 0 {
-				ext = extSanRe.ReplaceAllString(strings.ToLower(filename[i+1:]), "")
-				if len(ext) > 8 {
-					ext = ext[:8]
-				}
-			}
-			b := make([]byte, 16)
-			_, _ = rand.Read(b)
-			key := "email-attachments/" + hex.EncodeToString(b)
-			if ext != "" {
-				key += "." + ext
-			}
-			if err := putAttachment(key, bytes, mimeType); err != nil {
-				uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
-				continue
-			}
-			uploads = append(uploads, uploaded{filename, mimeType, size, &key, false})
+		mimeType = httpx.UTF16Cap(mimeType, 120)
+		size := a.SizeBytes
+		if size < 0 {
+			size = 0
 		}
-		// 扇出:每个可解析到租户的收件人一条投递。
-		type delivery struct {
-			CompanyID      string `json:"companyId"`
-			ConversationID string `json:"conversationId"`
-			MessageID      string `json:"messageId"`
+		if a.Truncated || a.ContentBase64 == "" {
+			uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
+			continue
 		}
-		inserts := []delivery{}
-		for _, rc := range recipients {
-			companyID, _, _, _, resolved := resolveInboundRecipient(ctx, db, rc.addr)
-			if !resolved {
-				continue
+		bytes, err := base64Decode(a.ContentBase64)
+		if err != nil {
+			uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
+			continue
+		}
+		ext := ""
+		if i := strings.LastIndex(filename, "."); i > 0 {
+			ext = extSanRe.ReplaceAllString(strings.ToLower(filename[i+1:]), "")
+			if len(ext) > 8 {
+				ext = ext[:8]
 			}
-			senderID, _ := resolveSender(ctx, db, fromAddr, fromName, companyID)
-			memberIDs := []string{senderID} // TS:new Set([sender, ...]) 保插入序
-			seenMember := map[string]bool{senderID: true}
-			for _, r2 := range recipients {
-				if c2, pid2, _, _, ok2 := resolveInboundRecipient(ctx, db, r2.addr); ok2 && c2 == companyID && !seenMember[pid2] {
-					seenMember[pid2] = true
-					memberIDs = append(memberIDs, pid2)
-				}
+		}
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		key := "email-attachments/" + hex.EncodeToString(b)
+		if ext != "" {
+			key += "." + ext
+		}
+		if err := putAttachment(key, bytes, mimeType); err != nil {
+			uploads = append(uploads, uploaded{filename, mimeType, size, nil, true})
+			continue
+		}
+		uploads = append(uploads, uploaded{filename, mimeType, size, &key, false})
+	}
+	// 扇出:每个可解析到租户的收件人一条投递。
+	type delivery struct {
+		CompanyID      string `json:"companyId"`
+		ConversationID string `json:"conversationId"`
+		MessageID      string `json:"messageId"`
+	}
+	inserts := []delivery{}
+	for _, rc := range recipients {
+		companyID, _, _, _, resolved := resolveInboundRecipient(ctx, db, rc.addr)
+		if !resolved {
+			continue
+		}
+		senderID, _ := resolveSender(ctx, db, fromAddr, fromName, companyID)
+		memberIDs := []string{senderID} // TS:new Set([sender, ...]) 保插入序
+		seenMember := map[string]bool{senderID: true}
+		for _, r2 := range recipients {
+			if c2, pid2, _, _, ok2 := resolveInboundRecipient(ctx, db, r2.addr); ok2 && c2 == companyID && !seenMember[pid2] {
+				seenMember[pid2] = true
+				memberIDs = append(memberIDs, pid2)
 			}
-			var inReplyTo string
-			if payload.InReplyTo != nil {
-				inReplyTo = *payload.InReplyTo
-			}
-			convID, _, err := core.FindOrCreateEmailConversation(ctx, db, companyID, inReplyTo, payload.References, subjectKey, memberIDs)
-			if err != nil {
-				continue
-			}
-			atts := []core.PersistAttachment{}
-			for _, u := range uploads {
-				atts = append(atts, core.PersistAttachment{
-					Filename: u.filename, MimeType: u.mimeType, SizeBytes: u.sizeBytes,
-					StorageKey: u.key, Truncated: u.truncated,
-				})
-			}
-			persistedID, _, err := core.PersistEmailMessage(ctx, db, core.PersistArgs{
-				ConversationID: convID, CompanyID: companyID, AuthorID: senderID,
-				Direction: "in", TransportStatus: "received",
-				SmtpMessageID: messageIDNorm, InReplyTo: inReplyTo,
-				References: payload.References, Subject: subjectKey,
-				FromAddr: fromFull, ToAddrs: payload.To, CCAddrs: payload.CC,
-				Body: body, HTML: html, RawSizeBytes: payload.RawSizeBytes,
-				AutoSubmitted: payload.AutoSubmitted != nil, // TS Boolean(payload.autoSubmitted):"no" 亦真
-				Attachments:   atts,
+		}
+		var inReplyTo string
+		if payload.InReplyTo != nil {
+			inReplyTo = *payload.InReplyTo
+		}
+		convID, _, err := core.FindOrCreateEmailConversation(ctx, db, companyID, inReplyTo, payload.References, subjectKey, memberIDs)
+		if err != nil {
+			continue
+		}
+		atts := []core.PersistAttachment{}
+		for _, u := range uploads {
+			atts = append(atts, core.PersistAttachment{
+				Filename: u.filename, MimeType: u.mimeType, SizeBytes: u.sizeBytes,
+				StorageKey: u.key, Truncated: u.truncated,
 			})
-			if err != nil {
-				if isUniqueViolation(err) {
-					continue // 双 worker 并发同投:竞态 dedup
-				}
-				continue
+		}
+		persistedID, _, err := core.PersistEmailMessage(ctx, db, core.PersistArgs{
+			ConversationID: convID, CompanyID: companyID, AuthorID: senderID,
+			Direction: "in", TransportStatus: "received",
+			SmtpMessageID: messageIDNorm, InReplyTo: inReplyTo,
+			References: payload.References, Subject: subjectKey,
+			FromAddr: fromFull, ToAddrs: payload.To, CCAddrs: payload.CC,
+			Body: body, HTML: html, RawSizeBytes: payload.RawSizeBytes,
+			AutoSubmitted: payload.AutoSubmitted != nil, // TS Boolean(payload.autoSubmitted):"no" 亦真
+			Attachments:   atts,
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				continue // 双 worker 并发同投:竞态 dedup
 			}
-			inserts = append(inserts, delivery{companyID, convID, persistedID})
+			continue
 		}
-		if len(inserts) == 0 {
-			httpx.WriteError(w, http.StatusNotFound, "no recipient resolved to a known agent")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deliveries": inserts})
+		inserts = append(inserts, delivery{companyID, convID, persistedID})
+	}
+	if len(inserts) == 0 {
+		httpx.WriteError(w, http.StatusNotFound, "no recipient resolved to a known agent")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deliveries": inserts})
+}
+
+// MountInbound 挂 /webhooks/email/inbound(不在 /api 认证链内,自有
+// HMAC 面;根 mux 特定 pattern 优先于 /api/ 子树)。core tag 的接口
+// 方法亦委托 InboundWebhook —— 单一函数体,双注册。
+func MountInbound(mux *http.ServeMux, db *sql.DB) {
+	mux.HandleFunc("POST /webhooks/email/inbound", func(w http.ResponseWriter, r *http.Request) {
+		InboundWebhook(db, w, r)
 	})
 }
 
