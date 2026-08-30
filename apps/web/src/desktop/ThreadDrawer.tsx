@@ -16,7 +16,7 @@ import { useMessages } from '@/stores/messages'
 import { useParticipants } from '@/stores/participants'
 import { api, type ApiMessage } from '@/api/client'
 import { MessageRow } from '@/components/Message'
-import { Composer } from '@/desktop/ChatPane'
+import { Composer } from './Composer'
 import type { Message, Participant } from '@/types'
 import { useT } from '@/lib/i18n'
 
