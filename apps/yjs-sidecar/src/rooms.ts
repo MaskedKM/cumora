@@ -6,13 +6,15 @@
  * last subscriber detaches we keep the room around for a short grace
  * window so a refresh / quick re-open doesn't pay the cold-load cost.
  *
- * Persistence is append-only: every Y.Doc 'update' event is written to
- * `document_updates`. A periodic compaction merges the log into a single
- * `document_snapshots` row; the next cold load reads the snapshot + any
- * tail updates. The room manager subscribes to a Redis channel so two
- * different server instances can fan an update out to each other and
- * stay convergent — Yjs updates are CRDTs, applying the same update
- * twice is a no-op.
+ * Persistence is append-only: Y.Doc 'update' events are coalesced into a
+ * short per-room window (#145) and written to `document_updates` as one
+ * merged row per origin — 同进程订阅者仍逐帧即时扇出(内存调用,协同
+ * 延迟不回退),合的只有 DB INSERT 与跨实例 Redis publish. A periodic
+ * compaction merges the log into a single `document_snapshots` row; the
+ * next cold load reads the snapshot + any tail updates. The room manager
+ * subscribes to a Redis channel so two different server instances can fan
+ * an update out to each other and stay convergent — Yjs updates are CRDTs,
+ * applying the same update twice is a no-op.
  */
 import * as Y from 'yjs'
 import { pool } from './infra/pool.js'
@@ -56,10 +58,28 @@ interface Room {
   /** Marked true after the doc is hydrated from DB; flips OFF doc.on('update')
    *  persistence to skip writing replays back into the log. */
   hydrated: boolean
+  /** #145 合帧:窗口内按 authorId 分组攒批的待落库 update。 */
+  pending: Map<string, PendingOrigin>
+  pendingTotal: number
+  flushTimer: NodeJS.Timeout | null
+}
+
+/** One author's pending batch — merged incrementally so the flush is a
+ *  single persistUpdate + publish. Keyed by authorId: the rooms layer
+ *  resolves object origins to INSTANCE_ORIGIN (per-connection originId
+ *  only lives in the WS bridge), so authorId is the finest real grouping
+ *  — one row per author keeps 归属不失真. `originId` rides along for the
+ *  publish envelope, preserving today's wire shape. */
+interface PendingOrigin {
+  originId: string
+  authorId: string
+  merged: Uint8Array
 }
 
 const COMPACT_AFTER_UPDATES = 200
 const ROOM_GRACE_MS = 60_000
+const FLUSH_WINDOW_MS = env.YJS_FLUSH_WINDOW_MS
+const FLUSH_MAX_PENDING = env.YJS_FLUSH_MAX_PENDING
 
 const rooms = new Map<string, Room>()
 /** Pending eviction timers, keyed by documentId — cleared when a fresh
@@ -136,6 +156,73 @@ async function maybeCompact(room: Room): Promise<void> {
   room.updatesSinceSnapshot = 0
 }
 
+/** #145 合帧:窗口内到达的 update 按 authorId 分组、增量合并;窗口到点
+ *  或攒满 FLUSH_MAX_PENDING 帧时 flush —— 每作者一次 persistUpdate +
+ *  一次跨实例 publish。同进程 subs 扇出在上游已逐帧完成,不经过这里。 */
+function queuePending(room: Room, originId: string, authorId: string, update: Uint8Array): void {
+  const existing = room.pending.get(authorId)
+  if (existing) {
+    existing.merged = Y.mergeUpdates([existing.merged, update])
+  } else {
+    room.pending.set(authorId, { originId, authorId, merged: update })
+  }
+  room.pendingTotal += 1
+  if (room.pendingTotal >= FLUSH_MAX_PENDING) {
+    flushPending(room)
+    return
+  }
+  if (room.flushTimer == null) {
+    room.flushTimer = setTimeout(() => flushPending(room), FLUSH_WINDOW_MS)
+  }
+}
+
+/** Drain a room's pending batches. Returns the in-flight work so callers
+ *  can either fire-and-forget (timer/cap/eviction) or await it (shutdown). */
+function flushPendingNow(room: Room): Array<Promise<void>> {
+  if (room.flushTimer != null) {
+    clearTimeout(room.flushTimer)
+    room.flushTimer = null
+  }
+  const entries = [...room.pending.entries()]
+  room.pending.clear()
+  room.pendingTotal = 0
+  const work: Array<Promise<void>> = []
+  for (const [, batch] of entries) {
+    work.push(
+      persistUpdate(room.documentId, batch.authorId, batch.merged).catch((e) => {
+        console.warn('[docs] persistUpdate failed', e)
+      }),
+    )
+    work.push(
+      publish(CH_DOC_UPDATE, {
+        type: 'doc.update',
+        companyId: room.companyId,
+        documentId: room.documentId,
+        updateB64: Buffer.from(batch.merged).toString('base64'),
+        originId: batch.originId,
+        authorId: batch.authorId,
+      }).catch(() => { /* swallow */ }),
+    )
+  }
+  if (entries.length > 0) {
+    work.push(maybeCompact(room).catch((e) => console.warn('[docs] compact failed', e)))
+  }
+  return work
+}
+
+function flushPending(room: Room): void {
+  void Promise.allSettled(flushPendingNow(room))
+}
+
+/** 进程关停前把所有房间的待落库批次刷进 pg(main.ts 的 shutdown 调用)。 */
+export async function flushAllPending(): Promise<void> {
+  const work: Array<Promise<void>> = []
+  for (const room of rooms.values()) {
+    work.push(...flushPendingNow(room))
+  }
+  await Promise.allSettled(work)
+}
+
 async function hydrateDoc(documentId: string, doc: Y.Doc): Promise<void> {
   const snap = await loadSnapshot(documentId)
   if (snap.state) Y.applyUpdate(doc, snap.state, 'hydrate')
@@ -169,6 +256,9 @@ async function getOrCreateRoom(documentId: string, companyId: string): Promise<R
     updatesSinceSnapshot: 0,
     hydrated: false,
     loaded: Promise.resolve(),
+    pending: new Map(),
+    pendingTotal: 0,
+    flushTimer: null,
   }
   rooms.set(roomKey(documentId), room)
 
@@ -198,21 +288,12 @@ async function getOrCreateRoom(documentId: string, companyId: string): Promise<R
       }
 
       // Persist + fan-out unless this update arrived FROM another instance
-      // (it's already persisted there + already on the bus).
+      // (it's already persisted there + already on the bus). #145: local
+      // subs above got their per-frame copy already; the expensive legs
+      // (DB INSERT + cross-instance publish) go through the batch window.
       if (!isRemote) {
         room.updatesSinceSnapshot += 1
-        void persistUpdate(documentId, authorId, update).catch((e) => {
-          console.warn('[docs] persistUpdate failed', e)
-        })
-        void publish(CH_DOC_UPDATE, {
-          type: 'doc.update',
-          companyId: room.companyId,
-          documentId,
-          updateB64: Buffer.from(update).toString('base64'),
-          originId,
-          authorId,
-        }).catch(() => { /* swallow */ })
-        void maybeCompact(room).catch((e) => console.warn('[docs] compact failed', e))
+        queuePending(room, originId, authorId, update)
       }
     })
     normalizeMarkdownImageParagraphs(doc, pmFragment(doc), { originId: 'system:doc-image-normalize', authorId: 'system' })
@@ -243,8 +324,12 @@ export function unsubscribe(documentId: string, sub: DocSubscriber): void {
   if (room.subs.size === 0) {
     // Schedule an eviction so flapping reconnects don't churn cold loads.
     const t = setTimeout(() => {
-      const stillEmpty = (rooms.get(roomKey(documentId))?.subs.size ?? 0) === 0
-      if (stillEmpty) {
+      const current = rooms.get(roomKey(documentId))
+      const stillEmpty = (current?.subs.size ?? 0) === 0
+      if (stillEmpty && current) {
+        // 房间对象即将从 map 摘除 —— 待落库批次必须先出发(fire-and-forget
+        // 即可:persist 只需要 documentId/authorId/bytes,不依赖房间存活)。
+        flushPending(current)
         rooms.delete(roomKey(documentId))
         evictions.delete(documentId)
       }

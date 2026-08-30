@@ -19,6 +19,10 @@ export const env = {
   INSTANCE_ID: process.env.INSTANCE_ID ?? '',
   YJS_SIDECAR_TOKEN: process.env.YJS_SIDECAR_TOKEN ?? '',
   YJS_SIDECAR_PORT: Number(process.env.YJS_SIDECAR_PORT ?? 5183),
+  // #145 合帧窗口:同房间 update 攒批后合并落库+跨实例 publish。
+  // 窗口毫秒数与触发上限(原始 update 计数),测试经 env 缩短。
+  YJS_FLUSH_WINDOW_MS: Number(process.env.YJS_FLUSH_WINDOW_MS ?? 150),
+  YJS_FLUSH_MAX_PENDING: Number(process.env.YJS_FLUSH_MAX_PENDING ?? 32),
   // redis.ts 消费(pod 形态懒连接)
   CUMORA_RUNTIME_CLIENT: process.env.CUMORA_RUNTIME_CLIENT ?? '',
   // storage.ts 消费(文档快照/内联图片附件;R2 全空=本地 FS 模式)
