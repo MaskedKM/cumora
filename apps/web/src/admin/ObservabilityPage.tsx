@@ -34,6 +34,15 @@ import { Select } from '@/components/Select'
 import { Combobox } from '@/components/Combobox'
 import { useLocale, useT, tLabel, type MessageKey } from '@/lib/i18n'
 import {
+  fmtUsdCompact as fmtUsd,
+  fmtTokens,
+  fmtPct,
+  fmtInt,
+  cacheHitRate,
+  relativeTimeParts,
+} from '@/lib/format'
+import { usePollingRefresh } from '@/lib/usePollingRefresh'
+import {
   adminApi,
   type LlmCallPurpose,
   type LlmCallRow,
@@ -124,25 +133,8 @@ function metaFor(p: LlmCallPurpose | string): PurposeMeta {
   return m ?? { label: p, blurb: '', swatch: FALLBACK_SWATCH }
 }
 
-// ─── Formatters ──────────────────────────────────────────────────────────
-
-const fmtUsd = (n: number, places = 2): string => {
-  // Tight format: $1.23, $12.4K, $1.23M. Trying to read raw 9-digit
-  // numbers in a hero card is hostile.
-  if (!Number.isFinite(n)) return '$0'
-  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`
-  if (Math.abs(n) >= 1_000)     return `$${(n / 1_000).toFixed(1)}K`
-  return `$${n.toFixed(places)}`
-}
-const fmtTokens = (n: number): string => {
-  if (!Number.isFinite(n)) return '0'
-  if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`
-  if (Math.abs(n) >= 1_000_000)     return `${(n / 1_000_000).toFixed(2)}M`
-  if (Math.abs(n) >= 1_000)         return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
-}
-const fmtInt = (n: number): string => n.toLocaleString('en-US')
-const fmtPct = (n: number, places = 1): string => `${(n * 100).toFixed(places)}%`
+// ─── Formatters(#147 ②:与 desktop/ObservabilityView 共享 @/lib/format,
+// 本页用紧凑 $ 档位语体;import 重命名维持百处调用点零改动) ─────────
 
 // ─── Unit: $ vs tokens ───────────────────────────────────────────────────
 //
@@ -295,13 +287,10 @@ export function ObservabilityPage() {
     return () => { cancelled = true }
   }, [sinceDays, modelFilter, companyFilter, refreshTick])
 
-  // Auto-refresh: while a non-zero interval is selected, force a fresh re-fetch
-  // on that cadence. Cleared/reset whenever the interval changes.
-  useEffect(() => {
-    if (!autoRefreshMs) return
-    const id = setInterval(() => triggerRefresh(), autoRefreshMs)
-    return () => clearInterval(id)
-  }, [autoRefreshMs])
+  // Auto-refresh: while a non-zero interval is selected, force a fresh
+  // re-fetch on that cadence. 共享 hook(#147 ②)—— 本页顺带采纳后台 tab
+  // 暂停(desktop 侧既有实践:看不见的面板不烧 API/电池)。
+  usePollingRefresh(triggerRefresh, autoRefreshMs)
 
   // Apply source filter CLIENT-SIDE — the payload is small and we want toggle
   // changes to be instant, not another round-trip. The summary KPIs stay
@@ -795,8 +784,7 @@ function CacheHealthCard({ summary, trend, rollup, unit, loading, t }: {
       m.set(r.purpose, cur)
     }
     const out = [...m.entries()].map(([purpose, v]) => {
-      const total = v.uncached + v.cached
-      const hitRate = total > 0 ? v.cached / total : null
+      const hitRate = (v.uncached + v.cached) > 0 ? cacheHitRate(v.uncached, v.cached) : null
       return { purpose, hitRate, savableUsd: v.savable, costUsd: v.cost, uncachedIn: v.uncached, cachedIn: v.cached }
     })
     // Biggest optimization target at the top: by savable $ in USD mode, by
@@ -816,8 +804,8 @@ function CacheHealthCard({ summary, trend, rollup, unit, loading, t }: {
     }
     const days = [...m.entries()].sort(([a], [b]) => a < b ? -1 : 1)
     return days.map(([day, v]) => {
-      const total = v.uncached + v.cached
-      return { day, hitRate: total > 0 ? v.cached / total : null }
+      const hitRate = (v.uncached + v.cached) > 0 ? cacheHitRate(v.uncached, v.cached) : null
+      return { day, hitRate }
     })
   }, [trend])
 
@@ -1015,9 +1003,7 @@ function RollupTable({ rows, unit, loading, onDrill, t }: { rows: LlmRollupRow[]
   useEffect(() => { setSort((s) => (s.key === 'costUsd' || s.key === 'totalTok') ? { key: headlineKey, dir: 'desc' } : s) }, [headlineKey])
   const enriched = useMemo(() => rows.map((r) => {
     const failureRate = r.calls > 0 ? (r.calls - r.okCalls) / r.calls : 0
-    const totalIn = r.inputTokens + r.cachedInputTokens
-    const cacheHitRate = totalIn > 0 ? r.cachedInputTokens / totalIn : 0
-    return { ...r, failureRate, cacheHitRate, totalTok: totalTokens(r) }
+    return { ...r, failureRate, cacheHitRate: cacheHitRate(r.inputTokens, r.cachedInputTokens), totalTok: totalTokens(r) }
   }), [rows])
   const sorted = useMemo(() => {
     const out = [...enriched]
@@ -1200,8 +1186,7 @@ function DaemonVersionTable({ rows, unit, loading, t }: {
         <div className="obs-th-right">{t('adminobs.colLastSeen')}</div>
       </div>
       {rows.map((r, i) => {
-        const totalIn = r.inputTokens + r.cachedInputTokens
-        const hitRate = totalIn > 0 ? r.cachedInputTokens / totalIn : null
+        const hitRate = (r.inputTokens + r.cachedInputTokens) > 0 ? cacheHitRate(r.inputTokens, r.cachedInputTokens) : null
         const totalTok = r.inputTokens + r.cachedInputTokens + r.outputTokens
         const avgCost = r.calls > 0 ? r.costUsd / r.calls : 0
         const avgTok = r.calls > 0 ? totalTok / r.calls : 0
@@ -1225,15 +1210,17 @@ function DaemonVersionTable({ rows, unit, loading, t }: {
 }
 
 /** Tiny "now-3h" / "2d ago" formatter for the "Last seen" column. The full
- *  timestamp lives in the title attribute. */
+ *  timestamp lives in the title attribute. 分部计算在 @/lib/format(#147 ②),
+ *  这里只做本页 i18n 键族映射。 */
 function relativeTime(iso: string, t: ReturnType<typeof useT>): string {
-  const ts = new Date(iso).getTime()
-  if (!Number.isFinite(ts)) return '—'
-  const ms = Date.now() - ts
-  if (ms < 60_000) return t('adminobs.timeAgoSec', { n: Math.max(0, Math.floor(ms / 1000)) })
-  if (ms < 3_600_000) return t('adminobs.timeAgoMin', { n: Math.floor(ms / 60_000) })
-  if (ms < 86_400_000) return t('adminobs.timeAgoHour', { n: Math.floor(ms / 3_600_000) })
-  return t('adminobs.timeAgoDay', { n: Math.floor(ms / 86_400_000) })
+  const parts = relativeTimeParts(iso)
+  if (!parts) return '—'
+  switch (parts.unit) {
+    case 'sec':  return t('adminobs.timeAgoSec',  { n: parts.n })
+    case 'min':  return t('adminobs.timeAgoMin',  { n: parts.n })
+    case 'hour': return t('adminobs.timeAgoHour', { n: parts.n })
+    default:     return t('adminobs.timeAgoDay',  { n: parts.n })
+  }
 }
 
 // ─── Drill-down panel ────────────────────────────────────────────────────
@@ -1374,9 +1361,10 @@ function DrillCallCard({ call, unit, onJumpToRun, onJumpToAgent, t }: {
   onJumpToAgent: (agentId: string, agentName: string | null) => void
   t: ReturnType<typeof useT>
 }) {
-  // Cache hit %: cached / (uncached + cached). NaN-safe.
-  const totalIn = call.inputTokens + call.cachedInputTokens
-  const cacheHit = totalIn > 0 ? call.cachedInputTokens / totalIn : null
+  // Cache hit %: cached / (uncached + cached). NaN-safe(共享件,#147 ②)。
+  const cacheHit = (call.inputTokens + call.cachedInputTokens) > 0
+    ? cacheHitRate(call.inputTokens, call.cachedInputTokens)
+    : null
   // The five extras we WANT to surface as first-class chips when present
   // (these are the ones the engine + daemon write). Anything else still
   // shows up via the generic kv list below so nothing's invisible.
