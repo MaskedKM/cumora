@@ -49,7 +49,8 @@
     "contract:gen": "node scripts/contract-coverage.mjs && openapi-typescript packages/contract/openapi.yaml -o packages/contract/src/schema.d.ts && bash scripts/contract-gen-go.sh",
     "contract:check": "bash scripts/contract-check.sh",
     "sidecar:dev": "tsx watch apps/yjs-sidecar/src/main.ts",
-    "sidecar:start": "tsx apps/yjs-sidecar/src/main.ts"
+    "sidecar:start": "tsx apps/yjs-sidecar/src/main.ts",
+    "test:e2e": "INTEGRATION_E2E=1 node server/run-integration-tests.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
@@ -104,6 +105,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
+    "@playwright/test": "^1.62.1",
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

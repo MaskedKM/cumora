@@ -79,3 +79,7 @@ apps/server-go/migrate
 # #131: 用户上传件(真实头像/附件,磁盘保留不入库)、file-snapshots 测试残留
 server/server/uploads/
 server/file-snapshots/
+
+# Playwright e2e (#147)
+playwright-report/
+test-results/
