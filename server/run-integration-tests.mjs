@@ -90,8 +90,14 @@ if (process.env.INTEGRATION_FILES) {
  * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。 */
 let autoStack = null // { pg, redis, dbUrl, redisUrl }
 
+/** runCmd 在飞 promise 登记:teardownAutoStack 拆栈前必须等在飞的
+ *  docker CLI 落地再 rm —— 否则 earlySignal 的 process.exit 排在微任务
+ *  队列,严格早于 CLI 'exit' 宏任务,"run 期间收定向信号"会把容器在
+ *  父进程死后诞生成孤儿(#199 复核 P2)。 */
+const inflightCmds = new Set()
+
 function runCmd(cmd, args, timeoutMs = 30_000) {
-  return new Promise((resolve) => {
+  const pr = new Promise((resolve) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let out = '', err = ''
     const timer = setTimeout(() => { try { p.kill('SIGKILL') } catch { /* gone */ } }, timeoutMs)
@@ -100,6 +106,10 @@ function runCmd(cmd, args, timeoutMs = 30_000) {
     p.on('error', () => { clearTimeout(timer); resolve({ code: 1, out, err }) })
     p.on('exit', (c) => { clearTimeout(timer); resolve({ code: c ?? 1, out, err }) })
   })
+  inflightCmds.add(pr)
+  const clear = () => inflightCmds.delete(pr)
+  pr.then(clear, clear)
+  return pr
 }
 
 async function waitContainerReady(name, checkArgs, deadlineMs) {
@@ -122,8 +132,14 @@ async function provisionOneOffStack() {
   const dockerOk = await runCmd('docker', ['info', '--format', '{{.ServerVersion}}'], 10_000)
   if (dockerOk.code !== 0) return { ok: false, reason: 'no-docker' }
   const id = Math.random().toString(36).slice(2, 8)
-  const stack = { pg: `cumora-it-pg-${id}`, redis: null, dbUrl: null, redisUrl: null }
-  const { pg } = stack
+  // 信号已接管(exited)就别再覆写 autoStack / 造容器 —— docker info 期间
+  // 收信号的场景下,主路径会走到这里,必须让位给 early 的拆栈退出。
+  if (exited) return { ok: false, reason: 'provision-failed' }
+  // 容器名在 run【之前】就登记(rm -f 打不存在的名字只是无害报错)——
+  // 拆栈不再依赖 run 成功与否;局部 stack 引用不被信号置 null 波及。
+  const stack = { pg: `cumora-it-pg-${id}`, redis: `cumora-it-redis-${id}`, dbUrl: null, redisUrl: null }
+  const { pg, redis: rd } = stack
+  autoStack = stack // 预登记:任何时刻收信号,teardown 都有两个名字可 rm
   // 与 CI/scratch 同款镜像(pgvector 为迁移所需;本机两者皆有缓存,
   // 拉取仅首次)。POSTGRES_* 与 CI services 块同参。run 宽超时:首次
   // 拉取数百 MB,30s 必掐死(#199 评审 P2)。
@@ -136,14 +152,9 @@ async function provisionOneOffStack() {
     console.error(`[integration] docker run pg failed: ${(pgRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
     return { ok: false, reason: 'provision-failed' }
   }
-  // 若信号恰落在 pg run 期间:early 拆栈时 autoStack 尚未登记(rm 空),
-  // 这里补拆这个可能已诞生的容器再退,不留孤儿。
-  if (exited) {
-    await runCmd('docker', ['rm', '-f', pg])
-    return { ok: false, reason: 'provision-failed' }
-  }
-  autoStack = stack
-  const rd = `cumora-it-redis-${id}`
+  // 信号落在 pg run 期间:teardown 会等在飞 run 落地后 rm 预登记的名字,
+  // 这里只需停止后续起栈,不必重复 rm。
+  if (exited || autoStack !== stack) return { ok: false, reason: 'provision-failed' }
   const rdRun = await runCmd('docker', [
     'run', '-d', '--name', rd, '-p', '127.0.0.1::6379', 'redis:7',
   ], 300_000)
@@ -153,13 +164,8 @@ async function provisionOneOffStack() {
     autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
-  // 信号落在 redis run 期间:pg 已被 early 拆掉(autoStack 置 null),
-  // 别把刚诞生的 redis 留成孤儿。
-  if (exited || autoStack !== stack) {
-    await runCmd('docker', ['rm', '-f', rd])
-    return { ok: false, reason: 'provision-failed' }
-  }
-  stack.redis = rd
+  // 同上:redis run 期间收信号,由 teardown 的"等在飞 + rm 预登记名"兜。
+  if (exited || autoStack !== stack) return { ok: false, reason: 'provision-failed' }
   const ready = (await waitContainerReady(pg, ['pg_isready', '-U', 'cumora', '-d', 'cumora_test'], 45_000))
     && (await waitContainerReady(rd, ['redis-cli', 'ping'], 20_000))
   if (!ready) {
@@ -181,12 +187,18 @@ async function provisionOneOffStack() {
   return { ok: true, stack }
 }
 
-/** 拆 auto 栈(部分登记也拆:起栈中途只 rm 已存在的)。10s 硬上限兜底:
- *  docker CLI 若陷在挂死的 daemon socket 上不回 'exit' 事件,promise
- *  永悬会把退出流程一起挂死(#199 评审 P3)。 */
+/** 拆 auto 栈。两段式:①先等在飞的 docker CLI 落地(run/exec/port 都
+ *  可能正在造容器或查询,runCmd 有登记)—— 否则 exit 排微任务先于 CLI
+ *  'exit' 宏任务,容器会在父进程死后诞生;②rm 预登记的名字(部分存在
+ *  也拆,rm -f 对不存在者无害)。两段各有 10s 硬上限:CLI 陷 D-state
+ *  不回 'exit' 时 promise 永悬,不能把退出流程一起挂死(#199 复核 P2/P3)。 */
 async function teardownAutoStack() {
   const names = autoStack ? [autoStack.pg, autoStack.redis].filter(Boolean) : []
   autoStack = null
+  await Promise.race([
+    Promise.allSettled([...inflightCmds]),
+    new Promise((r) => setTimeout(r, 10_000)),
+  ])
   if (names.length === 0) return
   await Promise.race([
     Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', n]))),
@@ -212,6 +224,9 @@ if (!INTEGRATION_URL) {
   process.on('SIGINT', earlySignal('interrupted', 130))
   process.on('SIGTERM', earlySignal('terminated', 143))
   const prov = await provisionOneOffStack()
+  // 信号已接管退出(early 的 teardown → exit 130/143 在飞):主路径必须
+  // 悬停让位,否则同步 exit(0/1) 会抢跑,rm 还没发出进程就死了。
+  if (exited) await new Promise(() => { /* teardown 收尾后 process.exit 终结本进程 */ })
   if (!prov.ok && prov.reason === 'no-docker') {
     console.log('[integration] skipped — 无 docker 且未设 INTEGRATION_DATABASE_URL。')
     console.log('             起本地 docker 后重跑即自动起一次性测试栈;或显式指定:')
@@ -222,8 +237,10 @@ if (!INTEGRATION_URL) {
     console.error('[integration] 一次性测试栈起失败(见上)。修好 docker 后重跑,或显式给 INTEGRATION_DATABASE_URL。')
     process.exit(1)
   }
-  INTEGRATION_URL = autoStack.dbUrl
-  console.log(`[integration] one-off stack: ${autoStack.pg} + ${autoStack.redis}(退出即拆)`)
+  // 读 prov.stack(局部引用):端口发现期间收信号时模块级 autoStack 已被
+  // teardown 置 null,直接读会 TypeError 且丢 130 退出码(#199 复核 P3)。
+  INTEGRATION_URL = prov.stack.dbUrl
+  console.log(`[integration] one-off stack: ${prov.stack.pg} + ${prov.stack.redis}(退出即拆)`)
 }
 
 // Belt-and-braces safety: refuse to run when INTEGRATION_DATABASE_URL
