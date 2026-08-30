@@ -480,27 +480,58 @@ if (!(await waitFor(GO_BASE, 30_000))) {
 }
 console.log(`[integration] SUT up: ${GO_BASE} (sidecar :${SIDECAR_PORT}, mock :${MOCK_PORT})`)
 
-// Forward to node --import tsx --test against the MIRROR-only suite.
-// --test-concurrency=1 serializes test FILES: every file's beforeEach
-// TRUNCATEs the same tables on the shared test DB; concurrent TRUNCATE
-// CASCADEs deadlock at the catalog-lock level.
-const child = spawn(
-  'node',
-  ['--import', 'tsx', '--test', '--test-concurrency=1', ...testFiles],
-  {
+/** 测试子进程的统一收尾:退出时杀尽子进程、关 mock、删二进制、拆 auto 栈。 */
+function runTestChild(cmd, args, extraEnv = {}, opts = {}) {
+  const child = spawn(cmd, args, {
+    cwd: opts.cwd ?? repo,
     stdio: 'inherit',
-    env: { ...process.env, CUMORA_MIRROR_BASE: GO_BASE },
-  },
-)
-const builtHere = !process.env.INTEGRATION_GO_BIN
-child.on('exit', (code) => {
-  // bail(SIGINT/BOOT-FAILED)已接管退出时不再抢:exit 码归 bail(130/143
-  // 而非 child 的 1),拆栈也由 bail 的 teardown 统一做(#199 评审 P3)。
-  if (exited) return
-  exited = true
-  killAll()
-  mockLLM.close()
-  if (builtHere) rm(GO_BIN, { force: true }).catch(() => { /* best effort */ })
-  if (autoStack) void teardownAutoStack().finally(() => process.exit(code ?? 1))
-  else process.exit(code ?? 1)
-})
+    env: { ...process.env, ...extraEnv },
+  })
+  const builtHere = !process.env.INTEGRATION_GO_BIN
+  child.on('exit', (code) => {
+    // bail(SIGINT/BOOT-FAILED)已接管退出时不再抢:exit 码归 bail(130/143
+    // 而非 child 的 1),拆栈也由 bail 的 teardown 统一做(#199 评审 P3)。
+    if (exited) return
+    exited = true
+    killAll()
+    mockLLM.close()
+    if (builtHere) rm(GO_BIN, { force: true }).catch(() => { /* best effort */ })
+    if (autoStack) void teardownAutoStack().finally(() => process.exit(code ?? 1))
+    else process.exit(code ?? 1)
+  })
+}
+
+if (process.env.INTEGRATION_E2E) {
+  /* ───────── #147④ e2e 形态:同一套自建 SUT,测试面换 Playwright ─────────
+   * 驱动 vite preview(生产构建页)+ localStorage 'cumora.serverUrl' 运行时
+   * 指向 SUT(三层解析第一层,无需按动态端口重烘 VITE_CUMORA_API_BASE)。 */
+  const WEB_PORT = await freePort()
+  const build = spawn('npm', ['run', 'build', '-w', 'cumora-web'], { cwd: repo, stdio: 'inherit' })
+  if ((await new Promise((r) => build.on('exit', r))) !== 0) bail('web build failed')
+  spawnChild('vite-preview', 'node', [
+    // vite 被提升在仓库根 node_modules(apps/web 无本地副本),给绝对路径。
+    join(repo, 'node_modules/vite/bin/vite.js'), 'preview',
+    '--port', String(WEB_PORT), '--strictPort', '--host', '127.0.0.1',
+  ], {
+    cwd: join(repo, 'apps/web'),
+    // preview 继承 vite.config 的 server.proxy(/api /uploads /ws)——代理
+    // 目标由此 env 指向 SUT;Go 无 CORS,页面侧必须同源走代理(侦察④)。
+    env: { ...SHARED_ENV, CUMORA_DEV_API_TARGET: GO_BASE },
+  })
+  if (!(await waitFor(`http://127.0.0.1:${WEB_PORT}`, 20_000, '/'))) {
+    bail('BOOT-FAILED: vite preview never came up')
+  }
+  console.log(`[integration] web preview up: http://127.0.0.1:${WEB_PORT}`)
+  runTestChild('npx', ['playwright', 'test'], {
+    CUMORA_E2E_API_BASE: GO_BASE,
+    CUMORA_E2E_WEB_BASE: `http://127.0.0.1:${WEB_PORT}`,
+  })
+} else {
+  // Forward to node --import tsx --test against the MIRROR-only suite.
+  // --test-concurrency=1 serializes test FILES: every file's beforeEach
+  // TRUNCATEs the same tables on the shared test DB; concurrent TRUNCATE
+  // CASCADEs deadlock at the catalog-lock level.
+  runTestChild('node', ['--import', 'tsx', '--test', '--test-concurrency=1', ...testFiles], {
+    CUMORA_MIRROR_BASE: GO_BASE,
+  })
+}

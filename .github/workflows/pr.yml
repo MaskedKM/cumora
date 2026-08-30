@@ -478,6 +478,34 @@ jobs:
           wait "$p2" || rc=1
           wait "$p3" || rc=1
           exit $rc
+      # #147④ e2e 冒烟:同一 SUT 二进制 + 独立 cumora_e2e 库;排在分片
+      # 之后串行复用 redis(分片在跑时 pub/sub 会串音)。checks 容器无
+      # docker,auto 栈不触发(显式 env)。浏览器二进制经
+      # PLAYWRIGHT_BROWSERS_PATH 落持久卷(容器层随 job 消亡,默认
+      # ~/.cache 每次重下 115MB 且受出口长流抖动);apt 系统库随容器
+      # 生灭,每 run 由 --with-deps 重装(~40s)。
+      - name: Playwright e2e smoke (#147)
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /npm/cache/playwright
+        run: |
+          set -e -o pipefail
+          npx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node e2e/smoke.spec.ts
+          npx playwright install --with-deps chromium
+          node -e 'const {Client}=require("pg");(async()=>{
+            const admin=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/postgres"});
+            await admin.connect();
+            const r=await admin.query("SELECT 1 FROM pg_database WHERE datname=$1",["cumora_e2e"]);
+            if (r.rowCount===0) await admin.query("CREATE DATABASE cumora_e2e");
+            await admin.end();
+            const c=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/cumora_e2e"});
+            await c.connect(); await c.query("CREATE EXTENSION IF NOT EXISTS vector"); await c.end();
+          })().catch(e=>{console.error(e);process.exit(1)})'
+          INTEGRATION_E2E=1 \
+          INTEGRATION_DATABASE_URL="postgres://cumora:cumora@postgres:5432/cumora_e2e" \
+          REDIS_URL="redis://redis:6379" \
+          INTEGRATION_GO_BIN="$GITHUB_WORKSPACE/apps/server-go/.integration-server-bin" \
+          npm run test:integration
       # The container runs as root but shares the workspace with the host
       # runner user — give ownership back so the runner's next workspace
       # cleanup can delete it. Without this, root-owned files from the
