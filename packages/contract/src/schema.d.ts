@@ -4004,7 +4004,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                provider: "google" | "github";
+                provider: string;
             };
             cookie?: never;
         };
@@ -5663,8 +5663,8 @@ export interface operations {
     };
     search: {
         parameters: {
-            query: {
-                q: string;
+            query?: {
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -5867,7 +5867,7 @@ export interface operations {
             query?: {
                 agentId?: string;
                 status?: string;
-                limit?: number;
+                limit?: string;
             };
             header?: never;
             path?: never;
@@ -5912,7 +5912,7 @@ export interface operations {
         parameters: {
             query?: {
                 agentId?: string;
-                sinceHours?: number;
+                sinceHours?: string;
             };
             header?: never;
             path?: never;

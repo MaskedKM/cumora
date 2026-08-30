@@ -120,7 +120,9 @@ paths:
       security: []
       summary: OAuth 跳转(302,浏览器导航)
       parameters:
-        - { name: provider, in: path, required: true, schema: { type: string, enum: [google, github] } }
+        # 枚举软化(#194 P2 同族):handler 自有 404 'unknown provider' 分支是契约,
+        # 枚举绑定会在其前用生成文案 400 抢答
+        - { name: provider, in: path, required: true, schema: { type: string } }
         - { name: return, in: query, schema: { type: string } }
         - { name: invite, in: query, schema: { type: string } }
       responses:
@@ -1254,7 +1256,8 @@ paths:
       operationId: search
       summary: 全域搜索
       parameters:
-        - { name: q, in: query, required: true, schema: { type: string } }
+        # 宽容语义(#194 评审同族):TS/Go 均缺 q→200 空桶,required 会让中间件 400
+        - { name: q, in: query, schema: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/SearchResults' } } } }
   /api/peek/agent-chats:
@@ -1371,7 +1374,7 @@ paths:
       parameters:
         - { name: agentId, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: string } }
       responses:
         '200':
           description: ok
@@ -1402,7 +1405,7 @@ paths:
       summary: triage 成效台账
       parameters:
         - { name: agentId, in: query, schema: { type: string } }
-        - { name: sinceHours, in: query, schema: { type: integer } }
+        - { name: sinceHours, in: query, schema: { type: string } }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/TriageEconomics' } } } }
   /api/agents/observability/llm-spend:
