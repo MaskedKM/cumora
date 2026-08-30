@@ -10,7 +10,7 @@
 import 'dotenv/config'
 import { env } from './infra/env.js'
 import { pool } from './infra/pool.js'
-import { bootDocumentBus } from './rooms.js'
+import { bootDocumentBus, flushAllPending } from './rooms.js'
 import { startSidecarHttp } from './http.js'
 
 async function main() {
@@ -23,7 +23,9 @@ async function main() {
   bootDocumentBus()
   await startSidecarHttp(env.YJS_SIDECAR_PORT)
   const shutdown = async (sig: string): Promise<void> => {
-    console.log(`[yjs-sidecar] ${sig} — exiting(房间状态已持久化于 pg,冷加载自恢复)`)
+    console.log(`[yjs-sidecar] ${sig} — flushing pending batches, exiting`)
+    // #145:合批窗口内的尾帧必须在关连接池前落库,否则 SIGTERM 丢尾部编辑。
+    try { await flushAllPending() } catch { /* ignore */ }
     try { await pool.end() } catch { /* ignore */ }
     process.exit(0)
   }

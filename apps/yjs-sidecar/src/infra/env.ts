@@ -13,12 +13,23 @@ function required(name: string, fallback?: string): string {
   return v
 }
 
+/** 正整数 env 旋钮:非数字/非正值回退默认(NaN 会让上限比较恒 false、
+ *  setTimeout(NaN) 退化 1ms,静默变成"永不封顶+即时窗口")。 */
+function positiveInt(name: string, fallback: number): number {
+  const n = Number(process.env[name] ?? fallback)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 export const env = {
   DATABASE_URL: required('DATABASE_URL', `postgres://${process.env.USER ?? 'postgres'}@localhost:5432/cumora`),
   REDIS_URL: required('REDIS_URL', 'redis://localhost:6379'),
   INSTANCE_ID: process.env.INSTANCE_ID ?? '',
   YJS_SIDECAR_TOKEN: process.env.YJS_SIDECAR_TOKEN ?? '',
   YJS_SIDECAR_PORT: Number(process.env.YJS_SIDECAR_PORT ?? 5183),
+  // #145 合帧窗口:同房间 update 攒批后合并落库+跨实例 publish。
+  // 窗口毫秒数与触发上限(原始 update 计数),测试经 env 缩短。
+  YJS_FLUSH_WINDOW_MS: positiveInt('YJS_FLUSH_WINDOW_MS', 150),
+  YJS_FLUSH_MAX_PENDING: positiveInt('YJS_FLUSH_MAX_PENDING', 32),
   // redis.ts 消费(pod 形态懒连接)
   CUMORA_RUNTIME_CLIENT: process.env.CUMORA_RUNTIME_CLIENT ?? '',
   // storage.ts 消费(文档快照/内联图片附件;R2 全空=本地 FS 模式)
