@@ -148,16 +148,20 @@ GC reconciliation (`pickOrphans`). Runs in ~0.5s, no DB / Redis needed.
 
 ### Integration (`npm run test:integration`)
 
-End-to-end against a REAL Postgres + Redis. Skipped by default —
-`INTEGRATION_DATABASE_URL` env var gates it. Setup:
+End-to-end against a REAL Postgres + Redis. Zero-setup by default: with a
+local docker daemon the runner auto-provisions a one-off test stack
+(pgvector + redis, random ports, torn down on exit) — the production
+`cumora-pg`/`cumora-redis` instances are never touched (#146). To bring
+your own DB instead, gate it with `INTEGRATION_DATABASE_URL`:
 
 ```bash
-# Pick whichever Postgres you have handy:
+# Pick whichever Postgres you have handy (pgvector flavor — migrations
+# need the vector extension):
 createdb cumora_test
 # or via Docker:
 docker run -d --name pg-test -p 5433:5432 \
   -e POSTGRES_USER=cumora -e POSTGRES_PASSWORD=cumora \
-  -e POSTGRES_DB=cumora_test postgres:16-alpine
+  -e POSTGRES_DB=cumora_test pgvector/pgvector:pg16
 
 # Run the suite (the runner refuses to TRUNCATE non-test-looking URLs):
 INTEGRATION_DATABASE_URL=postgres://cumora:cumora@localhost:5433/cumora_test \
