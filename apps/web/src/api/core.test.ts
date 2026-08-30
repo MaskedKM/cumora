@@ -84,6 +84,13 @@ test('401: main face exempts /auth/ paths, admin face always clears', async () =
   stubFetch(401, '{"error":"unauthorized"}')
   await expect(fetchJson('/me', undefined, { base: '/api/admin' })).rejects.toThrow(ApiError)
   expect(h.clear).toHaveBeenCalledTimes(1)
+
+  // 主面非 auth 路径(最高频默认路径):401 必须清 session 回登录屏。
+  stubFetch(401, '{"error":"expired"}')
+  await expect(
+    fetchJson('/conversations', undefined, { base: '/api', clear401: (p) => !p.startsWith('/auth/') }),
+  ).rejects.toThrow(ApiError)
+  expect(h.clear).toHaveBeenCalledTimes(2)
 })
 
 test('error detail: {error} first, {message} fallback, text snippet, then status-only', async () => {

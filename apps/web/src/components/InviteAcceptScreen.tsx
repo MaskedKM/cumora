@@ -28,6 +28,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { api, type ApiInvitationPreview } from '@/api/client'
+import { SERVER_URL_KEY } from '@/api/core'
 import { useAuth } from '@/stores/auth'
 import { isElectron, isWebAppHost } from '@/lib/runtime'
 import { useT } from '@/lib/i18n'
@@ -458,7 +459,7 @@ function SignInToAccept({ token }: { token: string }) {
     // Persist BEFORE redirect so the post-OAuth landing can resume here.
     stashPendingInvite(token)
     if (isElectron && window.cumora?.auth) {
-      const origin = (typeof localStorage !== 'undefined' && localStorage.getItem('cumora.serverUrl'))
+      const origin = (typeof localStorage !== 'undefined' && localStorage.getItem(SERVER_URL_KEY))
         || (import.meta.env.VITE_CUMORA_API_BASE as string | undefined)
         || 'http://127.0.0.1:5181' // #127: self-hosted default, never the upstream cloud
       const inv = encodeURIComponent(token)
