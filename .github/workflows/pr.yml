@@ -486,7 +486,10 @@ jobs:
         shell: bash
         run: |
           set -e -o pipefail
-          npx playwright install chromium
+          # --with-deps:bookworm 容器缺浏览器系统库(libglib 等),经 apt
+          # 一并装(job 的 lowercase http_proxy 对 apt 生效);ser8 自托管,
+          # 装过即常驻,后续秒过。
+          npx playwright install --with-deps chromium
           node -e '(async()=>{
             const {Client}=require("pg");
             const admin=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/postgres"});
