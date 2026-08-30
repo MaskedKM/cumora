@@ -114,13 +114,16 @@ async function waitContainerReady(name, checkArgs, deadlineMs) {
 /** 起栈结果:{ ok:false, reason } 或 { ok:true, stack }。reason 区分
  *  'no-docker'(daemon 不在 → 维持旧 skipped 语义退 0)与
  *  'provision-failed'(run/就绪/端口失败 → 调用方按真失败退 1,
- *  不再误报"无 docker")。 */
+ *  不再误报"无 docker")。
+ *  容器名在每个 docker run 成功后【立刻】登记进模块级 autoStack ——
+ *  earlySignal/bail 读"已存在即拆"的真实状态;局部 stack 引用在信号
+ *  拆栈(置 null)后仍可安全写,中途中断时新造容器就地兜底 rm。 */
 async function provisionOneOffStack() {
   const dockerOk = await runCmd('docker', ['info', '--format', '{{.ServerVersion}}'], 10_000)
   if (dockerOk.code !== 0) return { ok: false, reason: 'no-docker' }
   const id = Math.random().toString(36).slice(2, 8)
-  const pg = `cumora-it-pg-${id}`
-  const rd = `cumora-it-redis-${id}`
+  const stack = { pg: `cumora-it-pg-${id}`, redis: null, dbUrl: null, redisUrl: null }
+  const { pg } = stack
   // 与 CI/scratch 同款镜像(pgvector 为迁移所需;本机两者皆有缓存,
   // 拉取仅首次)。POSTGRES_* 与 CI services 块同参。run 宽超时:首次
   // 拉取数百 MB,30s 必掐死(#199 评审 P2)。
@@ -133,19 +136,36 @@ async function provisionOneOffStack() {
     console.error(`[integration] docker run pg failed: ${(pgRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
     return { ok: false, reason: 'provision-failed' }
   }
+  // 若信号恰落在 pg run 期间:early 拆栈时 autoStack 尚未登记(rm 空),
+  // 这里补拆这个可能已诞生的容器再退,不留孤儿。
+  if (exited) {
+    await runCmd('docker', ['rm', '-f', pg])
+    return { ok: false, reason: 'provision-failed' }
+  }
+  autoStack = stack
+  const rd = `cumora-it-redis-${id}`
   const rdRun = await runCmd('docker', [
     'run', '-d', '--name', rd, '-p', '127.0.0.1::6379', 'redis:7',
   ], 300_000)
   if (rdRun.code !== 0) {
     console.error(`[integration] docker run redis failed: ${(rdRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
     await runCmd('docker', ['rm', '-f', pg])
+    autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
+  // 信号落在 redis run 期间:pg 已被 early 拆掉(autoStack 置 null),
+  // 别把刚诞生的 redis 留成孤儿。
+  if (exited || autoStack !== stack) {
+    await runCmd('docker', ['rm', '-f', rd])
+    return { ok: false, reason: 'provision-failed' }
+  }
+  stack.redis = rd
   const ready = (await waitContainerReady(pg, ['pg_isready', '-U', 'cumora', '-d', 'cumora_test'], 45_000))
     && (await waitContainerReady(rd, ['redis-cli', 'ping'], 20_000))
   if (!ready) {
     console.error('[integration] one-off stack never became ready — tearing down')
     await runCmd('docker', ['rm', '-f', pg, rd])
+    if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
   const pgPort = (await runCmd('docker', ['port', pg, '5432'])).out.trim().split('\n')[0]?.split(':').pop()
@@ -153,50 +173,45 @@ async function provisionOneOffStack() {
   if (!pgPort || !rdPort) {
     console.error('[integration] could not discover one-off stack ports')
     await runCmd('docker', ['rm', '-f', pg, rd])
+    if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
-  return {
-    ok: true,
-    stack: {
-      pg, redis: rd,
-      dbUrl: `postgres://cumora:cumora@127.0.0.1:${pgPort}/cumora_test`,
-      redisUrl: `redis://127.0.0.1:${rdPort}`,
-    },
-  }
+  stack.dbUrl = `postgres://cumora:cumora@127.0.0.1:${pgPort}/cumora_test`
+  stack.redisUrl = `redis://127.0.0.1:${rdPort}`
+  return { ok: true, stack }
 }
 
-/** 拆 auto 栈。10s 硬上限兜底:docker CLI 若陷在挂死的 daemon socket 上
- *  不回 'exit' 事件,promise 永悬会把退出流程一起挂死(#199 评审 P3)。 */
+/** 拆 auto 栈(部分登记也拆:起栈中途只 rm 已存在的)。10s 硬上限兜底:
+ *  docker CLI 若陷在挂死的 daemon socket 上不回 'exit' 事件,promise
+ *  永悬会把退出流程一起挂死(#199 评审 P3)。 */
 async function teardownAutoStack() {
-  if (!autoStack) return
-  const { pg, redis } = autoStack
+  const names = autoStack ? [autoStack.pg, autoStack.redis].filter(Boolean) : []
   autoStack = null
+  if (names.length === 0) return
   await Promise.race([
-    Promise.allSettled([runCmd('docker', ['rm', '-f', pg]), runCmd('docker', ['rm', '-f', redis])]),
+    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', n]))),
     new Promise((r) => setTimeout(r, 10_000)),
   ])
 }
 
 let INTEGRATION_URL = process.env.INTEGRATION_DATABASE_URL
 let exited = false // bail / child-exit / 早期信号共享,防双拆双退
+let mainSignalArmed = false // 主 bail 注册后 early 处理器让位
 if (!INTEGRATION_URL) {
   console.log('[integration] INTEGRATION_DATABASE_URL 未设 —— 尝试 docker 一次性测试栈(#146)…')
-  // 起栈窗口(拉镜像+就绪门控,最坏 ~2min)的信号兜底:此刻主 bail 的
-  // 依赖(children/mockLLM/GO_BIN)尚未初始化,单独兜拆栈再退;主信号
-  // 处理器注册后再摘掉(#199 评审 P2)。
+  // 起栈窗口(拉镜像+就绪门控,最坏 ~6min)的信号兜底:此刻主 bail 的
+  // 依赖(children/mockLLM/GO_BIN)尚未初始化,单独兜拆栈再退。处理器
+  // 注册后不摘(off/on 空档与主注册之间的 await 窗口同样无保护),
+  // mainSignalArmed 置位后让位给主 bail(#199 评审 P2+P3)。
   const earlySignal = (label, code) => () => {
-    if (exited) return
+    if (exited || mainSignalArmed) return
     exited = true
     console.error(`[integration] ${label} during provisioning`)
     void teardownAutoStack().finally(() => process.exit(code))
   }
-  const onEarlyInt = earlySignal('interrupted', 130)
-  const onEarlyTerm = earlySignal('terminated', 143)
-  process.on('SIGINT', onEarlyInt)
-  process.on('SIGTERM', onEarlyTerm)
+  process.on('SIGINT', earlySignal('interrupted', 130))
+  process.on('SIGTERM', earlySignal('terminated', 143))
   const prov = await provisionOneOffStack()
-  process.off('SIGINT', onEarlyInt)
-  process.off('SIGTERM', onEarlyTerm)
   if (!prov.ok && prov.reason === 'no-docker') {
     console.log('[integration] skipped — 无 docker 且未设 INTEGRATION_DATABASE_URL。')
     console.log('             起本地 docker 后重跑即自动起一次性测试栈;或显式指定:')
@@ -207,7 +222,6 @@ if (!INTEGRATION_URL) {
     console.error('[integration] 一次性测试栈起失败(见上)。修好 docker 后重跑,或显式给 INTEGRATION_DATABASE_URL。')
     process.exit(1)
   }
-  autoStack = prov.stack
   INTEGRATION_URL = autoStack.dbUrl
   console.log(`[integration] one-off stack: ${autoStack.pg} + ${autoStack.redis}(退出即拆)`)
 }
@@ -294,6 +308,7 @@ function bail(msg, code = 1) {
 }
 process.on('SIGINT', () => bail('interrupted', 130))
 process.on('SIGTERM', () => bail('terminated', 143))
+mainSignalArmed = true // early 处理器从此让位(注册顺序保证主处理器后跑)
 // 顶层未捕获异常同样要走拆栈再退(#199 评审 P3):ESM 顶层 throw 的默认
 // 退出不经过任何清理,auto 栈会漏。
 process.on('uncaughtException', (e) => bail(`uncaught: ${e?.stack ?? e}`, 1))
