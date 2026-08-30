@@ -24,47 +24,164 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/runtime"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
-// Mount:挂全部 /runtime 路由。
+// Mount:runtime tag(34 路由)走契约生成物(#187 批次 9)。34 个接口
+// 方法均为 `s.auth(s.handleX)` 薄包装 —— handler 体零触碰,鉴权语义
+// (Bearer agent-runtime JWT + panic 兜底)与逐路由包装完全同源。
 func (s *Service) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /runtime/wake-stream", s.auth(s.handleWakeStream))
-	mux.HandleFunc("POST /runtime/cli", s.auth(s.handleCli))
-	mux.HandleFunc("GET /runtime/persona", s.auth(s.handlePersona))
-	mux.HandleFunc("POST /runtime/conversation/company-id", s.auth(s.handleConversationCompanyId))
-	mux.HandleFunc("GET /runtime/inbox", s.auth(s.handleInbox))
-	mux.HandleFunc("GET /runtime/inbox-triage/payload", s.auth(s.handleInboxTriagePayload))
-	mux.HandleFunc("GET /runtime/agenda", s.auth(s.handleAgenda))
-	mux.HandleFunc("POST /runtime/agenda/verdict", s.auth(s.handleAgendaVerdict))
-	mux.HandleFunc("POST /runtime/memory/query", s.auth(s.handleMemoryQuery))
-	mux.HandleFunc("POST /runtime/context", s.auth(s.handleContext))
-	mux.HandleFunc("GET /runtime/climate", s.auth(s.handleClimate))
-	mux.HandleFunc("GET /runtime/skills", s.auth(s.handleSkills))
-	mux.HandleFunc("POST /runtime/faces", s.auth(s.handleFaces))
-	mux.HandleFunc("GET /runtime/system-prompt", s.auth(s.handleSystemPrompt))
-	mux.HandleFunc("GET /runtime/roster", s.auth(s.handleRoster))
-	mux.HandleFunc("POST /runtime/status", s.auth(s.handleStatus))
-	mux.HandleFunc("POST /runtime/status/heartbeat", s.auth(s.handleStatusHeartbeat))
-	mux.HandleFunc("POST /runtime/typing", s.auth(s.handleTyping))
-	mux.HandleFunc("POST /runtime/runs", s.auth(s.handleCreateRun))
-	mux.HandleFunc("POST /runtime/events", s.auth(s.handleRecordEvent))
-	mux.HandleFunc("POST /runtime/triage", s.auth(s.handleRecordTriage))
-	mux.HandleFunc("POST /runtime/llm-calls", s.auth(s.handleLlmCalls))
-	mux.HandleFunc("POST /runtime/runs/{runId}/heartbeat", s.auth(s.handleRunHeartbeat))
-	mux.HandleFunc("POST /runtime/runs/{runId}/finish", s.auth(s.handleRunFinish))
-	mux.HandleFunc("POST /runtime/busy/heartbeat", s.auth(s.handleBusyHeartbeat))
-	mux.HandleFunc("POST /runtime/busy/clear", s.auth(s.handleBusyClear))
-	mux.HandleFunc("POST /runtime/thinking/mark", s.auth(s.handleThinkingMark))
-	mux.HandleFunc("POST /runtime/thinking/unmark", s.auth(s.handleThinkingUnmark))
-	mux.HandleFunc("GET /runtime/thinking/peek", s.auth(s.handleThinkingPeek))
-	mux.HandleFunc("POST /runtime/worklog/claim", s.auth(s.handleWorklogClaim))
-	mux.HandleFunc("POST /runtime/worklog/release", s.auth(s.handleWorklogRelease))
-	mux.HandleFunc("GET /runtime/worklog/peek", s.auth(s.handleWorklogPeek))
-	mux.HandleFunc("POST /runtime/conversation/mark-read", s.auth(s.handleMarkRead))
-	mux.HandleFunc("POST /runtime/notices", s.auth(s.handleNotices))
+	_ = contract.HandlerFromMux(&Server{Svc: s}, mux)
+}
+
+// Server:runtime tag 的 ServerInterface 实现 —— 34 个薄包装到
+// *Service 的 s.auth(s.handleX)。独立类型而非直接挂 *Service:后者
+// 经嵌入 *agent.Service 已有 LoadInbox/LoadContext/LoadClimate/
+// LoadFaces 同名业务方法(daemon/内部调用面,签名不同),接口方法名
+// 与之冲突。
+type Server struct{ Svc *Service }
+
+var _ contract.ServerInterface = (*Server)(nil)
+
+/* ───────── ServerInterface 薄包装(34 条,体在下方 handle* 不动) ───────── */
+
+func (h *Server) WakeStream(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleWakeStream)(w, r)
+}
+
+func (h *Server) RuntimeCli(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleCli)(w, r)
+}
+
+func (h *Server) LoadPersona(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handlePersona)(w, r)
+}
+
+func (h *Server) ResolveConversationCompany(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleConversationCompanyId)(w, r)
+}
+
+func (h *Server) LoadInbox(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleInbox)(w, r)
+}
+
+func (h *Server) InboxTriagePayload(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleInboxTriagePayload)(w, r)
+}
+
+func (h *Server) LoadAgenda(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleAgenda)(w, r)
+}
+
+func (h *Server) AgendaVerdict(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleAgendaVerdict)(w, r)
+}
+
+func (h *Server) MemoryQuery(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleMemoryQuery)(w, r)
+}
+
+func (h *Server) LoadContext(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleContext)(w, r)
+}
+
+func (h *Server) LoadClimate(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleClimate)(w, r)
+}
+
+func (h *Server) LoadSkills(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleSkills)(w, r)
+}
+
+func (h *Server) LoadFaces(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleFaces)(w, r)
+}
+
+func (h *Server) LoadSystemPrompt(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleSystemPrompt)(w, r)
+}
+
+func (h *Server) LoadRoster(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleRoster)(w, r)
+}
+
+func (h *Server) ReportStatus(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleStatus)(w, r)
+}
+
+func (h *Server) StatusHeartbeat(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleStatusHeartbeat)(w, r)
+}
+
+func (h *Server) RuntimeTyping(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleTyping)(w, r)
+}
+
+func (h *Server) StartRun(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleCreateRun)(w, r)
+}
+
+func (h *Server) RecordEvent(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleRecordEvent)(w, r)
+}
+
+func (h *Server) RecordTriage(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleRecordTriage)(w, r)
+}
+
+func (h *Server) RecordLlmCall(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleLlmCalls)(w, r)
+}
+
+func (h *Server) RunHeartbeat(w http.ResponseWriter, r *http.Request, runId string) {
+	h.Svc.auth(h.Svc.handleRunHeartbeat)(w, r)
+}
+
+func (h *Server) FinishRun(w http.ResponseWriter, r *http.Request, runId string) {
+	h.Svc.auth(h.Svc.handleRunFinish)(w, r)
+}
+
+func (h *Server) BusyHeartbeat(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleBusyHeartbeat)(w, r)
+}
+
+func (h *Server) BusyClear(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleBusyClear)(w, r)
+}
+
+func (h *Server) ThinkingMark(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleThinkingMark)(w, r)
+}
+
+func (h *Server) ThinkingUnmark(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleThinkingUnmark)(w, r)
+}
+
+func (h *Server) ThinkingPeek(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleThinkingPeek)(w, r)
+}
+
+func (h *Server) WorklogClaim(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleWorklogClaim)(w, r)
+}
+
+func (h *Server) WorklogRelease(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleWorklogRelease)(w, r)
+}
+
+func (h *Server) WorklogPeek(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleWorklogPeek)(w, r)
+}
+
+func (h *Server) RuntimeMarkRead(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleMarkRead)(w, r)
+}
+
+func (h *Server) PostNotice(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleNotices)(w, r)
 }
 
 // auth:Bearer agent-runtime JWT → claims 注入;失败 401。
