@@ -155,12 +155,13 @@ local docker daemon the runner auto-provisions a one-off test stack
 your own DB instead, gate it with `INTEGRATION_DATABASE_URL`:
 
 ```bash
-# Pick whichever Postgres you have handy:
+# Pick whichever Postgres you have handy (pgvector flavor — migrations
+# need the vector extension):
 createdb cumora_test
 # or via Docker:
 docker run -d --name pg-test -p 5433:5432 \
   -e POSTGRES_USER=cumora -e POSTGRES_PASSWORD=cumora \
-  -e POSTGRES_DB=cumora_test postgres:16-alpine
+  -e POSTGRES_DB=cumora_test pgvector/pgvector:pg16
 
 # Run the suite (the runner refuses to TRUNCATE non-test-looking URLs):
 INTEGRATION_DATABASE_URL=postgres://cumora:cumora@localhost:5433/cumora_test \
