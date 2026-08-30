@@ -14,7 +14,9 @@ export function fmtUsdCompact(n: number, places = 2): string {
   return `$${n.toFixed(places)}`
 }
 
-/** 精确美元:按量级 2/4/6 位小数($0.000012 这种 BYOA 长尾也要可读)。 */
+/** 精确美元:按量级 2/4/6 位小数($0.000012 这种 BYOA 长尾也要可读)。
+ *  有意不做 Number.isFinite 守卫(NaN→'$NaN',desktop 原行为)——调用
+ *  点上游已保证有限,别"补齐"守卫造成语体漂移。 */
 export function fmtUsdPrecise(n: number): string {
   const a = Math.abs(n)
   const s = a >= 1 ? n.toFixed(2) : a >= 0.01 ? n.toFixed(4) : n.toFixed(6)
@@ -40,7 +42,7 @@ export function fmtPct(n: number, places = 1): string {
 }
 
 /** 缓存命中率:cached / (uncached + cached)。分母为 0 时给 0(渲染层
- * 需要区分"无流量"与"0% 命中"时自行判 null)。此前 admin 页四处内联。 */
+ * 需要区分"无流量"与"0% 命中"时自行判 null)。此前 admin 页五处内联。 */
 export function cacheHitRate(inputTokens: number, cachedInputTokens: number): number {
   const totalIn = inputTokens + cachedInputTokens
   return totalIn > 0 ? cachedInputTokens / totalIn : 0

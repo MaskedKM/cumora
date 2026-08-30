@@ -784,8 +784,7 @@ function CacheHealthCard({ summary, trend, rollup, unit, loading, t }: {
       m.set(r.purpose, cur)
     }
     const out = [...m.entries()].map(([purpose, v]) => {
-      const total = v.uncached + v.cached
-      const hitRate = total > 0 ? v.cached / total : null
+      const hitRate = (v.uncached + v.cached) > 0 ? cacheHitRate(v.uncached, v.cached) : null
       return { purpose, hitRate, savableUsd: v.savable, costUsd: v.cost, uncachedIn: v.uncached, cachedIn: v.cached }
     })
     // Biggest optimization target at the top: by savable $ in USD mode, by
@@ -805,8 +804,8 @@ function CacheHealthCard({ summary, trend, rollup, unit, loading, t }: {
     }
     const days = [...m.entries()].sort(([a], [b]) => a < b ? -1 : 1)
     return days.map(([day, v]) => {
-      const total = v.uncached + v.cached
-      return { day, hitRate: total > 0 ? v.cached / total : null }
+      const hitRate = (v.uncached + v.cached) > 0 ? cacheHitRate(v.uncached, v.cached) : null
+      return { day, hitRate }
     })
   }, [trend])
 
