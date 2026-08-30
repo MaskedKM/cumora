@@ -151,17 +151,19 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(websocket.StatusPolicyViolation, "invalid or expired ticket")
 		return
 	}
-	// 注册顺序对齐 TS:clients.add → 在场 0→1 → hello → 消息处理。
-	// 拆链在 readLoop 的 defer 单点完成(hub/在场/doc 订阅/写协程)。
 	c := &conn{
 		ws: ws, userID: userID, originID: "ws-" + authn.NewToken()[:12],
 		docSubs: map[string]*docrelay.Subscriber{}, companies: g.loadMemberships(userID),
 		outbound: make(chan []byte, outboundCap),
 	}
-	g.hub.add(c)
-	g.humanConnect(userID)
-	c.startWriter()
+	// hello 必须先于注册/写协程发出(TS 单线程下的既成不变量):保证
+	// 它是该连接的首帧,客户端"收到 hello = 连接完成"的语义不被抢先的
+	// 聊天帧打破。c.send 在 mu 下完成写,后续 writer 的帧只能排其后。
+	// 拆链在 readLoop 的 defer 单点完成(hub/在场/doc 订阅/写协程)。
 	c.send(helloFrame(g.instanceID))
+	g.hub.add(c)
+	g.humanConnect(c.userID)
+	c.startWriter()
 	go g.readLoop(c)
 }
 

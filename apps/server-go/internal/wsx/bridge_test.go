@@ -45,7 +45,7 @@ func TestFanoutDropsUntaggedAndMalformed(t *testing.T) {
 	g.hub.add(c)
 
 	g.fanout([]byte(`{"type":"typing","conversationId":"cv1","done":false}`)) // 无 companyId
-	g.fanout([]byte(`not json`))                                             // 解析失败
+	g.fanout([]byte(`not json`))                                              // 解析失败
 
 	if got := len(c.outbound); got != 0 {
 		t.Fatalf("untagged/malformed events must not route, got %d frames", got)

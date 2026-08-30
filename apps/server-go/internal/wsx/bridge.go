@@ -101,8 +101,12 @@ func (g *Gateway) fanout(payload []byte) {
 	var head struct {
 		CompanyID string `json:"companyId"`
 	}
-	if err := json.Unmarshal(payload, &head); err != nil || head.CompanyID == "" {
-		slog.Warn("wsx bridge dropping untagged event", "err", err)
+	if err := json.Unmarshal(payload, &head); err != nil {
+		slog.Warn("wsx bridge dropping malformed event", "err", err)
+		return
+	}
+	if head.CompanyID == "" {
+		slog.Warn("wsx bridge dropping untagged event")
 		return
 	}
 	g.hub.each(func(c *conn) {

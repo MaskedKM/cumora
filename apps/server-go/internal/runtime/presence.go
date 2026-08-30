@@ -96,13 +96,18 @@ func (s *Service) ResetHumanPresenceOnBoot(ctx context.Context) {
 			continue
 		}
 		demoted++
-		events.PublishRaw(ctx, chStatus, mustJSON(map[string]any{
+		// 每条发布独立 5s 上限:TS 曾因逐条 publish 无界拖住 server.listen
+		// 上线(Promise.race 兜底);关键面(UPDATE)已先行提交,这里只是
+		// 通知面,不该有能力拖住启动。
+		pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
+		events.PublishRaw(pctx, chStatus, mustJSON(map[string]any{
 			"type":            "participants.status",
 			"participantId":   id,
 			"status":          "resting",
 			"statusUpdatedAt": httpx.ISOms(at),
 			"companyId":       companyID,
 		}))
+		pcancel()
 	}
 	if demoted > 0 {
 		slog.Info("[runtime] demoted stale 'avail' human(s) to 'resting' on boot", "count", demoted)
