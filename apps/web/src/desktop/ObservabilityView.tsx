@@ -10,6 +10,13 @@ import {
 } from '@/api/client'
 import { Checkbox } from '@/components/Checkbox'
 import { Select } from '@/components/Select'
+import {
+  fmtUsdPrecise,
+  fmtTokens,
+  fmtPct as fmtPctPlaces,
+  relativeTimeParts,
+} from '@/lib/format'
+import { usePollingRefresh } from '@/lib/usePollingRefresh'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { RichBody, CodeBlock } from '@/components/Message'
 import { useParticipants } from '@/stores/participants'
@@ -76,11 +83,16 @@ function elapsed(ms: number): string {
 }
 
 function relative(ts: string, t: ReturnType<typeof useT>): string {
-  const delta = Date.now() - new Date(ts).getTime()
-  if (delta < 5000) return t('obs.justNow')
-  if (delta < 60_000) return t('obs.secondsAgo', { n: Math.round(delta / 1000) })
-  if (delta < 3_600_000) return t('obs.minutesAgo', { n: Math.round(delta / 60_000) })
-  return t('obs.hoursAgo', { n: Math.round(delta / 3_600_000) })
+  // 分部计算共享 @/lib/format(#147 ②);5s 内 justNow 的阈值与 obs.*
+  // 键族是本页局部约定。向下取整(原 Math.round,纯字面差)。
+  const parts = relativeTimeParts(ts)
+  if (!parts) return '—'
+  if (parts.unit === 'sec' && parts.ms < 5000) return t('obs.justNow')
+  switch (parts.unit) {
+    case 'sec':  return t('obs.secondsAgo', { n: parts.n })
+    case 'min':  return t('obs.minutesAgo', { n: parts.n })
+    default:     return t('obs.hoursAgo', { n: Math.round(parts.ms / 3_600_000) })
+  }
 }
 
 function pretty(value: unknown): string {
@@ -617,13 +629,12 @@ function FileViewer({ path, body }: { path: string; body: string }) {
   )
 }
 
-function fmtUsd(n: number): string {
-  const a = Math.abs(n)
-  const s = a >= 1 ? n.toFixed(2) : a >= 0.01 ? n.toFixed(4) : n.toFixed(6)
-  return `$${s}`
-}
-function fmtPct(n: number): string { return `${(n * 100).toFixed(0)}%` }
-function fmtTok(n: number): string { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n) }
+// 格式化与相对时间分部共享 @/lib/format(#147 ②);本页 $ 用精确小数语体,
+// 百分比固定 0 位 —— 一行委托维持调用点零改动。fmtTok 换共享档位版
+// (1.2k → 1.2K,纯字面差)。
+const fmtUsd = fmtUsdPrecise
+const fmtPct = (n: number): string => fmtPctPlaces(n, 0)
+const fmtTok = fmtTokens
 
 function StatCard({ label, value, sub, tone }: {
   label: string; value: string; sub?: string; tone?: 'pos' | 'neg' | 'warn' | 'muted'
@@ -1017,21 +1028,17 @@ export function ObservabilityView() {
     void loadEvents(selectedId)
   }, [loadEvents, selectedId])
 
-  useEffect(() => {
-    if (!autoRefresh) return
-    const id = window.setInterval(() => {
-      // Don't poll when the tab is backgrounded — same pattern as the
-      // participants roster refresher. Saves API + battery for a panel
-      // the user can't even see.
-      if (document.visibilityState === 'hidden') return
+  // 15s(#144a): each tick re-fetches runs (up to 80) + the selected
+  // run's events — 3s was ~20 req/min against the server for a panel
+  // that rarely changes that fast. Manual refresh stays instant.
+  // 共享 hook(#147 ②):后台 tab 暂停语义原样保留。
+  usePollingRefresh(
+    useCallback(() => {
       void loadRuns()
       void loadEvents(selectedId)
-      // 15s (#144a): each tick re-fetches runs (up to 80) + the selected
-      // run's events — 3s was ~20 req/min against the server for a panel
-      // that rarely changes that fast. Manual refresh stays instant.
-    }, 15_000)
-    return () => window.clearInterval(id)
-  }, [autoRefresh, loadEvents, loadRuns, selectedId])
+    }, [loadEvents, loadRuns, selectedId]),
+    autoRefresh ? 15_000 : 0,
+  )
 
   useEffect(() => {
     if (panel === 'workspace') void loadWorkspaceFiles()
