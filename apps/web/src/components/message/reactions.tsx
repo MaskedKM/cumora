@@ -9,11 +9,9 @@ import { TwEmoji } from '../TwEmoji'
 
 
 
-export 
-const QUICK_REACTIONS = ['👍', '❤️', '👀', '🌤️', '🔥', '👏', '✅', '🎯', '📌']
+export const QUICK_REACTIONS = ['👍', '❤️', '👀', '🌤️', '🔥', '👏', '✅', '🎯', '📌']
 
-export 
-function ReactionPill({ msgId, r }: { msgId: string; r: import('@/types').ReactionEntry }) {
+export function ReactionPill({ msgId, r }: { msgId: string; r: import('@/types').ReactionEntry }) {
   const byId = useParticipants((s) => s.byId)
   const meId = useMe()
   const [burst, setBurst] = useState(0)
@@ -83,7 +81,6 @@ function ReactionPill({ msgId, r }: { msgId: string; r: import('@/types').Reacti
   )
 }
 
-export 
 function ReactionBurst() {
   return (
     <span className="reaction-burst" aria-hidden="true">
@@ -95,8 +92,7 @@ function ReactionBurst() {
   )
 }
 
-export 
-function QuickReactionButton({ msgId, emoji }: { msgId: string; emoji: string }) {
+export function QuickReactionButton({ msgId, emoji }: { msgId: string; emoji: string }) {
   const [burst, setBurst] = useState(0)
   return (
     <button

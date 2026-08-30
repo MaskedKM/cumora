@@ -55,8 +55,7 @@ function artifactRefsFromPlainText(text: string): ArtifactRef[] {
   return Array.from(out.values())
 }
 
-export 
-function artifactRefsForMessage(msg: Message): ArtifactRef[] {
+export function artifactRefsForMessage(msg: Message): ArtifactRef[] {
   const out = new Map<string, ArtifactRef>()
   for (const ref of artifactRefsFromBody(msg.body)) addArtifactRef(out, ref)
   if (msg.tool) {
@@ -65,7 +64,6 @@ function artifactRefsForMessage(msg: Message): ArtifactRef[] {
   return Array.from(out.values())
 }
 
-export 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime()
   const ms = Date.now() - then
@@ -76,8 +74,7 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString()
 }
 
-export 
-function DocumentArtifactCard({ id: rawId, conversationId }: { id: string; conversationId: string }) {
+export function DocumentArtifactCard({ id: rawId, conversationId }: { id: string; conversationId: string }) {
   const t = useT()
   const id = useResolvedDocumentId(rawId) // git-style short-id → full id
   const loaded = useDocuments((s) => s.loaded)
@@ -156,8 +153,7 @@ function DocumentArtifactCard({ id: rawId, conversationId }: { id: string; conve
   )
 }
 
-export 
-function BoardArtifactCard({ id: rawId }: { id: string }) {
+export function BoardArtifactCard({ id: rawId }: { id: string }) {
   const t = useT()
   const id = useResolvedBoardId(rawId) // git-style short-id → full id
   const loadList = useBoards((s) => s.loadList)
@@ -248,8 +244,7 @@ function BoardArtifactCard({ id: rawId }: { id: string }) {
   )
 }
 
-export 
-function CardArtifactCard({ id: rawId }: { id: string }) {
+export function CardArtifactCard({ id: rawId }: { id: string }) {
   const t = useT()
   const id = useResolvedCardId(rawId) // git-style short-id → full id (best-effort for cards)
   const lookup = useBoards((s) => s.cardLookups[id])
@@ -342,8 +337,7 @@ function CardArtifactCard({ id: rawId }: { id: string }) {
   )
 }
 
-export 
-function CalendarArtifactCard({ id: rawId }: { id: string }) {
+export function CalendarArtifactCard({ id: rawId }: { id: string }) {
   const t = useT()
   const id = useResolvedCalendarId(rawId) // git-style short-id → full event id
   const loadingEventId = useCalendar((s) => s.loadingEventId)
@@ -423,8 +417,7 @@ function CalendarArtifactCard({ id: rawId }: { id: string }) {
   )
 }
 
-export 
-function ToolCard({ msg }: { msg: Message }) {
+export function ToolCard({ msg }: { msg: Message }) {
   if (!msg.tool) return null
   const t = msg.tool
   const ico = t.icon ?? 'web'
@@ -455,8 +448,7 @@ function ToolCard({ msg }: { msg: Message }) {
   )
 }
 
-export 
-function AttachmentCard({ msg }: { msg: Message }) {
+export function AttachmentCard({ msg }: { msg: Message }) {
   const [viewerOpen, setViewerOpen] = useState(false)
   if (!msg.attachment) return null
   const a = msg.attachment
