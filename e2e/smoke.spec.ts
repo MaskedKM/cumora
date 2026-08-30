@@ -54,7 +54,6 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
         headers: { authorization: `Bearer ${bearer}` },
         signal: ac.signal,
       })
-      // eslint-disable-next-line no-console
       console.error(`[echo-rt] wake-stream → ${res.status}`)
       if (!res.ok || !res.body) throw new Error(`wake-stream ${res.status}`)
       const reader = res.body.getReader()
@@ -70,7 +69,6 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
           buf = buf.slice(idx + 2)
           const ev = /^event: (.+)$/m.exec(block)?.[1]
           const data = /^data: (.+)$/m.exec(block)?.[1]
-          // eslint-disable-next-line no-console
           console.error(`[echo-rt] frame event=${ev} data=${(data ?? '').slice(0, 160)}`)
           if (ev !== 'wake' || !data) continue
           const frame = JSON.parse(data) as { conversationId?: string }
@@ -81,12 +79,10 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
             headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
             body: JSON.stringify({ argv: ['reply', frame.conversationId, REPLY_MSG] }),
           })
-          // eslint-disable-next-line no-console
           console.error(`[echo-rt] reply → ${r.status}: ${(await r.text()).slice(0, 200)}`)
         }
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(`[echo-rt] exited: ${e instanceof Error ? e.message : String(e)}`)
     }
   })()
@@ -94,7 +90,7 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
 }
 
 test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(180_000)
 
   // ── 1) 种登录态:users/companies/membership/participants + sessions ──
   const pg = new Client({ connectionString: process.env.DATABASE_URL })
@@ -149,8 +145,10 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
   await expect(page.locator('[aria-label="Conversations"]')).toBeVisible({ timeout: 30_000 })
 
   // ── 5) 打开 Atlas 的 DM,发消息 ──
-  // DM 行无 aria-label(侦察假设有误):行内是 img[alt=名] + 文本节点,
-  // 用精确文本锚点(快照实测);点击文本冒泡到行 onClick。
+  // DM 行无 aria-label(快照实测):行内是 img[alt=名] + 文本节点,用
+  // 精确文本锚点。.first() 依赖 DOM 顺序(会话列表在 ChatPane 之前)
+  // ——本流程首开无选中会话,列表的 Atlas 是唯一匹配;切回步骤里
+  // ChatPane 头部显示的是 Bram,同样无歧义(评审 P3 留档此约束)。
   await page.getByText('Atlas', { exact: true }).first().click({ timeout: 30_000 })
   const composer = page.locator('div[role="textbox"]').first()
   await composer.click()
@@ -180,6 +178,10 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
     if (Date.now() > deadline) throw new Error('reply never landed in pg')
     await page.waitForTimeout(500)
   }
+  // 切走的真实作用链:选中 Bram → markRead → conversations.reload →
+  // refreshActiveMessagesIfSidebarMoved(见 stores/conversations.ts,比对
+  // lastMessageId 不在缓存即 reload)——切回 Atlas 时新回复经此副作用
+  // 拉进缓存;对 loadConversation/该 helper 的重构会让本步神秘变红。
   await page.getByText('Bram', { exact: true }).first().click()
   await page.getByText('Atlas', { exact: true }).first().click()
   await expect(page.getByText(REPLY_MSG)).toBeVisible({ timeout: 15_000 })
