@@ -5345,8 +5345,8 @@ export interface operations {
     getMessages: {
         parameters: {
             query?: {
-                before?: number;
-                limit?: number;
+                before?: string;
+                limit?: string;
             };
             header?: never;
             path: {

@@ -1944,8 +1944,8 @@ type AddMemberJSONBody struct {
 
 // GetMessagesParams defines parameters for GetMessages.
 type GetMessagesParams struct {
-	Before *int `form:"before,omitempty" json:"before,omitempty"`
-	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
+	Before *string `form:"before,omitempty" json:"before,omitempty"`
+	Limit  *string `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // SendMessageJSONBody defines parameters for SendMessage.

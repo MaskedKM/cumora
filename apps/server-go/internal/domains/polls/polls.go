@@ -13,12 +13,6 @@ import (
 	engine "github.com/MaskedKM/cumora/apps/server-go/internal/polls"
 )
 
-func Mount(mux *http.ServeMux, db *sql.DB) {
-	mux.HandleFunc("POST /api/polls", create(db))
-	mux.HandleFunc("POST /api/polls/{messageId}/vote", vote(db))
-	mux.HandleFunc("POST /api/polls/{messageId}/close", closePoll(db))
-}
-
 // pollHttpError:引擎可预期错误带状态;其余 500(对齐 pollHttpError)。
 func pollHttpError(w http.ResponseWriter, r *http.Request, err error) {
 	if pe, ok := err.(*engine.PollError); ok {
@@ -49,123 +43,117 @@ func requireConversationMember(w http.ResponseWriter, r *http.Request, db *sql.D
 	return false
 }
 
-func create(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-		if !ok {
-			return
-		}
-		var raw map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&raw)
-		keyAny := func(k string) any {
-			var v any
-			_ = json.Unmarshal(raw[k], &v)
-			return v
-		}
-		// 强转对齐 TS:conversationId/question 走 String(x ?? ''),mode 仅
-		// 'multi' 收敛,optionIds/optionIds 元素 String 化,expiresInMinutes
-		// 仅 number 透传。
-		conversationID := httpx.JSStringOrNullish(keyAny("conversationId"))
-		if conversationID == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "conversationId required")
-			return
-		}
-		if !requireConversationMember(w, r, db, uid, companyID, conversationID) {
-			return
-		}
-		var options []string
-		if arr, ok := keyAny("options").([]any); ok {
-			for _, o := range arr {
-				options = append(options, httpx.JSStringOrNullish(o))
-			}
-		}
-		mode := "single"
-		if s, ok := keyAny("mode").(string); ok && s == "multi" {
-			mode = "multi"
-		}
-		var expiresIn *float64
-		if f, ok := keyAny("expiresInMinutes").(float64); ok {
-			expiresIn = &f
-		}
-		created, perr := engine.Create(r.Context(), db, engine.CreateArgs{
-			ConversationID: conversationID, CompanyID: companyID, AuthorID: uid,
-			Question: httpx.JSStringOrNullish(keyAny("question")), Mode: mode,
-			Options: options, ExpiresInMinutes: expiresIn,
-		})
-		if perr != nil {
-			pollHttpError(w, r, perr)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-			"messageId": created.MessageID,
-			"sequence":  created.Sequence,
-			"poll":      created.Poll,
-		})
+func CreatePoll(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
+	if !ok {
+		return
+	}
+	var raw map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&raw)
+	keyAny := func(k string) any {
+		var v any
+		_ = json.Unmarshal(raw[k], &v)
+		return v
+	}
+	// 强转对齐 TS:conversationId/question 走 String(x ?? ''),mode 仅
+	// 'multi' 收敛,optionIds/optionIds 元素 String 化,expiresInMinutes
+	// 仅 number 透传。
+	conversationID := httpx.JSStringOrNullish(keyAny("conversationId"))
+	if conversationID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "conversationId required")
+		return
+	}
+	if !requireConversationMember(w, r, db, uid, companyID, conversationID) {
+		return
+	}
+	var options []string
+	if arr, ok := keyAny("options").([]any); ok {
+		for _, o := range arr {
+			options = append(options, httpx.JSStringOrNullish(o))
+		}
+	}
+	mode := "single"
+	if s, ok := keyAny("mode").(string); ok && s == "multi" {
+		mode = "multi"
+	}
+	var expiresIn *float64
+	if f, ok := keyAny("expiresInMinutes").(float64); ok {
+		expiresIn = &f
+	}
+	created, perr := engine.Create(r.Context(), db, engine.CreateArgs{
+		ConversationID: conversationID, CompanyID: companyID, AuthorID: uid,
+		Question: httpx.JSStringOrNullish(keyAny("question")), Mode: mode,
+		Options: options, ExpiresInMinutes: expiresIn,
+	})
+	if perr != nil {
+		pollHttpError(w, r, perr)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"messageId": created.MessageID,
+		"sequence":  created.Sequence,
+		"poll":      created.Poll,
+	})
 }
 
-func vote(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-		if !ok {
-			return
-		}
-		messageID := r.PathValue("messageId")
-		var raw map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&raw)
-		var arr []any
-		_ = json.Unmarshal(raw["optionIds"], &arr)
-		var optionIDs []string
-		for _, x := range arr {
-			// String(x ?? '') 后滤空(TS .map(String).filter(Boolean))。
-			if s := httpx.JSStringOrNullish(x); s != "" {
-				optionIDs = append(optionIDs, s)
-			}
-		}
-		event, perr := engine.CastVote(r.Context(), db, engine.CastVoteArgs{
-			MessageID: messageID, CompanyID: companyID, VoterParticipant: uid,
-			VoterKind: "human", OptionIDs: optionIDs,
-		})
-		if perr != nil {
-			pollHttpError(w, r, perr)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"tallies": event.Tallies, "poll": event.Poll})
+func CastVote(db *sql.DB, w http.ResponseWriter, r *http.Request, messageId string) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
+	if !ok {
+		return
+	}
+	messageID := messageId
+	var raw map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&raw)
+	var arr []any
+	_ = json.Unmarshal(raw["optionIds"], &arr)
+	var optionIDs []string
+	for _, x := range arr {
+		// String(x ?? '') 后滤空(TS .map(String).filter(Boolean))。
+		if s := httpx.JSStringOrNullish(x); s != "" {
+			optionIDs = append(optionIDs, s)
+		}
+	}
+	event, perr := engine.CastVote(r.Context(), db, engine.CastVoteArgs{
+		MessageID: messageID, CompanyID: companyID, VoterParticipant: uid,
+		VoterKind: "human", OptionIDs: optionIDs,
+	})
+	if perr != nil {
+		pollHttpError(w, r, perr)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"tallies": event.Tallies, "poll": event.Poll})
 }
 
-func closePoll(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := httpx.RequireAuth(w, r)
-		if !ok {
-			return
-		}
-		companyID, ok := httpx.ResolveCompany(w, r, db, uid)
-		if !ok {
-			return
-		}
-		event, perr := engine.ClosePoll(r.Context(), db, engine.CloseArgs{
-			MessageID: r.PathValue("messageId"), CompanyID: companyID,
-			ActorID: &uid, Reason: "manual",
-		})
-		if perr != nil {
-			pollHttpError(w, r, perr)
-			return
-		}
-		// 幂等关闭:closed=false + poll=null(TS !!event 形状)。
-		closed := event != nil
-		var poll any
-		if event != nil {
-			poll = event.Poll
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"closed": closed, "poll": poll})
+func ClosePoll(db *sql.DB, w http.ResponseWriter, r *http.Request, messageId string) {
+	uid, ok := httpx.RequireAuth(w, r)
+	if !ok {
+		return
 	}
+	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
+	if !ok {
+		return
+	}
+	event, perr := engine.ClosePoll(r.Context(), db, engine.CloseArgs{
+		MessageID: messageId, CompanyID: companyID,
+		ActorID: &uid, Reason: "manual",
+	})
+	if perr != nil {
+		pollHttpError(w, r, perr)
+		return
+	}
+	// 幂等关闭:closed=false + poll=null(TS !!event 形状)。
+	closed := event != nil
+	var poll any
+	if event != nil {
+		poll = event.Poll
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"closed": closed, "poll": poll})
 }
