@@ -106,8 +106,14 @@ test('cap: FLUSH_MAX_PENDING trips before the window', async () => {
     await applyLocalUpdate(DOC, COMPANY, 'client:cap', 'u-cap', stepInsert(local, String(i)))
   }
 
-  await new Promise((r) => setTimeout(r, 120))
-  const mid = await rowsFor(DOC)
+  // 轮询等 cap 批出现 —— deadline 卡在 400ms 窗口到期前,确保观察到的
+  // 1 行来自 cap 腿而非窗口腿。
+  const midDeadline = Date.now() + 250
+  let mid = await rowsFor(DOC)
+  while (mid.length === 0 && Date.now() < midDeadline) {
+    await new Promise((r) => setTimeout(r, 25))
+    mid = await rowsFor(DOC)
+  }
   assert.equal(mid.length, 1, `cap flush expected mid-window, got ${mid.length}`)
 
   await new Promise((r) => setTimeout(r, 700))

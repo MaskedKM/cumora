@@ -140,13 +140,17 @@ export function openDocument(opts: OpenDocumentOptions): YDocSession {
 
   const onWsEvent = (e: WsEvent) => {
     if (e.type === 'hello') {
-      // Reconnected — push any batch that queued through the outage
-      // FIRST, then re-subscribe and re-broadcast our awareness so
-      // peers refresh our cursor on the new socket.
+      // Reconnected — re-subscribe FIRST, then push any batch that queued
+      // through the outage, and re-broadcast our awareness so peers
+      // refresh our cursor on the new socket. Order matters: the gateway
+      // silently drops doc.update for connections that haven't (re-)
+      // subscribed yet ("必须先订阅"), so flushing before subscribe would
+      // lose the batch for good. doc.sync vs. the flushed update may land
+      // in either order — both converge (CRDT, idempotent apply).
+      subscribe()
       flushUpdate()
       dirtyClients.clear()
       if (awarenessTimer != null) { clearTimeout(awarenessTimer); awarenessTimer = null }
-      subscribe()
       const clientId = doc.clientID
       const update = encodeAwarenessUpdate(awareness, [clientId])
       ws.send({
@@ -188,9 +192,13 @@ export function openDocument(opts: OpenDocumentOptions): YDocSession {
     awareness,
     synced,
     destroy() {
-      // 尾帧先冲:窗口内攒着的编辑不能随组件卸载丢失。
+      // 尾帧先冲:窗口内攒着的编辑不能随组件卸载丢失。若此刻恰好断线
+      // (send 失败),显式弃置 —— 重试定时器若不清会每秒自续、并在日后
+      // 全局 ws 重连时把已销毁会话的尾帧迟到送到服务端。
       flushUpdate()
       flushAwareness()
+      if (updateRetryTimer != null) { clearTimeout(updateRetryTimer); updateRetryTimer = null }
+      pendingUpdate = null
       window.removeEventListener('pagehide', onPageHide)
       off()
       doc.off('update', handleUpdate)

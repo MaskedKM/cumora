@@ -8,8 +8,9 @@
  *
  * Persistence is append-only: Y.Doc 'update' events are coalesced into a
  * short per-room window (#145) and written to `document_updates` as one
- * merged row per origin — 同进程订阅者仍逐帧即时扇出(内存调用,协同
- * 延迟不回退),合的只有 DB INSERT 与跨实例 Redis publish. A periodic
+ * merged row per author. 生产拓扑中 WS 客户端经 Go relay 订 Redis 取帧,
+ * 也就是说 B 端看到协作者按键要多等 0~FLUSH_WINDOW_MS(150ms,无感知
+ * 级);同进程直连订阅者(桥接代理等)仍逐帧即时扇出. A periodic
  * compaction merges the log into a single `document_snapshots` row; the
  * next cold load reads the snapshot + any tail updates. The room manager
  * subscribes to a Redis channel so two different server instances can fan
@@ -324,15 +325,22 @@ export function unsubscribe(documentId: string, sub: DocSubscriber): void {
   if (room.subs.size === 0) {
     // Schedule an eviction so flapping reconnects don't churn cold loads.
     const t = setTimeout(() => {
-      const current = rooms.get(roomKey(documentId))
-      const stillEmpty = (current?.subs.size ?? 0) === 0
-      if (stillEmpty && current) {
-        // 房间对象即将从 map 摘除 —— 待落库批次必须先出发(fire-and-forget
-        // 即可:persist 只需要 documentId/authorId/bytes,不依赖房间存活)。
-        flushPending(current)
-        rooms.delete(roomKey(documentId))
-        evictions.delete(documentId)
-      }
+      void (async () => {
+        const current = rooms.get(roomKey(documentId))
+        if (!current || current.subs.size !== 0) return
+        // 房间仍挂着,先冲尾批 —— 必须等落库落定再摘房间:若先 delete,
+        // 同 tick 的新订阅会重建房间并 hydrate,而此刻驱逐批的 INSERT
+        // 可能尚未提交,新房间将永久缺这批 ops(本实例的 Redis 自回声被
+        // INSTANCE_ORIGIN 抑制,不会补)。
+        await Promise.allSettled(flushPendingNow(current))
+        // 冲刷期间可能又有订阅者进门(getOrCreateRoom 会清掉 evictions
+        // 登记并复用本房间)—— 已有人就保留,没人再摘。
+        const still = rooms.get(roomKey(documentId))
+        if (still === current && current.subs.size === 0) {
+          rooms.delete(roomKey(documentId))
+          evictions.delete(documentId)
+        }
+      })()
     }, ROOM_GRACE_MS)
     evictions.set(documentId, t)
   }
