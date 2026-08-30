@@ -996,8 +996,11 @@ paths:
       operationId: getMessages
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: before, in: query, schema: { type: integer } }
-        - { name: limit, in: query, schema: { type: integer } }
+        # 宽容解析(评审 #194 P2,calendar from/to 同例):integer 绑定会让
+        # 畸形值(?limit=abc)在生成中间件 400,而 TS 基线 NaN→默认值
+        # 忽略;handler 体自读 Query() 宽容解析,标 string 保平价。
+        - { name: before, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: string } }
       summary: 拉消息(倒序分页)
       responses:
         '200':

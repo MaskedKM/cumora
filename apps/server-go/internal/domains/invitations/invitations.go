@@ -34,10 +34,6 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("DELETE /api/companies/{id}/invitations/{inviteId}", revoke(db))
 	mux.HandleFunc("GET /api/invitations/{token}", preview(db))
 	mux.HandleFunc("POST /api/invitations/{token}/accept", accept(db))
-	// convene(#68)
-	mux.HandleFunc("POST /api/conversations/{id}/convene", conveneStart(db))
-	mux.HandleFunc("GET /api/conversations/{id}/convene", conveneActive(db))
-	mux.HandleFunc("GET /api/convene/{sessionId}/transcript", conveneTranscript(db))
 }
 
 /* ───────── 助手 ───────── */
@@ -704,63 +700,60 @@ func requireConvoMember(w http.ResponseWriter, r *http.Request, db *sql.DB, conv
 	return "", "", false
 }
 
-func conveneStart(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		me, _, ok := requireConvoMember(w, r, db, id)
-		if !ok {
-			return
-		}
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		// F16:TS 是 String(body.topic ?? 'live work session')——非串值
-		// 强转(123→"123"),仅 null/缺省落默认。
-		topic := "live work session"
-		if raw, has := body["topic"]; has {
-			var v any
-			if json.Unmarshal(raw, &v) == nil && v != nil {
-				topic = httpx.JSToString(v)
-			}
-		}
-		var convoTitle string
-		var membersJSON string
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT title, members::text FROM conversations WHERE id = $1`, id).
-			Scan(&convoTitle, &membersJSON); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "conversation "+id+" not found")
-			return
-		}
-		// F6:Go 侧无服务端编排,会话无人终结——新会话开场即了结本会话
-		// 既有 live(被新会话取代),恢复 TS 编排自然结束时的终态。
-		sweepStaleConvene(r.Context(), db, id, true)
-		sessionID := "cs-" + randUUID()
-		flair := httpx.UTF16Cap(topic, 80)
-		startedAt := time.Now().UTC()
-		_, _ = db.ExecContext(r.Context(), `
-			INSERT INTO convene_sessions (id, conversation_id, title, flair, started_by, started_at, state)
-			VALUES ($1, $2, $3, $4, $5, NOW(), 'live')`,
-			sessionID, id, convoTitle+" · live", flair, me)
-		session := map[string]any{
-			"id": sessionID, "conversation_id": id,
-			"title": convoTitle + " · live", "flair": flair,
-			"started_by": me, "started_at": httpx.ISOms(startedAt), "ended_at": nil, "state": "live",
-		}
-		var companyID sql.NullString
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT company_id FROM conversations WHERE id = $1`, id).Scan(&companyID)
-		payload := map[string]any{
-			"type": "convene", "sessionId": sessionID, "conversationId": id,
-			"kind": "started", "data": session,
-		}
-		if companyID.Valid {
-			payload["companyId"] = companyID.String
-		}
-		_ = events.PublishRaw(r.Context(), "cumora:convene", mustMJSON(payload))
-		// 编排(orchestrate)是服务端 agent-turn 引擎——BYOA 化后由成员
-		// daemon 经常规唤醒参与;此处不移植服务端编排,transcript 在测试
-		// 形态两侧同为空(测试只断言列表形状)。
-		httpx.WriteJSON(w, http.StatusOK, session)
+func StartConvene(db *sql.DB, w http.ResponseWriter, r *http.Request, id string) {
+	me, _, ok := requireConvoMember(w, r, db, id)
+	if !ok {
+		return
 	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	// F16:TS 是 String(body.topic ?? 'live work session')——非串值
+	// 强转(123→"123"),仅 null/缺省落默认。
+	topic := "live work session"
+	if raw, has := body["topic"]; has {
+		var v any
+		if json.Unmarshal(raw, &v) == nil && v != nil {
+			topic = httpx.JSToString(v)
+		}
+	}
+	var convoTitle string
+	var membersJSON string
+	if err := db.QueryRowContext(r.Context(),
+		`SELECT title, members::text FROM conversations WHERE id = $1`, id).
+		Scan(&convoTitle, &membersJSON); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "conversation "+id+" not found")
+		return
+	}
+	// F6:Go 侧无服务端编排,会话无人终结——新会话开场即了结本会话
+	// 既有 live(被新会话取代),恢复 TS 编排自然结束时的终态。
+	sweepStaleConvene(r.Context(), db, id, true)
+	sessionID := "cs-" + randUUID()
+	flair := httpx.UTF16Cap(topic, 80)
+	startedAt := time.Now().UTC()
+	_, _ = db.ExecContext(r.Context(), `
+		INSERT INTO convene_sessions (id, conversation_id, title, flair, started_by, started_at, state)
+		VALUES ($1, $2, $3, $4, $5, NOW(), 'live')`,
+		sessionID, id, convoTitle+" · live", flair, me)
+	session := map[string]any{
+		"id": sessionID, "conversation_id": id,
+		"title": convoTitle + " · live", "flair": flair,
+		"started_by": me, "started_at": httpx.ISOms(startedAt), "ended_at": nil, "state": "live",
+	}
+	var companyID sql.NullString
+	_ = db.QueryRowContext(r.Context(),
+		`SELECT company_id FROM conversations WHERE id = $1`, id).Scan(&companyID)
+	payload := map[string]any{
+		"type": "convene", "sessionId": sessionID, "conversationId": id,
+		"kind": "started", "data": session,
+	}
+	if companyID.Valid {
+		payload["companyId"] = companyID.String
+	}
+	_ = events.PublishRaw(r.Context(), "cumora:convene", mustMJSON(payload))
+	// 编排(orchestrate)是服务端 agent-turn 引擎——BYOA 化后由成员
+	// daemon 经常规唤醒参与;此处不移植服务端编排,transcript 在测试
+	// 形态两侧同为空(测试只断言列表形状)。
+	httpx.WriteJSON(w, http.StatusOK, session)
 }
 
 /* ───────── convene(F6 清扫 + 端点) ───────── */
@@ -808,97 +801,92 @@ func sweepStaleConvene(ctx context.Context, db *sql.DB, conversationID string, s
 	}
 }
 
-func conveneActive(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if _, _, ok := requireConvoMember(w, r, db, id); !ok {
-			return
-		}
-		// F6:读侧兜底——超时(30min)live 僵尸就地了结(TS 编排崩溃同样
-		// 会留 live 僵尸,30min 远超编排时长,不影响真进行中的会话)。
-		sweepStaleConvene(r.Context(), db, id, false)
-		var sessionID, title, flair, startedBy, state string
-		var startedAt time.Time
-		var endedAt sql.NullTime
-		err := db.QueryRowContext(r.Context(), `
-			SELECT id, title, flair, started_by, started_at, ended_at, state
-			  FROM convene_sessions
-			 WHERE conversation_id = $1 AND state = 'live'
-			 ORDER BY started_at DESC LIMIT 1`, id).
-			Scan(&sessionID, &title, &flair, &startedBy, &startedAt, &endedAt, &state)
-		if err == sql.ErrNoRows {
-			httpx.WriteJSON(w, http.StatusOK, nil)
-			return
-		}
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"id": sessionID, "conversation_id": id,
-			"title": title, "flair": flair, "started_by": startedBy,
-			"started_at": httpx.ISOms(startedAt), "ended_at": nullTimeUTC(endedAt), "state": state,
-		})
+func ActiveConvene(db *sql.DB, w http.ResponseWriter, r *http.Request, id string) {
+	if _, _, ok := requireConvoMember(w, r, db, id); !ok {
+		return
 	}
+	// F6:读侧兜底——超时(30min)live 僵尸就地了结(TS 编排崩溃同样
+	// 会留 live 僵尸,30min 远超编排时长,不影响真进行中的会话)。
+	sweepStaleConvene(r.Context(), db, id, false)
+	var sessionID, title, flair, startedBy, state string
+	var startedAt time.Time
+	var endedAt sql.NullTime
+	err := db.QueryRowContext(r.Context(), `
+		SELECT id, title, flair, started_by, started_at, ended_at, state
+		  FROM convene_sessions
+		 WHERE conversation_id = $1 AND state = 'live'
+		 ORDER BY started_at DESC LIMIT 1`, id).
+		Scan(&sessionID, &title, &flair, &startedBy, &startedAt, &endedAt, &state)
+	if err == sql.ErrNoRows {
+		httpx.WriteJSON(w, http.StatusOK, nil)
+		return
+	}
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"id": sessionID, "conversation_id": id,
+		"title": title, "flair": flair, "started_by": startedBy,
+		"started_at": httpx.ISOms(startedAt), "ended_at": nullTimeUTC(endedAt), "state": state,
+	})
 }
 
-func conveneTranscript(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		me, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		sessionID := r.PathValue("sessionId")
-		var membersJSON string
-		err := db.QueryRowContext(r.Context(), `
-			SELECT c.members::text
-			  FROM convene_sessions s
-			  JOIN conversations c ON c.id = s.conversation_id
-			 WHERE s.id = $1 AND c.company_id = $2 LIMIT 1`, sessionID, tenant).Scan(&membersJSON)
-		if err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		var members []string
-		_ = json.Unmarshal([]byte(membersJSON), &members)
-		isMember := false
-		for _, m := range members {
-			if m == me {
-				isMember = true
-				break
-			}
-		}
-		if !isMember {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT id, session_id, author_id, kind, body, sequence, decision, created_at
-			  FROM convene_transcript WHERE session_id = $1
-			 ORDER BY sequence ASC`, sessionID)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var id, sessID, authorID, kind, body string
-			var sequence int
-			var decision []byte
-			var createdAt time.Time
-			if rows.Scan(&id, &sessID, &authorID, &kind, &body, &sequence, &decision, &createdAt) == nil {
-				var decisionAny any
-				_ = json.Unmarshal(decision, &decisionAny)
-				out = append(out, map[string]any{
-					"id": id, "sessionId": sessID, "authorId": authorID,
-					"kind": kind, "body": body, "sequence": sequence,
-					"decision": decisionAny, "createdAt": httpx.ISOms(createdAt),
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+func ConveneTranscript(db *sql.DB, w http.ResponseWriter, r *http.Request, sessionId string) {
+	me, tenant, ok := httpx.RequireCompany(w, r, db)
+	if !ok {
+		return
 	}
+	sessionID := sessionId
+	var membersJSON string
+	err := db.QueryRowContext(r.Context(), `
+		SELECT c.members::text
+		  FROM convene_sessions s
+		  JOIN conversations c ON c.id = s.conversation_id
+		 WHERE s.id = $1 AND c.company_id = $2 LIMIT 1`, sessionID, tenant).Scan(&membersJSON)
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var members []string
+	_ = json.Unmarshal([]byte(membersJSON), &members)
+	isMember := false
+	for _, m := range members {
+		if m == me {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	rows, err := db.QueryContext(r.Context(), `
+		SELECT id, session_id, author_id, kind, body, sequence, decision, created_at
+		  FROM convene_transcript WHERE session_id = $1
+		 ORDER BY sequence ASC`, sessionID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, sessID, authorID, kind, body string
+		var sequence int
+		var decision []byte
+		var createdAt time.Time
+		if rows.Scan(&id, &sessID, &authorID, &kind, &body, &sequence, &decision, &createdAt) == nil {
+			var decisionAny any
+			_ = json.Unmarshal(decision, &decisionAny)
+			out = append(out, map[string]any{
+				"id": id, "sessionId": sessID, "authorId": authorID,
+				"kind": kind, "body": body, "sequence": sequence,
+				"decision": decisionAny, "createdAt": httpx.ISOms(createdAt),
+			})
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 /* ───────── all-hands / DM 种子(onboardCompany.ts 同语义;
