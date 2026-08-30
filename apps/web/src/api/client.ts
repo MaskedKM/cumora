@@ -58,74 +58,27 @@ import type {Status,
   BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
   CalendarEvent, CalendarEventKind, CalendarEventStatus, CalendarDispatch, ComputerStatus, ComputerKind, EngineId,
 } from '@/types'
-import { getAuthToken, getActiveCompanyId, useAuth } from '@/stores/auth'
+import { getAuthToken, getActiveCompanyId } from '@/stores/auth'
+import { SERVER_ORIGIN, fetchJson, getDevModeEnabled } from './core'
 
-const DEVTOOLS_KEY = 'cumora.devtools.enabled'
-const SERVER_URL_KEY = 'cumora.serverUrl'
+// 共享骨架(#147 ①)挪到 ./core —— origin 三层解析/Bearer/401 清 session/
+// 错误 detail 解析与 admin 面合一;此处 re-export 维持既有导入方不变。
+export {
+  getServerOrigin, setServerOrigin, getDevModeEnabled, setDevModeEnabled,
+  ApiError,
+} from './core'
 
-// Vite's relative proxy keeps browser requests same-origin, but the pairing
-// command runs outside the browser and must address the API directly.
 const DEV_API_TARGET = import.meta.env.DEV
   ? (import.meta.env.VITE_CUMORA_DEV_API_TARGET as string | undefined)?.replace(/\/+$/, '')
   : undefined
 
-/** Resolve the API base. Three layers, highest priority first:
- *    1. localStorage['cumora.serverUrl'] — runtime override, settable
- *       from the dev console: `localStorage.setItem('cumora.serverUrl',
- *       'http://192.168.1.10:5181')`. Lets a packaged build switch
- *       endpoints without rebuilding (e.g. server on another LAN box).
- *    2. import.meta.env.VITE_CUMORA_API_BASE — baked at build time;
- *       .env.production points it at the self-hosted server
- *       (http://127.0.0.1:5181 by default).
- *    3. '' — falls back to relative URLs, which work in Vite dev (the
- *       proxy rewrites /api → CUMORA_DEV_API_TARGET) and in any same-
- *       origin static deploy.
- *  Values should be the origin only, with NO trailing slash and NO
- *  `/api` suffix — the suffix is added on use, so `http(...)` and the
- *  WS / ws-ticket paths stay consistent. */
-function resolveServerOrigin(): string {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem(SERVER_URL_KEY)
-    if (override) return override.replace(/\/+$/, '')
-  }
-  const baked = import.meta.env.VITE_CUMORA_API_BASE as string | undefined
-  if (baked) return baked.replace(/\/+$/, '')
-  return ''
-}
-
-const SERVER_ORIGIN = resolveServerOrigin()
 const API = `${SERVER_ORIGIN}/api`
-
-/** Public getter for UI surfaces (AuthScreen, Settings). Returns the
- *  origin actually in use this session — same value `http()` and the WS
- *  client are built against. Empty string means "relative URLs, going
- *  through the Vite proxy or same-origin." */
-export function getServerOrigin(): string {
-  return SERVER_ORIGIN
-}
 
 /** Origin to embed in a local computer pairing command.
  * In Vite dev the browser uses a relative proxy, so SERVER_ORIGIN is empty;
  * the daemon still needs the API target rather than the renderer origin. */
 export function getPairingServerOrigin(): string {
   return SERVER_ORIGIN || DEV_API_TARGET || ''
-}
-
-/** Persist a new server origin override and clear the existing session.
- *  We don't try to hot-swap the in-memory API/WS — anything pending against
- *  the old origin would race or fail in confusing ways. Callers should
- *  follow up with `location.reload()` so the whole app boots fresh against
- *  the new origin. Pass `null` to drop the override entirely (revert to
- *  build-time default). */
-export function setServerOrigin(origin: string | null): void {
-  if (origin == null || origin.trim() === '') {
-    localStorage.removeItem(SERVER_URL_KEY)
-  } else {
-    localStorage.setItem(SERVER_URL_KEY, origin.trim().replace(/\/+$/, ''))
-  }
-  // Auth token is server-scoped — DELETE here so a reload lands on AuthScreen
-  // instead of probing /auth/me against the new origin with a stale token.
-  useAuth.getState().clear()
 }
 
 /** WS origin (ws:// or wss://) derived from the resolved server origin.
@@ -137,56 +90,15 @@ function wsOrigin(): string {
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
 }
 
-export function getDevModeEnabled(): boolean {
-  if (typeof localStorage === 'undefined') return false
-  return localStorage.getItem(DEVTOOLS_KEY) === '1'
-}
-
-export function setDevModeEnabled(enabled: boolean): void {
-  if (typeof localStorage === 'undefined') return
-  if (enabled) localStorage.setItem(DEVTOOLS_KEY, '1')
-  else localStorage.removeItem(DEVTOOLS_KEY)
-}
-
-export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message)
-    this.name = 'ApiError'
-  }
-}
-
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  const token = getAuthToken()
-  if (token) headers.authorization = `Bearer ${token}`
-  const company = getActiveCompanyId()
-  if (company) headers['x-company-id'] = company
-  if (getDevModeEnabled()) headers['x-cumora-dev-mode'] = '1'
-  const res = await fetch(`${API}${path}`, {
-    headers: { ...headers, ...(init?.headers ?? {}) },
-    ...init,
+  return fetchJson<T>(path, init, {
+    base: API,
+    companyHeader: true,
+    devModeHeader: true,
+    // 匿名 auth 端点(/auth/*)的 401 是"凭证错误"而非"会话过期"——
+    // 不能清掉半登录态,交给调用方渲染表单错误。
+    clear401: (p) => !p.startsWith('/auth/'),
   })
-  // Auto-clear session on 401 so the AuthGate boots back to the login screen.
-  if (res.status === 401 && !path.startsWith('/auth/')) {
-    useAuth.getState().clear()
-  }
-  if (!res.ok) {
-    // Surface the server's actual error message — most endpoints return a
-    // JSON body like `{error: "..."}` on failure. Falls back to a body text
-    // snippet if it isn't JSON, then to status only as last resort.
-    let detail: string | null = null
-    try {
-      const text = await res.text()
-      if (text) {
-        try {
-          const j = JSON.parse(text) as { error?: string; message?: string }
-          detail = j.error ?? j.message ?? text.slice(0, 200)
-        } catch { detail = text.slice(0, 200) }
-      }
-    } catch { /* ignore */ }
-    throw new ApiError(detail ? `${detail} (${res.status})` : `${res.status} ${res.statusText}`, res.status)
-  }
-  return res.json() as Promise<T>
 }
 
 
