@@ -14,14 +14,18 @@
  * (2026-08-28 实测:生产 Go 服与测试服同库会导致 scheduler 用例 0 唤醒)。
  *
  * To run:
- *   1. DEDICATED test DB(套件 TRUNCATE 全表):
- *        createdb cumora_test
- *   2. Redis listening(默认 localhost:6379)
- *   3. export INTEGRATION_DATABASE_URL=postgres://$USER@localhost:5432/cumora_test
- *   4. npm run test:integration
+ *   1. 什么都不用配(本机有 docker 时):未设 INTEGRATION_DATABASE_URL
+ *      则自动起一次性测试栈(pgvector + redis 各一容器,随机端口,退出
+ *      即拆)——cumora-pg/cumora-redis 生产实例不再被测试打搅(#146)。
+ *      镜像与 CI/scratch 同款(pgvector/pgvector:pg16 + redis:7)。
+ *   2. 显式自带库:export INTEGRATION_DATABASE_URL=postgres://…/cumora_test
+ *      (CI 即此形态,auto 路径不触发);REDIS_URL 同理,本机 localhost
+ *      形态会被强制加 /5 db 序号与常驻服务分道。
+ *   3. INTEGRATION_FILES="mirror-scheduler" 可按文件名子串过滤(逗号分隔
+ *      多个子串,叠在 shard 之后)——#119 单文件复跑复现器用。
  *
- * INTEGRATION_DATABASE_URL 未设时打一行 skipped 退出 0(CI/pre-commit
- * 无测试库也不挡道)。BOOT-FAILED 时杀尽全部子进程再退出(#68 评审 F17)。
+ * 两者皆无时(无 env 且 docker 不可用)打一行 skipped 退出 0(pre-commit
+ * 不挡道)。BOOT-FAILED 时杀尽全部子进程、拆掉 auto 栈再退出(#68 F17)。
  */
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
@@ -31,12 +35,99 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import 'dotenv/config'
 
-const INTEGRATION_URL = process.env.INTEGRATION_DATABASE_URL
+/* ───────── #146 一次性测试栈(仅本机、仅未显式给 env 时) ─────────
+ * 随机端口起 pgvector + redis 各一容器,套件退出(含 bail/信号)即拆。
+ * 此前本机测试直连 cumora-pg 里的 cumora_test:TRUNCATE churn 与生产共
+ * 缓冲池/CPU/IO,是 #119 时序 flake 的环境根源(2026-08-28 实测
+ * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。 */
+let autoStack = null // { pg, redis, dbUrl, redisUrl }
+
+function runCmd(cmd, args, timeoutMs = 30_000) {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = '', err = ''
+    const timer = setTimeout(() => { try { p.kill('SIGKILL') } catch { /* gone */ } }, timeoutMs)
+    p.stdout.on('data', (d) => { out += d })
+    p.stderr.on('data', (d) => { err += d })
+    p.on('error', () => { clearTimeout(timer); resolve({ code: 1, out, err }) })
+    p.on('exit', (c) => { clearTimeout(timer); resolve({ code: c ?? 1, out, err }) })
+  })
+}
+
+async function waitContainerReady(name, checkArgs, deadlineMs) {
+  const deadline = Date.now() + deadlineMs
+  while (Date.now() < deadline) {
+    if ((await runCmd('docker', ['exec', name, ...checkArgs], 10_000)).code === 0) return true
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  return false
+}
+
+async function provisionOneOffStack() {
+  const dockerOk = await runCmd('docker', ['info', '--format', '{{.ServerVersion}}'], 10_000)
+  if (dockerOk.code !== 0) return null
+  const id = Math.random().toString(36).slice(2, 8)
+  const pg = `cumora-it-pg-${id}`
+  const rd = `cumora-it-redis-${id}`
+  // 与 CI/scratch 同款镜像(pgvector 为迁移所需;本机两者皆有缓存,
+  // 拉取仅首次)。POSTGRES_* 与 CI services 块同参。
+  const pgRun = await runCmd('docker', [
+    'run', '-d', '--name', pg, '-p', '127.0.0.1::5432',
+    '-e', 'POSTGRES_USER=cumora', '-e', 'POSTGRES_PASSWORD=cumora', '-e', 'POSTGRES_DB=cumora_test',
+    'pgvector/pgvector:pg16',
+  ])
+  if (pgRun.code !== 0) {
+    console.error(`[integration] docker run pg failed: ${pgRun.err.trim()}`)
+    return null
+  }
+  const rdRun = await runCmd('docker', [
+    'run', '-d', '--name', rd, '-p', '127.0.0.1::6379', 'redis:7',
+  ])
+  if (rdRun.code !== 0) {
+    console.error(`[integration] docker run redis failed: ${rdRun.err.trim()}`)
+    await runCmd('docker', ['rm', '-f', pg])
+    return null
+  }
+  const ready = (await waitContainerReady(pg, ['pg_isready', '-U', 'cumora', '-d', 'cumora_test'], 45_000))
+    && (await waitContainerReady(rd, ['redis-cli', 'ping'], 20_000))
+  if (!ready) {
+    console.error('[integration] one-off stack never became ready — tearing down')
+    await runCmd('docker', ['rm', '-f', pg, rd])
+    return null
+  }
+  const pgPort = (await runCmd('docker', ['port', pg, '5432'])).out.trim().split('\n')[0]?.split(':').pop()
+  const rdPort = (await runCmd('docker', ['port', rd, '6379'])).out.trim().split('\n')[0]?.split(':').pop()
+  if (!pgPort || !rdPort) {
+    console.error('[integration] could not discover one-off stack ports')
+    await runCmd('docker', ['rm', '-f', pg, rd])
+    return null
+  }
+  return {
+    pg, redis: rd,
+    dbUrl: `postgres://cumora:cumora@127.0.0.1:${pgPort}/cumora_test`,
+    redisUrl: `redis://127.0.0.1:${rdPort}`,
+  }
+}
+
+async function teardownAutoStack() {
+  if (!autoStack) return
+  const { pg, redis } = autoStack
+  autoStack = null
+  await Promise.allSettled([runCmd('docker', ['rm', '-f', pg]), runCmd('docker', ['rm', '-f', redis])])
+}
+
+let INTEGRATION_URL = process.env.INTEGRATION_DATABASE_URL
 if (!INTEGRATION_URL) {
-  console.log('[integration] skipped — set INTEGRATION_DATABASE_URL to enable.')
-  console.log('             example: INTEGRATION_DATABASE_URL=postgres://$USER@localhost:5432/cumora_test \\\\')
-  console.log('                      npm run test:integration')
-  process.exit(0)
+  console.log('[integration] INTEGRATION_DATABASE_URL 未设 —— 尝试 docker 一次性测试栈(#146)…')
+  autoStack = await provisionOneOffStack()
+  if (!autoStack) {
+    console.log('[integration] skipped — 无 docker 且未设 INTEGRATION_DATABASE_URL。')
+    console.log('             起本地 docker 后重跑即自动起一次性测试栈;或显式指定:')
+    console.log('             INTEGRATION_DATABASE_URL=postgres://$USER@localhost:5432/cumora_test npm run test:integration')
+    process.exit(0)
+  }
+  INTEGRATION_URL = autoStack.dbUrl
+  console.log(`[integration] one-off stack: ${autoStack.pg} + ${autoStack.redis}(退出即拆)`)
 }
 
 // Belt-and-braces safety: refuse to run when INTEGRATION_DATABASE_URL
@@ -58,11 +149,18 @@ if (!process.env.EMAIL_DOMAIN) process.env.EMAIL_DOMAIN = 'cumora.local'
 if (!process.env.EMAIL_INBOUND_HMAC_SECRET) process.env.EMAIL_INBOUND_HMAC_SECRET = 'integration-test-secret'
 if (!process.env.CUMORA_SECRETS_KEY) process.env.CUMORA_SECRETS_KEY = 'integration-secrets-key'
 
-// Redis isolation(见文件头)。显式带 db 序号或非本机(CI service redis
-// 上没有别的订阅者)的 REDIS_URL 原样放行。
-let redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379'
-if (/\/\/(localhost|127\.0\.0\.1)/.test(redisUrl) && !/\/\d+$/.test(redisUrl)) {
-  redisUrl = redisUrl.replace(/\/?$/, '') + '/5'
+// Redis isolation(见文件头)。auto 栈是一次性实例(pub/sub 实例级隔离,
+// 无需 db 序号);显式给的 REDIS_URL 若指向本机且未带 db 序号,强制追加
+// /5——与常驻服务器(默认 db0)分道,防 wake-claim SETNX 被偷
+// (2026-08-28 实测:生产 Go 服与测试服同库会导致 scheduler 用例 0 唤醒)。
+let redisUrl
+if (autoStack) {
+  redisUrl = autoStack.redisUrl
+} else {
+  redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379'
+  if (/\/\/(localhost|127\.0\.0\.1)/.test(redisUrl) && !/\/\d+$/.test(redisUrl)) {
+    redisUrl = redisUrl.replace(/\/?$/, '') + '/5'
+  }
 }
 process.env.REDIS_URL = redisUrl
 console.log(`[integration] redis: ${redisUrl}`)
@@ -113,7 +211,9 @@ function bail(msg, code = 1) {
   killAll()
   mockLLM?.close()
   if (!process.env.INTEGRATION_GO_BIN) rm(GO_BIN, { force: true }).catch(() => {})
-  process.exit(code)
+  // auto 栈是本 runner 起的,任何失败路径都得拆干净再退(#146)。
+  if (autoStack) void teardownAutoStack().finally(() => process.exit(code))
+  else process.exit(code)
 }
 process.on('SIGINT', () => bail('interrupted', 130))
 process.on('SIGTERM', () => bail('terminated', 143))
@@ -198,6 +298,20 @@ if (testFiles.length === 0) {
   process.exit(2)
 }
 console.log(`[integration] shard ${shardN}/${shardM}: ${testFiles.length} file(s) — ${testFiles.map((f) => basename(f)).join(', ')}`)
+
+// #119 复现器入口:INTEGRATION_FILES 按文件名子串过滤(逗号分隔多个
+// 子串任一命中),叠在 shard 之后 —— 单文件循环复跑不再需要动 shard。
+if (process.env.INTEGRATION_FILES) {
+  const subs = process.env.INTEGRATION_FILES.split(',').map((s) => s.trim()).filter(Boolean)
+  const filtered = testFiles.filter((f) => subs.some((s) => basename(f).includes(s)))
+  if (filtered.length === 0) {
+    console.error(`[integration] INTEGRATION_FILES="${process.env.INTEGRATION_FILES}" matched zero files (after shard ${shardN}/${shardM})`)
+    process.exit(2)
+  }
+  testFiles.length = 0
+  testFiles.push(...filtered)
+  console.log(`[integration] INTEGRATION_FILES filter: ${testFiles.length} file(s) — ${testFiles.map((f) => basename(f)).join(', ')}`)
+}
 
 async function buildGoServer() {
   if (process.env.INTEGRATION_GO_BIN) {
@@ -308,5 +422,6 @@ child.on('exit', (code) => {
   mockLLM.close()
   if (builtHere) rm(GO_BIN, { force: true }).catch(() => { /* best effort */ })
   exited = true
-  process.exit(code ?? 1)
+  if (autoStack) void teardownAutoStack().finally(() => process.exit(code ?? 1))
+  else process.exit(code ?? 1)
 })
