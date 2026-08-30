@@ -491,6 +491,9 @@ jobs:
         run: |
           set -e -o pipefail
           npx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node e2e/smoke.spec.ts
+          # apt 走 Mihomo 出口偶发 502(96MB 并行拉包单包翻车实例),配
+          # 重试后再装;--with-deps:bookworm 容器缺浏览器系统库。
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries
           npx playwright install --with-deps chromium
           node -e 'const {Client}=require("pg");(async()=>{
             const admin=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/postgres"});
