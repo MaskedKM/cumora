@@ -491,10 +491,17 @@ jobs:
         run: |
           set -e -o pipefail
           npx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node e2e/smoke.spec.ts
-          # apt 走 Mihomo 出口偶发 502(96MB 并行拉包单包翻车实例),配
-          # 重试后再装;--with-deps:bookworm 容器缺浏览器系统库。
-          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries
-          npx playwright install --with-deps chromium
+          # apt 过 Mihomo 的抖动配方:禁 HTTP pipelining(代理弄坏串流请求
+          # 的已知病因)+ 重试(5xx 逐包重试)+ 失败整轮重来×3(单流大包
+          # 25MB 级恰在出口病理区,每轮翻车的包不同,已缓存的 deb 不重拉)。
+          # 浏览器二进制在持久卷,install 不带 --with-deps 走代理下载一次即缓存。
+          echo 'Acquire::Retries "5"; Acquire::http::Pipeline-Depth "0"; Acquire::https::Pipeline-Depth "0";' > /etc/apt/apt.conf.d/80flaky-proxy
+          for i in 1 2 3; do
+            npx playwright install-deps chromium && break
+            [ "$i" = 3 ] && { echo "apt deps failed after 3 rounds"; exit 1; }
+            sleep 5
+          done
+          npx playwright install chromium
           node -e 'const {Client}=require("pg");(async()=>{
             const admin=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/postgres"});
             await admin.connect();
