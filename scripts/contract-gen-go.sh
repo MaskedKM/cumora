@@ -17,7 +17,7 @@ if [ -n "$GEN_NETWORK" ]; then NET_FLAG=(--network "$GEN_NETWORK"); fi
 # 已迁移到 ServerInterface 的域 tag(扩域 = 此处加一行,生成物落
 # $GEN_DIR/<tag>/ 独立子包 —— 同包多 tag 会重复声明 ServerInterface/
 # Handler 等共享符号;types 留根包单文件,server 生成物不引用它)。
-SERVER_TAGS=(documents push uploads projects calendar computers email workspaces devtools admin boards agents participants observability)
+SERVER_TAGS=(documents push uploads projects calendar computers email workspaces devtools admin boards agents participants observability shipping)
 
 GEN_DIR=apps/server-go/internal/contract
 mkdir -p "$GEN_DIR"
