@@ -1,6 +1,8 @@
 // domains/agents —— agent CRUD(#68 补齐):create(全链种子)/update/
 // offboard/rehire/autonomy 三端点(#123 补 GET 单读)。行为对齐
 // router.ts 2236–2660、4712–4760 与 onboardCompany.ts joinAllHands。
+// #187 批次 5:agents+participants 双 tag 走 ServerInterface;avatar/
+// computer/runtime-token 三条跨包路由经导出面委托(devtools/computers)。
 package agents
 
 import (
@@ -17,6 +19,10 @@ import (
 	"strings"
 	"time"
 
+	agentscontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/agents"
+	participantscontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/participants"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/computers"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
@@ -26,15 +32,36 @@ import (
 // AvatarGen:创建后的 fire-and-forget 头像生成钩子(runtime 注入;nil 安全)。
 type AvatarGen func(agentID, tenant string)
 
-func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
-	mux.HandleFunc("POST /api/agents", create(db, avatarGen))
-	mux.HandleFunc("PUT /api/agents/{id}", update(db))
-	mux.HandleFunc("DELETE /api/agents/{id}", offboard(db))
-	mux.HandleFunc("POST /api/agents/{id}/rehire", rehire(db))
-	mux.HandleFunc("GET /api/agents/{id}/autonomy", getAutonomyOne(db))
-	mux.HandleFunc("PUT /api/agents/{id}/autonomy", putAutonomy(db))
-	mux.HandleFunc("GET /api/agents/autonomy", getAutonomy(db))
-	mux.HandleFunc("GET /api/participants", listParticipants(db))
+// Server:agents tag(10 路由)与 participants tag(1 路由)的域实现。
+// 方法体自原闭包工厂逐字上移(#187 批次 5);三条跨包路由一行委托。
+type Server struct {
+	DB         *sql.DB
+	AvatarGen  AvatarGen          // create 后 fire-and-forget(nil 安全)
+	SyncAvatar devtools.AvatarGen // {id}/avatar/generate 端点(同步产 URL)
+	Computers  *computers.Server  // computer/runtime-token 两路由委托载体
+}
+
+var _ agentscontract.ServerInterface = (*Server)(nil)
+var _ participantscontract.ServerInterface = (*Server)(nil)
+
+func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen, syncAvatar devtools.AvatarGen) {
+	s := &Server{DB: db, AvatarGen: avatarGen, SyncAvatar: syncAvatar, Computers: &computers.Server{DB: db}}
+	_ = agentscontract.HandlerFromMux(s, mux)
+	_ = participantscontract.HandlerFromMux(s, mux)
+}
+
+/* ───────── 跨包委托(agents tag 的三条路由) ───────── */
+
+func (s *Server) GenerateAgentAvatar(w http.ResponseWriter, r *http.Request, id string) {
+	devtools.AgentAvatarGenerate(s.DB, s.SyncAvatar, w, r, id)
+}
+
+func (s *Server) AssignAgentComputer(w http.ResponseWriter, r *http.Request, id string) {
+	s.Computers.AssignAgentComputer(w, r, id)
+}
+
+func (s *Server) MintAgentRuntimeToken(w http.ResponseWriter, r *http.Request, id string) {
+	s.Computers.MintAgentRuntimeToken(w, r, id)
 }
 
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
@@ -245,94 +272,92 @@ func pickUniqueAgentID(ctx context.Context, db *sql.DB, baseName string) (string
 	return "", fmt.Errorf("no unique id")
 }
 
-func create(db *sql.DB, avatarGen AvatarGen) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		if _, ok := requireRole(w, r, db); !ok {
-			return
-		}
-		body := decodeAgentBody(r)
-		if body.name == nil || *body.name == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "name required")
-			return
-		}
-		if body.systemPrompt == nil || len(strings.TrimSpace(*body.systemPrompt)) < 10 {
-			httpx.WriteError(w, http.StatusBadRequest,
-				"systemPrompt required (at least 10 chars — describe the agent's style)")
-			return
-		}
-		// tier 限(free=10/pro=20/max=50);tier 属公司不属调用者(评审 F2)。
-		tier := companyPlanTier(r.Context(), db, tenant)
-		var agentCount int
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
-			tenant).Scan(&agentCount)
-		if agentCount >= tierAgents(tier) {
-			httpx.WriteError(w, http.StatusForbidden,
-				fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
-			return
-		}
-		agentID, err := pickUniqueAgentID(r.Context(), db, *body.name)
-		if err != nil {
-			// 9 候选全撞(TS 落到 INSERT duplicate)→ 同 409 语义(评审 F14)。
-			httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
-			return
-		}
-		initial := ""
-		if body.initial != nil && *body.initial != "" {
-			initial = *body.initial
-		} else {
-			initial = strings.ToUpper(string([]rune(*body.name)[0:1]))
-		}
-		avatarBg := ""
-		if body.avatarBg != nil && *body.avatarBg != "" {
-			avatarBg = *body.avatarBg
-		} else {
-			avatarBg = defaultAvatarBg(agentID)
-		}
-		role := ""
-		if body.role != nil {
-			role = *body.role
-		}
-		bio := ""
-		if body.bio != nil {
-			bio = *body.bio
-		}
-		tools := body.tools
-		if !body.hasTools || len(tools) == 0 {
-			tools = []string{"bash"}
-		}
-		toolsJSON, _ := json.Marshal(tools)
-		var modelArg, fastModelArg any
-		if body.model != nil {
-			modelArg = *body.model
-		}
-		if body.fastModel != nil {
-			fastModelArg = *body.fastModel
-		}
-		_, err = db.ExecContext(r.Context(), `
-			INSERT INTO participants (id, kind, name, role, initial, avatar_bg, status, bio, tools, system_prompt, model, fast_model, company_id)
-			VALUES ($1, 'agent', $2, $3, $4, $5, 'avail', $6, $7::jsonb, $8, $9, $10, $11)`,
-			agentID, *body.name, role, initial, avatarBg, bio, string(toolsJSON), *body.systemPrompt, modelArg, fastModelArg, tenant)
-		if err != nil {
-			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "participants_agent_id_unique") {
-				httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
-			} else {
-				httpx.WriteInternalError(w, r, err)
-			}
-			return
-		}
-		onboard.JoinAllHands(r.Context(), db, tenant, agentID)
-		seedIdentitySoul(r.Context(), db, tenant, agentID, *body.name, role, bio, *body.systemPrompt)
-		autoCreateDirect(r.Context(), db, uid, tenant, agentID, *body.name)
-		if avatarGen != nil {
-			go func() { avatarGen(agentID, tenant) }()
-		}
-		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": agentID})
+func (s *Server) CreateAgent(w http.ResponseWriter, r *http.Request) {
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
+	if _, ok := requireRole(w, r, s.DB); !ok {
+		return
+	}
+	body := decodeAgentBody(r)
+	if body.name == nil || *body.name == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if body.systemPrompt == nil || len(strings.TrimSpace(*body.systemPrompt)) < 10 {
+		httpx.WriteError(w, http.StatusBadRequest,
+			"systemPrompt required (at least 10 chars — describe the agent's style)")
+		return
+	}
+	// tier 限(free=10/pro=20/max=50);tier 属公司不属调用者(评审 F2)。
+	tier := companyPlanTier(r.Context(), s.DB, tenant)
+	var agentCount int
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
+		tenant).Scan(&agentCount)
+	if agentCount >= tierAgents(tier) {
+		httpx.WriteError(w, http.StatusForbidden,
+			fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
+		return
+	}
+	agentID, err := pickUniqueAgentID(r.Context(), s.DB, *body.name)
+	if err != nil {
+		// 9 候选全撞(TS 落到 INSERT duplicate)→ 同 409 语义(评审 F14)。
+		httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
+		return
+	}
+	initial := ""
+	if body.initial != nil && *body.initial != "" {
+		initial = *body.initial
+	} else {
+		initial = strings.ToUpper(string([]rune(*body.name)[0:1]))
+	}
+	avatarBg := ""
+	if body.avatarBg != nil && *body.avatarBg != "" {
+		avatarBg = *body.avatarBg
+	} else {
+		avatarBg = defaultAvatarBg(agentID)
+	}
+	role := ""
+	if body.role != nil {
+		role = *body.role
+	}
+	bio := ""
+	if body.bio != nil {
+		bio = *body.bio
+	}
+	tools := body.tools
+	if !body.hasTools || len(tools) == 0 {
+		tools = []string{"bash"}
+	}
+	toolsJSON, _ := json.Marshal(tools)
+	var modelArg, fastModelArg any
+	if body.model != nil {
+		modelArg = *body.model
+	}
+	if body.fastModel != nil {
+		fastModelArg = *body.fastModel
+	}
+	_, err = s.DB.ExecContext(r.Context(), `
+		INSERT INTO participants (id, kind, name, role, initial, avatar_bg, status, bio, tools, system_prompt, model, fast_model, company_id)
+		VALUES ($1, 'agent', $2, $3, $4, $5, 'avail', $6, $7::jsonb, $8, $9, $10, $11)`,
+		agentID, *body.name, role, initial, avatarBg, bio, string(toolsJSON), *body.systemPrompt, modelArg, fastModelArg, tenant)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "participants_agent_id_unique") {
+			httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
+		} else {
+			httpx.WriteInternalError(w, r, err)
+		}
+		return
+	}
+	onboard.JoinAllHands(r.Context(), s.DB, tenant, agentID)
+	seedIdentitySoul(r.Context(), s.DB, tenant, agentID, *body.name, role, bio, *body.systemPrompt)
+	autoCreateDirect(r.Context(), s.DB, uid, tenant, agentID, *body.name)
+	if s.AvatarGen != nil {
+		go func() { s.AvatarGen(agentID, tenant) }()
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": agentID})
 }
 
 func seedIdentitySoul(ctx context.Context, db *sql.DB, tenant, agentID, name, role, bio, systemPrompt string) {
@@ -378,269 +403,254 @@ func autoCreateDirect(ctx context.Context, db *sql.DB, uid, tenant, agentID, nam
 
 /* ───────── update / offboard / rehire ───────── */
 
-func update(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var kind string
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT kind FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).Scan(&kind); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if kind != "agent" {
-			httpx.WriteError(w, http.StatusBadRequest, "cannot edit non-agent participant")
-			return
-		}
-		body := decodeAgentBody(r)
-		sets := []string{}
-		params := []any{}
-		push := func(col string, v any) {
-			params = append(params, v)
-			sets = append(sets, fmt.Sprintf("%s = $%d", col, len(params)))
-		}
-		if body.name != nil {
-			push("name", *body.name)
-		}
-		if body.role != nil {
-			push("role", *body.role)
-		}
-		if body.systemPrompt != nil {
-			push("system_prompt", *body.systemPrompt)
-		}
-		if body.bio != nil {
-			push("bio", *body.bio)
-		}
-		if body.initial != nil {
-			push("initial", *body.initial)
-		}
-		if body.avatarBg != nil {
-			push("avatar_bg", *body.avatarBg)
-		}
-		if body.avatarURL != nil {
-			push("avatar_url", *body.avatarURL)
-		} else if body.avatarURLNull {
-			push("avatar_url", nil)
-		}
-		if body.model != nil {
-			push("model", *body.model)
-		} else if body.modelNull {
-			push("model", nil)
-		}
-		if body.fastModel != nil {
-			push("fast_model", *body.fastModel)
-		} else if body.fastNull {
-			push("fast_model", nil)
-		}
-		if body.hasTools {
-			toolsJSON, _ := json.Marshal(body.tools)
-			params = append(params, string(toolsJSON))
-			sets = append(sets, fmt.Sprintf("tools = $%d::jsonb", len(params)))
-		}
-		if len(sets) == 0 {
-			httpx.WriteError(w, http.StatusBadRequest, "nothing to update")
-			return
-		}
-		params = append(params, id, tenant)
-		if _, err := db.ExecContext(r.Context(),
-			fmt.Sprintf(`UPDATE participants SET %s WHERE id = $%d AND company_id = $%d`,
-				strings.Join(sets, ", "), len(params)-1, len(params)), params...); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) UpdateAgent(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var kind string
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT kind FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).Scan(&kind); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if kind != "agent" {
+		httpx.WriteError(w, http.StatusBadRequest, "cannot edit non-agent participant")
+		return
+	}
+	body := decodeAgentBody(r)
+	sets := []string{}
+	params := []any{}
+	push := func(col string, v any) {
+		params = append(params, v)
+		sets = append(sets, fmt.Sprintf("%s = $%d", col, len(params)))
+	}
+	if body.name != nil {
+		push("name", *body.name)
+	}
+	if body.role != nil {
+		push("role", *body.role)
+	}
+	if body.systemPrompt != nil {
+		push("system_prompt", *body.systemPrompt)
+	}
+	if body.bio != nil {
+		push("bio", *body.bio)
+	}
+	if body.initial != nil {
+		push("initial", *body.initial)
+	}
+	if body.avatarBg != nil {
+		push("avatar_bg", *body.avatarBg)
+	}
+	if body.avatarURL != nil {
+		push("avatar_url", *body.avatarURL)
+	} else if body.avatarURLNull {
+		push("avatar_url", nil)
+	}
+	if body.model != nil {
+		push("model", *body.model)
+	} else if body.modelNull {
+		push("model", nil)
+	}
+	if body.fastModel != nil {
+		push("fast_model", *body.fastModel)
+	} else if body.fastNull {
+		push("fast_model", nil)
+	}
+	if body.hasTools {
+		toolsJSON, _ := json.Marshal(body.tools)
+		params = append(params, string(toolsJSON))
+		sets = append(sets, fmt.Sprintf("tools = $%d::jsonb", len(params)))
+	}
+	if len(sets) == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	params = append(params, id, tenant)
+	if _, err := s.DB.ExecContext(r.Context(),
+		fmt.Sprintf(`UPDATE participants SET %s WHERE id = $%d AND company_id = $%d`,
+			strings.Join(sets, ", "), len(params)-1, len(params)), params...); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func offboard(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var kind string
-		var departedAt sql.NullTime
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
-			Scan(&kind, &departedAt); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if kind != "agent" {
-			httpx.WriteError(w, http.StatusBadRequest, "cannot off-board non-agent participant")
-			return
-		}
-		if departedAt.Valid {
-			httpx.WriteError(w, http.StatusConflict, "already off-boarded")
-			return
-		}
-		if _, err := db.ExecContext(r.Context(), `
-			UPDATE participants SET departed_at = NOW(), status = 'resting', status_updated_at = NOW()
-			  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "departedAt": httpx.ISOms(time.Now()),
-		})
+func (s *Server) OffboardAgent(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var kind string
+	var departedAt sql.NullTime
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
+		Scan(&kind, &departedAt); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if kind != "agent" {
+		httpx.WriteError(w, http.StatusBadRequest, "cannot off-board non-agent participant")
+		return
+	}
+	if departedAt.Valid {
+		httpx.WriteError(w, http.StatusConflict, "already off-boarded")
+		return
+	}
+	if _, err := s.DB.ExecContext(r.Context(), `
+		UPDATE participants SET departed_at = NOW(), status = 'resting', status_updated_at = NOW()
+		  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "departedAt": httpx.ISOms(time.Now()),
+	})
 }
 
-func rehire(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var kind string
-		var departedAt sql.NullTime
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
-			Scan(&kind, &departedAt); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if kind != "agent" {
-			httpx.WriteError(w, http.StatusBadRequest, "cannot rehire non-agent participant")
-			return
-		}
-		if !departedAt.Valid {
-			httpx.WriteError(w, http.StatusConflict, "agent is not off-boarded")
-			return
-		}
-		// tier 限:rehire 同 create 的闸(tier 属公司,评审 F2)。
-		tier := companyPlanTier(r.Context(), db, tenant)
-		var agentCount int
-		_ = db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
-			tenant).Scan(&agentCount)
-		if agentCount >= tierAgents(tier) {
-			httpx.WriteError(w, http.StatusForbidden,
-				fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
-			return
-		}
-		if _, err := db.ExecContext(r.Context(), `
-			UPDATE participants SET departed_at = NULL, status = 'avail', status_updated_at = NOW()
-			  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) RehireAgent(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var kind string
+	var departedAt sql.NullTime
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
+		Scan(&kind, &departedAt); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if kind != "agent" {
+		httpx.WriteError(w, http.StatusBadRequest, "cannot rehire non-agent participant")
+		return
+	}
+	if !departedAt.Valid {
+		httpx.WriteError(w, http.StatusConflict, "agent is not off-boarded")
+		return
+	}
+	// tier 限:rehire 同 create 的闸(tier 属公司,评审 F2)。
+	tier := companyPlanTier(r.Context(), s.DB, tenant)
+	var agentCount int
+	_ = s.DB.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
+		tenant).Scan(&agentCount)
+	if agentCount >= tierAgents(tier) {
+		httpx.WriteError(w, http.StatusForbidden,
+			fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
+		return
+	}
+	if _, err := s.DB.ExecContext(r.Context(), `
+		UPDATE participants SET departed_at = NULL, status = 'avail', status_updated_at = NOW()
+		  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 /* ───────── autonomy ───────── */
 
-// getAutonomyOne:TS rows[0] ?? 默认门 —— 已存行原样回,未见行回
+// GetAutonomy:TS rows[0] ?? 默认门 —— 已存行原样回,未见行回
 // threshold 0.6 起步(未见 ≠ 错误,前端首访即拿默认值)。
-func getAutonomyOne(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var one int
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
-			r.PathValue("id"), tenant).Scan(&one); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
+func (s *Server) GetAutonomy(w http.ResponseWriter, r *http.Request, id string) {
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var one int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		id, tenant).Scan(&one); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var threshold float64
+	var pulled, led, dissolved int
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT threshold, pulled, led, dissolved FROM agent_autonomy
+		 WHERE user_id = $1 AND agent_id = $2`, uid, id).
+		Scan(&threshold, &pulled, &led, &dissolved)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if err != nil {
+		threshold = 0.6
+		pulled, led, dissolved = 0, 0, 0
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"userId": uid, "agentId": id, "threshold": threshold,
+		"pulled": pulled, "led": led, "dissolved": dissolved,
+	})
+}
+
+func (s *Server) PutAutonomy(w http.ResponseWriter, r *http.Request, id string) {
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var one int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		id, tenant).Scan(&one); err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	var v any
+	_ = json.Unmarshal(body["threshold"], &v)
+	threshold := 0.6
+	if f, isNum := v.(float64); isNum {
+		threshold = f
+	}
+	if threshold < 0 {
+		threshold = 0
+	}
+	if threshold > 1 {
+		threshold = 1
+	}
+	if _, err := s.DB.ExecContext(r.Context(), `
+		INSERT INTO agent_autonomy (user_id, agent_id, threshold)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, agent_id) DO UPDATE SET threshold = EXCLUDED.threshold`,
+		uid, id, threshold); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "threshold": threshold})
+}
+
+func (s *Server) GetAllAutonomy(w http.ResponseWriter, r *http.Request) {
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT a.user_id, a.agent_id, a.threshold, a.pulled, a.led, a.dissolved
+		  FROM agent_autonomy a
+		  JOIN participants p ON p.id = a.agent_id
+		 WHERE a.user_id = $1 AND p.company_id = $2`, uid, tenant)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var userID, agentID string
 		var threshold float64
 		var pulled, led, dissolved int
-		err := db.QueryRowContext(r.Context(), `
-			SELECT threshold, pulled, led, dissolved FROM agent_autonomy
-			 WHERE user_id = $1 AND agent_id = $2`, uid, r.PathValue("id")).
-			Scan(&threshold, &pulled, &led, &dissolved)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			httpx.WriteInternalError(w, r, err)
-			return
+		if rows.Scan(&userID, &agentID, &threshold, &pulled, &led, &dissolved) == nil {
+			out = append(out, map[string]any{
+				"userId": userID, "agentId": agentID, "threshold": threshold,
+				"pulled": pulled, "led": led, "dissolved": dissolved,
+			})
 		}
-		if err != nil {
-			threshold = 0.6
-			pulled, led, dissolved = 0, 0, 0
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"userId": uid, "agentId": r.PathValue("id"), "threshold": threshold,
-			"pulled": pulled, "led": led, "dissolved": dissolved,
-		})
 	}
-}
-
-func putAutonomy(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		var one int
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
-			r.PathValue("id"), tenant).Scan(&one); err != nil {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		var body map[string]json.RawMessage
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		var v any
-		_ = json.Unmarshal(body["threshold"], &v)
-		threshold := 0.6
-		if f, isNum := v.(float64); isNum {
-			threshold = f
-		}
-		if threshold < 0 {
-			threshold = 0
-		}
-		if threshold > 1 {
-			threshold = 1
-		}
-		if _, err := db.ExecContext(r.Context(), `
-			INSERT INTO agent_autonomy (user_id, agent_id, threshold)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (user_id, agent_id) DO UPDATE SET threshold = EXCLUDED.threshold`,
-			uid, r.PathValue("id"), threshold); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "threshold": threshold})
-	}
-}
-
-func getAutonomy(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT a.user_id, a.agent_id, a.threshold, a.pulled, a.led, a.dissolved
-			  FROM agent_autonomy a
-			  JOIN participants p ON p.id = a.agent_id
-			 WHERE a.user_id = $1 AND p.company_id = $2`, uid, tenant)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var userID, agentID string
-			var threshold float64
-			var pulled, led, dissolved int
-			if rows.Scan(&userID, &agentID, &threshold, &pulled, &led, &dissolved) == nil {
-				out = append(out, map[string]any{
-					"userId": userID, "agentId": agentID, "threshold": threshold,
-					"pulled": pulled, "led": led, "dissolved": dissolved,
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
-	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 /* ───────── 小助手 ───────── */
@@ -653,73 +663,71 @@ func randHex6() string {
 
 /* ───────── GET /participants(#68 补齐) ───────── */
 
-// listParticipants:过期 busy 状态回落 + 名册(含 agent 惰铸地址回显)。
-func listParticipants(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, tenant, ok := httpx.RequireCompany(w, r, db)
-		if !ok {
-			return
-		}
-		_, _ = db.ExecContext(r.Context(), `
-			UPDATE participants
-			   SET status = 'avail', status_updated_at = NOW()
-			 WHERE company_id = $1
-			   AND kind = 'agent'
-			   AND departed_at IS NULL
-			   AND status IN ('thinking', 'working', 'waiting')
-			   AND status_updated_at < NOW() - ($2::int * INTERVAL '1 millisecond')`, tenant, 90_000)
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT p.id, p.kind, p.name, p.role, p.initial,
-			       p.avatar_bg, p.avatar_url,
-			       p.status, p.status_updated_at,
-			       p.bio, p.tools, p.system_prompt, p.model,
-			       p.computer_id, p.engine, p.fast_model,
-			       COALESCE(p.email, CASE WHEN p.kind = 'human' AND cm.user_id IS NOT NULL THEN u.email END),
-			       comp.slug, p.departed_at
-			  FROM participants p
-			  JOIN companies comp ON comp.id = p.company_id
-			  LEFT JOIN company_members cm ON cm.user_id = p.id AND cm.company_id = p.company_id
-			  LEFT JOIN users u ON u.id = cm.user_id
-			 WHERE p.company_id = $1
-			 ORDER BY p.kind DESC, p.name ASC`, tenant)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var id, kind, name, initial, avatarBg, status string
-			var role, avatarUrl, bio, systemPrompt, model sql.NullString
-			var tools []byte
-			var statusUpdatedAt time.Time
-			var computerID, engine, fastModel, emailCol, companySlug sql.NullString
-			var departedAt sql.NullTime
-			if err := rows.Scan(&id, &kind, &name, &role, &initial,
-				&avatarBg, &avatarUrl, &status, &statusUpdatedAt,
-				&bio, &tools, &systemPrompt, &model,
-				&computerID, &engine, &fastModel, &emailCol, &companySlug, &departedAt); err == nil {
-				var toolsAny any
-				_ = json.Unmarshal(tools, &toolsAny)
-				emailVal := any(nil)
-				if emailCol.Valid {
-					emailVal = emailCol.String
-				} else if kind == "agent" && companySlug.Valid {
-					emailVal = emailpkg.ComputeAgentAddress(id, companySlug.String)
-				}
-				out = append(out, map[string]any{
-					"id": id, "kind": kind, "name": name, "role": nullStr(role),
-					"initial": initial, "avatarBg": avatarBg, "avatarUrl": nullStr(avatarUrl),
-					"status": status, "statusUpdatedAt": httpx.ISOms(statusUpdatedAt),
-					"bio": nullStr(bio), "tools": toolsAny, "systemPrompt": nullStr(systemPrompt),
-					"model": nullStr(model), "computerId": nullStr(computerID),
-					"engine": nullStr(engine), "fastModel": nullStr(fastModel),
-					"email": emailVal, "departedAt": nullTimeUTC(departedAt),
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+// GetParticipants:过期 busy 状态回落 + 名册(含 agent 惰铸地址回显)。
+func (s *Server) GetParticipants(w http.ResponseWriter, r *http.Request) {
+	_, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	if !ok {
+		return
 	}
+	_, _ = s.DB.ExecContext(r.Context(), `
+		UPDATE participants
+		   SET status = 'avail', status_updated_at = NOW()
+		 WHERE company_id = $1
+		   AND kind = 'agent'
+		   AND departed_at IS NULL
+		   AND status IN ('thinking', 'working', 'waiting')
+		   AND status_updated_at < NOW() - ($2::int * INTERVAL '1 millisecond')`, tenant, 90_000)
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT p.id, p.kind, p.name, p.role, p.initial,
+		       p.avatar_bg, p.avatar_url,
+		       p.status, p.status_updated_at,
+		       p.bio, p.tools, p.system_prompt, p.model,
+		       p.computer_id, p.engine, p.fast_model,
+		       COALESCE(p.email, CASE WHEN p.kind = 'human' AND cm.user_id IS NOT NULL THEN u.email END),
+		       comp.slug, p.departed_at
+		  FROM participants p
+		  JOIN companies comp ON comp.id = p.company_id
+		  LEFT JOIN company_members cm ON cm.user_id = p.id AND cm.company_id = p.company_id
+		  LEFT JOIN users u ON u.id = cm.user_id
+		 WHERE p.company_id = $1
+		 ORDER BY p.kind DESC, p.name ASC`, tenant)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, kind, name, initial, avatarBg, status string
+		var role, avatarUrl, bio, systemPrompt, model sql.NullString
+		var tools []byte
+		var statusUpdatedAt time.Time
+		var computerID, engine, fastModel, emailCol, companySlug sql.NullString
+		var departedAt sql.NullTime
+		if err := rows.Scan(&id, &kind, &name, &role, &initial,
+			&avatarBg, &avatarUrl, &status, &statusUpdatedAt,
+			&bio, &tools, &systemPrompt, &model,
+			&computerID, &engine, &fastModel, &emailCol, &companySlug, &departedAt); err == nil {
+			var toolsAny any
+			_ = json.Unmarshal(tools, &toolsAny)
+			emailVal := any(nil)
+			if emailCol.Valid {
+				emailVal = emailCol.String
+			} else if kind == "agent" && companySlug.Valid {
+				emailVal = emailpkg.ComputeAgentAddress(id, companySlug.String)
+			}
+			out = append(out, map[string]any{
+				"id": id, "kind": kind, "name": name, "role": nullStr(role),
+				"initial": initial, "avatarBg": avatarBg, "avatarUrl": nullStr(avatarUrl),
+				"status": status, "statusUpdatedAt": httpx.ISOms(statusUpdatedAt),
+				"bio": nullStr(bio), "tools": toolsAny, "systemPrompt": nullStr(systemPrompt),
+				"model": nullStr(model), "computerId": nullStr(computerID),
+				"engine": nullStr(engine), "fastModel": nullStr(fastModel),
+				"email": emailVal, "departedAt": nullTimeUTC(departedAt),
+			})
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 func nullTimeUTC(nt sql.NullTime) any {

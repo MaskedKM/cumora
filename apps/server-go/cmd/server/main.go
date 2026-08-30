@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
@@ -170,20 +169,19 @@ func main() {
 	push.Mount(coreRouter, pool)
 	domcomputers.Mount(coreRouter, pool)
 	// 长尾路由(#77):uploads 面 + 开发者/观察面(devtools 文件读、run
-	// 事件、纯 agent 房偷看、admin 头像生成——头像钩子注入 runtime 面)。
+	// 事件、纯 agent 房偷看;头像钩子经 domagents 注入 runtime 面)。
 	uploads.Mount(coreRouter, pool)
 	projects.Mount(coreRouter, pool)
 	search.Mount(coreRouter, pool)
-	domagents.Mount(coreRouter, pool, func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) })
-	devtools.Mount(coreRouter, pool, runtimeSvc.GenerateAgentAvatar)
+	domagents.Mount(coreRouter, pool,
+		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
+		runtimeSvc.GenerateAgentAvatar)
+	devtools.Mount(coreRouter, pool)
 	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
 	// users/waitlist/stats/observability-llm 子面留待完整化票。
 	admin.Mount(coreRouter, pool)
 	computers.StartSweepWorker(ctxBoot, pool)
 
-	// 观察面(#68):runs/triage 经济学/llm-spend(obs 包实现(#140 拆出),
-	// 挂 coreRouter 吃 authMiddleware 链)。
-	obs.MountObservabilityApi(coreRouter, runtimeSvc.DB)
 	invitations.Mount(coreRouter, pool)
 	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
 	// 回读/回归/摩擦,16 路由。
