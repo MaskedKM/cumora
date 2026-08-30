@@ -20,12 +20,10 @@ type Server struct{ DB *sql.DB }
 
 var _ contract.ServerInterface = (*Server)(nil)
 
-// Mount:computers tag 7 路由走契约生成物;assign/runtimeToken 属
-// agents tag(本包代挂),待 agents 批次收编后并入。
+// Mount:computers tag 7 路由走契约生成物;agents tag 的 assign/
+// runtimeToken 已由 agents 域经 Server 方法委托收编(#187 批次 5)。
 func Mount(mux *http.ServeMux, db *sql.DB) {
 	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
-	mux.HandleFunc("POST /api/agents/{id}/computer", assign(db))
-	mux.HandleFunc("POST /api/agents/{id}/runtime-token", runtimeToken(db))
 }
 
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
@@ -102,33 +100,33 @@ func (s *Server) DeleteComputer(w http.ResponseWriter, r *http.Request, id strin
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func assign(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		_, companyID, ok := requireRole(w, r, db)
-		if !ok {
-			return
-		}
-		var body struct {
-			ComputerID string  `json:"computerId"`
-			Engine     *string `json:"engine"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		computerID := strings.TrimSpace(body.ComputerID)
-		if computerID == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "computerId required")
-			return
-		}
-		var engine string
-		if body.Engine != nil {
-			engine = *body.Engine
-		}
-		out, ok2 := reg.AssignAgentToComputer(r.Context(), db, r.PathValue("id"), companyID, computerID, engine)
-		if !ok2 {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid computer, agent, or engine for this company")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": out["kind"], "engine": out["engine"]})
+// AssignAgentComputer:agents tag 跨包路由(agents 域 Server 一行委托
+// 到此)—— 体为原 assign 闭包逐字上移,#187 批次 5。
+func (s *Server) AssignAgentComputer(w http.ResponseWriter, r *http.Request, id string) {
+	_, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
 	}
+	var body struct {
+		ComputerID string  `json:"computerId"`
+		Engine     *string `json:"engine"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	computerID := strings.TrimSpace(body.ComputerID)
+	if computerID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "computerId required")
+		return
+	}
+	var engine string
+	if body.Engine != nil {
+		engine = *body.Engine
+	}
+	out, ok2 := reg.AssignAgentToComputer(r.Context(), s.DB, id, companyID, computerID, engine)
+	if !ok2 {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid computer, agent, or engine for this company")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": out["kind"], "engine": out["engine"]})
 }
 
 func (s *Server) PairComputer(w http.ResponseWriter, r *http.Request) {
@@ -195,17 +193,17 @@ func (s *Server) HeartbeatComputer(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func runtimeToken(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		computerID, _, ok := requireDevice(w, r, db)
-		if !ok {
-			return
-		}
-		token, ttl, ok2 := reg.MintAgentRuntimeToken(r.Context(), db, computerID, r.PathValue("id"))
-		if !ok2 {
-			httpx.WriteError(w, http.StatusForbidden, "agent not assigned to this computer")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"token": token, "expiresInSeconds": ttl})
+// MintAgentRuntimeToken:agents tag 跨包路由(agents 域委托)—— 体为
+// 原 runtimeToken 闭包逐字上移,#187 批次 5。
+func (s *Server) MintAgentRuntimeToken(w http.ResponseWriter, r *http.Request, id string) {
+	computerID, _, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
 	}
+	token, ttl, ok2 := reg.MintAgentRuntimeToken(r.Context(), s.DB, computerID, id)
+	if !ok2 {
+		httpx.WriteError(w, http.StatusForbidden, "agent not assigned to this computer")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"token": token, "expiresInSeconds": ttl})
 }

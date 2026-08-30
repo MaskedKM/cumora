@@ -2,6 +2,9 @@
 // 事件流、纯 agent 会话偷看、admin 头像生成。门禁对齐 router.ts:
 // requireDevtools(NODE_ENV≠production 恒开,否则 x-cumora-dev-mode 头 +
 // owner/admin)、requireCompanyRole(avatar:owner/admin;peek:仅 owner)。
+// #187 批次 5:本域同时是 observability tag 的宿主(run events/peek 三
+// 路由原生,runs/triage/llm-spend 委托 obs.API);avatar/generate 属
+// agents tag,经导出函数 AgentAvatarGenerate 供 agents 域委托。
 package devtools
 
 import (
@@ -15,7 +18,9 @@ import (
 	"time"
 
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/devtools"
+	obscontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/observability"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
 const devtoolsHeader = "x-cumora-dev-mode"
@@ -24,19 +29,22 @@ const devtoolsHeader = "x-cumora-dev-mode"
 // boards 的 WakeMentioned 同款依赖倒置,域包不反向 import runtime)。
 type AvatarGen func(ctx context.Context, agentID, tenant string) (string, error)
 
-// Server:devtools tag(3 路由)的域实现(#187 机械迁移)。
-type Server struct{ DB *sql.DB }
+// Server:devtools tag(3 路由)+ observability tag(6 路由)的域实现。
+type Server struct {
+	DB  *sql.DB
+	Obs *obs.API // observability 的 runs/triage/llm-spend 三面委托载体
+}
 
 var _ contract.ServerInterface = (*Server)(nil)
+var _ obscontract.ServerInterface = (*Server)(nil)
 
-// Mount:devtools tag 走契约生成物;其余 4 路由分属 observability(run
-// events/peek×2)与 agents(avatar)tag,跨包设计另批收编。
-func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen) {
-	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
-	mux.HandleFunc("GET /api/agents/observability/runs/{id}/events", runEvents(db))
-	mux.HandleFunc("GET /api/peek/agent-chats/{id}/messages", peekAgentChat(db))
-	mux.HandleFunc("GET /api/peek/agent-chats", peekAgentChatsList(db))
-	mux.HandleFunc("POST /api/agents/{id}/avatar/generate", avatarGenerate(db, avatarGen))
+// Mount:两 tag 均走契约生成物(#187 批次 5 收编 observability;agents
+// tag 的 avatar/generate 由 agents 域 Mount 携钩子委托到本包导出函数,
+// 本 Mount 不再需要头像钩子)。
+func Mount(mux *http.ServeMux, db *sql.DB) {
+	s := &Server{DB: db, Obs: &obs.API{DB: db}}
+	_ = contract.HandlerFromMux(s, mux)
+	_ = obscontract.HandlerFromMux(s, mux)
 }
 
 /* ───────── 门禁 ───────── */
@@ -135,147 +143,157 @@ func (s *Server) ReadAgentWorkspaceFile(w http.ResponseWriter, r *http.Request, 
 
 /* ───────── GET /agents/observability/runs/{id}/events ───────── */
 
-func runEvents(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireDevtools(w, r, db)
-		if !ok {
-			return
-		}
-		runID := r.PathValue("id")
-		var one int
-		if err := db.QueryRowContext(r.Context(),
-			`SELECT 1 FROM agent_runs WHERE id = $1 AND company_id = $2 LIMIT 1`,
-			runID, tenant).Scan(&one); err != nil {
-			if err == sql.ErrNoRows {
-				httpx.WriteError(w, http.StatusNotFound, "not found")
-			} else {
-				// 门禁查询失败 ≠ 不存在(TS throw → 500,#107 评审 NIT5)。
-				httpx.WriteInternalError(w, r, err)
-			}
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT id, run_id, agent_id, kind, level, title, data, created_at
-			  FROM agent_events
-			 WHERE run_id = $1 AND company_id = $2
-			 ORDER BY created_at ASC, id ASC`, runID, tenant)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var id, runID2, agentID, kind, level, title string
-			var data []byte
-			var createdAt time.Time
-			if err := rows.Scan(&id, &runID2, &agentID, &kind, &level, &title, &data, &createdAt); err != nil {
-				continue
-			}
-			var dataAny any
-			_ = json.Unmarshal(data, &dataAny)
-			out = append(out, map[string]any{
-				"id": id, "runId": runID2, "agentId": agentID, "kind": kind,
-				"level": level, "title": title, "data": dataAny, "createdAt": httpx.ISOms(createdAt),
-			})
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+func (s *Server) GetAgentRunEvents(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireDevtools(w, r, s.DB)
+	if !ok {
+		return
 	}
+	runID := id
+	var one int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM agent_runs WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		runID, tenant).Scan(&one); err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+		} else {
+			// 门禁查询失败 ≠ 不存在(TS throw → 500,#107 评审 NIT5)。
+			httpx.WriteInternalError(w, r, err)
+		}
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT id, run_id, agent_id, kind, level, title, data, created_at
+		  FROM agent_events
+		 WHERE run_id = $1 AND company_id = $2
+		 ORDER BY created_at ASC, id ASC`, runID, tenant)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, runID2, agentID, kind, level, title string
+		var data []byte
+		var createdAt time.Time
+		if err := rows.Scan(&id, &runID2, &agentID, &kind, &level, &title, &data, &createdAt); err != nil {
+			continue
+		}
+		var dataAny any
+		_ = json.Unmarshal(data, &dataAny)
+		out = append(out, map[string]any{
+			"id": id, "runId": runID2, "agentId": agentID, "kind": kind,
+			"level": level, "title": title, "data": dataAny, "createdAt": httpx.ISOms(createdAt),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 /* ───────── GET /peek/agent-chats/{id}/messages ───────── */
 
-// peekAgentChat:owner-only;绕过"必须是成员"规则以允许人类旁听纯 agent
-// 房,但必须验证会话确为全员 agent(否则就是读任意会话的后门)。
-func peekAgentChat(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireCompanyRole(w, r, db, true)
-		if !ok {
-			return
-		}
-		id := r.PathValue("id")
-		var isAgentOnly bool
-		if err := db.QueryRowContext(r.Context(), `
-			SELECT (
-			    jsonb_array_length(c.members) >= 1
-			    AND NOT EXISTS (
-			      SELECT 1 FROM jsonb_array_elements_text(c.members) m
-			        LEFT JOIN participants p ON p.id = m AND p.company_id = c.company_id
-			       WHERE p.kind IS DISTINCT FROM 'agent'
-			    )
-			 ) FROM conversations c
-			WHERE c.id = $1 AND c.company_id = $2
-			LIMIT 1`, id, tenant).Scan(&isAgentOnly); err != nil {
-			if err == sql.ErrNoRows {
-				httpx.WriteError(w, http.StatusNotFound, "not found")
-			} else {
-				httpx.WriteInternalError(w, r, err)
-			}
-			return
-		}
-		if !isAgentOnly {
-			httpx.WriteError(w, http.StatusNotFound, "not found")
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT id, conversation_id, author_id, kind, body, sequence, tool, created_at
-			  FROM messages
-			 WHERE conversation_id = $1
-			 ORDER BY sequence ASC`, id)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var msgID, convoID, authorID, kind, body string
-			var sequence int64
-			var tool []byte
-			var createdAt time.Time
-			if err := rows.Scan(&msgID, &convoID, &authorID, &kind, &body, &sequence, &tool, &createdAt); err != nil {
-				continue
-			}
-			var toolAny any
-			_ = json.Unmarshal(tool, &toolAny)
-			out = append(out, map[string]any{
-				"id": msgID, "conversationId": convoID, "authorId": authorID,
-				"kind": kind, "body": body, "sequence": sequence, "tool": toolAny,
-				"createdAt": httpx.ISOms(createdAt),
-			})
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+// GetWhisperMessages:owner-only;绕过"必须是成员"规则以允许人类旁听纯
+// agent 房,但必须验证会话确为全员 agent(否则就是读任意会话的后门)。
+func (s *Server) GetWhisperMessages(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireCompanyRole(w, r, s.DB, true)
+	if !ok {
+		return
 	}
+	var isAgentOnly bool
+	if err := s.DB.QueryRowContext(r.Context(), `
+		SELECT (
+		    jsonb_array_length(c.members) >= 1
+		    AND NOT EXISTS (
+		      SELECT 1 FROM jsonb_array_elements_text(c.members) m
+		        LEFT JOIN participants p ON p.id = m AND p.company_id = c.company_id
+		       WHERE p.kind IS DISTINCT FROM 'agent'
+		    )
+		 ) FROM conversations c
+		WHERE c.id = $1 AND c.company_id = $2
+		LIMIT 1`, id, tenant).Scan(&isAgentOnly); err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+		} else {
+			httpx.WriteInternalError(w, r, err)
+		}
+		return
+	}
+	if !isAgentOnly {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT id, conversation_id, author_id, kind, body, sequence, tool, created_at
+		  FROM messages
+		 WHERE conversation_id = $1
+		 ORDER BY sequence ASC`, id)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var msgID, convoID, authorID, kind, body string
+		var sequence int64
+		var tool []byte
+		var createdAt time.Time
+		if err := rows.Scan(&msgID, &convoID, &authorID, &kind, &body, &sequence, &tool, &createdAt); err != nil {
+			continue
+		}
+		var toolAny any
+		_ = json.Unmarshal(tool, &toolAny)
+		out = append(out, map[string]any{
+			"id": msgID, "conversationId": convoID, "authorId": authorID,
+			"kind": kind, "body": body, "sequence": sequence, "tool": toolAny,
+			"createdAt": httpx.ISOms(createdAt),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 /* ───────── POST /agents/{id}/avatar/generate ───────── */
 
-// avatarGenerate:owner/admin(烧真钱的图像 API);404 'not found' /
-// 400 'avatar generation is only for agents' 透传,其余 502
-// 'image generation failed: <msg>'。
-func avatarGenerate(db *sql.DB, gen AvatarGen) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireCompanyRole(w, r, db, false)
-		if !ok {
-			return
-		}
-		url, err := gen(r.Context(), r.PathValue("id"), tenant)
-		if err != nil {
-			switch err.Error() {
-			case "not found":
-				httpx.WriteError(w, http.StatusNotFound, "not found")
-			case "avatar generation is only for agents":
-				httpx.WriteError(w, http.StatusBadRequest, "avatar generation is only for agents")
-			default:
-				slog.Warn("[agents] avatar generate failed", "err", err)
-				// TS baseline 无条件透传(`image generation failed: ${msg}`),
-				// 非 errorHandler 面 —— 不进 WriteInternalError。
-				httpx.WriteError(w, http.StatusBadGateway, "image generation failed: "+err.Error())
-			}
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"url": url})
+// AgentAvatarGenerate:agents tag 的 {id}/avatar/generate(agents 域
+// Server 委托到此;体为原 avatarGenerate 闭包逐字上移)。owner/admin
+// (烧真钱的图像 API);404 'not found' / 400 'avatar generation is
+// only for agents' 透传,其余 502 'image generation failed: <msg>'。
+func AgentAvatarGenerate(db *sql.DB, gen AvatarGen, w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireCompanyRole(w, r, db, false)
+	if !ok {
+		return
 	}
+	url, err := gen(r.Context(), id, tenant)
+	if err != nil {
+		switch err.Error() {
+		case "not found":
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+		case "avatar generation is only for agents":
+			httpx.WriteError(w, http.StatusBadRequest, "avatar generation is only for agents")
+		default:
+			slog.Warn("[agents] avatar generate failed", "err", err)
+			// TS baseline 无条件透传(`image generation failed: ${msg}`),
+			// 非 errorHandler 面 —— 不进 WriteInternalError。
+			httpx.WriteError(w, http.StatusBadGateway, "image generation failed: "+err.Error())
+		}
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"url": url})
+}
+
+/* ───────── observability 委托面(obs.API 三路由) ───────── */
+
+// runs/triage/llm-spend 的体在 obs 包(#140 自 runtime 拆出);生成器不
+// 摘 query,obs 侧继续读 r.URL.Query(),params 形参落地不消费。
+func (s *Server) GetAgentRuns(w http.ResponseWriter, r *http.Request, params obscontract.GetAgentRunsParams) {
+	s.Obs.HandleObsRuns(w, r)
+}
+
+func (s *Server) GetTriageEconomics(w http.ResponseWriter, r *http.Request, params obscontract.GetTriageEconomicsParams) {
+	s.Obs.HandleObsTriage(w, r)
+}
+
+func (s *Server) GetLlmSpend(w http.ResponseWriter, r *http.Request) {
+	s.Obs.HandleObsSpend(w, r)
 }
 
 /* ───────── capabilities + workspace 索引 + peek 列表(#68 补齐) ───────── */
@@ -343,53 +361,51 @@ func (s *Server) ListAgentWorkspace(w http.ResponseWriter, r *http.Request, para
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-// peekAgentChatsList:owner-only 的 agent↔agent 会话观察列表。
-func peekAgentChatsList(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := requireCompanyRole(w, r, db, true)
-		if !ok {
-			return
-		}
-		rows, err := db.QueryContext(r.Context(), `
-			SELECT c.id, c.kind, c.title, c.members,
-			       (c.members->>0), (c.members->>1),
-			       c.topic, c.created_at, c.updated_at,
-			       (SELECT COUNT(*)::int FROM messages WHERE conversation_id = c.id)
-			  FROM conversations c
-			 WHERE c.company_id = $1
-			   AND jsonb_array_length(c.members) >= 2
-			   AND NOT EXISTS (
-			     SELECT 1 FROM jsonb_array_elements_text(c.members) m
-			       LEFT JOIN participants p ON p.id = m AND p.company_id = c.company_id
-			      WHERE p.kind IS DISTINCT FROM 'agent'
-			   )
-			 ORDER BY c.updated_at DESC
-			 LIMIT 50`, tenant)
-		if err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
-		}
-		defer rows.Close()
-		out := []map[string]any{}
-		for rows.Next() {
-			var id, kind, title, agentA, agentB string
-			var members []byte
-			var topic sql.NullString
-			var createdAt, updatedAt time.Time
-			var msgCount int
-			if rows.Scan(&id, &kind, &title, &members, &agentA, &agentB, &topic, &createdAt, &updatedAt, &msgCount) == nil {
-				var membersAny any
-				_ = json.Unmarshal(members, &membersAny)
-				out = append(out, map[string]any{
-					"id": id, "kind": kind, "title": title, "members": membersAny,
-					"agentA": agentA, "agentB": agentB, "about": nullStrOf(topic),
-					"createdAt": httpx.ISOms(createdAt), "updatedAt": httpx.ISOms(updatedAt),
-					"msgCount": msgCount,
-				})
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, out)
+// GetWhispers:owner-only 的 agent↔agent 会话观察列表。
+func (s *Server) GetWhispers(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := requireCompanyRole(w, r, s.DB, true)
+	if !ok {
+		return
 	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT c.id, c.kind, c.title, c.members,
+		       (c.members->>0), (c.members->>1),
+		       c.topic, c.created_at, c.updated_at,
+		       (SELECT COUNT(*)::int FROM messages WHERE conversation_id = c.id)
+		  FROM conversations c
+		 WHERE c.company_id = $1
+		   AND jsonb_array_length(c.members) >= 2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM jsonb_array_elements_text(c.members) m
+		       LEFT JOIN participants p ON p.id = m AND p.company_id = c.company_id
+		      WHERE p.kind IS DISTINCT FROM 'agent'
+		   )
+		 ORDER BY c.updated_at DESC
+		 LIMIT 50`, tenant)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, kind, title, agentA, agentB string
+		var members []byte
+		var topic sql.NullString
+		var createdAt, updatedAt time.Time
+		var msgCount int
+		if rows.Scan(&id, &kind, &title, &members, &agentA, &agentB, &topic, &createdAt, &updatedAt, &msgCount) == nil {
+			var membersAny any
+			_ = json.Unmarshal(members, &membersAny)
+			out = append(out, map[string]any{
+				"id": id, "kind": kind, "title": title, "members": membersAny,
+				"agentA": agentA, "agentB": agentB, "about": nullStrOf(topic),
+				"createdAt": httpx.ISOms(createdAt), "updatedAt": httpx.ISOms(updatedAt),
+				"msgCount": msgCount,
+			})
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 func nullStrOf(ns sql.NullString) any {

@@ -58,15 +58,7 @@ func (s *API) obsRequireDevtools(w http.ResponseWriter, r *http.Request) (string
 	return companyID, true
 }
 
-// MountObservabilityApi:coreRouter 挂载(main.go 调;authMiddleware 链内)。
-func MountObservabilityApi(mux *http.ServeMux, db *sql.DB) {
-	s := &API{DB: db}
-	mux.HandleFunc("GET /api/agents/observability/runs", s.handleObsRuns)
-	mux.HandleFunc("GET /api/agents/observability/triage", s.handleObsTriage)
-	mux.HandleFunc("GET /api/agents/observability/llm-spend", s.handleObsSpend)
-}
-
-func (s *API) handleObsRuns(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandleObsRuns(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
@@ -171,7 +163,7 @@ type triAcc struct {
 	cacheRead, totalInput             int64
 }
 
-func (s *API) handleObsTriage(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandleObsTriage(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
@@ -506,7 +498,7 @@ func (s *API) buildTriageEconomics(ctx context.Context, tenant, agentID string, 
 
 /* ───────── llm-spend rollup ───────── */
 
-func (s *API) handleObsSpend(w http.ResponseWriter, r *http.Request) {
+func (s *API) HandleObsSpend(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.obsRequireDevtools(w, r)
 	if !ok {
 		return
