@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 )
 
 /* ───────── 错误与公共件 ───────── */
@@ -204,11 +205,6 @@ var featureTransitions = map[string]map[string]bool{
 	"archived":  {},
 }
 
-func mustJSONString(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
 // dbtx:db 与事务共用的最小执行面。
 type dbtx interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -225,7 +221,7 @@ func recordEvent(ctx context.Context, db dbtx, companyID, featureID, actorID, ki
 	_, err := db.ExecContext(ctx,
 		`INSERT INTO shipping_events (id, company_id, feature_id, actor_id, kind, data)
 		   VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-		randID("se"), companyID, fid, aid, kind, mustJSONString(orEmptyMap(data)))
+		randID("se"), companyID, fid, aid, kind, jsonx.MustJSONString(orEmptyMap(data)))
 	return err
 }
 

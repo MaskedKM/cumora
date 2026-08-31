@@ -2,16 +2,18 @@
 # 契约防漂移守卫:#48(OpenAPI-first);#139 起对账面含 server-go 生成物
 # (internal/contract = 全量 types + 已迁移 tag 的 ServerInterface);
 # #221 起对账面含 WS 事件契约双端生成物(contract/src/ws-events.d.ts +
-# server-go internal/events/ws.gen.go),并 grep 拦三端手写事件形状回流。
+# server-go internal/events/ws.gen.go),并 grep 拦三端手写事件形状回流;
+# #266 起对账面含 prompt 文案生成物(packages/prompt/*.txt → 双端 .gen.go)。
 # 自举 safe.directory —— CI job 容器内 root 的 git 会报 dubious ownership
 # (actions/checkout 的 safe.directory 写在宿主用户配置里,容器 root 看不到)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 git config --global --add safe.directory "$(pwd)" 2>/dev/null || true
 npm run contract:gen
-git add -A -- packages/contract apps/server-go/internal/contract apps/server-go/internal/events/ws.gen.go
-if ! git diff --cached --exit-code HEAD -- packages/contract apps/server-go/internal/contract apps/server-go/internal/events/ws.gen.go; then
-  echo "契约与生成物不同步 —— 跑 npm run contract:gen 并提交" >&2
+npm run prompt:gen
+git add -A -- packages/contract apps/server-go/internal/contract apps/server-go/internal/events/ws.gen.go packages/prompt apps/server-go/internal/agent/prompt_constants.gen.go apps/byoa-daemon/internal/daemon/persona_prompts.gen.go
+if ! git diff --cached --exit-code HEAD -- packages/contract apps/server-go/internal/contract apps/server-go/internal/events/ws.gen.go packages/prompt apps/server-go/internal/agent/prompt_constants.gen.go apps/byoa-daemon/internal/daemon/persona_prompts.gen.go; then
+  echo "契约与生成物不同步 —— 跑 npm run contract:gen && npm run prompt:gen 并提交" >&2
   exit 1
 fi
 

@@ -24,6 +24,7 @@ import (
 	emailpkg "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 )
 
@@ -1202,7 +1203,7 @@ func (s *Server) ToggleReaction(w http.ResponseWriter, r *http.Request, id strin
 		_ = json.Unmarshal([]byte(usersJSON), &users)
 		agg = append(agg, map[string]any{"emoji": em, "count": cnt, "users": users})
 	}
-	_ = events.PublishRaw(r.Context(), events.ChReactions, mustJSON(map[string]any{
+	_ = events.PublishRaw(r.Context(), events.ChReactions, jsonx.MustJSON(map[string]any{
 		"type":           "message.reactions",
 		"conversationId": convoID,
 		"companyId":      tenant,
@@ -1250,9 +1251,4 @@ func clampF(v float64) float64 {
 		return -1
 	}
 	return v
-}
-
-func mustJSON(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
 }

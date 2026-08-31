@@ -7,13 +7,13 @@ package runtime
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 )
 
 // SetStatus:更新 participants.status 并按租户逐行广播(status.ts)。
@@ -35,7 +35,7 @@ func (s *Service) SetStatus(ctx context.Context, participantID, status string) e
 		if err := rows.Scan(&companyID, &at); err != nil {
 			return err
 		}
-		events.PublishRaw(ctx, events.ChStatus, mustJSON(map[string]any{
+		events.PublishRaw(ctx, events.ChStatus, jsonx.MustJSON(map[string]any{
 			"type":            "participants.status",
 			"participantId":   participantID,
 			"status":          status,
@@ -61,7 +61,7 @@ func (s *Service) HeartbeatStatus(ctx context.Context, participantID, status str
 	if err != nil {
 		return err
 	}
-	events.PublishRaw(ctx, events.ChStatus, mustJSON(map[string]any{
+	events.PublishRaw(ctx, events.ChStatus, jsonx.MustJSON(map[string]any{
 		"type":            "participants.status",
 		"participantId":   participantID,
 		"status":          status,
@@ -98,7 +98,7 @@ func (s *Service) ResetHumanPresenceOnBoot(ctx context.Context) {
 		// 上线(Promise.race 兜底);关键面(UPDATE)已先行提交,这里只是
 		// 通知面,不该有能力拖住启动。
 		pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
-		events.PublishRaw(pctx, events.ChStatus, mustJSON(map[string]any{
+		events.PublishRaw(pctx, events.ChStatus, jsonx.MustJSON(map[string]any{
 			"type":            "participants.status",
 			"participantId":   id,
 			"status":          "resting",
@@ -110,14 +110,6 @@ func (s *Service) ResetHumanPresenceOnBoot(ctx context.Context) {
 	if demoted > 0 {
 		slog.Info("[runtime] demoted stale 'avail' human(s) to 'resting' on boot", "count", demoted)
 	}
-}
-
-func mustJSON(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return []byte("{}")
-	}
-	return b
 }
 
 // PublishTyping:发 "typing in convo X" 指示。keep-alive 节流:渲染侧
@@ -141,7 +133,7 @@ func (s *Service) PublishTyping(ctx context.Context, conversationID, agentID str
 	if companyID != nil {
 		payload["companyId"] = *companyID
 	}
-	if err := events.PublishRaw(ctx, events.ChTyping, mustJSON(payload)); err != nil {
+	if err := events.PublishRaw(ctx, events.ChTyping, jsonx.MustJSON(payload)); err != nil {
 		slog.Warn("[runtime] publishTyping failed — dropping", "err", err)
 	}
 }

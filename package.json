@@ -48,6 +48,7 @@
     "mobile:android:run": "npm run mobile:sync && npx cap run android",
     "contract:gen": "node scripts/contract-coverage.mjs && openapi-typescript packages/contract/openapi.yaml -o packages/contract/src/schema.d.ts && bash scripts/contract-gen-go.sh && node scripts/contract-gen-ws.mjs",
     "contract:check": "bash scripts/contract-check.sh",
+    "prompt:gen": "node scripts/prompt-gen.mjs",
     "sidecar:dev": "tsx watch apps/yjs-sidecar/src/main.ts",
     "sidecar:start": "tsx apps/yjs-sidecar/src/main.ts",
     "test:e2e": "INTEGRATION_E2E=1 node tests/integration/run.mjs"

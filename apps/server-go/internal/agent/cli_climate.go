@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -184,7 +185,7 @@ func (s *Service) cliClimateNote(ctx context.Context, parsed cliParsed, me strin
 	// 追加历史并截到最近 20 条。
 	var prevList []any
 	if prevHistory != nil && string(prevHistory) != "null" {
-		_ = jsonUnmarshal(prevHistory, &prevList)
+		_ = json.Unmarshal(prevHistory, &prevList)
 	}
 	if len(prevList) > 19 {
 		prevList = prevList[len(prevList)-19:]
