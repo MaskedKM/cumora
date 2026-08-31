@@ -308,7 +308,10 @@ function MessageRowImpl({ msg, author, delay = 0, animate = true }: MessageRowPr
               'inline-block py-2.5 px-3.5 rounded-tl-[4px] rounded-tr-[14px] rounded-br-[14px] rounded-bl-[14px] text-[14px] leading-[1.55] max-w-[min(100%,580px)] break-words',
               isMine
                 ? 'border'
-                : 'bg-sky2-50 border border-sky2-100 text-ink-700'
+                : 'bg-sky2-50 border border-sky2-100 text-ink-700',
+              // #210 流式态:灰显前缀(尚未落库,终局 message.new 会替换)
+              // + 尾部脉冲光标 = 打字机语义。
+              msg.streaming && 'opacity-70',
             )}
             style={isMine ? {
               background: 'linear-gradient(135deg, #FFE8E1, #FFD9D2)',
@@ -317,6 +320,12 @@ function MessageRowImpl({ msg, author, delay = 0, animate = true }: MessageRowPr
             } : undefined}
           >
             <RichBody body={msg.body} conversationId={msg.conversationId} />
+            {msg.streaming && (
+              <span
+                aria-label={t('msgview.streaming')}
+                className="inline-block w-[7px] h-[14px] ml-[3px] align-[-2px] rounded-[1px] bg-skype/70 animate-pulse"
+              />
+            )}
           </div>
         )}
 

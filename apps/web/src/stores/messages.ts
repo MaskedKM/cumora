@@ -156,9 +156,32 @@ function scheduleTypingExpiry(conversationId: string, agentId: string): void {
     typingExpiryTimers.delete(typingKey(conversationId, agentId))
     useMessages.setState((s) => ({
       typing: withoutTypingAgent(s.typing, conversationId, agentId),
+      // #210:同款陈旧兜底也收走该作者的 streaming 气泡——daemon 中途死
+      // 亡时 done/message.new 永不到达,45s 静默即弃(帧持续到达会重拍
+      // 此定时器,活跃流不受影响)。
+      ...retireStreamingFor(s, conversationId, agentId),
     }))
   }, TYPING_STALE_MS)
   typingExpiryTimers.set(typingKey(conversationId, agentId), timer)
+}
+
+/** Retire the transient streaming entries of one author in one conversation
+ *  (#210). The daemon mints its own stream id, which never matches the final
+ *  message id — so the terminal handoff (`message.new` from the same author,
+ *  typing-stale timeout) must key on (conversationId, authorId), not id.
+ *  Idempotent: an absent entry is a no-op. Returns a streaming-map partial. */
+function retireStreamingFor(
+  s: Pick<MessagesState, 'streaming'>,
+  conversationId: string,
+  authorId: string,
+): Partial<Pick<MessagesState, 'streaming'>> {
+  const doomed = Object.entries(s.streaming)
+    .filter(([, x]) => x.conversationId === conversationId && x.authorId === authorId)
+  if (doomed.length === 0) return {}
+  for (const [id] of doomed) deltaBatch.drop(id)
+  const rest = { ...s.streaming }
+  for (const [id] of doomed) delete rest[id]
+  return { streaming: rest }
 }
 
 /** Re-derive every reaction's `mine` flag from `users` + the local user id.
@@ -529,6 +552,12 @@ export const useMessages = create<MessagesState>((set, get) => ({
       // The completed body supersedes any delta tail still sitting in
       // the coalescing buffer (a fast finish can beat the next frame).
       deltaBatch.drop(m.id)
+      // #210:agent 回帖落地 = 该作者的 delta 流终局。daemon 铸的流 id
+      // 与终局消息 id 不配对,按 (convo, author) 收口换真消息(幂等:
+      // done/message.new/陈旧兜底三条退场路径互不踩)。
+      const retiredStreaming = retireStreamingFor(
+        { streaming: get().streaming }, e.conversationId, m.authorId,
+      )
       set((s) => {
         const existing = s.byConvo[e.conversationId] ?? []
         // Match the optimistic bubble against the server echo. We have to
@@ -565,7 +594,8 @@ export const useMessages = create<MessagesState>((set, get) => ({
             x.id === rootId ? { ...x, replyCount: (x.replyCount ?? 0) + 1 } : x,
           )
         }
-        const { [m.id]: _drop, ...rest } = s.streaming
+        const rest = retiredStreaming.streaming ?? { ...s.streaming }
+        delete rest[m.id]
         return {
           streaming: rest,
           typing: withoutTypingAgent(s.typing, e.conversationId, m.authorId),
@@ -573,7 +603,10 @@ export const useMessages = create<MessagesState>((set, get) => ({
         }
       })
     } else if (e.type === 'message.delta') {
-      clearTypingExpiry(e.conversationId, e.authorId)
+      // 帧到达 = 流活跃:重拍陈旧兜底(daemon 死亡时 45s 后收走 typing
+      // 指示与 streaming 气泡);done/终局路径仍走 clearTypingExpiry。
+      if (e.done) clearTypingExpiry(e.conversationId, e.authorId)
+      else scheduleTypingExpiry(e.conversationId, e.authorId)
       if (e.done) {
         // Terminal: drop the unflushed tail (the final body arrives via
         // message.new) and retire the streaming entry as before.
@@ -655,6 +688,7 @@ export const messagesFor = (s: MessagesState, convoId: string | null): Message[]
           kind: 'text' as const,
           body: x.body,
           at: timeFromIso(),
+          streaming: true,
         }
         bubbleCache.set(x, bubble)
       }

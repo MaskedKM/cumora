@@ -1775,6 +1775,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'msgview.removedFromGroup': '移出了群组',
   'msgview.messageDeleted': '[消息已删除]',
   'msgview.jumpToOriginal': '跳转到原消息',
+  'msgview.streaming': '正在输出…',
   'msgview.typingIs': ' 正在输入…',
   'msgview.typingAre': ' 正在输入…',
   'msgview.typingSep': '、',

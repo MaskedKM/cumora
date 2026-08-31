@@ -94,6 +94,46 @@ test('messagesFor hands back the SAME bubble object until a flush replaces the e
   expect(grown?.body).toBe('onetwo')
 })
 
+// ── #210:daemon 铸的流 id 与终局消息 id 不配对——收口必须按
+// (conversationId, authorId),否则终局后残留一条重复的瞬态气泡。──
+test('message.new from the same author retires a daemon-id transient (id never matches)', () => {
+  reset()
+  const apply = useMessages.getState().applyEvent
+  apply(delta('ds-abc123', 'composing the reply…'))
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming['ds-abc123']).toBeDefined()
+  apply({
+    type: 'message.new', conversationId: 'c1',
+    message: { id: 'm-real', conversationId: 'c1', authorId: 'a1', kind: 'text', body: 'final body' },
+  } as unknown as WsEvent)
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming).toEqual({})
+  const list = messagesFor(useMessages.getState(), 'c1')
+  expect(list.map((m) => m.body)).toEqual(['final body'])
+})
+
+test('message.new from a DIFFERENT author leaves the transient alone', () => {
+  reset()
+  const apply = useMessages.getState().applyEvent
+  apply(delta('ds-abc123', 'agent is composing'))
+  flushStreamingDeltas()
+  apply({
+    type: 'message.new', conversationId: 'c1',
+    message: { id: 'm-other', conversationId: 'c1', authorId: 'someone-else', kind: 'text', body: 'not my stream' },
+  } as unknown as WsEvent)
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming['ds-abc123']).toBeDefined()
+})
+
+test('synthesized streaming bubbles carry the streaming render flag', () => {
+  reset()
+  const apply = useMessages.getState().applyEvent
+  apply(delta('ds-flag', 'live prefix'))
+  flushStreamingDeltas()
+  const bubble = messagesFor(useMessages.getState(), 'c1').find((m) => m.id === 'ds-flag')
+  expect(bubble?.streaming).toBe(true)
+})
+
 test('a completed message in byConvo hides a same-id streaming entry', () => {
   reset()
   useMessages.setState({
