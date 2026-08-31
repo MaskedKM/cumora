@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, ws, type ApiConversation } from '@/api/client'
+import { api, ws, type ApiConversation, type ApiMessage } from '@/api/client'
 import type { Conversation } from '@/types'
 import { useApp } from '@/stores/app'
 import { commitIfContextCurrent, useAuth } from '@/stores/auth'
@@ -61,12 +61,26 @@ function renderSystemPreview(
   }
 }
 
-function fromApi(c: ApiConversation): Conversation {
-  const last = c.lastMessage
-  // Empty string when there's no message yet — the row renderer skips the
-  // preview line entirely so an empty conversation doesn't show a stray "—".
+/** previewForMessage 的入参面:事件载荷 ApiMessage(message.new)与列表
+ *  端点 lastMessage 的共同结构子集——两者字段兼容但类型不同形
+ *  (lastMessage 无 conversationId/sequence,事件侧 createdAt 可选)。 */
+interface PreviewMessage {
+  authorId: string
+  kind: string
+  body: string
+  tool?: unknown
+  email?: { direction?: string; subject?: string | null } | null
+  attachment?: { name?: string | null; kind?: string } | null
+}
+
+/** Sidebar preview line for a message — the single derivation shared by
+ *  fromApi (full reload) and the message.new surgical patch (#220), so a
+ *  patched row is byte-identical to what a reload would have produced.
+ *  Empty string when there's no message yet — the row renderer skips the
+ *  preview line entirely so an empty conversation doesn't show a stray "—". */
+function previewForMessage(last: PreviewMessage): string {
   let preview = ''
-  if (last) {
+  {
     // Resolve the author's DISPLAY NAME from the participants store. If the
     // participant isn't loaded yet, omit the author prefix entirely — never
     // fall back to the raw id (which may carry a server-side collision
@@ -124,6 +138,12 @@ function fromApi(c: ApiConversation): Conversation {
       preview = authorName ? `${authorName}: ${trimmedBody.slice(0, 100)}` : trimmedBody.slice(0, 100)
     }
   }
+  return preview
+}
+
+function fromApi(c: ApiConversation): Conversation {
+  const last = c.lastMessage
+  const preview = last ? previewForMessage(last) : ''
   return {
     id: c.id,
     kind: c.kind,
@@ -207,6 +227,64 @@ export const useConversations = create<ConversationsState>((set) => ({
   },
 }))
 
+/** Apply a message.new to the sidebar row in place (#220): preview /
+ *  lastMessageId / lastAt* refresh, unread bumps only when the user isn't
+ *  reading the conversation, and the row re-takes its position under the
+ *  server's list order (pinned first, then recency — conversations.go
+ *  `ORDER BY c.pinned DESC, c.updated_at DESC`). Falls back to one reload
+ *  when the row isn't loaded yet (a patch can't invent the row).
+ *  Exported for conversations.patch.test.ts. */
+export function applyMessageEvent(conversationId: string, m: ApiMessage, isActive: boolean): void {
+  const meId = useAuth.getState().user?.id
+  const bumpUnread = !isActive && m.authorId !== meId
+  // 事件侧 createdAt 类型可选;实况恒在,缺省回退"现在"——活事件的诚实
+  // 时间戳(比丢弃或纪元零好,零值会被守卫误判为陈旧帧)。
+  const createdAt = m.createdAt ?? new Date().toISOString()
+  useConversations.setState((s) => {
+    const idx = s.list.findIndex((c) => c.id === conversationId)
+    if (idx === -1) {
+      void useConversations.getState().reload()
+      return s
+    }
+    const prev = s.list[idx]
+    // Out-of-order or replayed frame (hello backfill races a live event):
+    // message ids are random server-side tokens (not orderable), so recency
+    // is judged on createdAt — never move the row backwards, and an equal
+    // timestamp (the replay) must not double-bump unread.
+    if (prev.lastAtIso >= createdAt) return s
+    const next: Conversation = {
+      ...prev,
+      preview: previewForMessage(m),
+      lastMessageId: m.id,
+      lastAt: timeFromIso(createdAt),
+      lastAtIso: createdAt,
+      // Reading it live → treated as seen (server markRead already fired);
+      // own messages from another surface never self-unread.
+      unread: bumpUnread ? (prev.unread ?? 0) + 1 : undefined,
+    }
+    const list = s.list.filter((c) => c.id !== conversationId)
+    let insertAt: number
+    if (next.pinned) {
+      // Pinned rows keep their top block; a pinned conversation that just
+      // received a message returns to the END of that block (recency
+      // doesn't reorder inside the block — the server sort doesn't either).
+      insertAt = list.findIndex((c) => !c.pinned)
+      if (insertAt === -1) insertAt = list.length
+    } else {
+      // Unpinned: first row (pinned gap aside) that is older-or-equal to
+      // this message; fall through to append when everything is newer.
+      insertAt = list.findIndex((c) => !c.pinned)
+      if (insertAt === -1) insertAt = list.length
+      for (let i = insertAt; i < list.length; i++) {
+        if (list[i].lastAtIso <= createdAt) { insertAt = i; break }
+        insertAt = i + 1
+      }
+    }
+    list.splice(insertAt, 0, next)
+    return { list }
+  })
+}
+
 // WS bindings are attached once for the page lifetime; data reload runs
 // on every call so workspace switches (App.tsx remounts the tree on
 // companyId change) pick up the new tenant's data.
@@ -227,14 +305,24 @@ export function bootConversations() {
       return
     }
     if (e.type === 'message.new' || e.type === 'group.pulled') {
-      // If a new message arrives for the conversation the user is currently
-      // viewing, treat it as already-seen — mark read on the server BEFORE we
-      // reload, so the badge never blinks up to 1 just to drop back to 0.
+      // message.new patches the row in place (#220): with several agents
+      // replying concurrently, one HTTP list refetch per message was a
+      // request storm with full-list re-renders. The open conversation
+      // keeps its server read-state in step via markRead alone (no
+      // refetch — the transcript itself lives in the messages store).
       const active = useApp.getState().selectedConversationId
-      if (e.type === 'message.new' && e.conversationId === active) {
-        void api.markRead(e.conversationId).then(() => useConversations.getState().reload())
+      if (e.type === 'message.new') {
+        const isActive = e.conversationId === active
+        if (isActive) {
+          // Treated as already-seen: mark read BEFORE the patch so the
+          // badge never blinks up to 1 just to drop back to 0.
+          void api.markRead(e.conversationId).catch(() => { /* offline: next open retries */ })
+        }
+        applyMessageEvent(e.conversationId, e.message, isActive)
         return
       }
+      // group.pulled can introduce a conversation the client has never
+      // loaded — a patch can't invent the row, so this stays a reload.
       void useConversations.getState().reload()
     } else if (e.type === 'conversation.updated') {
       // Surgical patch — apply patch fields to the matching conversation in
