@@ -44,13 +44,18 @@ func (s *Service) SetRelay(r *docrelay.Relay) { s.Service.SetRelay(r) }
 func (s *Service) redis() redis.UniversalClient { return s.RDB }
 
 // StartScheduler / StartIdleScheduler / StartCalendarReminderScheduler /
-// WakeMentionedAgents:main.go 与域挂载的启动/回调入口(调度域实装的壳代理)。
+// StartDbGcWorker / WakeMentionedAgents:main.go 与域挂载的启动/回调入口
+// (调度域实装的壳代理)。
 func (s *Service) StartScheduler()     { s.Sched.StartScheduler() }
 func (s *Service) StartIdleScheduler() { s.Sched.StartIdleScheduler() }
 
 // StartCalendarReminderScheduler:日历提醒调度器(#209)——calendar.reminder
 // 的发布方(toast 恒发 + email 按 Resend 配置),详见 sched 包。
 func (s *Service) StartCalendarReminderScheduler() { s.Sched.StartCalendarReminderScheduler() }
+
+// StartDbGcWorker:DB 行保留 GC(同族审计 P1-2;#70 退役时丢失的 TS
+// startDbGcWorker 移植)——五张高量表按保留窗小批扫删,详见 sched 包。
+func (s *Service) StartDbGcWorker() { s.Sched.StartDbGcWorker() }
 func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
 	s.Sched.WakeMentionedAgents(companyID, mentions, actorID)
 }
