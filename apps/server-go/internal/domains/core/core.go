@@ -13,12 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	emaildomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
@@ -158,7 +158,7 @@ func (s *Server) AuthMe(w http.ResponseWriter, r *http.Request) {
 		"companies":       companies,
 		"activeCompanyId": activeCompany,
 		"serverCapabilities": map[string]any{
-			"invitationEmail": os.Getenv("EMAIL_DOMAIN") != "",
+			"invitationEmail": config.EmailDomainRaw() != "",
 		},
 	})
 }

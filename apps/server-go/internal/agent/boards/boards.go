@@ -12,6 +12,7 @@ import (
 
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 )
 
 // Domain:boards 域子包的接收器——嵌入 agent.Service(内核),方法体与
@@ -138,7 +139,7 @@ func (s *Domain) publishBoardCli(companyID, kind, boardID string, cardID, column
 		payload["mentions"] = mentions
 	}
 	if b, err := agent.MarshalOrdered(payload); err == nil {
-		_ = s.PublishRaw("cumora:boards", b)
+		_ = s.PublishRaw(events.ChBoards, b)
 	}
 }
 

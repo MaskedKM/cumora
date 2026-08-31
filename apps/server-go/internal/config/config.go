@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -32,31 +31,17 @@ func Load() Config {
 		instanceID = "app-go-" + hex.EncodeToString(b)
 	}
 	return Config{
-		ListenAddr:        envOr("CUMORA_GO_LISTEN", ":5190"),
-		DatabaseURL:       withSSLModeDisabled(envOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
-		MigrationsDir:     envOr("CUMORA_GO_MIGRATIONS", "migrations"),
-		RedisURL:          envOr("REDIS_URL", "redis://localhost:6379"),
-		YjsSidecarURL:     envOr("YJS_SIDECAR_URL", "http://127.0.0.1:5182"),
+		// #217:默认只绑回环——此前 ":5190" 监听所有接口,生产正确值
+		// 127.0.0.1:5181 只活在 systemd Environment 行;裸跑不得暴露。
+		ListenAddr:        EnvOr("CUMORA_GO_LISTEN", "127.0.0.1:5190"),
+		DatabaseURL:       withSSLModeDisabled(EnvOr("DATABASE_URL", "postgres://localhost:5432/cumora")),
+		MigrationsDir:     EnvOr("CUMORA_GO_MIGRATIONS", "migrations"),
+		RedisURL:          EnvOr("REDIS_URL", "redis://localhost:6379"),
+		YjsSidecarURL:     EnvOr("YJS_SIDECAR_URL", "http://127.0.0.1:5182"),
 		YjsSidecarToken:   os.Getenv("YJS_SIDECAR_TOKEN"),
-		YjsSidecarTimeout: envInt("YJS_SIDECAR_TIMEOUT_MS", 5000),
+		YjsSidecarTimeout: EnvInt("YJS_SIDECAR_TIMEOUT_MS", 5000),
 		InstanceID:        instanceID,
 	}
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // withSSLModeDisabled 在 URL 未显式指定 sslmode 时追加 disable —— 自托管

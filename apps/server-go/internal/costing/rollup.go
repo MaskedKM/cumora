@@ -9,10 +9,9 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"os"
-	"strconv"
-	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // 与 migrate 的 SCHEMA_LOCK_KEY(7_643_178_926_104)区分。
@@ -27,25 +26,9 @@ const rollupMaxBackfillHours = 95 * 24
 // 保留窗:更旧的桶定期清,rollup 随历史增长有界。
 const rollupRetentionHours = 95 * 24
 
-// envIntRaw:符号感知的环境整数(0/-1 原样返回);缺键/非数 → ok=false。
-// 与 envIntOr(0→默认)相反——间隔类 env 的 TS 语义是"0=禁用",
-// 必须让 0 活着到达调用方的禁用分支。(自 runtime/scheduler.go 平移;
-// #141 横切统一票若收敛 env 助手则届时合一。)
-func envIntRaw(name string) (int64, bool) {
-	v := strings.TrimSpace(os.Getenv(name))
-	if v == "" {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// envIntRaw 语义:LLM_ROLLUP_INTERVAL_MS=0 = 禁用(TS 文档化 kill-switch)。
+// config.EnvIntRaw 语义:LLM_ROLLUP_INTERVAL_MS=0 = 禁用(TS 文档化 kill-switch)。
 func rollupIntervalMS() int64 {
-	if n, ok := envIntRaw("LLM_ROLLUP_INTERVAL_MS"); ok {
+	if n, ok := config.EnvIntRaw("LLM_ROLLUP_INTERVAL_MS"); ok {
 		return n
 	}
 	return 120_000

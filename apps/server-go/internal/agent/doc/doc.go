@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -37,7 +38,7 @@ func (s *Domain) publishDocChanged(companyID, documentID, kind, actorID string) 
 		"actorId":    actorID,
 	})
 	if err == nil {
-		_ = s.PublishRaw("cumora:docs", payload)
+		_ = s.PublishRaw(events.ChDocs, payload)
 	}
 }
 

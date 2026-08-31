@@ -7,10 +7,10 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 type ctxKey int
@@ -30,7 +30,7 @@ const (
 func Authn(db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if os.Getenv("CUMORA_GO_FAKE_AUTH") == "1" {
+			if config.FakeAuth() == "1" {
 				if uid := r.Header.Get("x-test-user"); uid != "" {
 					r = r.WithContext(context.WithValue(r.Context(), ctxUserID, uid))
 					next.ServeHTTP(w, r)

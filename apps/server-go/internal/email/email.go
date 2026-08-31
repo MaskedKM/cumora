@@ -14,18 +14,18 @@ import (
 	"io"
 	randv2 "math/rand/v2"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 /* ───────────── 地址铸造(与 contacts 包同语义) ───────────── */
 
-func RootDomain() string { return strings.Trim(strings.ToLower(os.Getenv("EMAIL_DOMAIN")), ".") }
+func RootDomain() string { return config.EmailDomain() }
 
 var localPartAllowed = func(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
@@ -434,7 +434,7 @@ var httpClient = &http.Client{Timeout: 20 * time.Second}
 // 注入失败);否则 POST api.resend.com/emails,In-Reply-To/References 经
 // headers 字段,Message-ID 显式下发保持线程一致。永不 panic,失败进 Error。
 func SendViaProvider(ctx context.Context, args SendArgs) ProviderSendResult {
-	apiKey := os.Getenv("RESEND_API_KEY")
+	apiKey := config.ResendAPIKey()
 	if apiKey == "" {
 		failRate := clamp01(parseFloatEnv("EMAIL_MOCK_FAIL_RATE"))
 		if failRate > 0 && randv2.Float64() < failRate {
@@ -517,7 +517,7 @@ func SendViaProvider(ctx context.Context, args SendArgs) ProviderSendResult {
 }
 
 func parseFloatEnv(key string) float64 {
-	v := os.Getenv(key)
+	v := config.Getenv(key)
 	if v == "" {
 		return 0
 	}

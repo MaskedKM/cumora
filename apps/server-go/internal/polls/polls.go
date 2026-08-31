@@ -23,8 +23,6 @@ const (
 	MinOptions     = 2
 	MaxQuestionLen = 280
 	MaxOptionLen   = 120
-
-	chPolls = "cumora:polls"
 )
 
 // PollError:引擎层可预期错误,携带 HTTP 状态(对齐 TS PollError.status)。
@@ -404,7 +402,7 @@ func BuildUpdatedEvent(ctx context.Context, db *sql.DB, messageID string, actorI
 
 func publishUpdated(ctx context.Context, e UpdatedEvent) {
 	payload, _ := json.Marshal(e)
-	_ = events.PublishRaw(ctx, chPolls, payload)
+	_ = events.PublishRaw(ctx, events.ChPolls, payload)
 }
 
 // Sweep 过期清扫:关闭所有 expiresAt 已过且未关闭的投票,返回关闭数。

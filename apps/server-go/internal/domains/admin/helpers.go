@@ -11,9 +11,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // avatarOrGravatar:管理行恒有头像 —— 库里 NULL(存量/种子号)落
@@ -73,8 +74,8 @@ func randHexID(n int) string {
 // approve 建号判 is_admin 用)。
 func isAllowlistedAdmin(email string) bool {
 	mine := strings.ToLower(strings.TrimSpace(email))
-	for _, e := range strings.Split(os.Getenv("CUMORA_ADMIN_EMAILS"), ",") {
-		if strings.ToLower(strings.TrimSpace(e)) == mine && mine != "" {
+	for _, e := range config.AdminEmails() {
+		if e == mine && mine != "" {
 			return true
 		}
 	}

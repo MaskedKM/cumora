@@ -5,12 +5,18 @@
 package sched
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -18,21 +24,12 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
-
-	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
-	"encoding/base64"
-	"io"
-	"net/http"
-
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
-func getenv(name string) string           { return os.Getenv(name) }
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
 /* ───────── 类型(对齐 agenda-triage-core.ts) ───────── */
@@ -285,32 +282,14 @@ const (
 	calendarLookbehindMS = 15 * 60_000
 )
 
-func envIntOr(name string, def int64) int64 {
-	v := strings.TrimSpace(getenv(name))
-	if v == "" {
-		return def
-	}
-	n := int64(0)
-	for _, c := range v {
-		if c < '0' || c > '9' {
-			return def
-		}
-		n = n*10 + int64(c-'0')
-	}
-	if n == 0 {
-		return def
-	}
-	return n
-}
-
 // 停摆窗与 nudge 冷却:env 可覆盖(fallback 用短冷却,理由见 claimStallNudge)。
-func stallMinMS() int64 { return envIntOr("CUMORA_STALL_MIN_MS", 5*60_000) }
-func stallMaxMS() int64 { return envIntOr("CUMORA_STALL_MAX_MS", 6*60*60_000) }
+func stallMinMS() int64 { return config.EnvIntOr("CUMORA_STALL_MIN_MS", 5*60_000) }
+func stallMaxMS() int64 { return config.EnvIntOr("CUMORA_STALL_MAX_MS", 6*60*60_000) }
 func nudgeCooldownMS() int64 {
-	return envIntOr("CUMORA_NUDGE_COOLDOWN_MS", 45*60_000)
+	return config.EnvIntOr("CUMORA_NUDGE_COOLDOWN_MS", 45*60_000)
 }
 func nudgeCooldownFallbackMS() int64 {
-	return envIntOr("CUMORA_NUDGE_COOLDOWN_FALLBACK_MS", 5*60_000)
+	return config.EnvIntOr("CUMORA_NUDGE_COOLDOWN_FALLBACK_MS", 5*60_000)
 }
 
 // ClaimStallNudge:认领先前停摆会话的 nudge 权。首个调用者(全体成员
@@ -733,7 +712,7 @@ func (s *S) ResolveCerebellumRouteForAgent(ctx context.Context, agentID string) 
 // 任何失败(缺主键/主键轮换/坏数据)都返回 "" —— 按 ADR 0001,丢失主键
 // 只是让配置"看起来未设置",绝不抛错。
 func (s *S) CerebellumApiKeyPlaintext(ctx context.Context) string {
-	master := os.Getenv("CUMORA_SECRETS_KEY")
+	master := config.SecretsKey()
 	if master == "" {
 		return ""
 	}

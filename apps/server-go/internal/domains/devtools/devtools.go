@@ -13,10 +13,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/devtools"
 	obscontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/observability"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -75,7 +75,7 @@ func requireDevtools(w http.ResponseWriter, r *http.Request, db *sql.DB) (compan
 	if !ok {
 		return "", false
 	}
-	localDev := os.Getenv("NODE_ENV") != "production"
+	localDev := !config.IsProduction()
 	h := r.Header.Get(devtoolsHeader)
 	requested := h == "1" || h == "true"
 	if !(localDev || (requested && privileged(role))) {
@@ -305,7 +305,7 @@ func (s *Server) GetDevtoolsCapabilities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	_ = cid
-	localDev := os.Getenv("NODE_ENV") != "production"
+	localDev := !config.IsProduction()
 	h := r.Header.Get(devtoolsHeader)
 	requested := h == "1" || h == "true"
 	priv := privileged(role)

@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // WriteJSON 统一 JSON 响应与错误形状({error: string},与 TS baseline 对齐)。
@@ -39,7 +40,7 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Warn("api 500", "method", r.Method, "path", r.URL.Path, "err", err)
 	msg := err.Error()
-	if os.Getenv("NODE_ENV") == "production" {
+	if config.IsProduction() {
 		msg = "internal server error"
 	}
 	WriteError(w, http.StatusInternalServerError, msg)

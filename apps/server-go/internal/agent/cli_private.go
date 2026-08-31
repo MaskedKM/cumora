@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 )
 
 // nodeLocaleDate:en-US toLocaleDateString = "8/27/2026"。
@@ -51,7 +53,7 @@ func (s *Service) publishConvoUpdated(conversationID, companyID string, patch ma
 		"patch":          patch,
 	})
 	if err == nil {
-		_ = s.publishRaw("cumora:convo.updated", payload)
+		_ = s.publishRaw(events.ChConvoUpdated, payload)
 	}
 }
 

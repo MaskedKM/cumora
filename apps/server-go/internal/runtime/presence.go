@@ -16,8 +16,6 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
-const chStatus = "cumora:status"
-
 // SetStatus:更新 participants.status 并按租户逐行广播(status.ts)。
 // 一个 participant id 在多个租户可能有多行(human 跨租户共享 id)——
 // 全部更新、每租户一条广播。
@@ -37,7 +35,7 @@ func (s *Service) SetStatus(ctx context.Context, participantID, status string) e
 		if err := rows.Scan(&companyID, &at); err != nil {
 			return err
 		}
-		events.PublishRaw(ctx, chStatus, mustJSON(map[string]any{
+		events.PublishRaw(ctx, events.ChStatus, mustJSON(map[string]any{
 			"type":            "participants.status",
 			"participantId":   participantID,
 			"status":          status,
@@ -63,7 +61,7 @@ func (s *Service) HeartbeatStatus(ctx context.Context, participantID, status str
 	if err != nil {
 		return err
 	}
-	events.PublishRaw(ctx, chStatus, mustJSON(map[string]any{
+	events.PublishRaw(ctx, events.ChStatus, mustJSON(map[string]any{
 		"type":            "participants.status",
 		"participantId":   participantID,
 		"status":          status,
@@ -100,7 +98,7 @@ func (s *Service) ResetHumanPresenceOnBoot(ctx context.Context) {
 		// 上线(Promise.race 兜底);关键面(UPDATE)已先行提交,这里只是
 		// 通知面,不该有能力拖住启动。
 		pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
-		events.PublishRaw(pctx, chStatus, mustJSON(map[string]any{
+		events.PublishRaw(pctx, events.ChStatus, mustJSON(map[string]any{
 			"type":            "participants.status",
 			"participantId":   id,
 			"status":          "resting",

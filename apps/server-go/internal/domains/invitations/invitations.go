@@ -14,11 +14,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
@@ -42,10 +42,7 @@ func generateInviteToken() string {
 }
 
 func buildInviteURL(token string) string {
-	base := os.Getenv("INVITE_BASE_URL")
-	if base == "" {
-		base = os.Getenv("AUTH_DONE_URL")
-	}
+	base := config.InviteSignInBase()
 	base = strings.TrimRight(base, "/")
 	if base == "" {
 		base = "http://localhost:5173"
@@ -733,7 +730,7 @@ func StartConvene(db *sql.DB, w http.ResponseWriter, r *http.Request, id string)
 	if companyID.Valid {
 		payload["companyId"] = companyID.String
 	}
-	_ = events.PublishRaw(r.Context(), "cumora:convene", mustMJSON(payload))
+	_ = events.PublishRaw(r.Context(), events.ChConvene, mustMJSON(payload))
 	// 编排(orchestrate)是服务端 agent-turn 引擎——BYOA 化后由成员
 	// daemon 经常规唤醒参与;此处不移植服务端编排,transcript 在测试
 	// 形态两侧同为空(测试只断言列表形状)。
@@ -781,7 +778,7 @@ func sweepStaleConvene(ctx context.Context, db *sql.DB, conversationID string, s
 		if s.companyID.Valid {
 			payload["companyId"] = s.companyID.String
 		}
-		_ = events.PublishRaw(ctx, "cumora:convene", mustMJSON(payload))
+		_ = events.PublishRaw(ctx, events.ChConvene, mustMJSON(payload))
 	}
 }
 

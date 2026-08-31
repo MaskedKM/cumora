@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/uploads"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/storage"
@@ -133,12 +134,7 @@ func (s *Server) UploadCapabilities(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func uploadDir() string {
-	if d := os.Getenv("CUMORA_UPLOADS_DIR"); d != "" {
-		return d
-	}
-	return filepath.Join("server", "uploads")
-}
+func uploadDir() string { return config.UploadsDir() }
 
 // uploadBase64:{name, mime, dataBase64} → 解码校验 → 落盘 →
 // {url, key, name, mime, size, kind}。name 按 TS trim().slice(0,200)

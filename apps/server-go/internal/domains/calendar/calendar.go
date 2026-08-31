@@ -29,8 +29,6 @@ const calendarSelect = `id, company_id, created_by, kind, title, description,
   is_private,
   created_at, updated_at`
 
-const chCalendarEvents = "cumora:calendar.events"
-
 // visibilityClause 对齐 router.ts 的 calendarVisibilityClause:公开行全员
 // 可见;私密行仅 creator/assignee;任一端是 agent 时公司 owner 亦可见
 // (监督可见性,不泄漏人与人私密事件)。meIdx/companyIdx 为占位符序号。
@@ -332,7 +330,7 @@ func publishCalendarChange(ctx context.Context, kind, eventID, companyID, actorI
 		"type": "calendar.changed", "kind": kind, "eventId": eventID,
 		"companyId": companyID, "actorId": actorID,
 	})
-	_ = events.PublishRaw(ctx, chCalendarEvents, payload)
+	_ = events.PublishRaw(ctx, events.ChCalendarEvents, payload)
 }
 
 // Server:contract.calendar ServerInterface 的域实现(#187 机械迁移,

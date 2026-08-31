@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	core "github.com/MaskedKM/cumora/apps/server-go/internal/domains/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -339,13 +339,10 @@ func approvedEntryURL(raw string) string {
 // mock(RESEND 空)由 provider 层吞发。HTML 模板对齐 TS 的无 CDN 形态
 // (R2_PUBLIC_BASE 未配时 TS 同样省略图行;本部署即此形态)。
 func sendWaitlistApprovedEmail(ctx context.Context, to, displayName string) {
-	if os.Getenv("EMAIL_DOMAIN") == "" {
+	if config.EmailDomainRaw() == "" {
 		return
 	}
-	signInBase := os.Getenv("INVITE_BASE_URL")
-	if signInBase == "" {
-		signInBase = os.Getenv("AUTH_DONE_URL")
-	}
+	signInBase := config.InviteSignInBase()
 	httpURL := approvedEntryURL(signInBase)
 	parts := strings.Fields(displayName)
 	firstName := "there"
@@ -369,7 +366,7 @@ func sendWaitlistApprovedEmail(ctx context.Context, to, displayName string) {
 		"— Cumora",
 	}, "\n")
 	_ = email.SendViaProvider(ctx, email.SendArgs{
-		From:          email.FormatAddress("welcome@"+os.Getenv("EMAIL_DOMAIN"), "Cumora"),
+		From:          email.FormatAddress("welcome@"+config.EmailDomainRaw(), "Cumora"),
 		To:            []string{to},
 		Subject:       "You're in — welcome to Cumora",
 		Text:          text,

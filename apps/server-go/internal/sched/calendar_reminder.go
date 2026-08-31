@@ -18,10 +18,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
 	core "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
@@ -254,7 +254,7 @@ type reminderPayload struct {
 // (拼不出 reminders@ 发件地址)都静默跳过 email,toast 不受影响(#209
 // 对齐 TS:toast 恒发、email 按配置)。
 func emailReminderConfigured() bool {
-	return os.Getenv("RESEND_API_KEY") != "" && core.RootDomain() != ""
+	return config.ResendAPIKey() != "" && core.RootDomain() != ""
 }
 
 // sendCalendarReminder:对齐 sendReminder。先占 (event_id, scheduled_for)
@@ -448,7 +448,7 @@ func renderReminderHtml(e calendar.EventRow, occurrence time.Time, leadMinutes i
 // 透传,envIntOr 的 0→默认会吞掉 kill-switch,#62 教训);默认 60s 对齐
 // TS TICK_INTERVAL_MS。
 func calendarReminderIntervalMS() int64 {
-	if n, ok := envIntRaw("CALENDAR_REMINDER_INTERVAL_MS"); ok {
+	if n, ok := config.EnvIntRaw("CALENDAR_REMINDER_INTERVAL_MS"); ok {
 		return n
 	}
 	return 60_000
@@ -510,7 +510,7 @@ func (s *S) RunCalendarReminderTick(ctx context.Context) int {
 // ENABLE_*/INTERVAL 家族)。#215 形态:select{ctxBG.Done, ticker.C} +
 // tick 级 panic 隔离,cancelBoot 即停。
 func (s *S) StartCalendarReminderScheduler() {
-	if getenv("ENABLE_CALENDAR_REMINDER") == "false" {
+	if config.Getenv("ENABLE_CALENDAR_REMINDER") == "false" {
 		return
 	}
 	interval := calendarReminderIntervalMS()

@@ -7,9 +7,6 @@ package runtime
 import (
 	"context"
 	"database/sql"
-	"os"
-	"strconv"
-	"strings"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
@@ -67,19 +64,3 @@ var ctxBG = context.Background()
 
 // SetBaseContext:见 ctxBG 注释。须在 worker 启动前调用(boot 期单线程)。
 func SetBaseContext(ctx context.Context) { ctxBG = ctx }
-
-// envIntRaw / getenv:调度/议程面(#140 拆出)同名助手的本包副本
-// (scanner 的间隔/门控 env 仍在此读)。
-func envIntRaw(name string) (int64, bool) {
-	v := strings.TrimSpace(os.Getenv(name))
-	if v == "" {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-func getenv(name string) string { return os.Getenv(name) }

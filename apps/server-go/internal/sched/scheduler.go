@@ -12,11 +12,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/redis/go-redis/v9"
 )
@@ -50,21 +49,6 @@ type WakeOpts struct {
 	IdleReason      string
 	BackgroundBrief *BackgroundBrief
 	PollBrief       map[string]any
-}
-
-// envIntRaw:符号感知的环境整数(0/-1 原样返回);缺键/非数 → ok=false。
-// 与 envIntOr(0→默认)相反——间隔类 env 的 TS 语义是"0=禁用",
-// 必须让 0 活着到达调用方的禁用分支。
-func envIntRaw(name string) (int64, bool) {
-	v := strings.TrimSpace(getenv(name))
-	if v == "" {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
 }
 
 /* ───────── 低优先级合成唤醒预算(FUSE-cap 事故) ───────── */
@@ -148,7 +132,7 @@ func (s *S) consumeSteerRateToken(agentID string) bool {
 var steerEnabledRe = regexp.MustCompile(`(?i)^(false|0|no|off)$`)
 
 func steerEnabled() bool {
-	return !steerEnabledRe.MatchString(getenv("STEER_ENABLED")) // TS 正则不 trim:带空格的 " false " = 启用
+	return !steerEnabledRe.MatchString(config.Getenv("STEER_ENABLED")) // TS 正则不 trim:带空格的 " false " = 启用
 }
 
 /* ───────── 唤醒核心 ───────── */
@@ -556,7 +540,7 @@ var wakeFanoutSem chan struct{}
 func (s *S) fanOutSem() chan struct{} {
 	wakeFanoutOnce.Do(func() {
 		n := 6
-		if v, ok := envIntRaw("WAKE_FANOUT_CONCURRENCY"); ok {
+		if v, ok := config.EnvIntRaw("WAKE_FANOUT_CONCURRENCY"); ok {
 			n = int(v)
 			if n <= 0 {
 				n = 1 // TS Semaphore 对 0/负钳 1(热循环护身)
@@ -619,9 +603,9 @@ func (s *S) StartScheduler() {
 }
 
 func (s *S) pumpScheduler(rdb redis.UniversalClient) error {
-	sub := rdb.Subscribe(ctxBG, events.ChMessageNew, chPolls)
+	sub := rdb.Subscribe(ctxBG, events.ChMessageNew, events.ChPolls)
 	defer sub.Close()
-	slog.Info("[scheduler] mailbox scheduler listening", "channels", []string{events.ChMessageNew, chPolls}, "runtime", "byoa-only")
+	slog.Info("[scheduler] mailbox scheduler listening", "channels", []string{events.ChMessageNew, events.ChPolls}, "runtime", "byoa-only")
 	ch := sub.Channel()
 	for msg := range ch {
 		raw := []byte(msg.Payload)
@@ -639,7 +623,7 @@ func (s *S) pumpScheduler(rdb redis.UniversalClient) error {
 				}()
 				s.claimAndWake(p)
 			}(payload)
-		case chPolls:
+		case events.ChPolls:
 			var payload pollUpdatedEvent
 			if json.Unmarshal(raw, &payload) != nil || payload.Type != "poll.updated" {
 				continue
@@ -658,8 +642,6 @@ func (s *S) pumpScheduler(rdb redis.UniversalClient) error {
 }
 
 /* ───────── poll 更新 → 唤醒发起者 ───────── */
-
-const chPolls = "cumora:polls"
 
 const pollVoteWakeDebounceSec = 8
 const pollCloseWakeClaimSec = 600

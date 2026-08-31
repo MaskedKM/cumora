@@ -12,10 +12,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -141,7 +141,7 @@ var (
 )
 
 func openAIBaseURL() string {
-	if u := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); u != "" {
+	if u := strings.TrimSpace(config.OpenAIBaseURL()); u != "" {
 		return strings.TrimRight(u, "/")
 	}
 	return "https://api.openai.com/v1"
@@ -170,10 +170,10 @@ func (s *Service) EmbedText(ctx context.Context, text string) *string {
 	if trimmed == "" {
 		return nil
 	}
-	if override := strings.TrimSpace(os.Getenv("CUMORA_TEST_EMBED_OVERRIDE")); override != "" {
+	if override := strings.TrimSpace(config.TestEmbedOverride()); override != "" {
 		return &override
 	}
-	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	apiKey := strings.TrimSpace(config.OpenAIAPIKey())
 	if apiKey == "" {
 		return nil
 	}

@@ -15,9 +15,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	core "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 )
@@ -219,12 +219,7 @@ func PickOrphans(inStorage map[string]time.Time, inDB map[string]bool, now time.
 	return out
 }
 
-func uploadsRoot() string {
-	if dir := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); dir != "" {
-		return dir
-	}
-	return filepath.Join("server", "uploads")
-}
+func uploadsRoot() string { return config.EmailUploadDir() }
 
 // RunGcTick:枚举前缀 → 对账 DB → 删孤儿。幂等(多副本安全)。
 func RunGcTick(ctx context.Context, db *sql.DB) (inspected, deleted int) {
