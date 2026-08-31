@@ -31,6 +31,21 @@ const spec = JSON.parse(readFileSync(SCHEMA, 'utf8'))
 const defs = spec.$defs
 const channels = spec['x-channels']
 const SCOPES = new Set(['company', 'doc', 'gateway'])
+
+// --print-guard-pattern:输出"手写事件判别字面量"守卫用的正则(供
+// contract-check.sh 消费)。单词名从契约精确派生;点分命名走通配,
+// 契约外的新事件名(dummy.ping 之类)同样命中。
+if (process.argv.includes('--print-guard-pattern')) {
+  const Q = String.fromCharCode(39) // 单引号
+  const DQ = String.fromCharCode(34) // 双引号
+  const BS = String.fromCharCode(92) // 反斜杠
+  const singles = Object.values(defs)
+    .map((v) => v.properties?.type?.const ?? v.properties?.type?.enum?.[0])
+    .filter((t) => typeof t === 'string' && !t.includes('.'))
+  const alt = singles.join('|') + '|[a-z]+(' + BS + '.[a-z]+)+'
+  process.stdout.write('type: [' + Q + DQ + ']?(' + alt + ')[' + Q + DQ + ']?')
+  process.exit(0)
+}
 const TS_SCALARS = { string: 'string', integer: 'number', number: 'number', boolean: 'boolean' }
 
 /* ── 校验:契约自洽(事件名/通道/作用域),坏契约当场红 ── */
@@ -44,7 +59,7 @@ for (const [name, def] of Object.entries(defs)) {
     throw new Error(`[ws-gen] $defs.${name} properties.type.const(${typeProp?.const}) ≠ x-event.type(${meta.type})`)
   if (meta.channel && !channels[meta.channel])
     throw new Error(`[ws-gen] $defs.${name} 引用未声明的通道 ${meta.channel}`)
-  if (!meta.required?.includes?.('type')) {
+  if (!def.required?.includes('type')) {
     // required 必含 type(discriminator),顺手补齐而非报错——契约里都写了
     def.required = [...new Set(['type', ...(def.required ?? [])])]
   }

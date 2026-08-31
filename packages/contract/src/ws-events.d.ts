@@ -36,7 +36,7 @@ export interface MessageDeltaEvent {
 /** 代理输入态:done=false 开始 / true 停止。 */
 export interface TypingEvent {
   type: 'typing'
-  /** Go events.Typing 恒带此键(空串也保留)——桥对空 companyId 的帧本就丢弃,语义等价。 */
+  /** Go events.Typing(调度器/HTTP 路径)恒带此键(空串也保留);runtime/presence.go 高频路径 companyID 为 nil 时省键——桥对空 companyId 与键缺失同判(丢弃),两形语义等价。 */
   companyId?: string
   conversationId: string
   agentId: string

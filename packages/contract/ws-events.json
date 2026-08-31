@@ -181,7 +181,7 @@
           "x-go": {
             "omitempty": false
           },
-          "description": "Go events.Typing 恒带此键(空串也保留)——桥对空 companyId 的帧本就丢弃,语义等价。"
+          "description": "Go events.Typing(调度器/HTTP 路径)恒带此键(空串也保留);runtime/presence.go 高频路径 companyID 为 nil 时省键——桥对空 companyId 与键缺失同判(丢弃),两形语义等价。"
         },
         "conversationId": {
           "type": "string"

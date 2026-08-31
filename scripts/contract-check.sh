@@ -36,7 +36,9 @@ drift=0
 # TS 侧:事件判别字面量只允许出现在生成物里(比较 e.type === 'x' 的消费窄化
 # 不在此形态,不受限)。
 # 单双引号都拦(TS 两者皆合法);事件判别字面量只允许出现在生成物里。
-WS_TS_EVENT_LITERALS="type: ['\"]?(hello|message\.new|message\.delta|typing|participants\.[a-z]+|computers\.[a-z]+|conversation\.updated|group\.pulled|convene|board\.changed|doc\.[a-z]+|calendar\.[a-z]+|poll\.updated)['\"]?"
+# 事件名清单经生成器从契约派生(单词名精确+点分通配)——契约外新事件名
+# (dummy.ping 之类)也拦,这正是当年 calendar.reminder/msg.delta 孤儿的成因。
+WS_TS_EVENT_LITERALS="$(node scripts/contract-gen-ws.mjs --print-guard-pattern)"
 ws_handwritten_drift apps/web/src/api/client.ts "$WS_TS_EVENT_LITERALS" || drift=1
 ws_handwritten_drift tests/integration/harness/redis.ts "$WS_TS_EVENT_LITERALS" || drift=1
 # yjs-sidecar 的 redis.ts 同面(doc.update/doc.awareness 发布方,#142 内联副本已退役)
