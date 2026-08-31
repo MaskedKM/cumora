@@ -608,7 +608,11 @@ func (s *S) StartScheduler() {
 					return
 				}
 				slog.Warn("[scheduler] pubsub loop exited — reconnecting in 1s", "err", err)
-				time.Sleep(time.Second)
+				select {
+				case <-ctxBG.Done():
+					return
+				case <-time.After(time.Second):
+				}
 			}
 		}()
 	})

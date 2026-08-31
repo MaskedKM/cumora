@@ -146,26 +146,25 @@ func RunLlmRollupTick(ctx context.Context, db *sql.DB) (buckets int64, sinceHour
 	return buckets, sinceHours, true
 }
 
-// ctxBG:fire-and-forget 后台写共用的父上下文。
-var ctxBG = context.Background()
-
-var rollupStop chan struct{}
-
 // StartLlmRollupRefresher: 幂等启动;LLM_ROLLUP_INTERVAL_MS=0 关闭。
-// 启动即首轮(新部署立刻回填,不等整周期)。
-func StartLlmRollupRefresher(db *sql.DB) {
+// 启动即首轮(新部署立刻回填,不等整周期)。#215:ctx 驱动——取消即停
+// (原 rollupStop channel 创建后无人 close,停机对循环无效)。
+var rollupStarted bool
+
+func StartLlmRollupRefresher(ctx context.Context, db *sql.DB) {
 	interval := rollupIntervalMS()
 	if interval <= 0 {
 		slog.Info("[llm-rollup] disabled (LLM_ROLLUP_INTERVAL_MS=0)")
 		return
 	}
-	if rollupStop != nil {
+	if rollupStarted {
 		return
 	}
+	rollupStarted = true
 	slog.Info("[llm-rollup] starting", "interval_ms", interval)
 	tick := func() {
 		start := time.Now()
-		buckets, _, ok := RunLlmRollupTick(ctxBG, db)
+		buckets, _, ok := RunLlmRollupTick(ctx, db)
 		if ok {
 			slog.Info("[llm-rollup] refreshed", "buckets", buckets, "ms", time.Since(start).Milliseconds())
 		}
@@ -179,13 +178,12 @@ func StartLlmRollupRefresher(db *sql.DB) {
 		}()
 		tick()
 	}()
-	rollupStop = make(chan struct{})
-	go func(stop <-chan struct{}) {
+	go func() {
 		ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				func() {
@@ -198,5 +196,5 @@ func StartLlmRollupRefresher(db *sql.DB) {
 				}()
 			}
 		}
-	}(rollupStop)
+	}()
 }

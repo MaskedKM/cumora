@@ -221,29 +221,35 @@ func RandHex12() string {
 }
 
 // StartIdleScheduler: 周期 tick;ENABLE_IDLE='false' 或 IDLE_INTERVAL_MS<=0
-// 关闭(nil = 未启动)。TS 门控是字面 !== 'false'。
-func (s *S) StartIdleScheduler() (stop func()) {
+// 关闭。TS 门控是字面 !== 'false'。#215:ctx 驱动(ctxBG 取消即停——
+// 原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
+func (s *S) StartIdleScheduler() {
 	if getenv("ENABLE_IDLE") == "false" {
-		return nil
+		return
 	}
 	interval := idleIntervalMS()
 	if interval <= 0 {
-		return nil
+		return
 	}
 	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	go func() {
-		for range ticker.C {
-			func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						slog.Error("[idle] tick panicked", "recover", rec)
-					}
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctxBG.Done():
+				return
+			case <-ticker.C:
+				func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							slog.Error("[idle] tick panicked", "recover", rec)
+						}
+					}()
+					s.RunIdleTick(ctxBG)
 				}()
-				s.RunIdleTick(ctxBG)
-			}()
+			}
 		}
 	}()
 	slog.Info("[boot] idle scheduler running",
 		"interval_ms", interval, "min_quiet_min", idleMinQuietMin())
-	return ticker.Stop
 }

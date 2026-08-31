@@ -328,11 +328,12 @@ func ResetBackgroundScannerForTests() {
 	scannerPrecedentScans = map[string]string{}
 }
 
-// StartScanner: 周期 kick;ENABLE_SCANNER='false' 关闭(nil = 未启动)。
-// TS 门控是字面 !== 'false'(仅精确串关闭)。
-func (s *Service) StartScanner() (stop func()) {
+// StartScanner: 周期 kick;ENABLE_SCANNER='false' 关闭。
+// TS 门控是字面 !== 'false'(仅精确串关闭)。#215:ctx 驱动(ctxBG 取消
+// 即停——原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
+func (s *Service) StartScanner() {
 	if getenv("ENABLE_SCANNER") == "false" {
-		return nil
+		return
 	}
 	interval := scannerIntervalMS()
 	// time.Ticker(0) 会 panic;钳 1ms = Node setInterval 对 <1 的钳制
@@ -342,17 +343,22 @@ func (s *Service) StartScanner() (stop func()) {
 	}
 	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	go func() {
-		for range ticker.C {
-			func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						slog.Error("[scanner] tick panicked", "recover", rec)
-					}
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctxBG.Done():
+				return
+			case <-ticker.C:
+				func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							slog.Error("[scanner] tick panicked", "recover", rec)
+						}
+					}()
+					s.RunBackgroundScans(ctxBG)
 				}()
-				s.RunBackgroundScans(ctxBG)
-			}()
+			}
 		}
 	}()
 	slog.Info("[boot] background scanner running", "interval_ms", interval)
-	return ticker.Stop
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
@@ -86,6 +87,11 @@ func main() {
 	// Noop(HTTP 域照常,协同 401/超时,与 TS 未配 token 的姿态一致)。
 	ctxBoot, cancelBoot := context.WithCancel(context.Background())
 	defer cancelBoot()
+	// #215:后台 worker 父 ctx 注入——cancelBoot 时 sched/runtime 的
+	// tick 循环与调度订阅真正停下来(此前两包的 ctxBG 恒 Background,
+	// 优雅停机对它们无效)。须在任何 Start* 之前。
+	sched.SetBaseContext(ctxBoot)
+	runtime.SetBaseContext(ctxBoot)
 	var rdb *redis.Client
 	if ropts, err := redis.ParseURL(cfg.RedisURL); err != nil {
 		slog.Warn("REDIS_URL unparsable — events degrade to noop, doc collab unavailable", "err", err)
@@ -132,7 +138,7 @@ func main() {
 	runtimeSvc.StartScheduler()
 	runtimeSvc.StartScanner()
 	runtimeSvc.StartIdleScheduler()
-	costing.StartLlmRollupRefresher(runtimeSvc.DB)
+	costing.StartLlmRollupRefresher(ctxBoot, runtimeSvc.DB)
 
 	// 投票过期清扫器(#121):POLL_SWEEP_INTERVAL_MS(默认 60s;0=禁用,
 	// 须透传——envInt 的 0→fallback 会吞掉 kill-switch,#62 教训)。
@@ -218,6 +224,9 @@ func main() {
 	defer stop()
 	<-ctx.Done()
 	slog.Info("shutting down")
+	// #215:先停后台 worker(订阅/tick/回写),与 HTTP 排空并行收尾;
+	// defer 的 cancelBoot 仍在,双保险。
+	cancelBoot()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
