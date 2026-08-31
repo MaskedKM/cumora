@@ -129,7 +129,7 @@ func main() {
 	// 降级实例保持红,运维一眼可知要重启。core tag 的冗余注册同源注入。
 	livezPing := func(ctx context.Context) error {
 		if !eventsLive {
-			return errors.New("redis unreachable at boot — events degraded to noop, restart cumora-go to recover")
+			return errors.New("redis unreachable at boot — events degraded to noop; fix redis/REDIS_URL then restart cumora-go (restart alone cannot recover a bad REDIS_URL)")
 		}
 		return rdb.Ping(ctx).Err()
 	}

@@ -56,7 +56,8 @@ cat ~/.local/share/cumora/current/VERSION         # → vX.Y.Z(与制品对得�
 curl -s localhost:5181/api/livez                  # 200
 ```
 
-回退 = 同脚本指旧 tag(旧版本目录仍在 releases/ 下,秒级切回):
+回退 = 同脚本指旧 tag(注意:脚本会重新下载并校验制品——离线/gh 不可达时
+回退失败;旧版本目录虽仍在 releases/ 下,但脚本不复用本地副本,须联网):
 
 ```bash
 bash scripts/deploy/deploy-release.sh v<旧版本>
@@ -247,7 +248,9 @@ systemctl --user start cumora-go.service     # 回到 Go,复跑观察清单 1–
 - **生产机**:卸载 `cumora-ts.service`;旧 `cumora.service`(TS daemon,
   agent-cli)disable + 删;daemon.env 保留(byoa-daemon 仍用)。
 - **现行回退(#211 起)**:`bash scripts/deploy/deploy-release.sh v<上一版本>`
-  —— 切回 releases/ 下既有版本目录并重启,数据不动。手工重建二进制
+  —— 重新下载旧 tag 制品、重铺其 releases/ 目录并重启,数据不动。
+  注意两点:①需联网(不复用本地既有版本目录);②migrations 只前进无
+  down——旧二进制跑在新 schema 上,属既有前进式策略,回退不回滚 schema。手工重建二进制
   仅作取证兜底(`godocker.sh build` 产物须落版本目录并自管 symlink)。
   Postgres/Redis 数据不动。
   TS 栈如需考古,git 历史完整留档(本 runbook 的切换日段落即其用法)。

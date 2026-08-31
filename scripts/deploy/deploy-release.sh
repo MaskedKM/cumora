@@ -93,7 +93,12 @@ fi
 echo "$tag" > "$inner/VERSION"
 
 target="$RELEASES_DIR/$tag"
-rm -rf "$target"
+# current 已指向同 tag 时拒绝裸重部署:rm→mv 窗口会把在跑版本的目录
+# 打穿(ENOENT + Restart=always 循环)。livez 503 后原 tag 复验是现实
+# 路径——此场景重启即可,无需重铺目录;确要重铺先切走再指回。
+if [ -L "$CURRENT_LINK" ] && [ "$(readlink "$CURRENT_LINK" 2>/dev/null)" = "releases/$tag" ]; then
+  die "current 已指向 releases/$tag —— 同 tag 重部署会打穿在跑版本目录。复验用 systemctl --user restart 三件套即可;确要重铺:先部署/切走别的 tag。"
+fi
 mv "$inner" "$target"
 rm -rf "$staging"
 trap 'rm -rf "$work"' EXIT
@@ -101,6 +106,7 @@ chmod 0755 "$target/cumora-server" "$target/cumora-daemon"
 say "落盘 $target(server + daemon + migrations + VERSION)"
 
 # ── 原子切 current symlink ───────────────────────────────────────────
+rm -f "${CURRENT_LINK}.new"   # 清上次中断的残留(否则 ln 会建进目录内部)
 ln -s "releases/$tag" "${CURRENT_LINK}.new"
 mv -T "${CURRENT_LINK}.new" "$CURRENT_LINK"
 say "current -> $(readlink "$CURRENT_LINK")(原子切换完成)"
@@ -120,9 +126,9 @@ for _ in $(seq 1 30); do
 done
 case "$code" in
   200) say "livez 200(进程 + Redis 事件面均活)" ;;
-  503) die "livez 503 —— 进程已活但 Redis 不可达/事件面降级 Noop(#211 起显性变红,不再假绿)。查:systemctl --user status redis 或 journalctl --user -u cumora-go | grep redis" ;;
+  503) die "livez 503 —— 进程已活但 Redis 不可达/事件面降级 Noop(#211 起显性变红,不再假绿)。查:systemctl status redis(redis 为系统级服务,非 --user 域)或 journalctl --user -u cumora-go | grep redis" ;;
   *)   die "livez 探测失败(HTTP $code / 无响应)—— journalctl --user -u cumora-go -u cumora-sidecar 取证" ;;
 esac
 
-say "部署完成:版本 $(cat "$target/VERSION")"
+say "部署完成:版本 $(cat "$CURRENT_LINK/VERSION")"
 say "核验:systemctl --user status cumora-go(ExecStart 应经 $CURRENT_LINK 寻址);readlink $CURRENT_LINK;cat $CURRENT_LINK/VERSION"

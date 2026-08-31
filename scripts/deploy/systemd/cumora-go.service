@@ -29,13 +29,13 @@ Environment=CUMORA_GO_MIGRATIONS=%h/.local/share/cumora/current/migrations
 ExecStart=%h/.local/share/cumora/current/cumora-server
 Restart=always
 RestartSec=3
-# ExecStartPost 探针(#211):60×(1s curl+1s sleep)内 curl 通 /api/livez
+# ExecStartPost 探针(#211):最坏 60×(2s curl+1s sleep)≈180s 内 /api/livez
 # 即算启动完成。语义要点:200 与 503 都算"进程已就绪" —— 503 是 Redis
 # 依赖红的诚实信号(livez 本身活着),重启修不了 Redis,反而会把可观测
 # 的红打成 connection refused 的重启循环;连接始终建立不起来(崩溃/
 # 端口未起)才判失败,交 Restart=always 自愈。
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do curl -s --max-time 2 http://127.0.0.1:5181/api/livez >/dev/null 2>&1 && exit 0; sleep 1; done; echo cumora-server did not answer /api/livez within 60s >&2; exit 1'
-TimeoutStartSec=150
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do curl -s --max-time 2 http://127.0.0.1:5181/api/livez >/dev/null 2>&1 && exit 0; sleep 1; done; echo cumora-server did not answer /api/livez within 180s >&2; exit 1'
+TimeoutStartSec=200
 
 [Install]
 WantedBy=default.target
