@@ -39,7 +39,15 @@ type conn struct {
 	docCompanies map[string]string
 	// 聊天帧出站队列(#202):桥/写协程解耦,慢客户端只堵自己;doc 帧
 	// (#216)同走此队列——relay 扇出协程不被任何订阅者的慢写阻塞。
-	outbound      chan []byte
+	outbound chan []byte
+	// 出站字节累计(#236):outbound 内帧 + 写协程在途帧的 len 之和,
+	// 是背压的第一道界(对齐 TS bufferedAmount 预算,见 bridge.go 两档
+	// 常量)。守恒规则:入队前占位、写出后归还、投递失败回滚,全部在
+	// outmu 下原子进行。必须独立于 c.mu——入队发生在扇出协程上,若与
+	// 写协程的慢写(持 c.mu 最长 10s)共锁,#216 解掉的"慢客户端拖住
+	// 扇出"会从预算路径回流。
+	outmu         sync.Mutex
+	outBytes      int
 	dropAnnounced uint32 // 背压丢帧只告警一次(atomic)
 	docClosed     uint32 // doc 帧掐线只告警一次(独立于丢帧,atomic)
 	wcancel       context.CancelFunc
