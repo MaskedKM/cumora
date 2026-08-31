@@ -2,10 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConversations } from '@/stores/conversations'
 import { useT } from '@/lib/i18n'
 
-/** Soft "Coming soon" popover anchored beneath the trigger. Auto-dismisses
- *  after a beat; also closes on outside-click or Escape. The sparkle
- *  drifts gently so the bubble feels alive rather than static. */
-
 
 
 export function ThreadLoader() {

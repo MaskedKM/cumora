@@ -13,15 +13,9 @@ import { ScrollToLatestButton } from '@/components/ScrollToLatestButton'
 import { ISearch } from '@/components/icons'
 import { useT } from '@/lib/i18n'
 
-/** Soft "Coming soon" popover anchored beneath the trigger. Auto-dismisses
- *  after a beat; also closes on outside-click or Escape. The sparkle
- *  drifts gently so the bubble feels alive rather than static. */
-
 import { ChatHeader } from './ChatHeader'
 import { ThreadLoader, ThreadError, EmptyConversationState } from './chatStates'
 import { Composer } from './Composer'
-
-export { Composer } from './Composer'
 
 
 export function ChatPane() {

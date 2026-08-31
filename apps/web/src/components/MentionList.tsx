@@ -120,7 +120,3 @@ export function filterMentionCandidates(all: Participant[], query: string): Part
   return scored.slice(0, 8).map((s) => s.p)
 }
 
-/** Used by both the editor (to dedupe newly-inserted ids) and the
- *  notify-WS frame builder. We keep the helper here next to the popup
- *  so both consumers share the same shape definition. */
-export const MENTION_NODE_TYPE = 'mention'

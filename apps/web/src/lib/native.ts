@@ -295,15 +295,6 @@ export async function mediumHaptic(): Promise<void> {
   }
 }
 
-/** Heavy haptic — for destructive confirmations or rare hard hits. */
-export async function heavyHaptic(): Promise<void> {
-  if (!isNativePlatform()) return
-  try {
-    await Haptics.impact({ style: ImpactStyle.Heavy })
-  } catch {
-    // ignore
-  }
-}
 
 /** Light "tick" haptic — for crossing selection thresholds during a
  *  drag (e.g. swipe-action revealing a button, pull-to-refresh

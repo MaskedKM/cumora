@@ -1,19 +1,19 @@
 import { useEffect, useMemo } from 'react'
-import { Avatar, AvatarStack } from './Avatar'
-import { SkypeEmoji } from './SkypeEmoji'
-import { TwEmoji } from './TwEmoji'
-import { cn, parseBody, parseBlocks } from '@/lib/utils'
-import { useParticipants } from '@/stores/participants'
+import type { ApiWhisperMessage } from '@/api/client'
+import { useT } from '@/lib/i18n'
+import { parseBlocks, parseBody } from '@/lib/utils'
 import { useAuth, useMe } from '@/stores/auth'
-import { useWhispers, whisperMessages, type WhispersStateLike } from '@/stores/whispers'
-import { CodeBlock, SystemRow } from './Message'
+import { useParticipants } from '@/stores/participants'
+import { useWhispers, type WhispersStateLike, whisperMessages } from '@/stores/whispers'
+import type { Participant } from '@/types'
+import { Avatar, AvatarStack } from './Avatar'
 import { BoardLink } from './BoardLink'
+import { CalendarLink } from './CalendarLink'
 import { CardLink } from './CardLink'
 import { DocumentLink } from './DocumentLink'
-import { CalendarLink } from './CalendarLink'
-import type { ApiWhisperMessage } from '@/api/client'
-import type { Participant } from '@/types'
-import { useT } from '@/lib/i18n'
+import { CodeBlock, SystemRow } from './Message'
+import { SkypeEmoji } from './SkypeEmoji'
+import { TwEmoji } from './TwEmoji'
 
 /** Inline-only renderer for whisper bubbles — keeps the dashed-coral
  *  mention chip (whispers use a different visual register than the main
@@ -284,68 +284,5 @@ export function WhisperRoom({ pairId }: { pairId: string }) {
         </div>
       </div>
     </main>
-  )
-}
-
-export function WhisperInspector({ pairId }: { pairId: string }) {
-  const list = useWhispers((s) => s.list)
-  const byIdList = useWhispers((s) => s.byId)
-  const streaming = useWhispers((s) => s.streaming)
-  const whisper = useMemo(() => list.find((w) => w.id === pairId), [list, pairId])
-  const messages = useMemo(
-    () => whisperMessages({ byId: byIdList, streaming } as WhispersStateLike, pairId),
-    [byIdList, streaming, pairId],
-  )
-  const byId = useParticipants((s) => s.byId)
-  if (!whisper) return null
-  const ms = whisper.members
-    .map((id) => byId[id])
-    .filter((p): p is Participant => Boolean(p))
-  if (ms.length < 2) return null
-
-  // Per-member turn count — works for both pairs and bigger groups.
-  const turnsByAuthor: Record<string, number> = {}
-  for (const m of messages) turnsByAuthor[m.authorId] = (turnsByAuthor[m.authorId] ?? 0) + 1
-
-  return (
-    <aside className="border-l overflow-y-auto"
-      style={{
-        background: 'linear-gradient(180deg, #FBFAFE, #EFE9F7)',
-        borderColor: 'var(--whisper-100)',
-      }}>
-      <div className="py-5 px-5 pb-4 text-center border-b"
-        style={{
-          background: 'radial-gradient(circle at 50% 0%, var(--whisper-100), transparent 70%)',
-          borderColor: 'var(--whisper-100)',
-        }}>
-        <div className="text-[9.5px] font-extrabold text-whisper tracking-[0.18em] uppercase mb-2">Whisper · {messages.length} messages</div>
-        <h3 className="font-display font-medium text-[20px] tracking-tight mb-1.5">
-          {whisper.about ?? whisper.title ?? 'private thread'}
-        </h3>
-        <div className="font-display italic text-[12px] leading-[1.6] text-ink-500 px-1.5">
-          opened {new Date(whisper.createdAt).toLocaleString()}
-        </div>
-      </div>
-
-      <div className="py-4 px-5 border-b border-whisper-100">
-        <h4 className="text-[10.5px] font-extrabold text-whisper tracking-[0.12em] uppercase mb-2.5">
-          {ms.length === 2 ? 'The two voices' : `${ms.length} voices`}
-        </h4>
-        <div className={cn(
-          'grid gap-3',
-          ms.length === 2 ? 'grid-cols-2' : 'grid-cols-2',
-        )}>
-          {ms.map((p) => (
-            <div key={p.id} className="text-center py-2.5 px-2 bg-cloud rounded-[10px]" style={{ border: '1px solid var(--whisper-100)' }}>
-              <Avatar p={p} size={36} showStatus={false} />
-              <div className="text-[12px] font-bold text-ink-900 mt-1.5">{p.name}</div>
-              {p.role && <div className="font-display italic text-[10px] text-ink-500 mb-2">{p.role}</div>}
-              <div className="font-display text-[22px] font-medium text-whisper-deep leading-none" style={{ letterSpacing: '-0.02em' }}>{turnsByAuthor[p.id] ?? 0}</div>
-              <div className="text-[9px] font-bold text-ink-300 uppercase tracking-wider mt-0.5">turns</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </aside>
   )
 }

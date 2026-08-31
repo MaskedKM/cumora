@@ -213,19 +213,3 @@ export function openDocument(opts: OpenDocumentOptions): YDocSession {
   }
 }
 
-/** Awareness peer state as broadcast by openDocument. */
-export interface AwarenessPeer {
-  clientId: number
-  user: { id: string; name: string; color: string }
-}
-
-export function readPeers(awareness: Awareness, selfClientId: number): AwarenessPeer[] {
-  const peers: AwarenessPeer[] = []
-  awareness.getStates().forEach((state, clientId) => {
-    if (clientId === selfClientId) return
-    const u = (state as { user?: { id: string; name: string; color: string } }).user
-    if (!u) return
-    peers.push({ clientId, user: u })
-  })
-  return peers
-}
