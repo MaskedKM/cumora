@@ -243,7 +243,12 @@ func main() {
 	// CORS 全局挂载(TS app.use 平价,覆盖 /api、/uploads、/runtime;
 	// 非浏览器客户端不带 Origin 零影响):#70 退役时随 server/src 删除,
 	// 2026-08-31 打包桌面端全新登录被拦后补齐。
-	srv := newHTTPServer(cfg.ListenAddr, httpx.CORS()(mux))
+	//
+	// 全局请求体上限(TS express.json limit 34mb 平价,为 base64 上传
+	// 25MB→34MB 设;超限 413 快失败):防认证后单请求大体缓冲内存耗尽
+	// (同族审计 P1-1)。SSE/WS 升级不受影响(请求体为空)。CORS 在外层
+	// =TS 中间件序(CORS 先于 body parser)。
+	srv := newHTTPServer(cfg.ListenAddr, httpx.CORS()(http.MaxBytesHandler(mux, 34<<20)))
 
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)
