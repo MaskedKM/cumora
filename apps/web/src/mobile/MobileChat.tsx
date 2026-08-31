@@ -1,29 +1,36 @@
+// 子组件分桶(#219 ⑤):本文件保留 MobileChat 壳(状态/取数/编排 —— 消息流
+// 订阅与分页、@提及/表情/附件/回复/Tapback 状态、全部副作用、Virtuoso 装配
+// 与发送/提及/插入处理器),原局部子组件与 JSX 大块按职责分居 ./chat/:
+//   header(顶栏+更多菜单)· stream(StreamCtx/StreamHeader/StreamFooter/
+//   STREAM_COMPONENTS/MessageRowMobileShell)· composer(MentionEntry+输入区)
+//   · tapback(长按菜单动作装配)· info(MobileChatInfo 详情页+Stat)。
+// header/composer 两件的 JSX 体仅去一级缩进,状态全部留在壳经 props 透传。
+// 消费面不变:MobileApp 仍 `import { MobileChat, MobileChatInfo } from
+// './MobileChat'`(MobileChatInfo 经下方 re-export 转口)。store 消费面未动
+// (zustand v5 全部单值 selector,无新对象返回,无需 useShallow)。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { Pressable } from './Pressable'
-import { useLongPress } from './useLongPress'
-import { MobileMessageTapback, type TapbackAction } from './MobileMessageTapback'
-import { useApp } from '@/stores/app'
-import { useMe } from '@/stores/auth'
-import { useConversations, isMuted } from '@/stores/conversations'
-import { useParticipants } from '@/stores/participants'
-import { useMessages, sendUserMessage, messagesFor, useStreamingFor, toggleReaction, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
-import type { MessagesState } from '@/stores/messages'
-import { Avatar, AvatarStack } from '@/components/Avatar'
-import { MessageRow, TypingRow } from '@/components/Message'
-import { RichInput, type RichInputHandle } from '@/components/RichInput'
+import { type ApiAttachment, api } from '@/api/client'
+import type { RichInputHandle } from '@/components/RichInput'
 import { ScrollToLatestButton } from '@/components/ScrollToLatestButton'
-import { IBack, IConvene, IMore, IClip, IAt, ISmile, ISend, ISearch } from '@/components/icons'
-import { api, type ApiAttachment } from '@/api/client'
-import type { Message, Participant } from '@/types'
-import { cn } from '@/lib/utils'
+import { useT } from '@/lib/i18n'
 import { isImeComposing } from '@/lib/keyboard'
 import { tapHaptic } from '@/lib/native'
-import { COMPOSER_EMOJIS } from '@/lib/emoji'
-import { SKYPE_EMOJIS, findSkypeByShortcode } from '@/lib/skypeEmojis'
-import { TwEmoji } from '@/components/TwEmoji'
-import { SkypeEmoji } from '@/components/SkypeEmoji'
-import { useT, type MessageKey } from '@/lib/i18n'
+import { findSkypeByShortcode } from '@/lib/skypeEmojis'
+import { useApp } from '@/stores/app'
+import { useMe } from '@/stores/auth'
+import { isMuted, useConversations } from '@/stores/conversations'
+import type { MessagesState } from '@/stores/messages'
+import { messagesFor, sendUserMessage, toggleReaction, useMessages, useStreamingFor, VIRTUOSO_FIRST_INDEX_BASE } from '@/stores/messages'
+import { useParticipants } from '@/stores/participants'
+import type { Message, Participant } from '@/types'
+import { Composer, type MentionEntry } from './chat/composer'
+import { ChatHeader } from './chat/header'
+import { MessageRowMobileShell, STREAM_COMPONENTS, type StreamCtx } from './chat/stream'
+import { buildMessageTapbackActions } from './chat/tapback'
+import { MobileMessageTapback } from './MobileMessageTapback'
+
+export { MobileChatInfo } from './chat/info'
 
 export function MobileChat() {
   const t = useT()
@@ -106,10 +113,6 @@ export function MobileChat() {
       .filter((p): p is Participant => Boolean(p) && p.id !== meId)
   }, [c, byId, meId])
 
-  // Picker shows the broadcast token `@all` alongside individual members.
-  // Tagged union so insert / keyboard nav can tell them apart without a
-  // sentinel id collision (a participant could theoretically be named "all").
-  type MentionEntry = { kind: 'all' } | { kind: 'participant'; p: Participant }
   const filteredMentions = useMemo<MentionEntry[]>(() => {
     if (!mention) return []
     const q = mention.query.toLowerCase()
@@ -489,88 +492,19 @@ export function MobileChat() {
   return (
     <section className="flex flex-col h-full bg-cloud overflow-x-hidden">
       {/* Header */}
-      <header
-        className="bg-cloud/95 backdrop-blur-md sticky top-0 z-10 border-b border-ink-100"
-        style={{ paddingTop: 'env(safe-area-inset-top)' }}
-      >
-        <div className="px-2 py-2.5 flex items-center gap-2">
-          <Pressable
-            onClick={() => select(null)}
-            className="w-10 h-10 grid place-items-center text-ink-700 active:bg-sky2-50 rounded-full"
-          >
-            <IBack className="w-[22px] h-[22px]" strokeWidth={2} />
-          </Pressable>
-          <Pressable
-            onClick={() => pushStack('info')}
-            scale={0.985}
-            className="flex-1 flex items-center gap-2.5 py-1 active:opacity-70"
-          >
-            <AvatarStack ps={agents} size={26} max={3} />
-            <div className="text-left flex-1 min-w-0">
-              <div className="font-display font-medium text-[16px] text-ink-900 leading-tight truncate" style={{ letterSpacing: '-0.01em' }}>
-                {c.title}
-              </div>
-              <div className="text-[11px] font-semibold flex items-center gap-1 leading-none mt-0.5 text-working">
-                <span className="w-1.5 h-1.5 rounded-full animate-pulse-soft bg-working" />
-                {t('mobchat.agentsHeader', { n: agents.length })}
-              </div>
-            </div>
-          </Pressable>
-          <Pressable
-            onClick={onConvene}
-            disabled={conveneStarting}
-            className="w-10 h-10 grid place-items-center text-ink-700 active:bg-sky2-50 rounded-full disabled:opacity-50"
-            aria-label={t('mobchat.startConvene')}
-          >
-            <IConvene className="w-[20px] h-[20px]" />
-          </Pressable>
-          <div className="relative">
-            <Pressable
-              onClick={() => setMenuOpen((v) => !v)}
-              haptic="medium"
-              className="w-10 h-10 grid place-items-center text-ink-700 active:bg-sky2-50 rounded-full"
-              aria-label={t('mobchat.more')}
-            >
-              <IMore className="w-[20px] h-[20px]" />
-            </Pressable>
-            {menuOpen && (
-              <>
-                <div
-                  className="fixed inset-0 z-20"
-                  onClick={() => setMenuOpen(false)}
-                />
-                <div
-                  className="absolute right-2 top-11 z-30 min-w-[180px] py-1 rounded-[12px] bg-paper animate-rise"
-                  style={{
-                    border: '1px solid var(--ink-100)',
-                    boxShadow: '0 12px 28px -8px rgba(10, 30, 60, 0.20), 0 4px 10px -4px rgba(10, 30, 60, 0.12)',
-                  }}
-                >
-                  <button
-                    onClick={() => { pushStack('info'); setMenuOpen(false) }}
-                    className="w-full text-left py-2.5 px-3.5 text-[13px] text-ink-700 active:bg-sky2-50"
-                  >
-                    {t('mobchat.viewDetails')}
-                  </button>
-                  <button
-                    onClick={toggleMute}
-                    className="w-full text-left py-2.5 px-3.5 text-[13px] text-ink-700 active:bg-sky2-50"
-                  >
-                    {muted ? t('mobchat.unmute') : t('mobchat.muteNotifications')}
-                  </button>
-                  <div className="h-px bg-ink-100 mx-1.5 my-1" />
-                  <button
-                    onClick={leaveConvo}
-                    className="w-full text-left py-2.5 px-3.5 text-[13px] text-coral-deep active:bg-coral-soft/60"
-                  >
-                    {t('mobchat.leaveConversation')}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
+      <ChatHeader
+        c={c}
+        agents={agents}
+        select={select}
+        pushStack={pushStack}
+        onConvene={onConvene}
+        conveneStarting={conveneStarting}
+        menuOpen={menuOpen}
+        setMenuOpen={setMenuOpen}
+        toggleMute={toggleMute}
+        muted={muted}
+        leaveConvo={leaveConvo}
+      />
 
       {/* Stream — virtualized via react-virtuoso. Long conversations no
           longer mount every bubble at once; rows outside the viewport
@@ -645,276 +579,40 @@ export function MobileChat() {
         <ScrollToLatestButton visible={!atBottom} onClick={smoothScrollToLatest} bottomOffset={20} />
       </div>
       {/* Composer */}
-      <div
-        className="border-t border-ink-100 bg-cloud px-3 pt-1.5 kb-aware"
-      >
-        <div className="px-1 pb-1">
-          <TypingRow names={typingNames} />
-        </div>
-        {attachment && (
-          <div className="mb-2 inline-flex items-center gap-2.5 py-1.5 px-2 bg-sky2-50 border border-sky2-100 rounded-lg max-w-full">
-            {attachment.kind === 'img' ? (
-              <img src={attachment.url} alt={attachment.name}
-                className="w-10 h-10 object-cover rounded-md shrink-0" />
-            ) : (
-              <div className="w-10 h-10 rounded-md grid place-items-center shrink-0"
-                style={{ background: 'linear-gradient(135deg, #2A2A35, #1A1A22)' }}>
-                <IClip className="w-4 h-4 text-white/85" strokeWidth={1.8} />
-              </div>
-            )}
-            <div className="min-w-0">
-              <div className="text-[12px] font-semibold text-ink-700 truncate max-w-[220px]">{attachment.name}</div>
-              <div className="text-[10.5px] text-ink-500 truncate">{attachment.mime ?? attachment.kind}{attachment.size ? ` · ${Math.round(attachment.size / 1024)}KB` : ''}</div>
-            </div>
-            <button
-              onClick={() => setAttachment(null)}
-              className="ml-1 w-6 h-6 rounded-md grid place-items-center text-ink-500 active:bg-cloud transition shrink-0"
-              aria-label={t('mobchat.removeAttachment')}
-            >×</button>
-          </div>
-        )}
-        {uploading && (
-          <div className="mb-2 text-[11.5px] text-ink-500 italic">{t('mobchat.uploading')}</div>
-        )}
-        {uploadError && (
-          <div className="mb-2 text-[11.5px] py-1 px-2 rounded-md text-coral-deep bg-coral-soft inline-block max-w-full truncate">
-            {uploadError}
-          </div>
-        )}
-        {replyingToId && convoId && (
-          <div className="mb-2 flex items-stretch gap-2 rounded-md bg-sky2-50 border border-sky2-100 pl-2 pr-1 py-1.5">
-            <div className="w-[3px] rounded bg-skype shrink-0" />
-            <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-              <div className="text-[10.5px] font-bold uppercase tracking-wider text-skype-deep">
-                {t('mobchat.replyingTo', { name: byId[replyingToMsg?.authorId ?? '']?.name ?? replyingToMsg?.authorId ?? '…' })}
-              </div>
-              <div className="text-[12px] text-ink-500 truncate">
-                {replyingToMsg ? replyingToMsg.body.slice(0, 140).replace(/\n/g, ' ') : t('mobchat.replyLoading')}
-              </div>
-            </div>
-            <button
-              onClick={() => setReplyingTo(convoId, null)}
-              className="w-6 h-6 rounded-md grid place-items-center text-ink-500 active:bg-cloud transition shrink-0 self-center"
-              aria-label={t('mobchat.cancelReply')}
-            >×</button>
-          </div>
-        )}
-        {/* Mention picker. Lives ABOVE the composer row so the keyboard +
-            textarea stay anchored at the bottom and the picker grows up.
-            onMouseDown preventDefault keeps the textarea from blurring
-            when a row is tapped (which would close the picker first). */}
-        {mention && filteredMentions.length > 0 && (
-          <div
-            className="mb-2 rounded-[12px] bg-paper animate-rise overflow-hidden"
-            style={{
-              border: '1px solid var(--ink-100)',
-              boxShadow: '0 12px 28px -8px rgba(10, 30, 60, 0.20), 0 4px 10px -4px rgba(10, 30, 60, 0.12)',
-              maxHeight: 240,
-              overflowY: 'auto',
-            }}
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            <div className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-ink-300">
-              {mention.query ? `${t('mobchat.mentionHeader')} ${t('mobchat.mentionQuerySuffix', { query: mention.query })}` : t('mobchat.mentionHeader')}
-            </div>
-            {filteredMentions.map((entry, i) => {
-              const active = i === mentionIndex
-              if (entry.kind === 'all') {
-                return (
-                  <button
-                    key="__all"
-                    type="button"
-                    onClick={() => insertMention(entry)}
-                    className={cn(
-                      'w-full text-left flex items-center gap-2.5 py-2 px-3 transition',
-                      active ? 'bg-sky2-50' : 'active:bg-sky2-50',
-                    )}
-                  >
-                    <img src="/everyone.png" alt="" className="w-[28px] h-[28px] rounded-full object-cover" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-semibold text-ink-900 truncate">{t('mobchat.everyone')}</div>
-                      <div className="text-[11px] text-ink-500 truncate">{t('mobchat.notifyAll')}</div>
-                    </div>
-                  </button>
-                )
-              }
-              const p = entry.p
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => insertMention(entry)}
-                  className={cn(
-                    'w-full text-left flex items-center gap-2.5 py-2 px-3 transition',
-                    active ? 'bg-sky2-50' : 'active:bg-sky2-50',
-                  )}
-                >
-                  <Avatar p={p} size={28} ringColor="var(--paper)" showStatus={false} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold text-ink-900 truncate">{p.name}</div>
-                    <div className="text-[11px] text-ink-500 truncate">@{p.id}{p.role ? ` · ${p.role}` : ''}</div>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        )}
-        <input
-          ref={fileRef}
-          type="file"
-          // No `accept` filter — server's MIME whitelist is the source
-          // of truth. Browser-side accept is only a hint anyway.
-          className="hidden"
-          onChange={onPickFile}
-        />
-        {/* Two-row composer: textarea + send on top so the input gets
-            the full width, action buttons (attach / mention) below. */}
-        <div className="flex items-end gap-2">
-          <div
-            className="flex-1 bg-paper rounded-[20px] py-2 px-3.5 min-h-[40px] flex items-center"
-            style={{ border: '1px solid var(--ink-100)' }}
-          >
-            <RichInput
-              key={convoId}
-              ref={editorRef}
-              defaultValue={draft}
-              placeholder={t('mobchat.typeAtToSummon')}
-              ariaLabel={t('mobchat.composerAria')}
-              className="rich-input flex-1 whitespace-pre-wrap bg-transparent outline-none text-[14px] text-ink-900 leading-[1.4]"
-              style={{ minHeight: '1.4em' }}
-              maxHeight={120}
-              enterKeyHint="send"
-              autoCapitalize="sentences"
-              autoCorrect="on"
-              onChange={(value, caret) => {
-                setDraft(value)
-                updateMention(value, caret)
-              }}
-              onFocus={() => {
-                // Snap on focus AND on visualViewport resize (the
-                // useEffect above). Focus runs immediately, the
-                // resize runs once the keyboard finishes animating
-                // in — together they cover both fast and slow
-                // keyboard paths across iOS versions.
-                requestAnimationFrame(scrollToLatest)
-              }}
-              onBlur={() => setTimeout(() => setMention(null), 120)}
-              onKeyDown={onKey}
-              resolveMention={(id) => {
-                if (id === 'all') {
-                  return { name: 'all', initial: '@', avatarBg: 'var(--ink-300)', kind: 'human' }
-                }
-                const p = byId[id]
-                if (!p) return null
-                return {
-                  name: p.id === meId ? 'you' : p.name,
-                  initial: p.initial || p.name.charAt(0).toUpperCase(),
-                  avatarBg: typeof p.avatarBg === 'string' ? p.avatarBg : 'var(--ink-300)',
-                  kind: p.kind,
-                  avatarUrl: typeof p.avatarUrl === 'string' ? p.avatarUrl : undefined,
-                }
-              }}
-            />
-          </div>
-          <Pressable
-            onClick={send}
-            disabled={!canSend}
-            scale={0.9}
-            className="w-10 h-10 grid place-items-center rounded-full text-white shrink-0 disabled:opacity-40"
-            style={{
-              background: canSend
-                ? 'linear-gradient(135deg, var(--skype), var(--skype-deep))'
-                : 'var(--ink-200)',
-              boxShadow: canSend ? '0 4px 12px -3px rgba(0, 168, 240, 0.5)' : 'none',
-            }}
-            aria-label={t('mobchat.sendAria')}
-          >
-            <ISend className="w-[18px] h-[18px]" strokeWidth={2} />
-          </Pressable>
-        </div>
-        <div className="flex items-center gap-1 pt-1.5 pb-0.5">
-          <Pressable
-            onClick={() => fileRef.current?.click()}
-            className="w-9 h-9 grid place-items-center text-ink-500 rounded-full active:bg-sky2-50"
-            aria-label={t('mobchat.attachFile')}
-          >
-            <IClip className="w-[20px] h-[20px]" />
-          </Pressable>
-          <Pressable
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={openMentionByButton}
-            className={cn(
-              'w-9 h-9 grid place-items-center rounded-full active:bg-sky2-50',
-              mention ? 'text-skype-deep bg-sky2-50' : 'text-ink-500',
-            )}
-            aria-label={t('mobchat.mentionAria')}
-          >
-            <IAt className="w-[20px] h-[20px]" />
-          </Pressable>
-          <Pressable
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setEmojiOpen((v) => !v)}
-            className={cn(
-              'w-9 h-9 grid place-items-center rounded-full active:bg-sky2-50',
-              emojiOpen ? 'text-skype-deep bg-sky2-50' : 'text-ink-500',
-            )}
-            aria-label={t('mobchat.emojiAria')}
-          >
-            <ISmile className="w-[20px] h-[20px]" />
-          </Pressable>
-        </div>
-        {/* Emoji picker — inline above the composer's tool row so the
-            keyboard doesn't cover it. Tabs match the desktop popover
-            (Standard Twemoji + Skype emoticons). */}
-        {emojiOpen && (
-          <div
-            className="mt-2 mb-1 rounded-[12px] bg-paper overflow-hidden animate-rise"
-            style={{
-              border: '1px solid var(--ink-100)',
-              boxShadow: '0 -8px 20px -8px rgba(10, 30, 60, 0.10)',
-            }}
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            <div className="flex gap-1 px-2 pt-2">
-              {(['std', 'skype'] as const).map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setEmojiTab(k)}
-                  className={cn(
-                    'flex-1 text-[11px] font-semibold uppercase tracking-wider py-1.5 rounded-[6px] transition',
-                    emojiTab === k ? 'bg-sky2-100 text-skype-deep' : 'text-ink-500 active:bg-sky2-50',
-                  )}
-                >{k === 'std' ? t('mobchat.emojiStd') : t('mobchat.emojiSkype')}</button>
-              ))}
-            </div>
-            <div className="px-2 py-2 max-h-[220px] overflow-y-auto">
-              {emojiTab === 'std' ? (
-                <div className="grid grid-cols-8 gap-0.5">
-                  {COMPOSER_EMOJIS.map((e) => (
-                    <button
-                      key={e}
-                      onClick={() => insertAtCursor(e)}
-                      className="h-9 grid place-items-center rounded active:bg-sky2-50 transition"
-                      aria-label={e}
-                    ><TwEmoji emoji={e} size={22} /></button>
-                  ))}
-                </div>
-              ) : (
-                <div className="grid grid-cols-7 gap-0.5">
-                  {SKYPE_EMOJIS.map((e) => (
-                    <button
-                      key={e.key}
-                      onClick={() => insertAtCursor(e.shortcodes[0])}
-                      className="h-10 grid place-items-center rounded active:bg-sky2-50 transition"
-                      aria-label={e.label}
-                    ><SkypeEmoji name={e.key} size={28} autoPlaySound={false} /></button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+      <Composer
+        convoId={convoId}
+        draft={draft}
+        typingNames={typingNames}
+        attachment={attachment}
+        setAttachment={setAttachment}
+        uploading={uploading}
+        uploadError={uploadError}
+        replyingToId={replyingToId}
+        replyingToMsg={replyingToMsg}
+        setReplyingTo={setReplyingTo}
+        byId={byId}
+        meId={meId}
+        mention={mention}
+        filteredMentions={filteredMentions}
+        mentionIndex={mentionIndex}
+        insertMention={insertMention}
+        fileRef={fileRef}
+        onPickFile={onPickFile}
+        editorRef={editorRef}
+        setDraft={setDraft}
+        updateMention={updateMention}
+        scrollToLatest={scrollToLatest}
+        setMention={setMention}
+        onKey={onKey}
+        canSend={canSend}
+        send={send}
+        openMentionByButton={openMentionByButton}
+        emojiOpen={emojiOpen}
+        setEmojiOpen={setEmojiOpen}
+        emojiTab={emojiTab}
+        setEmojiTab={setEmojiTab}
+        insertAtCursor={insertAtCursor}
+      />
       <MobileMessageTapback
         open={tapback !== null}
         anchor={tapback?.coords ?? null}
@@ -926,489 +624,5 @@ export function MobileChat() {
         onClose={() => setTapback(null)}
       />
     </section>
-  )
-}
-
-/** Dynamic flags the virtualized stream's Header needs, threaded through
- *  Virtuoso's `context` prop instead of through a fresh `components` object
- *  every render. */
-type StreamCtx = { hasMoreOlder: boolean; loadingOlder: boolean }
-
-/** Top-of-list node: either the older-history loading affordance or the
- *  "Beginning" divider once the first page is reached. Defined at MODULE
- *  scope — never recreated per render — which is the whole point: an inline
- *  `components={{ Header: () => … }}` literal makes a brand-new component
- *  *type* on every render, and React unmounts+remounts a node whose type
- *  identity changed. Cumora streams agent messages many times per second, so
- *  that inline Header was being torn down and rebuilt on every streaming tick,
- *  re-measuring the very top of the list and nudging every row below it — a
- *  primary driver of the scroll-up jitter. The flags now arrive via `context`,
- *  which RE-RENDERS these stable components without remounting them.
- *
- *  Height stays constant across the loading↔idle toggle: while more history
- *  exists we always render the same `py-1 px-2.5` pill (text swaps between
- *  "Loading earlier…" and a blank space), so paging never changes the
- *  header's height and never re-anchors the scroll. */
-function StreamHeader({ context }: { context?: StreamCtx }) {
-  const t = useT()
-  const hasMoreOlder = context?.hasMoreOlder ?? false
-  const loadingOlder = context?.loadingOlder ?? false
-  return (
-    <div className="px-3 pt-4 flex flex-col gap-3">
-      {hasMoreOlder ? (
-        <div className="self-center py-1 px-2.5 rounded-full text-[10.5px] font-medium text-ink-400">
-          {loadingOlder ? t('chat.loadingEarlier') : ' '}
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 text-ink-300 text-[10.5px] font-bold tracking-[0.08em] uppercase">
-          <span className="flex-1 h-px bg-gradient-to-r from-transparent via-ink-100 to-transparent" />
-          {t('chat.beginning')}
-          <span className="flex-1 h-px bg-gradient-to-r from-transparent via-ink-100 to-transparent" />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function StreamFooter() {
-  return <div className="h-3" />
-}
-
-/** Stable identity — passed to Virtuoso once so it never sees a changed
- *  `components` reference (see StreamHeader for why that matters). */
-const STREAM_COMPONENTS = { Header: StreamHeader, Footer: StreamFooter }
-
-/** Per-message wrapper that attaches the long-press detector and
- *  preserves the same padding the bare MessageRow used to ship inside
- *  Virtuoso's itemContent. The wrapper exists as its own component
- *  so the long-press hook gets its own state slot — re-using one
- *  detector across all visible items would cross-fire.
- *
- *  `userSelect: none` + `WebkitTouchCallout: none` are critical:
- *  without them, iOS WKWebView's long-press triggers system text
- *  selection AT THE SAME TIME as our Tapback menu, with the system
- *  occasionally extending the selection across the whole screen
- *  before our menu paints on top — "全屏的文字都被选中了". iOS
- *  Messages itself doesn't allow per-bubble text selection for
- *  exactly this reason; Copy comes through the Tapback menu (our
- *  "Copy text" row), which puts the body on the clipboard
- *  programmatically. */
-function MessageRowMobileShell({
-  msg, author, animate, onLongPress,
-}: {
-  msg: Message
-  author?: Participant
-  animate: boolean
-  onLongPress: (coords: { x: number; y: number }) => void
-}) {
-  const press = useLongPress(onLongPress)
-  return (
-    <div
-      className="px-3 py-2"
-      style={{
-        userSelect: 'none',
-        WebkitUserSelect: 'none',
-        WebkitTouchCallout: 'none',
-      }}
-      {...press}
-    >
-      <MessageRow msg={msg} author={author} delay={0} animate={animate} />
-    </div>
-  )
-}
-
-/** Build the tapback action rows for a message. Reply is always
- *  available; Copy text appears when the message has a body; Delete
- *  is the user's own messages only. Future passes can layer on
- *  Quote, Thread, Forward, etc. without changing the menu chrome. */
-function buildMessageTapbackActions(
-  msg: Message,
-  convoId: string | null,
-  setReplyingTo: (convoId: string, msgId: string | null) => void,
-  meId: string | null,
-  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
-): TapbackAction[] {
-  const out: TapbackAction[] = []
-  out.push({
-    label: t('mobchat.tapbackReply'),
-    onClick: () => { if (convoId) setReplyingTo(convoId, msg.id) },
-  })
-  if (msg.body && msg.body.trim()) {
-    out.push({
-      label: t('mobchat.tapbackCopy'),
-      onClick: () => {
-        // Best-effort — `navigator.clipboard.writeText` returns a
-        // promise we don't await; failures fall through silently
-        // (rare on iOS WKWebView, and there's no good recovery).
-        void navigator.clipboard?.writeText(msg.body).catch(() => { /* ignore */ })
-      },
-    })
-  }
-  // Delete is only offered for the user's own messages. Mirrors the
-  // desktop ChatPane permission model: agents own their own rows.
-  if (meId && msg.authorId === meId) {
-    out.push({
-      label: t('common.delete'),
-      destructive: true,
-      onClick: () => {
-        // Wire deletion later — for now just close, no destructive
-        // call. Keeping the row in the menu so the affordance is
-        // discoverable + we can light it up the moment the API
-        // surface is ready.
-      },
-    })
-  }
-  return out
-}
-
-export function MobileChatInfo() {
-  const t = useT()
-  const pushStack = useApp((s) => s.pushMobileStack)
-  const setView = useApp((s) => s.setView)
-  const convoId = useApp((s) => s.selectedConversationId)
-  const c = useConversations((s) => s.list.find((x) => x.id === convoId))
-  const byId = useParticipants((s) => s.byId)
-  const meId = useMe()
-  const openAgentInfo = useApp((s) => s.openAgentInfo)
-  const [busy, setBusy] = useState(false)
-  // Inline editors for the group's name + topic (groups only — a DM title is
-  // derived from the other person and isn't user-editable). Plus a member
-  // search filter. All declared before the early returns so the hook order
-  // stays stable across renders.
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState('')
-  const [editingTopic, setEditingTopic] = useState(false)
-  const [topicDraft, setTopicDraft] = useState('')
-  const [memberQuery, setMemberQuery] = useState('')
-  if (!c) return null
-
-  // For DM / whisper, the page is fundamentally about the OTHER person —
-  // show their hero. For a GROUP, there is no single "focus" member, so
-  // we render a group-scoped hero (avatar stack + title + counts) and
-  // skip the per-agent tools/bio sections. Picking some arbitrary "first
-  // agent" and giant-profile-ing them at the top alongside the member
-  // list below is what made the group page look like a mash-up.
-  const isGroup = c.kind === 'group'
-  const focusId = isGroup ? null : (c.members.find((m) => m !== meId) ?? c.members[0])
-  const focus = focusId ? byId[focusId] : undefined
-  if (!isGroup && !focus) return null
-
-  const muted = isMuted(c)
-  const memberPs = c.members.map((m) => byId[m]).filter((p): p is Participant => Boolean(p))
-  const agentCount = memberPs.filter((p) => p.kind === 'agent').length
-  const humanCount = memberPs.filter((p) => p.kind === 'human').length
-  const groupAgents = memberPs.filter((p) => p.kind === 'agent')
-  const statusTone = focus?.status ?? 'avail'
-  // Localized status pill — same five tones as the desktop ChatPane, just
-  // looked up through the i18n layer here so the mobile info card renders
-  // the same Chinese/English as everywhere else.
-  const statusLabel: Record<string, string> = {
-    avail: t('info.statusAvail'),
-    working: t('info.statusWorking'),
-    thinking: t('info.statusThinking'),
-    waiting: t('info.statusWaiting'),
-    resting: t('info.statusResting'),
-  }
-
-  const startConvene = async () => {
-    if (!convoId || busy) return
-    setBusy(true)
-    try {
-      await api.startConvene(convoId, c.title || 'live work session')
-      setView('convene')
-    } catch (err) { console.warn('start convene failed', err) }
-    setBusy(false)
-  }
-
-  const onToggleMute = async () => {
-    if (!convoId) return
-    try {
-      await api.setMute(convoId, !muted)
-      await useConversations.getState().reload()
-    } catch (err) { console.warn('mute toggle failed', err) }
-  }
-
-  const onLeave = async () => {
-    if (!convoId) return
-    if (!confirm(t('mobchat.confirmLeaveBody'))) return
-    try {
-      await api.leaveConversation(convoId)
-      useApp.getState().selectConversation(null)
-      await useConversations.getState().reload()
-    } catch (err) { console.warn('leave failed', err) }
-  }
-
-  // Group rename + topic edit. Optimistic local write, rolled back on a
-  // failed network call — mirrors the desktop ChatPane pattern so both
-  // surfaces behave identically.
-  const startEditTitle = () => { setTitleDraft(c.title); setEditingTitle(true) }
-  const saveTitle = async () => {
-    const next = titleDraft.trim()
-    setEditingTitle(false)
-    if (!convoId || !next || next === c.title) return
-    const prev = c.title
-    useConversations.setState((s) => ({ list: s.list.map((x) => x.id === convoId ? { ...x, title: next } : x) }))
-    try { await api.setTitle(convoId, next) }
-    catch (err) {
-      console.warn('[title] rename failed', err)
-      useConversations.setState((s) => ({ list: s.list.map((x) => x.id === convoId ? { ...x, title: prev } : x) }))
-    }
-  }
-  const startEditTopic = () => { setTopicDraft(c.topic ?? ''); setEditingTopic(true) }
-  const saveTopic = async () => {
-    const next = topicDraft.trim() || null
-    setEditingTopic(false)
-    if (!convoId) return
-    const prev = c.topic ?? null
-    if (next === prev) return
-    useConversations.setState((s) => ({ list: s.list.map((x) => x.id === convoId ? { ...x, topic: next } : x) }))
-    try { await api.setTopic(convoId, next) }
-    catch (err) {
-      console.warn('[topic] save failed', err)
-      useConversations.setState((s) => ({ list: s.list.map((x) => x.id === convoId ? { ...x, topic: prev } : x) }))
-    }
-  }
-
-  // Member search filter — matches name OR id, case-insensitive (same rule
-  // as the desktop add-members picker).
-  const mq = memberQuery.trim().toLowerCase()
-  const filteredMembers = mq
-    ? memberPs.filter((p) => p.name.toLowerCase().includes(mq) || p.id.toLowerCase().includes(mq))
-    : memberPs
-
-  return (
-    <section className="flex flex-col h-full bg-paper overflow-y-auto">
-      <header
-        className="border-b border-ink-100 bg-cloud/95 backdrop-blur-md sticky top-0 z-10"
-        style={{ paddingTop: 'env(safe-area-inset-top)' }}
-      >
-        <div className="px-2 py-2.5 flex items-center gap-2">
-          <button
-            onClick={() => pushStack('chat')}
-            className="w-10 h-10 grid place-items-center text-ink-700 active:bg-sky2-50 rounded-full transition"
-            aria-label={t('mpinfo.back')}
-          >
-            <IBack className="w-[22px] h-[22px]" strokeWidth={2} />
-          </button>
-          <h1 className="font-display font-medium text-[18px] text-ink-900" style={{ letterSpacing: '-0.01em' }}>{t('mobchat.details')}</h1>
-        </div>
-      </header>
-
-      {isGroup ? (
-        <div
-          className="text-center pt-7 pb-5 px-5 border-b border-ink-100"
-          style={{ background: 'radial-gradient(circle at 50% 0%, var(--sky-100), transparent 70%)' }}
-        >
-          <div className="mx-auto mb-3 inline-flex justify-center">
-            <AvatarStack ps={groupAgents} size={64} max={5} />
-          </div>
-          {editingTitle ? (
-            <input
-              autoFocus
-              type="text"
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={saveTitle}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); void saveTitle() }
-                if (e.key === 'Escape') setEditingTitle(false)
-              }}
-              maxLength={80}
-              className="block w-full text-center bg-transparent outline-none border-b border-skype-deep font-display font-medium text-[26px] tracking-tight text-ink-900 pb-0.5 mb-1"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={startEditTitle}
-              className="font-display font-medium text-[26px] tracking-tight mb-1 active:text-skype-deep transition border-b border-dashed border-ink-200 leading-tight max-w-full truncate"
-              title={t('mobchat.tapToRename')}
-            >{c.title}</button>
-          )}
-          <div className="font-display italic text-[14px] text-ink-500">
-            {memberPs.length} {memberPs.length === 1 ? t('mobchat.memberOne') : t('mobchat.memberMany')}
-            {agentCount > 0 && ` · ${agentCount} ${agentCount === 1 ? t('mobchat.agentOne') : t('mobchat.agentMany')}`}
-          </div>
-          {/* Topic — tap to edit; prompt to add when empty. */}
-          {editingTopic ? (
-            <input
-              autoFocus
-              type="text"
-              value={topicDraft}
-              onChange={(e) => setTopicDraft(e.target.value)}
-              onBlur={saveTopic}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); void saveTopic() }
-                if (e.key === 'Escape') setEditingTopic(false)
-              }}
-              placeholder={t('mobchat.topicPlaceholder')}
-              maxLength={200}
-              className="mt-2 block w-full text-center bg-transparent text-[12.5px] text-ink-700 italic font-display placeholder:text-ink-300 outline-none border-b border-sky2-200 focus:border-skype-deep transition pb-0.5"
-            />
-          ) : c.topic ? (
-            <button
-              type="button"
-              onClick={startEditTopic}
-              className="mt-2 block mx-auto max-w-full truncate text-[12.5px] text-ink-500 italic font-display active:text-skype-deep transition"
-              title={t('mobchat.tapToEditTopic')}
-            >{c.topic}</button>
-          ) : (
-            <button
-              type="button"
-              onClick={startEditTopic}
-              className="mt-2 inline-block text-[12.5px] text-ink-300 italic font-display active:text-skype-deep transition"
-            >{t('mobchat.addTopic')}</button>
-          )}
-        </div>
-      ) : focus ? (
-        <div
-          className="text-center pt-7 pb-5 px-5 border-b border-ink-100"
-          style={{ background: 'radial-gradient(circle at 50% 0%, var(--sky-100), transparent 70%)' }}
-        >
-          <div className="mx-auto mb-3 inline-block">
-            <Avatar p={focus} size={96} ringColor="var(--paper)" />
-          </div>
-          <h3 className="font-display font-medium text-[26px] tracking-tight mb-1">{focus.name}</h3>
-          {focus.role && (
-            <div className="font-display italic text-[14px] text-ink-500 mb-3.5">{focus.role}</div>
-          )}
-          <div className="inline-flex items-center gap-2 py-2 px-4 rounded-full bg-cloud border border-ink-100 text-[13px] text-ink-700 shadow-soft">
-            <span className="w-2 h-2 rounded-full animate-pulse-soft" style={{ background: `var(--${statusTone})` }} />
-            {statusLabel[statusTone] ?? statusTone}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-2 gap-2 px-4 py-4 border-b border-ink-100">
-        <button
-          onClick={startConvene}
-          disabled={busy}
-          className="py-3 px-4 rounded-xl text-white font-semibold text-[13px] active:opacity-80 transition disabled:opacity-50"
-          style={{ background: 'var(--skype-ink)' }}
-        >
-          {busy ? t('mobchat.starting') : t('mobchat.convene')}
-        </button>
-        <button
-          onClick={onToggleMute}
-          className="py-3 px-4 rounded-xl bg-cloud border border-ink-100 text-ink-700 font-semibold text-[13px] active:bg-sky2-50 transition"
-        >
-          {muted ? t('mobchat.unmute') : t('mobchat.mute')}
-        </button>
-      </div>
-
-      {c.kind !== 'direct' && (
-        <div className="py-4 px-5 border-b border-ink-100">
-          <h4 className="text-[10.5px] font-bold text-ink-300 tracking-wider uppercase mb-3">{t('mobchat.members')}</h4>
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            <Stat n={String(memberPs.length)} l={t('mobchat.statMembers')} />
-            <Stat n={String(agentCount)} l={t('mobchat.statAgents')} />
-            <Stat n={String(humanCount)} l={t('mobchat.statHumans')} />
-          </div>
-          {/* Search — only worth showing once the list is long enough to
-              warrant scanning. Filters by name or @id. */}
-          {memberPs.length > 5 && (
-            <div className="mb-2.5 flex items-center gap-2 px-2.5 py-1.5 rounded-[10px] bg-paper" style={{ border: '1px solid var(--ink-100)' }}>
-              <ISearch className="w-3.5 h-3.5 text-ink-300 shrink-0" strokeWidth={2.4} />
-              <input
-                value={memberQuery}
-                onChange={(e) => setMemberQuery(e.target.value)}
-                placeholder={t('mobchat.searchMembersPh')}
-                className="flex-1 min-w-0 text-[13px] text-ink-700 bg-transparent outline-none placeholder:text-ink-300"
-              />
-              {memberQuery && (
-                <button
-                  type="button"
-                  onClick={() => setMemberQuery('')}
-                  className="w-6 h-6 -mr-1 grid place-items-center text-ink-400 active:text-ink-600 shrink-0"
-                  aria-label={t('mobchat.clearSearch')}
-                >×</button>
-              )}
-            </div>
-          )}
-          <div className="flex flex-col divide-y divide-ink-100 bg-cloud rounded-[12px]" style={{ border: '1px solid var(--ink-100)' }}>
-            {filteredMembers.map((p) => {
-              const isSelf = p.id === meId
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  disabled={isSelf}
-                  onClick={() => openAgentInfo(p.id)}
-                  className={cn(
-                    'flex items-center gap-3 py-2.5 px-3 text-left transition first:rounded-t-[12px] last:rounded-b-[12px]',
-                    !isSelf && 'active:bg-sky2-50',
-                  )}
-                >
-                  <Avatar p={p} size={32} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold text-ink-900 truncate">
-                      {p.name}{isSelf && <span className="text-ink-300 font-normal">{t('mobchat.youSuffix')}</span>}
-                    </div>
-                    <div className="text-[11px] text-ink-500 truncate font-display italic">
-                      {p.kind === 'agent' ? (p.role ?? t('common.agent')) : t('mobchat.humanTeammate')}
-                    </div>
-                  </div>
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: `var(--${p.status ?? 'avail'})` }} />
-                  {!isSelf && <IBack className="w-4 h-4 text-ink-200 shrink-0 rotate-180" strokeWidth={2} />}
-                </button>
-              )
-            })}
-            {filteredMembers.length === 0 && (
-              <div className="py-5 text-center text-[12px] text-ink-400 italic font-display">
-                {t('mobchat.noMembersMatch', { query: memberQuery })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {!isGroup && focus && (focus.tools ?? []).length > 0 && (
-        <div className="py-4 px-5 border-b border-ink-100">
-          <h4 className="text-[10.5px] font-bold text-ink-300 tracking-wider uppercase mb-3">{t('mobchat.tools')}</h4>
-          <div className="grid grid-cols-2 gap-2">
-            {(focus.tools ?? []).map((t) => (
-              <div key={t} className="py-2.5 px-3 bg-cloud border border-ink-100 rounded-[10px] flex items-center gap-2 text-[12.5px] text-ink-700">
-                <span className="w-1.5 h-1.5 rounded-full bg-skype" />
-                <b className="font-mono font-medium text-[11.5px] truncate">{t}</b>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!isGroup && focus?.bio && (
-        <div className="py-4 px-5 border-b border-ink-100">
-          <h4 className="text-[10.5px] font-bold text-ink-300 tracking-wider uppercase mb-3">{t('mobchat.about')}</h4>
-          <div
-            className="py-3 px-3.5 rounded-r-lg font-display italic text-[13px] leading-[1.55] text-ink-700"
-            style={{
-              background: 'linear-gradient(135deg, var(--sky-50), transparent)',
-              borderLeft: '2px solid var(--skype)',
-            }}
-          >
-            {focus.bio}
-          </div>
-        </div>
-      )}
-
-      <div className="py-4 px-5">
-        <button
-          onClick={onLeave}
-          className="w-full py-3 px-4 rounded-[12px] text-[13px] font-semibold text-coral-deep transition text-left active:opacity-70"
-          style={{ border: '1px solid rgba(255, 122, 107, 0.3)' }}
-        >
-          {t('mobchat.leaveConversation')}
-          <span className="block font-display italic text-[11px] text-ink-500 mt-0.5">{t('mobchat.agentsContinueWithout')}</span>
-        </button>
-      </div>
-    </section>
-  )
-}
-
-function Stat({ n, l }: { n: string; l: string }) {
-  return (
-    <div className="py-3 px-2 bg-cloud border border-ink-100 rounded-[10px] text-center">
-      <div className="font-display text-[22px] font-medium text-ink-900 leading-none" style={{ letterSpacing: '-0.02em' }}>{n}</div>
-      <div className="text-[10px] font-bold text-ink-500 uppercase tracking-wider mt-1">{l}</div>
-    </div>
   )
 }
