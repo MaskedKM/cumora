@@ -97,6 +97,13 @@ test('置顶会话收到消息:回到置顶块尾,不落进未置顶区', () => 
   expect(useConversations.getState().list.map((c) => c.id)).toEqual(['c-pin', 'c-a'])
 })
 
+test('RFC3339Nano 尾零形态不破比较:.5Z 早于 .500000001Z(数值比,非字典序)', () => {
+  seed([row('c-x', '2026-08-31T10:00:00.500000001Z', { lastMessageId: 'm-a' })])
+  applyMessageEvent('c-x', msg('m-b', '2026-08-31T10:00:00.5Z'), false)
+  // 字典序会误判 ".5Z" > ".500000001Z" 而放行;数值比较应识别为陈旧丢弃
+  expect(useConversations.getState().list[0].lastMessageId).toBe('m-a')
+})
+
 test('陈旧/重放帧被丢弃:不回退行,不重复 bump', () => {
   seed([row('c-x', '2026-08-31T10:00:00Z', { unread: 1, lastMessageId: 'm-new' })])
   const before = useConversations.getState().list

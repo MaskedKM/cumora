@@ -249,9 +249,12 @@ export function applyMessageEvent(conversationId: string, m: ApiMessage, isActiv
     const prev = s.list[idx]
     // Out-of-order or replayed frame (hello backfill races a live event):
     // message ids are random server-side tokens (not orderable), so recency
-    // is judged on createdAt — never move the row backwards, and an equal
-    // timestamp (the replay) must not double-bump unread.
-    if (prev.lastAtIso >= createdAt) return s
+    // is judged on createdAt. Compared NUMERICALLY via Date.parse — Go's
+    // RFC3339Nano trims trailing fractional zeros, which breaks plain
+    // string ordering ("…00.5Z" sorts after "…00.500000001Z"). Equal
+    // (sub-millisecond collapse) = replay: never move the row backwards,
+    // and a replay must not double-bump unread.
+    if (Date.parse(prev.lastAtIso) >= Date.parse(createdAt)) return s
     const next: Conversation = {
       ...prev,
       preview: previewForMessage(m),
@@ -276,7 +279,7 @@ export function applyMessageEvent(conversationId: string, m: ApiMessage, isActiv
       insertAt = list.findIndex((c) => !c.pinned)
       if (insertAt === -1) insertAt = list.length
       for (let i = insertAt; i < list.length; i++) {
-        if (list[i].lastAtIso <= createdAt) { insertAt = i; break }
+        if (Date.parse(list[i].lastAtIso) <= Date.parse(createdAt)) { insertAt = i; break }
         insertAt = i + 1
       }
     }
