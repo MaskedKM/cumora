@@ -125,8 +125,10 @@ func EmailInboundHMACSecret() string { return os.Getenv("EMAIL_INBOUND_HMAC_SECR
 // 镜像)、email 域(入站附件、GC 根)与 workspaces 默认区全部经此取
 // 路径,禁止再散落字面量。
 //
-// 解析链:CUMORA_UPLOADS_DIR > UPLOAD_DIR(退役 TS 时代的旧键,email
-// 域历史契约,保留兼容) > server/uploads(相对 cwd,与 TS 本地
+// 解析链:CUMORA_UPLOADS_DIR > UPLOAD_DIR(Go email 域 86aa85f 首创的
+// 历史键——TS 时代 server/src/storage.ts 的 UPLOAD_DIR 是常量、从未读
+// env;该键未被任何 .env.example/部署单元/文档文档化,保留兼容) >
+// server/uploads(相对 cwd,与 TS 本地
 // storage.put 同布局)。新值仅做 filepath.Clean(去尾斜杠,防
 // Join/前缀校验形态漂移),空白语义保留:主键不 trim、旧键 trim。
 func UploadsDir() string {

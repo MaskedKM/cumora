@@ -79,6 +79,16 @@ UPDATE workspaces
         '$HOME/.local/share/cumora/uploads')
  WHERE folder_path LIKE '$HOME/Code/cumora/server/uploads/%';"
 
+# 4b) 改写核验:应返回 0(历史上若有非本机 cwd 的异构实例产生的行,
+#     LIKE 模式会漏改,漏网行在文件列表处 400 且静默——核验兜住它;
+#     返回非 0 时逐行人工改写)
+psql "$DATABASE_URL" -tAc "
+SELECT count(*) FROM workspaces
+ WHERE folder_path LIKE '$HOME/Code/cumora/server/uploads/%';"
+
+# 4c) email 附件例外:历史上若给 Go 设过 UPLOAD_DIR 指到别处,那份
+#     email-attachments 不在上述 mv 覆盖内,需单独 mv 到新根(未设过
+#     则忽略本条)
 # 5) 重启三件套并核验
 systemctl --user start cumora-sidecar.service cumora-go.service cumora-daemon.service
 curl -s localhost:5181/api/livez   # 200

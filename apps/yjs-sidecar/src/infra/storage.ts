@@ -80,9 +80,11 @@ export function signedUrlExpiresSoon(raw: string, leewaySeconds = 300): boolean 
  *  served from, so existing /uploads/<file> URLs keep working after the
  *  abstraction lands.
  *
- *  #208: CUMORA_UPLOADS_DIR overrides the default (same key/semantics as
- *  the Go server's config.UploadsDir()) so both stacks can be pointed at
- *  an out-of-repo data dir via systemd without relying on a shared cwd. */
+ *  #208: CUMORA_UPLOADS_DIR overrides the default — same key and same
+ *  default as the Go server's config.UploadsDir(), but a two-link chain
+ *  (Go additionally honors the undocumented legacy UPLOAD_DIR key).
+ *  Both stacks point at an out-of-repo data dir via systemd, which
+ *  injects CUMORA_UPLOADS_DIR on both units, so the chains agree. */
 export const UPLOAD_DIR = env.CUMORA_UPLOADS_DIR
   ? resolve(env.CUMORA_UPLOADS_DIR)
   : resolve(process.cwd(), 'server/uploads')
