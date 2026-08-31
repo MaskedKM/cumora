@@ -772,52 +772,98 @@ func (r *AgentRunner) runTurn(reason string) error {
 	stopBeat := r.beatRun(token, run.RunID)
 	defer stopBeat()
 
-	sess := r.ensureEngineSession()
+	// #262 失败重试环:分类 → retryable 白名单本地退避重试(attempt 上限
+	// CUMORA_TURN_MAX_RETRIES,默认 1);resume-unsafe(上下文溢出类)弃
+	// 会话与 resume id 换全新开;credential/bad-request 不重试,带分类标
+	// 上报。里程碑二(服务端扫描兜底)另票。
 	var res RunResult
-	if sess != nil {
-		// 轮中每 2s 捕获会话 id(TS:第一轮被硬杀后盘上仍留可 resume 的
-		// id——Send 返回后再持久化的窗口不够)。
-		captureStop := make(chan struct{})
-		go func() {
-			tick := time.NewTicker(2 * time.Second)
-			defer tick.Stop()
-			for {
-				select {
-				case <-captureStop:
-					return
-				case <-tick.C:
-					if sid := sess.SessionID(); sid != "" {
-						r.setSessionID(sid)
+	fc := turnFailure{Class: fcUnknown, Retryable: false, ResumeSafe: true}
+	attempts := 0
+	retryCap := maxTurnRetries()
+	for {
+		if attempts > 0 {
+			// 重试轮重铸 token:轮首铸的可能已过期(判死窗口可达 30min+),
+			// 过期 token 会让引擎内 shim 401 → 被误分类 credential。
+			if t, terr := r.ensureToken(); terr == nil {
+				token = t
+			}
+		}
+		sess := r.ensureEngineSession()
+		if sess != nil {
+			// 轮中每 2s 捕获会话 id(TS:第一轮被硬杀后盘上仍留可 resume 的
+			// id——Send 返回后再持久化的窗口不够)。
+			captureStop := make(chan struct{})
+			go func() {
+				tick := time.NewTicker(2 * time.Second)
+				defer tick.Stop()
+				for {
+					select {
+					case <-captureStop:
+						return
+					case <-tick.C:
+						if sid := sess.SessionID(); sid != "" {
+							r.setSessionID(sid)
+						}
 					}
 				}
+			}()
+			res = sess.Send(r.turnPrompt(sess, r.turnDelta(reason, inbox.Rows)))
+			close(captureStop)
+			if sid := sess.SessionID(); sid != "" {
+				r.setSessionID(sid)
 			}
-		}()
-		res = sess.Send(r.turnPrompt(sess, r.turnDelta(reason, inbox.Rows)))
-		close(captureStop)
-		if sid := sess.SessionID(); sid != "" {
-			r.setSessionID(sid)
+			if !sess.Alive() {
+				// 进程在轮中/轮后死亡 → 弃会话,下一唤醒复活(resume)。
+				r.mu.Lock()
+				r.engineSession = nil
+				r.mu.Unlock()
+			}
+		} else {
+			args := RunArgs{
+				Home:            r.home,
+				Prompt:          r.turnPrompt(nil, r.turnDelta(reason, inbox.Rows)),
+				Env:             r.engineEnv(token),
+				Model:           resolveEngineModel(r.agent.Model, os.Getenv("CUMORA_ENGINE_MODEL")),
+				FastModel:       resolveEngineFastModel(r.agent.FastModel, os.Getenv("CUMORA_ENGINE_MODEL")),
+				ResumeSessionID: r.currentSession(),
+				OnLog:           func(line string) { r.logEngineLine(line) },
+				OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
+				OnAssistantText: func(text string) { r.onEngineText(text) },
+			}
+			res = r.adapter.Run(r.ctx, args)
+			if res.SessionID != "" {
+				r.setSessionID(res.SessionID)
+			}
 		}
-		if !sess.Alive() {
-			// 进程在轮中/轮后死亡 → 弃会话,下一唤醒复活(resume)。
+		if res.Err == "" {
+			break
+		}
+		fc = classifyTurnFailure(res)
+		attempts++
+		if !fc.ResumeSafe {
+			// 会话不可续(典型:上下文溢出)——弃活会话与 resume id,重试
+			// 从全新会话开始,避免在同一根爆掉的 transcript 上反复撞墙。
+			r.logEngineLine(fmt.Sprintf("[turn] failure class=%s — resume unsafe, dropping engine session for a fresh one", fc.Class))
+			if sess != nil {
+				sess.Stop()
+			}
 			r.mu.Lock()
 			r.engineSession = nil
 			r.mu.Unlock()
+			r.setSessionID("")
 		}
-	} else {
-		args := RunArgs{
-			Home:            r.home,
-			Prompt:          r.turnPrompt(nil, r.turnDelta(reason, inbox.Rows)),
-			Env:             r.engineEnv(token),
-			Model:           resolveEngineModel(r.agent.Model, os.Getenv("CUMORA_ENGINE_MODEL")),
-			FastModel:       resolveEngineFastModel(r.agent.FastModel, os.Getenv("CUMORA_ENGINE_MODEL")),
-			ResumeSessionID: r.currentSession(),
-			OnLog:           func(line string) { r.logEngineLine(line) },
-			OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
-			OnAssistantText: func(text string) { r.onEngineText(text) },
+		if !fc.Retryable || attempts > retryCap {
+			break
 		}
-		res = r.adapter.Run(r.ctx, args)
-		if res.SessionID != "" {
-			r.setSessionID(res.SessionID)
+		backoff := turnRetryBackoff() * time.Duration(attempts)
+		r.logEngineLine(fmt.Sprintf("[turn] failure class=%s attempt %d/%d — local retry in %s (#262)", fc.Class, attempts, retryCap, backoff))
+		select {
+		case <-time.After(backoff):
+		case <-r.ctx.Done():
+			// daemon 停机:结果原样上抛,不空等。
+		}
+		if r.IsStopped() {
+			break
 		}
 	}
 
@@ -827,7 +873,12 @@ func (r *AgentRunner) runTurn(reason string) error {
 	if res.Err != "" {
 		status = "failed"
 		visibleErr = r.visibleEngineError(res.ExitCode, res.Err)
-		summary = truncate(visibleErr, 2000)
+		// 前缀先拼再截断,保证分类标不被截掉。
+		summary = fmt.Sprintf("[turn-fail class=%s attempts=%d] %s", fc.Class, attempts, visibleErr)
+		summary = truncate(summary, 2000)
+	} else if attempts > 0 {
+		// 成功但经历过重试:留痕,观测重试命中率(nit-7)。
+		summary = fmt.Sprintf("[turn-recovered attempts=%d] %s", attempts, summary)
 	}
 	if run.RunID != "" {
 		runtimeBest(r.ctx, r.cfg.ServerURL, "/runs/"+run.RunID+"/finish", token,

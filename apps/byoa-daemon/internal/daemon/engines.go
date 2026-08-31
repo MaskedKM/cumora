@@ -532,6 +532,18 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 
 	st := &sniffState{}
 	var stderrTail, stdoutTail []string
+	// #259:一次性路径同受活性看门狗保护(空闲/首声两层;工具层在持久
+	// 会话由事件语义判定,此处行级计活)。判死 → 杀进程,wait 路径带出
+	// 124 与原因(分类按 engine-timeout)。
+	var wdReasonMu sync.Mutex
+	wdReason := ""
+	wd := newActivityWatchdog(func(reason string) {
+		wdReasonMu.Lock()
+		wdReason = reason
+		wdReasonMu.Unlock()
+		_ = killProcess(cmd)
+	})
+	wd.Arm()
 	var wg sync.WaitGroup
 	readersDone := make(chan struct{})
 	wg.Add(2)
@@ -547,6 +559,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 					if cleaned == "" {
 						return
 					}
+					wd.Activity(false, false) // #259 出声即活
 					pushTail(&stdoutTail, cleaned)
 					sniffStdoutLine(cleaned, st, args.OnHopUsage, args.OnAssistantText)
 					if args.OnLog != nil {
@@ -560,6 +573,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 					if cleaned == "" {
 						return
 					}
+					wd.Activity(false, false)
 					pushTail(&stdoutTail, cleaned)
 					sniffStdoutLine(cleaned, st, args.OnHopUsage, args.OnAssistantText)
 					if args.OnLog != nil {
@@ -582,6 +596,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 					if cleaned == "" {
 						return
 					}
+					wd.Activity(false, false) // #259 stderr 出声也算活
 					pushTail(&stderrTail, cleaned)
 					if args.OnLog != nil {
 						args.OnLog(cleaned)
@@ -594,6 +609,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 					if cleaned == "" {
 						return
 					}
+					wd.Activity(false, false)
 					pushTail(&stderrTail, cleaned)
 					if args.OnLog != nil {
 						args.OnLog(cleaned)
@@ -640,6 +656,10 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 	// 的是写端,不影响)。不 join 则主流程读尾巴与读者的最后冲刷构成
 	// 数据竞争(race 实抓)。
 	<-readersDone
+	wd.Disarm()
+	wdReasonMu.Lock()
+	idleReason := wdReason
+	wdReasonMu.Unlock()
 	exitCode, signalName := 1, ""
 	if werr == nil {
 		exitCode = 0
@@ -650,6 +670,11 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 		}
 	}
 	out := RunResult{ExitCode: exitCode, SessionID: st.sessionID, Usage: st.usage, Model: st.model}
+	if idleReason != "" {
+		out.ExitCode = 124
+		out.Err = idleReason
+		return out
+	}
 	if exitCode != 0 {
 		out.Err = failurePreview(exitCode, signalName, stderrTail, stdoutTail)
 	}

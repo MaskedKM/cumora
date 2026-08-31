@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -367,6 +366,17 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	if ctx.Err() != nil {
 		_ = killProcess(cmd)
 	}
+	// #259:一次性路径同受活性看门狗保护(与 spawnEngine 同款;判死 →
+	// 杀进程,结果带 124 与原因,分类按 engine-timeout)。
+	var wdReasonMu sync.Mutex
+	wdReason := ""
+	wd := newActivityWatchdog(func(reason string) {
+		wdReasonMu.Lock()
+		wdReason = reason
+		wdReasonMu.Unlock()
+		_ = killProcess(cmd)
+	})
+	wd.Arm()
 	// 中止 watcher(与 spawnEngine 同款):排队中的 turn 在 runner 已停时
 	// 才 spawn 的孤儿防护 + 运行中取消的实际杀灭——没有它,取消后
 	// cmd.Wait 会等自然退出,被取消的轮烧完配额还按成功记账(评审实测)。
@@ -387,7 +397,18 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&stdoutBuf, stdout) // Wait 后管道关读端,拷贝即返回
+		// 逐段拷贝而非 io.Copy:每段即一次 #259 出声信号。
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := stdout.Read(buf)
+			if n > 0 {
+				wd.Activity(false, false)
+				stdoutBuf.Write(buf[:n])
+			}
+			if rerr != nil {
+				return
+			}
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -395,6 +416,7 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 		for {
 			line, rerr := r.ReadString('\n')
 			if c := cleanLine(line); c != "" {
+				wd.Activity(false, false) // #259 stderr 出声也算活
 				mu.Lock()
 				pushTail(&stderrTail, c)
 				mu.Unlock()
@@ -422,6 +444,10 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 	werr := <-waitErr
 	stopWatcher()
 	<-readersDone
+	wd.Disarm()
+	wdReasonMu.Lock()
+	idleReason := wdReason
+	wdReasonMu.Unlock()
 	exitCode, signalName := 1, ""
 	if werr == nil {
 		exitCode = 0
@@ -430,6 +456,10 @@ func spawnZcodeJson(ctx context.Context, launcher *zcodeLauncher, argv []string,
 		if exitCode < 0 {
 			exitCode, signalName = 128, signalNameOf(ee)
 		}
+	}
+	if idleReason != "" {
+		// 判死:信封大概率残缺,直接按超时形态返回。
+		return RunResult{ExitCode: 124, Err: idleReason}, ""
 	}
 	mu.Lock()
 	tail := append([]string{}, stderrTail...)
