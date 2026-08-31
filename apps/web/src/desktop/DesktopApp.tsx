@@ -1,30 +1,48 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { useApp } from '@/stores/app'
-import { useDevtools } from '@/stores/devtools'
-import { isElectron } from '@/lib/runtime'
-import { useResizableWidth } from '@/lib/useResizableWidth'
-import { TitleBar } from './TitleBar'
-import { Rail } from './Rail'
-import { ConversationsPane } from './ConversationsPane'
-import { ChatPane } from './ChatPane'
-import { InfoPane } from './InfoPane'
-import { ThreadDrawer } from './ThreadDrawer'
-import { DocumentPeekPane } from './DocumentPeekPane'
-import { BoardPeekPane } from './BoardPeekPane'
-import { CalendarPeekPane } from './CalendarPeekPane'
-import { WhispersView } from './WhispersView'
-import { ConveneView } from './ConveneView'
-import { AgentsView } from './AgentsView'
-import { BoardsView } from './BoardsView'
-import { CalendarView } from './CalendarView'
-import { DocumentsView } from './DocumentsView'
-import { WorkspacesView } from './WorkspacesView'
-import { ObservabilityView } from './ObservabilityView'
-import { MeView } from './MeView'
 import { EmailComposer } from '@/components/EmailComposer'
 import { useT } from '@/lib/i18n'
+import { isElectron } from '@/lib/runtime'
+import { useResizableWidth } from '@/lib/useResizableWidth'
+import { useApp } from '@/stores/app'
+import { useDevtools } from '@/stores/devtools'
+import { ChatPane } from './ChatPane'
+import { ConversationsPane } from './ConversationsPane'
+import { Rail } from './Rail'
+import { TitleBar } from './TitleBar'
 
-const ShippingView = lazy(() => import('./ShippingView').then((module) => ({ default: module.ShippingView })))
+// Right-slot panes (thread / info / artifact peeks) open only on user
+// interaction, so they lazy-load exactly like rail views; the fallback
+// keeps the slot sized (h-full) so the grid doesn't reflow when the chunk
+// lands. ConversationsPane + ChatPane stay eager — see below.
+const InfoPane = lazy(() => import('./InfoPane').then((m) => ({ default: m.InfoPane })))
+const ThreadDrawer = lazy(() => import('./ThreadDrawer').then((m) => ({ default: m.ThreadDrawer })))
+const DocumentPeekPane = lazy(() => import('./DocumentPeekPane').then((m) => ({ default: m.DocumentPeekPane })))
+const BoardPeekPane = lazy(() => import('./BoardPeekPane').then((m) => ({ default: m.BoardPeekPane })))
+const CalendarPeekPane = lazy(() => import('./CalendarPeekPane').then((m) => ({ default: m.CalendarPeekPane })))
+
+// Rail-switchable views load as their own chunks (#218). Conversations is
+// the landing view and stays eager — ChatPane + ConversationsPane ARE the
+// first paint, so deferring them would trade a real flash for nothing.
+// Every other view (BoardsView, ObservabilityView, MeView…) is fetched on
+// first rail switch and then cached; a one-time centered placeholder
+// (ViewFallback) covers the fetch.
+const WhispersView = lazy(() => import('./WhispersView').then((m) => ({ default: m.WhispersView })))
+const ConveneView = lazy(() => import('./ConveneView').then((m) => ({ default: m.ConveneView })))
+const AgentsView = lazy(() => import('./AgentsView').then((m) => ({ default: m.AgentsView })))
+const BoardsView = lazy(() => import('./BoardsView').then((m) => ({ default: m.BoardsView })))
+const CalendarView = lazy(() => import('./CalendarView').then((m) => ({ default: m.CalendarView })))
+const DocumentsView = lazy(() => import('./DocumentsView').then((m) => ({ default: m.DocumentsView })))
+const WorkspacesView = lazy(() => import('./WorkspacesView').then((m) => ({ default: m.WorkspacesView })))
+const ObservabilityView = lazy(() => import('./ObservabilityView').then((m) => ({ default: m.ObservabilityView })))
+const MeView = lazy(() => import('./MeView').then((m) => ({ default: m.MeView })))
+const ShippingView = lazy(() => import('./ShippingView').then((m) => ({ default: m.ShippingView })))
+
+/** Centered placeholder while a rail-view chunk loads — same shape the
+ *  shipping view already used, now shared by every lazy view. */
+function ViewFallback() {
+  const t = useT()
+  return <div className="h-full grid place-items-center text-sm text-ink-400">{t('common.loading')}</div>
+}
 
 function ConversationsLayout() {
   const infoOpen = useApp((s) => s.infoAgentId !== null)
@@ -48,22 +66,21 @@ function ConversationsLayout() {
       <ConversationsPane onResizeStart={onResizeStart} />
       <ChatPane />
       {threadOpen
-        ? <ThreadDrawer />
+        ? <Suspense fallback={<ViewFallback />}><ThreadDrawer /></Suspense>
         : documentOpen
-          ? <DocumentPeekPane />
+          ? <Suspense fallback={<ViewFallback />}><DocumentPeekPane /></Suspense>
           : boardOpen
-            ? <BoardPeekPane />
+            ? <Suspense fallback={<ViewFallback />}><BoardPeekPane /></Suspense>
             : calendarOpen
-              ? <CalendarPeekPane />
+              ? <Suspense fallback={<ViewFallback />}><CalendarPeekPane /></Suspense>
               : infoOpen
-                ? <InfoPane />
+                ? <Suspense fallback={<ViewFallback />}><InfoPane /></Suspense>
                 : null}
     </div>
   )
 }
 
 export function DesktopApp() {
-  const t = useT()
   const view = useApp((s) => s.view)
   const setView = useApp((s) => s.setView)
   const devtoolsEnabled = useDevtools((s) => s.enabled)
@@ -102,16 +119,16 @@ export function DesktopApp() {
       <div className="grid h-full min-h-0 overflow-hidden" style={{ gridTemplateColumns: '72px minmax(0, 1fr)' }}>
         <Rail />
         {view === 'conversations' && <ConversationsLayout />}
-        {view === 'whispers' && <WhispersView />}
-        {view === 'convene' && <ConveneView />}
-        {view === 'agents' && <AgentsView />}
-        {view === 'boards' && <BoardsView />}
-        {view === 'calendar' && <CalendarView />}
-        {view === 'documents' && <DocumentsView />}
-        {view === 'workspaces' && <WorkspacesView />}
-        {view === 'shipping' && <Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('desktop.openingShip')}</div>}><ShippingView /></Suspense>}
-        {view === 'observability' && devtoolsEnabled && <ObservabilityView />}
-        {view === 'me' && <MeView />}
+        {view === 'whispers' && <Suspense fallback={<ViewFallback />}><WhispersView /></Suspense>}
+        {view === 'convene' && <Suspense fallback={<ViewFallback />}><ConveneView /></Suspense>}
+        {view === 'agents' && <Suspense fallback={<ViewFallback />}><AgentsView /></Suspense>}
+        {view === 'boards' && <Suspense fallback={<ViewFallback />}><BoardsView /></Suspense>}
+        {view === 'calendar' && <Suspense fallback={<ViewFallback />}><CalendarView /></Suspense>}
+        {view === 'documents' && <Suspense fallback={<ViewFallback />}><DocumentsView /></Suspense>}
+        {view === 'workspaces' && <Suspense fallback={<ViewFallback />}><WorkspacesView /></Suspense>}
+        {view === 'shipping' && <Suspense fallback={<ViewFallback />}><ShippingView /></Suspense>}
+        {view === 'observability' && devtoolsEnabled && <Suspense fallback={<ViewFallback />}><ObservabilityView /></Suspense>}
+        {view === 'me' && <Suspense fallback={<ViewFallback />}><MeView /></Suspense>}
       </div>
       {/* Email composer drawer — globally rendered so opening it works
           from any view (sidebar Compose CTA, EmailCard reply button). */}
