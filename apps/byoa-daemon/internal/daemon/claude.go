@@ -72,6 +72,8 @@ type claudeSession struct {
 	stderrTail, stdoutTail []string
 	steerQueue             []string
 	turnTimer              *time.Timer
+	// wd:#259 活性看门狗——空闲/工具在飞/首声三层,替代墙钟判死默认。
+	wd *activityWatchdog
 	// pumps:stdout/stderr 读者;waitExit 须等它们排干再 Wait(StdoutPipe
 	// 铁律——Wait 关管道 fd 会丢内核缓冲里的尾行,如最后一个 result 事件)。
 	pumps sync.WaitGroup
@@ -92,6 +94,12 @@ func newClaudeSession(bin string, argv []string, args SessionArgs, carriesStandi
 		pending:         nil,
 	}
 	s.cmd = cmd
+	// #259:判死动作与墙钟超时同形——结算在飞 turn(124)+杀进程,daemon
+	// 下一唤醒 --resume。
+	s.wd = newActivityWatchdog(func(reason string) {
+		s.settle(RunResult{ExitCode: 124, Err: reason, SessionID: s.SessionID()})
+		s.Stop()
+	})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		s.die(1, err.Error())
@@ -163,6 +171,8 @@ func (s *claudeSession) Send(prompt string) RunResult {
 	ch := make(chan RunResult, 1)
 	s.pending = ch
 	s.pendStderr, s.pendStdout = nil, nil
+	// #259:活性看门狗开表(首声层先行;每条 stdout/stderr 事件重置)。
+	s.wd.Arm()
 	// 选配失控保险(默认关):超窗 abort + 重spawn(下一唤醒 --resume)。
 	if to := turnTimeoutMS(); to > 0 {
 		s.turnTimer = time.AfterFunc(time.Duration(to)*time.Millisecond, func() {
@@ -259,6 +269,7 @@ func (s *claudeSession) pumpStderr(stderr io.Reader) {
 				carry = text[idx+1:]
 				for _, line := range strings.Split(text[:idx+1], "\n") {
 					if cleaned := cleanLine(line); cleaned != "" {
+						s.wd.Activity(false, false) // #259 stderr 出声也算活(重试噪音是活着的证据)
 						s.mu.Lock()
 						pushTail(&s.stderrTail, cleaned)
 						pushTail(&s.pendStderr, cleaned)
@@ -276,6 +287,7 @@ func (s *claudeSession) pumpStderr(stderr io.Reader) {
 		if rerr != nil {
 			if carry != "" {
 				if cleaned := cleanLine(carry); cleaned != "" {
+					s.wd.Activity(false, false)
 					s.mu.Lock()
 					pushTail(&s.stderrTail, cleaned)
 					pushTail(&s.pendStderr, cleaned)
@@ -298,6 +310,8 @@ func (s *claudeSession) onStdoutLine(line string) {
 	if cleaned == "" {
 		return
 	}
+	// #259:出声即活(任意行,含非 JSON 尾巴)。
+	s.wd.Activity(false, false)
 	s.mu.Lock()
 	pushTail(&s.stdoutTail, cleaned)
 	pushTail(&s.pendStdout, cleaned)
@@ -341,6 +355,15 @@ func (s *claudeSession) onStdoutLine(line string) {
 	onHop := s.onHop
 	onText := s.onText
 	s.mu.Unlock()
+	// #259 工具层:assistant 带 tool_use = 工具在飞(换 toolBudget 窗口);
+	// user 事件(tool_result 回显)= 工具落地,回常规窗口。
+	if ev.Type == "assistant" && ev.Message != nil {
+		if toolUses, _ := countAssistantContent(ev.Message.Content); toolUses > 0 {
+			s.wd.Activity(true, false)
+		}
+	} else if ev.Type == "user" {
+		s.wd.Activity(false, true)
+	}
 	// 逐跳台账:每条 {assistant, message:{model, usage}} 是本轮一次出站
 	// 模型调用;终止 result 事件带全轮总和(只作轮总账,不重复记账)。
 	if ev.Type == "assistant" && ev.Message != nil && ev.Message.Usage != nil && evModel != "" && onHop != nil {
@@ -413,6 +436,7 @@ func (s *claudeSession) onStdoutLine(line string) {
 
 // settle:结算在飞 turn(幂等;无在飞则丢弃)。
 func (s *claudeSession) settle(r RunResult) {
+	s.wd.Disarm()
 	s.mu.Lock()
 	timer := s.turnTimer
 	s.turnTimer = nil
@@ -430,6 +454,7 @@ func (s *claudeSession) settle(r RunResult) {
 // die:进程死亡——标记死亡并 fail 在飞 turn。空闲死亡也留痕(整队会话
 // 消失不能只有下一唤醒的 respawn 一行证据)。
 func (s *claudeSession) die(code int, why string) {
+	s.wd.Disarm()
 	s.mu.Lock()
 	alreadyDown := s.exited
 	s.exited = true

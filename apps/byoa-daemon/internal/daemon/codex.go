@@ -87,6 +87,8 @@ type codexSession struct {
 	onText func(string) // #210 agentMessage 增量(delta 上报源)
 
 	mu sync.Mutex
+	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
+	wd *activityWatchdog
 	// 状态(handshake 状态机)
 	threadID         string
 	threadWasResume  bool
@@ -154,6 +156,19 @@ func newCodexSession(bin string, spawnArgs []string, args SessionArgs) *codexSes
 	}
 	s.threadReq = &threadReq
 
+	// #259:判死动作——结算在飞 turn(124)+杀进程,下一唤醒 --resume。
+	s.wd = newActivityWatchdog(func(reason string) {
+		s.mu.Lock()
+		ch := s.pending
+		s.pending = nil
+		threadID := s.threadID
+		s.mu.Unlock()
+		if ch != nil {
+			ch <- RunResult{ExitCode: 124, Err: reason, SessionID: threadID}
+		}
+		s.Stop()
+	})
+
 	cmd := exec.Command(bin, spawnArgs...)
 	cmd.Dir = args.Home
 	cmd.Env = args.Env
@@ -185,8 +200,11 @@ func newCodexSession(bin string, spawnArgs []string, args SessionArgs) *codexSes
 		r := bufio.NewReader(stderr)
 		for {
 			line, rerr := r.ReadString('\n')
-			if c := cleanLine(line); c != "" && s.onLog != nil {
-				s.onLog(c)
+			if c := cleanLine(line); c != "" {
+				s.wd.Activity(false, false) // #259 stderr 出声也算活
+				if s.onLog != nil {
+					s.onLog(c)
+				}
 			}
 			if rerr != nil {
 				return
@@ -265,6 +283,7 @@ func (s *codexSession) Send(prompt string) RunResult {
 	}
 	ch := make(chan RunResult, 1)
 	s.pending = ch
+	s.wd.Arm() // #259 活性看门狗开表(首声层先行)
 	s.turnStart = s.cum
 	if s.ready && s.threadID != "" {
 		s.startTurnLocked(prompt)
@@ -373,6 +392,9 @@ func (s *codexSession) pumpStdout(stdout io.Reader) {
 
 func (s *codexSession) onLine(line string) {
 	t := strings.TrimSpace(line)
+	if c := cleanLine(line); c != "" {
+		s.wd.Activity(false, false) // #259 出声即活(任意行)
+	}
 	if !strings.HasPrefix(t, "{") {
 		if c := cleanLine(line); c != "" && s.onLog != nil {
 			s.onLog(c)
@@ -519,6 +541,16 @@ func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
 	if msg.Method == "item/started" || msg.Method == "item/completed" {
 		if item, ok := msg.Params["item"].(map[string]any); ok {
 			ty, _ := item["type"].(string)
+			// #259 工具层:命令/工具类 item 启动 = 工具在飞(换 toolBudget
+			// 窗口);item 完成 = 工具落地,回常规窗口。
+			if msg.Method == "item/started" {
+				switch ty {
+				case "commandExecution", "mcpToolCall", "webSearch", "fileChange", "applyPatch":
+					s.wd.Activity(true, false)
+				}
+			} else {
+				s.wd.Activity(false, true)
+			}
 			switch {
 			case ty == "contextCompaction":
 				stage := "started"
@@ -661,6 +693,7 @@ func (s *codexSession) turnUsageLocked() EngineUsage {
 }
 
 func (s *codexSession) settleLocked(errMsg string) {
+	s.wd.Disarm() // #259
 	ch := s.pending
 	s.pending = nil
 	if ch == nil {
@@ -699,6 +732,7 @@ func (s *codexSession) failPendingLocked(errMsg string) (idle bool) {
 }
 
 func (s *codexSession) die(code int, why string) {
+	s.wd.Disarm() // #259
 	s.mu.Lock()
 	alreadyDown := s.exited
 	s.exited = true

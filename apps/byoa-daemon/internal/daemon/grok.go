@@ -132,7 +132,9 @@ type grokSession struct {
 	onLog func(string)
 	onHop func(HopReport)
 
-	mu               sync.Mutex
+	mu sync.Mutex
+	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
+	wd               *activityWatchdog
 	sid              string
 	model            string // pin(可空)
 	curModel         string // ACP 流实际播报的模型(_x.ai/models/update)
@@ -167,6 +169,19 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 		sessionNewParams: map[string]any{"cwd": args.Home, "mcpServers": []any{}, "_meta": meta},
 		sessionWasLoad:   args.ResumeSessionID != "",
 	}
+	// #259:判死动作——结算在飞 turn(124)+杀进程,下一唤醒 --resume。
+	s.wd = newActivityWatchdog(func(reason string) {
+		s.mu.Lock()
+		ch := s.pending
+		s.pending = nil
+		s.pendingID = nil
+		sid := s.sid
+		s.mu.Unlock()
+		if ch != nil {
+			ch <- RunResult{ExitCode: 124, Err: reason, SessionID: sid}
+		}
+		s.Stop()
+	})
 	cmd := exec.Command(bin, spawnArgs...)
 	cmd.Dir = args.Home
 	cmd.Env = withEnvDefaultKeep(args.Env, "GROK_DISABLE_AUTOUPDATER", "1")
@@ -198,8 +213,11 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 		r := bufio.NewReader(stderr)
 		for {
 			line, rerr := r.ReadString('\n')
-			if c := cleanLine(line); c != "" && s.onLog != nil {
-				s.onLog(c)
+			if c := cleanLine(line); c != "" {
+				s.wd.Activity(false, false) // #259 stderr 出声也算活
+				if s.onLog != nil {
+					s.onLog(c)
+				}
 			}
 			if rerr != nil {
 				return
@@ -268,6 +286,7 @@ func (s *grokSession) Send(prompt string) RunResult {
 	}
 	ch := make(chan RunResult, 1)
 	s.pending = ch
+	s.wd.Arm() // #259 活性看门狗开表(首声层先行)
 	s.pendingStart = nowMS()
 	if s.ready && s.sid != "" {
 		s.startPromptLocked(prompt)
@@ -362,6 +381,9 @@ func (s *grokSession) pumpStdout(stdout io.Reader) {
 
 func (s *grokSession) onLine(line string) {
 	t := strings.TrimSpace(line)
+	if c := cleanLine(line); c != "" {
+		s.wd.Activity(false, false) // #259 出声即活(任意行)
+	}
 	if !strings.HasPrefix(t, "{") {
 		if c := cleanLine(line); c != "" && s.onLog != nil {
 			s.onLog(c)
@@ -461,6 +483,7 @@ func (s *grokSession) handleLocked(msg *acpMsg) []func() {
 		}
 		switch kind {
 		case "tool_call":
+			s.wd.Activity(true, false) // #259 工具在飞(换 toolBudget 窗口)
 			if title, ok := update["title"].(string); ok {
 				logf("[grok] tool %s", title)
 			}
@@ -505,6 +528,7 @@ func (s *grokSession) handleLocked(msg *acpMsg) []func() {
 		s.pendingID = nil
 		ch := s.pending
 		s.pending = nil
+		s.wd.Disarm() // #259 轮结算
 		effects = append(effects, func() {
 			ch <- RunResult{ExitCode: 0, SessionID: sid, Usage: usage, Model: resModel}
 		})
@@ -534,6 +558,7 @@ func acpErrMsg(msg, fallback string) string {
 }
 
 func (s *grokSession) failPendingLocked(errMsg string) {
+	s.wd.Disarm() // #259
 	if s.pending != nil {
 		s.pendingID = nil
 		ch := s.pending
@@ -547,6 +572,7 @@ func (s *grokSession) failPendingLocked(errMsg string) {
 }
 
 func (s *grokSession) die(code int, why string) {
+	s.wd.Disarm() // #259
 	s.mu.Lock()
 	alreadyDown := s.exited
 	s.exited = true
