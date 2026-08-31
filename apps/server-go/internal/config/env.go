@@ -141,6 +141,19 @@ func UploadsDir() string {
 	return filepath.Join("server", "uploads")
 }
 
+// CORSOrigins:CUMORA_CORS_ORIGINS 逗号分隔、trim、滤空(对齐 TS env.ts
+// 的解析);空 = 不额外放行任何源(桌面 app://cumora 由 httpx.CORS 内建)。
+func CORSOrigins() []string {
+	raw := os.Getenv("CUMORA_CORS_ORIGINS")
+	out := []string{}
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 /* ───────────── LLM 提供方 ───────────── */
 
 // OpenAIAPIKey:OPENAI_API_KEY 原始值。
