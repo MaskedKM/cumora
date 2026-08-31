@@ -11,12 +11,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -78,7 +78,7 @@ const (
 
 var httpClientSkillHub = &http.Client{Timeout: skillHubTimeout}
 
-func cliSkillHubBase() string { return strings.TrimRight(os.Getenv("SKILLHUB_URL"), "/") }
+func cliSkillHubBase() string { return strings.TrimRight(config.SkillHubURL(), "/") }
 
 // cliSearchSkillHub:GET <hub>/search?q=;非数组响应报错。
 func cliSearchSkillHub(query, hubURL string) ([]cliSkillHubHit, error) {
@@ -381,7 +381,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		if query == "" {
 			return agent.Err("usage: skills search <query>")
 		}
-		hub := os.Getenv("SKILLHUB_URL")
+		hub := config.SkillHubURL()
 		if hub == "" {
 			return agent.Err("SkillHub URL not configured — set SKILLHUB_URL on the server")
 		}
@@ -429,7 +429,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		if idOrURL == "" {
 			return agent.Err("usage: skills install <skill_id_or_install_url>")
 		}
-		hub := os.Getenv("SKILLHUB_URL")
+		hub := config.SkillHubURL()
 		manifest, err := cliFetchSkillManifest(idOrURL, hub)
 		if err == nil {
 			var name string

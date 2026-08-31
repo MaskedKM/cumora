@@ -1202,7 +1202,7 @@ func (s *Server) ToggleReaction(w http.ResponseWriter, r *http.Request, id strin
 		_ = json.Unmarshal([]byte(usersJSON), &users)
 		agg = append(agg, map[string]any{"emoji": em, "count": cnt, "users": users})
 	}
-	_ = events.PublishRaw(r.Context(), "cumora:reactions", mustJSON(map[string]any{
+	_ = events.PublishRaw(r.Context(), events.ChReactions, mustJSON(map[string]any{
 		"type":           "message.reactions",
 		"conversationId": convoID,
 		"companyId":      tenant,

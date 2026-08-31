@@ -18,10 +18,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/admin"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -93,7 +93,7 @@ func setSettingJSON(w http.ResponseWriter, r *http.Request, db *sql.DB, key, val
 // key=sha256(CUMORA_SECRETS_KEY),存储 `iv.tag.ct` 各 base64)----
 
 func secretsKeyRaw() string {
-	return os.Getenv("CUMORA_SECRETS_KEY")
+	return config.SecretsKey()
 }
 
 func secretsKeySum() [32]byte {

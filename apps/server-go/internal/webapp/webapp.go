@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -29,7 +30,7 @@ func Mount(mux *http.ServeMux) {
 	distDir := filepath.Join(cwd, "dist")
 	indexPath := filepath.Join(distDir, "index.html")
 	_, indexErr := os.Stat(indexPath)
-	hasDist := os.Getenv("NODE_ENV") == "production" && indexErr == nil
+	hasDist := config.IsProduction() && indexErr == nil
 
 	mux.HandleFunc("GET /uploads/", serveUpload(uploadDir))
 
@@ -61,7 +62,7 @@ func Mount(mux *http.ServeMux) {
 // instanceID:对齐 TS env.ts 的默认值形状 app-<rand5>(未设 INSTANCE_ID
 // 时逐进程随机;仅信息 JSON 展示,无消费方依赖具体值)。
 func instanceID() string {
-	if id := os.Getenv("INSTANCE_ID"); id != "" {
+	if id := config.InstanceIDEnv(); id != "" {
 		return id
 	}
 	b := make([]byte, 5)

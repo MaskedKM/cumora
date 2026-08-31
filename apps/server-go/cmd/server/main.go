@@ -12,16 +12,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
-
 	"github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/admin"
@@ -43,6 +39,7 @@ import (
 	pollsengine "github.com/MaskedKM/cumora/apps/server-go/internal/polls"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/push"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/runtime"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/webapp"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/wsx"
 	"github.com/redis/go-redis/v9"
@@ -56,6 +53,8 @@ func main() {
 
 	// 生产安全默认门(#212):危险配置拒启不带病运行;非生产侧的
 	// 回退提示也在内(开发回退密钥 / 生产缺 CUMORA_SECRETS_KEY)。
+	// #217 豁免:os.Getenv 在此仅作为 reader 注入 config 的守卫(键名与
+	// 判定语义都在 config 包内),便于 prodguard_test 用表驱动替身。
 	if violations := config.ProdEnvViolations(os.Getenv); len(violations) > 0 {
 		for _, v := range violations {
 			slog.Error("unsafe production config — refusing to start", "violation", v)
@@ -145,12 +144,10 @@ func main() {
 	costing.StartLlmRollupRefresher(ctxBoot, runtimeSvc.DB)
 
 	// 投票过期清扫器(#121):POLL_SWEEP_INTERVAL_MS(默认 60s;0=禁用,
-	// 须透传——envInt 的 0→fallback 会吞掉 kill-switch,#62 教训)。
+	// 须透传——0→fallback 会吞掉 kill-switch,#62 教训,故用 EnvIntRaw)。
 	pollSweepInterval := int64(60_000)
-	if raw := strings.TrimSpace(os.Getenv("POLL_SWEEP_INTERVAL_MS")); raw != "" {
-		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			pollSweepInterval = v
-		}
+	if v, ok := config.EnvIntRaw("POLL_SWEEP_INTERVAL_MS"); ok {
+		pollSweepInterval = v
 	}
 	if pollSweepInterval > 0 {
 		go func() {
@@ -173,8 +170,8 @@ func main() {
 	}
 
 	// 邮件任务组(#58):出站重试 + 附件 GC(受管 goroutine,ctx 随停机)
-	email.StartRetryWorker(ctxBoot, pool, envInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
-	email.StartGcWorker(ctxBoot, pool, envInt("EMAIL_GC_INTERVAL_MS", 24*60*60_000))
+	email.StartRetryWorker(ctxBoot, pool, config.EnvInt("EMAIL_RETRY_INTERVAL_MS", 60_000))
+	email.StartGcWorker(ctxBoot, pool, config.EnvInt("EMAIL_GC_INTERVAL_MS", 24*60*60_000))
 
 	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
 	authMiddleware := httpx.Authn(pool)
@@ -255,13 +252,4 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		ReadTimeout:       10 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
 }

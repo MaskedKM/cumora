@@ -25,7 +25,10 @@ export const env = {
   REDIS_URL: required('REDIS_URL', 'redis://localhost:6379'),
   INSTANCE_ID: process.env.INSTANCE_ID ?? '',
   YJS_SIDECAR_TOKEN: process.env.YJS_SIDECAR_TOKEN ?? '',
-  YJS_SIDECAR_PORT: Number(process.env.YJS_SIDECAR_PORT ?? 5183),
+  // #217:默认 5182 与 Go 客户端缺省(apps/server-go internal/config
+  // YJS_SIDECAR_URL=http://127.0.0.1:5182)对齐——此前 5183 靠 systemd
+  // 注入才对齐,裸 `npm run sidecar:start` 协同静默不可用。
+  YJS_SIDECAR_PORT: Number(process.env.YJS_SIDECAR_PORT ?? 5182),
   // #145 合帧窗口:同房间 update 攒批后合并落库+跨实例 publish。
   // 窗口毫秒数与触发上限(原始 update 计数),测试经 env 缩短。
   YJS_FLUSH_WINDOW_MS: positiveInt('YJS_FLUSH_WINDOW_MS', 150),

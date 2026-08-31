@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
-
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
@@ -33,7 +33,7 @@ var scannerPrecedentScans = map[string]string{}
 // envIntRaw 语义:SCANNER_INTERVAL_MS=0 原样生效(TS setInterval(fn,0)
 // 热循环怪癖按平价复刻,非数回落 90s 默认)。
 func scannerIntervalMS() int64 {
-	if n, ok := envIntRaw("SCANNER_INTERVAL_MS"); ok {
+	if n, ok := config.EnvIntRaw("SCANNER_INTERVAL_MS"); ok {
 		return n
 	}
 	return 90_000
@@ -332,7 +332,7 @@ func ResetBackgroundScannerForTests() {
 // TS 门控是字面 !== 'false'(仅精确串关闭)。#215:ctx 驱动(ctxBG 取消
 // 即停——原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
 func (s *Service) StartScanner() {
-	if getenv("ENABLE_SCANNER") == "false" {
+	if config.Getenv("ENABLE_SCANNER") == "false" {
 		return
 	}
 	interval := scannerIntervalMS()

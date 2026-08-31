@@ -161,7 +161,7 @@ func boardEvent(ctx context.Context, companyID, kind, boardID string, extra map[
 		payload[k] = v
 	}
 	b, _ := json.Marshal(payload)
-	_ = events.PublishRaw(ctx, "cumora:boards", b)
+	_ = events.PublishRaw(ctx, events.ChBoards, b)
 }
 
 /* handlers */

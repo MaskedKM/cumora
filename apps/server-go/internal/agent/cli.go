@@ -8,11 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -303,15 +303,15 @@ func cliStripLoneSurrogates(s string) string {
 //
 // 都没有 → 报错:静默缺省会重新打开本函数要关的冒充漏洞。
 func cliResolveAs(p cliParsed) (string, error) {
-	if os.Getenv("CUMORA_RUNTIME_CLIENT") == "http" || os.Getenv("CUMORA_CLI_IDENTITY_SOURCE") == "agent-bash" {
-		if pinned := os.Getenv("CUMORA_AGENT_ID"); pinned != "" {
+	if config.RuntimeClient() == "http" || config.CLIIdentitySource() == "agent-bash" {
+		if pinned := config.AgentIDEnv(); pinned != "" {
 			return pinned, nil
 		}
 	}
 	if explicit, ok := p.flagStr("as"); ok && explicit != "" {
 		return explicit, nil
 	}
-	if fromEnv := os.Getenv("CUMORA_DEFAULT_AS"); fromEnv != "" {
+	if fromEnv := config.DefaultAs(); fromEnv != "" {
 		return fromEnv, nil
 	}
 	return "", fmt.Errorf("--as <participant_id> is required (or set CUMORA_DEFAULT_AS in your env for dev)")

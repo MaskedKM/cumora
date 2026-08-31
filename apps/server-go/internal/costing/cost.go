@@ -10,9 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // TokenUsage:一次模型调用的缓存感知分解(input 不含缓存读;cacheRead 是
@@ -63,7 +64,7 @@ var (
 )
 
 func loadEnvOverrides() {
-	raw := strings.TrimSpace(os.Getenv("CUMORA_MODEL_PRICES_JSON"))
+	raw := strings.TrimSpace(config.ModelPricesJSON())
 	if raw == "" {
 		return
 	}

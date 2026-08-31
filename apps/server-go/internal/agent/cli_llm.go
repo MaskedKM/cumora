@@ -13,12 +13,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
@@ -29,12 +29,12 @@ import (
 // legacy(sub2api 卡死不得拖垮 agent turn)。
 func (s *Service) cliLlmEndpoint(ctx context.Context, tenant string) (baseURL, apiKey string) {
 	// TS legacy 客户端不显式传 baseURL —— OpenAI SDK 缺省读 OPENAI_BASE_URL。
-	legacyBase := os.Getenv("OPENAI_BASE_URL")
+	legacyBase := config.OpenAIBaseURL()
 	if legacyBase == "" {
 		legacyBase = "https://api.openai.com/v1"
 	}
-	baseURL, apiKey = legacyBase, os.Getenv("OPENAI_API_KEY")
-	if tenant == "" || os.Getenv("SUB2API_INTERNAL_URL") == "" || os.Getenv("SUB2API_ADMIN_KEY") == "" {
+	baseURL, apiKey = legacyBase, config.OpenAIAPIKey()
+	if tenant == "" || config.Sub2APIInternalURL() == "" || config.Sub2APIAdminKey() == "" {
 		return baseURL, apiKey
 	}
 	var key sql.NullString
@@ -46,8 +46,8 @@ func (s *Service) cliLlmEndpoint(ctx context.Context, tenant string) (baseURL, a
 	if err != nil || !key.Valid || key.String == "" {
 		return baseURL, apiKey // 租户未配 key → legacy
 	}
-	internal := strings.TrimRight(os.Getenv("SUB2API_INTERNAL_URL"), "/")
-	public := strings.TrimRight(os.Getenv("SUB2API_PUBLIC_URL"), "/")
+	internal := strings.TrimRight(config.Sub2APIInternalURL(), "/")
+	public := strings.TrimRight(config.Sub2APIPublicURL(), "/")
 	base := internal
 	if base == "" {
 		base = public
@@ -230,8 +230,8 @@ func (s *Service) ResponsesCreate(ctx context.Context, tenant string, args CliRe
 	baseURL, apiKey := s.cliLlmEndpoint(ctx, tenant)
 	var reqURL, method string
 	var body map[string]any
-	if isNovitaModel(args.Model) && os.Getenv("NOVITA_API_KEY") != "" {
-		base := strings.TrimRight(os.Getenv("NOVITA_BASE_URL"), "/")
+	if isNovitaModel(args.Model) && config.NovitaAPIKey() != "" {
+		base := strings.TrimRight(config.NovitaBaseURL(), "/")
 		if base == "" {
 			base = "https://api.novita.ai/openai"
 		}
@@ -391,9 +391,4 @@ func ParseNovitaChatCompletion(raw []byte) (CliResponsesResult, error) {
 }
 
 // imageModelEnv:OPENAI_IMAGE_MODEL(TS 缺省 gpt-image-2)。
-func imageModelEnv() string {
-	if m := os.Getenv("OPENAI_IMAGE_MODEL"); m != "" {
-		return m
-	}
-	return "gpt-image-2"
-}
+func imageModelEnv() string { return config.OpenAIImageModel() }

@@ -7,10 +7,10 @@ package contacts
 import (
 	"context"
 	"database/sql"
-	"os"
 	"strings"
 	"unicode/utf16"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -24,9 +24,7 @@ type Contact struct {
 }
 
 // rootDomain 对齐 env.ts:EMAIL_DOMAIN 小写化、去首尾点(不 trim 空白);空 = 未配置。
-func rootDomain() string {
-	return strings.Trim(strings.ToLower(os.Getenv("EMAIL_DOMAIN")), ".")
-}
+func rootDomain() string { return config.EmailDomain() }
 
 // sanitize:TS 的 regex replace 按 UTF-16 码元逐个替换 —— 非 ASCII 的
 // 一个 rune(如 emoji,占 2 个码元)会产出 2 个 '-',按字节则产出 4 个。

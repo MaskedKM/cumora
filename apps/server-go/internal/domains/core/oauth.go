@@ -25,12 +25,12 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
-
-	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
 )
 
 type oauthDeps struct {
@@ -55,7 +55,7 @@ type oauthProviderCfg struct {
 func oauthProviderConfig(p string) oauthProviderCfg {
 	if p == "google" {
 		authz, token, user := "https://accounts.google.com", "https://oauth2.googleapis.com", "https://openidconnect.googleapis.com"
-		if base := os.Getenv("CUMORA_OAUTH_GOOGLE_BASE"); base != "" {
+		if base := config.OAuthGoogleBase(); base != "" {
 			authz, token, user = base, base, base
 		}
 		return oauthProviderCfg{
@@ -63,12 +63,12 @@ func oauthProviderConfig(p string) oauthProviderCfg {
 			tokenURL:     token + "/token",
 			userInfoURL:  user + "/v1/userinfo",
 			scope:        "openid email profile",
-			clientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-			clientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+			clientID:     config.GoogleClientID(),
+			clientSecret: config.GoogleClientSecret(),
 		}
 	}
 	gh, api := "https://github.com/login/oauth", "https://api.github.com"
-	if base := os.Getenv("CUMORA_OAUTH_GITHUB_BASE"); base != "" {
+	if base := config.OAuthGitHubBase(); base != "" {
 		gh, api = base, base
 	}
 	return oauthProviderCfg{
@@ -77,8 +77,8 @@ func oauthProviderConfig(p string) oauthProviderCfg {
 		userInfoURL:  api + "/user",
 		emailsURL:    api + "/user/emails",
 		scope:        "read:user user:email",
-		clientID:     os.Getenv("GITHUB_CLIENT_ID"),
-		clientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		clientID:     config.GitHubClientID(),
+		clientSecret: config.GitHubClientSecret(),
 	}
 }
 
@@ -88,7 +88,7 @@ func oauthProviderEnabled(p string) bool {
 }
 
 func oauthPublicOrigin() string {
-	origin := os.Getenv("CUMORA_PUBLIC_ORIGIN")
+	origin := config.PublicOrigin()
 	if origin == "" {
 		origin = "http://localhost:5181"
 	}
@@ -96,7 +96,7 @@ func oauthPublicOrigin() string {
 }
 
 func oauthAuthDoneURL() string {
-	if u := os.Getenv("CUMORA_AUTH_DONE_URL"); u != "" {
+	if u := config.CumoraAuthDoneURL(); u != "" {
 		return u
 	}
 	return "http://localhost:5173/"
@@ -112,7 +112,7 @@ func oauthReturnURLAllowed(raw string) bool {
 	if raw == "" {
 		return false
 	}
-	for _, prefix := range strings.Split(os.Getenv("CUMORA_AUTH_RETURN_ALLOWLIST"), ",") {
+	for _, prefix := range strings.Split(config.AuthReturnAllowlist(), ",") {
 		if prefix = strings.TrimSpace(prefix); prefix != "" && strings.HasPrefix(raw, prefix) {
 			return true
 		}
@@ -382,8 +382,8 @@ type oauthCompletion struct {
 
 func oauthIsAllowlistedAdmin(email string) bool {
 	mine := strings.ToLower(strings.TrimSpace(email))
-	for _, e := range strings.Split(os.Getenv("CUMORA_ADMIN_EMAILS"), ",") {
-		if strings.ToLower(strings.TrimSpace(e)) == mine && mine != "" {
+	for _, e := range config.AdminEmails() {
+		if e == mine && mine != "" {
 			return true
 		}
 	}

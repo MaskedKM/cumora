@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // Payload 对齐 PushPayload(形似 APNs aps,便于 Android 映射)。
@@ -42,21 +44,13 @@ var (
 
 func apnsOn() bool {
 	apnsCredsOnce.Do(func() {
-		apnsConfigured = envNonEmpty("APNS_KEY_PATH", "APNS_KEY_ID", "APNS_TEAM_ID", "APNS_TOPIC")
+		apnsConfigured = config.APNSKeyPath() != "" && config.APNSKeyID() != "" &&
+			config.APNSTeamID() != "" && config.APNSTopic() != ""
 		if !apnsConfigured {
 			slog.Warn("APNs credentials not configured (APNS_KEY_PATH/APNS_KEY_ID/APNS_TEAM_ID) — push send path is a no-op.")
 		}
 	})
 	return apnsConfigured
-}
-
-func envNonEmpty(keys ...string) bool {
-	for _, k := range keys {
-		if strings.TrimSpace(os.Getenv(k)) == "" {
-			return false
-		}
-	}
-	return true
 }
 
 var (
@@ -67,7 +61,7 @@ var (
 
 func loadApnsKey() (string, error) {
 	apnsKeyOnce.Do(func() {
-		raw, err := os.ReadFile(strings.TrimSpace(os.Getenv("APNS_KEY_PATH")))
+		raw, err := os.ReadFile(config.APNSKeyPath())
 		if err != nil {
 			apnsKeyErr = err
 			return
@@ -140,11 +134,11 @@ func mintApnsJWT() (string, error) {
 		return "", err
 	}
 	header, _ := json.Marshal(map[string]string{
-		"alg": "ES256", "kid": strings.TrimSpace(os.Getenv("APNS_KEY_ID")), "typ": "JWT",
+		"alg": "ES256", "kid": config.APNSKeyID(), "typ": "JWT",
 	})
 	iat := now.Unix()
 	claims, _ := json.Marshal(map[string]any{
-		"iss": strings.TrimSpace(os.Getenv("APNS_TEAM_ID")), "iat": iat,
+		"iss": config.APNSTeamID(), "iat": iat,
 	})
 	signingInput := b64url(header) + "." + b64url(claims)
 	digest := sha256.Sum256([]byte(signingInput))
@@ -163,7 +157,7 @@ func mintApnsJWT() (string, error) {
 }
 
 func apnsHost() string {
-	if strings.TrimSpace(os.Getenv("APNS_ENV")) == "production" {
+	if config.APNSEnv() == "production" {
 		return "https://api.push.apple.com"
 	}
 	return "https://api.sandbox.push.apple.com"
@@ -213,7 +207,7 @@ func sendOneApns(token string, payload Payload) apnsResult {
 		return apnsResult{reason: "session-error"}
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
-	req.Header.Set("apns-topic", strings.TrimSpace(os.Getenv("APNS_TOPIC")))
+	req.Header.Set("apns-topic", config.APNSTopic())
 	req.Header.Set("apns-push-type", "alert")
 	req.Header.Set("apns-priority", "10")
 	req.Header.Set("content-type", "application/json")
@@ -259,13 +253,13 @@ var (
 func fcmOn() bool {
 	fcmOnce.Do(func() {
 		raw := ""
-		if v := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_JSON")); v != "" {
+		if v := config.FCMServiceAccountJSON(); v != "" {
 			if strings.HasPrefix(v, "{") {
 				raw = v
 			} else if dec, ok := lenientBase64(v); ok {
 				raw = string(dec)
 			}
-		} else if p := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_PATH")); p != "" {
+		} else if p := config.FCMServiceAccountPath(); p != "" {
 			b, err := os.ReadFile(p)
 			if err == nil {
 				raw = string(b)

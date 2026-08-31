@@ -98,5 +98,5 @@ func JoinAllHands(ctx context.Context, db *sql.DB, companyID, participantID stri
 			"status": status, "statusUpdatedAt": statusAt,
 		},
 	})
-	_ = events.PublishRaw(ctx, "cumora:status", payload)
+	_ = events.PublishRaw(ctx, events.ChStatus, payload)
 }

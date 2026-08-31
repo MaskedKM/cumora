@@ -15,12 +15,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -28,7 +28,6 @@ import (
 const (
 	StaleMS       = 90_000   // 心跳静默阈值(daemon ~30s 一跳)
 	AgentTokenTTL = 2 * 3600 // agent 运行时 JWT;daemon 到期前刷新
-	chStatus      = "cumora:status"
 	latestTTL     = time.Hour
 )
 
@@ -73,7 +72,7 @@ func broadcastComputerStatus(ctx context.Context, computerID, companyID, status 
 	payload, _ := json.Marshal(map[string]any{
 		"type": "computers.status", "computerId": computerID, "status": status, "companyId": companyID,
 	})
-	_ = events.PublishRaw(ctx, chStatus, payload)
+	_ = events.PublishRaw(ctx, events.ChStatus, payload)
 }
 
 func AnnounceComputerOnline(ctx context.Context, computerID, companyID string) {
@@ -316,7 +315,7 @@ func ResolveDevice(ctx context.Context, db *sql.DB, token string) (computerID, c
 // cmd/server 的 config.ProdEnvViolations(NODE_ENV=production 且未设密钥
 // 时进程直接退出,不会走到这里)。
 func agentRuntimeSecret() string {
-	if s := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")); s != "" {
+	if s := strings.TrimSpace(config.AgentRuntimeSecret()); s != "" {
 		return s
 	}
 	return "dev-agent-runtime-secret-do-not-use-in-prod"
@@ -418,7 +417,7 @@ func engineDefault(engine string) *string {
 		"zcode": "CUMORA_DEFAULT_ZCODE_MODEL",
 	}
 	if k, ok := keys[engine]; ok {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		if v := strings.TrimSpace(config.Getenv(k)); v != "" {
 			return &v
 		}
 	}

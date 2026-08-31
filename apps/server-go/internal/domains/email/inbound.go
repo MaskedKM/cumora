@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	core "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -53,7 +54,7 @@ type inboundPayload struct {
 
 // verifySignature:hex HMAC-SHA256 常时比较;sha256= 前缀容忍。
 func verifySignature(raw []byte, signature string) bool {
-	secret := os.Getenv("EMAIL_INBOUND_HMAC_SECRET")
+	secret := config.EmailInboundHMACSecret()
 	if secret == "" {
 		return false
 	}
@@ -160,10 +161,7 @@ var extSanRe = regexp.MustCompile(`[^a-z0-9]`)
 // putAttachment 本地存储:UPLOAD_DIR(server/uploads)/<key>;与 TS 本地
 // storage.put 同布局。
 func putAttachment(key string, bytes []byte, mimeType string) error {
-	root := filepath.Join("server", "uploads")
-	if dir := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); dir != "" {
-		root = dir
-	}
+	root := config.EmailUploadDir()
 	full := filepath.Join(root, filepath.FromSlash(key))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
@@ -185,7 +183,7 @@ func InboundWebhook(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "missing signature or body")
 		return
 	}
-	if os.Getenv("EMAIL_INBOUND_HMAC_SECRET") == "" {
+	if config.EmailInboundHMACSecret() == "" {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "inbound email disabled (EMAIL_INBOUND_HMAC_SECRET unset)")
 		return
 	}

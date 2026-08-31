@@ -16,20 +16,21 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // 间隔/阈值 env 用 envIntRaw:TS 语义 0=禁用(IDLE_INTERVAL_MS=0 关
 // 调度器)、IDLE_MIN_QUIET_MIN=0 原样生效——envIntOr 的 0→默认会吞掉
 // 这两个 kill-switch(PR #104 评审 MAJOR)。
 func idleIntervalMS() int64 {
-	if n, ok := envIntRaw("IDLE_INTERVAL_MS"); ok {
+	if n, ok := config.EnvIntRaw("IDLE_INTERVAL_MS"); ok {
 		return n
 	}
 	return 15 * 60_000
 }
 
 func idleMinQuietMin() int64 {
-	if n, ok := envIntRaw("IDLE_MIN_QUIET_MIN"); ok {
+	if n, ok := config.EnvIntRaw("IDLE_MIN_QUIET_MIN"); ok {
 		return n
 	}
 	return 25
@@ -224,7 +225,7 @@ func RandHex12() string {
 // 关闭。TS 门控是字面 !== 'false'。#215:ctx 驱动(ctxBG 取消即停——
 // 原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
 func (s *S) StartIdleScheduler() {
-	if getenv("ENABLE_IDLE") == "false" {
+	if config.Getenv("ENABLE_IDLE") == "false" {
 		return
 	}
 	interval := idleIntervalMS()

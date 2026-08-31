@@ -8,12 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // Parsed / Result / StrArr:内核 cliParsed/cliResult/cliStrArr 的导出别名。
@@ -217,12 +218,7 @@ func floorJS(f float64) float64 {
 func msSince(t0 time.Time) int64 { return time.Since(t0).Milliseconds() }
 
 // SupportModelEnv:OPENAI_MODEL_SUPPORT(TS 缺省 gpt-5.4-mini)。
-func SupportModelEnv() string {
-	if m := os.Getenv("OPENAI_MODEL_SUPPORT"); m != "" {
-		return m
-	}
-	return "gpt-5.4-mini"
-}
+func SupportModelEnv() string { return config.OpenAIModelSupport() }
 
 // hashStrJS:FNV-1a 32 位,按 UTF-16 code unit(charCodeAt 语义)。
 func hashStrJS(s string) uint32 {

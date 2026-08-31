@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
-
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -510,7 +510,7 @@ func (s *Domain) cliGenerateAndPersistAvatar(ctx context.Context, agentID, tenan
 		return "", err
 	}
 	agent.InvalidatePersonaCache(agentID)
-	_ = s.PublishRaw("cumora:status", agent.MustJSON(map[string]any{
+	_ = s.PublishRaw(events.ChStatus, agent.MustJSON(map[string]any{
 		"type":          "participants.avatar",
 		"participantId": agentID,
 		"avatarUrl":     url,
@@ -589,7 +589,7 @@ func (s *Domain) cliSetAgentAvatarFromUrl(ctx context.Context, agentID, tenant, 
 		return "", err
 	}
 	agent.InvalidatePersonaCache(agentID)
-	_ = s.PublishRaw("cumora:status", agent.MustJSON(map[string]any{
+	_ = s.PublishRaw(events.ChStatus, agent.MustJSON(map[string]any{
 		"type":          "participants.avatar",
 		"participantId": agentID,
 		"avatarUrl":     url,

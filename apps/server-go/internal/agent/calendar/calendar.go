@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	domcalendar "github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
-
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	domcalendar "github.com/MaskedKM/cumora/apps/server-go/internal/domains/calendar"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -35,7 +35,7 @@ func (s *Domain) publishCalendarCli(companyID, kind, eventID, actorID string) {
 		"actorId":   actorID,
 	})
 	if err == nil {
-		_ = s.PublishRaw("cumora:calendar.events", payload)
+		_ = s.PublishRaw(events.ChCalendarEvents, payload)
 	}
 }
 

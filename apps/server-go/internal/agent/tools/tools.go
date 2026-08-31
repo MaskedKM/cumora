@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
-
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -690,7 +690,7 @@ func (s *Domain) cliStartPulledGroup(ctx context.Context, instigatorID, title st
 	if companyID != "" {
 		groupPayload["companyId"] = companyID
 	}
-	_ = s.PublishRaw("cumora:group.pulled", agent.MustJSON(groupPayload))
+	_ = s.PublishRaw(events.ChGroupPulled, agent.MustJSON(groupPayload))
 	agent.EventsPublishMessageNew(ctx, companyPtr, convoID, map[string]any{
 		"id":             messageID,
 		"conversationId": convoID,
@@ -788,7 +788,7 @@ func (s *Domain) cliTReact(ctx context.Context, args map[string]any, agentID str
 	if rowCompany.Valid {
 		payload["companyId"] = rowCompany.String
 	}
-	_ = s.PublishRaw("cumora:reactions", agent.MustJSON(payload))
+	_ = s.PublishRaw(events.ChReactions, agent.MustJSON(payload))
 
 	detail := fmt.Sprintf("%s %s %s", agentID, action, emoji)
 	if emoji == "👀" && action == "added" {

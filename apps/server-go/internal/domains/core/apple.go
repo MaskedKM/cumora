@@ -29,13 +29,13 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -47,7 +47,7 @@ const (
 
 // CUMORA_APPLE_JWKS_URL:仅测试/开发桩覆盖(生产空 = Apple 正源)。
 func appleJwksURL() string {
-	if u := os.Getenv("CUMORA_APPLE_JWKS_URL"); u != "" {
+	if u := config.AppleJWKSURL(); u != "" {
 		return u
 	}
 	return appleJwksURLDefault

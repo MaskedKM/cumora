@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 )
 
 // agentAttachment:reply --attach* 家族落库的附件对象。Mime/Size/Key 仅
@@ -26,12 +28,7 @@ type agentAttachment struct {
 	Size *int64  `json:"size,omitempty"`
 }
 
-func uploadDir() string {
-	if d := os.Getenv("CUMORA_UPLOADS_DIR"); d != "" {
-		return d
-	}
-	return filepath.Join("server", "uploads")
-}
+func uploadDir() string { return config.UploadsDir() }
 
 // cliStoragePut:本地模式 storage.put —— 写文件,返回 /uploads/<key>。
 func cliStoragePut(key string, body []byte) (string, error) {

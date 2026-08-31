@@ -11,11 +11,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -47,7 +47,7 @@ func (s *API) obsRequireDevtools(w http.ResponseWriter, r *http.Request) (string
 		companyID, uid).Scan(&role); err != nil {
 		role = "member"
 	}
-	localDev := os.Getenv("NODE_ENV") != "production"
+	localDev := !config.IsProduction()
 	h := r.Header.Get("x-cumora-dev-mode")
 	requested := h == "1" || h == "true"
 	priv := role == "owner" || role == "admin"

@@ -7,9 +7,9 @@ package invitations
 import (
 	"context"
 	"database/sql"
-	"os"
 	"strings"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/email"
 )
 
@@ -41,7 +41,7 @@ func escapeHTML(s string) string {
 // 内联样式、Manrope 栈、天蓝 CTA)——收件人后续收到 waitlist 欢迎信时
 // 视觉语言一致。
 func buildInvitationEmailHTML(a invitationEmailArgs) string {
-	cdn := strings.TrimRight(os.Getenv("R2_PUBLIC_BASE"), "/")
+	cdn := strings.TrimRight(config.R2PublicBase(), "/")
 	logoURL := ""
 	if cdn != "" {
 		logoURL = cdn + "/email/logo.png"
