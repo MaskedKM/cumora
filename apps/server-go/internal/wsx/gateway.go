@@ -30,14 +30,25 @@ type conn struct {
 	originID string
 	mu       sync.Mutex // 帧写入串行化
 	// 该连接上的文档订阅;关闭时全部归还(防房间泄漏)。
-	docSubs map[string]*docrelay.Subscriber
-	// 连接时刻的租户成员集(对齐 TS loadMemberships:连接期内不刷新)。
-	// 聊天桥按它过滤;doc 面另有 per-doc 校验。
-	companies map[string]struct{}
-	// 聊天帧出站队列(#202):桥/写协程解耦,慢客户端只堵自己。
+	docSubs map[string]*docSub
+	// documentId → company_id,随 doc.subscribe 的成员资格校验一并解析
+	// 缓存(#216):doc.update/awareness/mention 高频帧不再逐帧打库。
+	// 成员资格语义与聊天面的 companies 握手快照一致——连接期内不刷新,
+	// 变更由新连接带入。
+	companies    map[string]struct{}
+	docCompanies map[string]string
+	// 聊天帧出站队列(#202):桥/写协程解耦,慢客户端只堵自己;doc 帧
+	// (#216)同走此队列——relay 扇出协程不被任何订阅者的慢写阻塞。
 	outbound      chan []byte
 	dropAnnounced uint32 // 背压丢帧只告警一次(atomic)
 	wcancel       context.CancelFunc
+}
+
+// docSub:一条文档订阅的本地登记(relay Subscriber + 订阅期解析的
+// companyID 缓存,#216)。
+type docSub struct {
+	sub       *docrelay.Subscriber
+	companyID string
 }
 
 func (c *conn) send(payload any) {
@@ -153,7 +164,7 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &conn{
 		ws: ws, userID: userID, originID: "ws-" + authn.NewToken()[:12],
-		docSubs: map[string]*docrelay.Subscriber{}, companies: g.loadMemberships(userID),
+		docSubs: map[string]*docSub{}, companies: g.loadMemberships(userID), docCompanies: map[string]string{},
 		outbound: make(chan []byte, outboundCap),
 	}
 	// hello 必须先于注册/写协程发出(TS 单线程下的既成不变量):保证
@@ -174,8 +185,8 @@ func (g *Gateway) readLoop(c *conn) {
 	defer func() {
 		g.hub.remove(c)
 		g.humanDisconnect(c.userID)
-		for docID, s := range c.docSubs {
-			g.relay.Unsubscribe(docID, s)
+		for docID, ds := range c.docSubs {
+			g.relay.Unsubscribe(docID, ds.sub)
 		}
 		c.wcancel()
 		_ = c.ws.Close(websocket.StatusNormalClosure, "")
@@ -247,14 +258,17 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		}
 		s := &docrelay.Subscriber{
 			OriginID: c.originID,
+			// #216:回调在 relay 的共享扇出协程上执行,绝不能同步写 WS
+			// (原 c.send 持锁阻塞写,一个停滞客户端每帧最多拖住全实例
+			// 的 doc 扇出 10s)——改投每连接有界出站队列,由写协程落笔。
 			OnUpdate: func(update []byte, originID string) {
-				c.send(map[string]any{
+				c.enqueueDoc(map[string]any{
 					"type": "doc.update", "documentId": documentID,
 					"updateB64": base64.StdEncoding.EncodeToString(update), "originId": originID,
 				})
 			},
 			OnAwareness: func(update []byte, originID string) {
-				c.send(map[string]any{
+				c.enqueueDoc(map[string]any{
 					"type": "doc.awareness", "documentId": documentID,
 					"updateB64": base64.StdEncoding.EncodeToString(update), "originId": originID,
 				})
@@ -264,7 +278,8 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		if err != nil {
 			return err // 上层发 doc.error(登记已回滚)
 		}
-		c.docSubs[documentID] = s
+		c.docSubs[documentID] = &docSub{sub: s, companyID: companyID}
+		c.docCompanies[documentID] = companyID
 		c.send(map[string]any{
 			"type": "doc.sync", "documentId": documentID,
 			"stateB64": base64.StdEncoding.EncodeToString(initial), "originId": c.originID,
@@ -272,9 +287,10 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		return nil
 
 	case "doc.unsubscribe":
-		if s, ok := c.docSubs[documentID]; ok {
-			g.relay.Unsubscribe(documentID, s)
+		if ds, ok := c.docSubs[documentID]; ok {
+			g.relay.Unsubscribe(documentID, ds.sub)
 			delete(c.docSubs, documentID)
+			delete(c.docCompanies, documentID)
 		}
 		return nil
 
@@ -286,10 +302,9 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		if updateB64 == "" {
 			return nil
 		}
-		companyID, ok := g.docCompanyFor(ctx, documentID, c.userID)
-		if !ok {
-			return nil
-		}
+		// #216:companyID 用订阅期缓存(docCompanyFor 已在 subscribe 时
+		// 校验过成员资格;每击键一批就查一次库的历史在此终结)。
+		companyID := c.docCompanies[documentID]
 		update, err := base64.StdEncoding.DecodeString(updateB64)
 		if err != nil {
 			return nil
@@ -304,10 +319,7 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		if updateB64 == "" {
 			return nil
 		}
-		companyID, ok := g.docCompanyFor(ctx, documentID, c.userID)
-		if !ok {
-			return nil
-		}
+		companyID := c.docCompanies[documentID] // #216:订阅期缓存
 		update, err := base64.StdEncoding.DecodeString(updateB64)
 		if err != nil {
 			return nil
@@ -325,10 +337,7 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		if len(requested) == 0 {
 			return nil
 		}
-		companyID, ok := g.docCompanyFor(ctx, documentID, c.userID)
-		if !ok {
-			return nil
-		}
+		companyID := c.docCompanies[documentID] // #216:订阅期缓存
 		return g.processDocMention(ctx, documentID, companyID, c.userID, requested)
 	}
 	return nil

@@ -160,3 +160,27 @@ func (c *conn) enqueueChat(raw []byte) {
 		}
 	}
 }
+
+// enqueueDoc:doc 帧与聊天帧同走有界出站队列(#216)。与聊天帧的丢帧
+// 语义不同:doc.update 是 yjs 增量,静默丢失会让该客户端的状态悄然
+// 分歧(hello 重同步不覆盖协同帧)——所以队列满时**直接掐线**,让
+// 客户端重连重订阅、从 sidecar 重取全量 state,这是唯一安全路径。
+// 掐线在 fanout 协程上是非阻塞的(cancel+Close 立即返回,拆链由
+// readLoop 的 defer 统一完成)。
+func (c *conn) enqueueDoc(payload any) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	select {
+	case c.outbound <- raw:
+	default:
+		if atomic.CompareAndSwapUint32(&c.dropAnnounced, 0, 1) {
+			slog.Warn("ws doc consumer behind — closing connection for full resync", "user", c.userID)
+		}
+		if c.wcancel != nil {
+			c.wcancel()
+		}
+		_ = c.ws.Close(websocket.StatusGoingAway, "doc consumer too slow")
+	}
+}
