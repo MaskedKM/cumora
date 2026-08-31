@@ -30,7 +30,7 @@ function delta(messageId: string, text: string, sequence = 1, done = false): WsE
 }
 
 function reset() {
-  useMessages.setState({ byConvo: {}, streaming: {}, typing: {}, loaded: new Set(), loading: new Set(), errors: {} })
+  useMessages.setState({ byConvo: {}, streaming: {}, streamSuppressed: {}, typing: {}, loaded: new Set(), loading: new Set(), errors: {} })
 }
 
 test('deltas buffer and flush as one entry with accumulated body', () => {
@@ -143,4 +143,45 @@ test('a completed message in byConvo hides a same-id streaming entry', () => {
   const list = messagesFor(useMessages.getState(), 'c1')
   expect(list.filter((m) => m.id === 'm1')).toHaveLength(1)
   expect(list.find((m) => m.id === 'm1')?.body).toBe('done')
+})
+
+// ── #253 评审 P2:终局后仍在途的尾帧不得复活瞬态气泡 ──────────────────
+test('late tail frame after message.new closure is suppressed (no ghost bubble)', () => {
+  reset()
+  const apply = useMessages.getState().applyEvent
+  // 流先播两帧
+  apply(delta('daemon-stream-1', 'partial answer ', 1))
+  apply(delta('daemon-stream-1', 'body', 2))
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming['daemon-stream-1']).toBeDefined()
+  // 终局落地(daemon 流 id 与终局 id 不配对,按 author 收口)
+  apply({
+    type: 'message.new', conversationId: 'c1',
+    message: { id: 'real-1', conversationId: 'c1', authorId: 'a1', kind: 'text', body: 'full final body' },
+  } as unknown as WsEvent)
+  // 在途尾帧随后到达(daemon 只保证 tail 先于 done,不保证先于 message.new)
+  apply(delta('daemon-stream-1', ' late tail', 3))
+  flushStreamingDeltas()
+  // 不复活:瞬态保持退场,真消息独占
+  expect(useMessages.getState().streaming).toEqual({})
+  expect(useMessages.getState().byConvo.c1.map((m) => m.body)).toEqual(['full final body'])
+  // 同作者新流也被短窗抑制覆盖(终局后 800ms 内的帧丢弃,只损瞬态)
+  apply(delta('daemon-stream-2', 'early', 1))
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming).toEqual({})
+})
+
+test('suppression does not leak across authors or conversations', () => {
+  reset()
+  const apply = useMessages.getState().applyEvent
+  apply({
+    type: 'message.new', conversationId: 'c1',
+    message: { id: 'real-1', conversationId: 'c1', authorId: 'a1', kind: 'text', body: 'x' },
+  } as unknown as WsEvent)
+  // 另一作者/另一会话的流不受抑制
+  apply({ type: 'message.delta', conversationId: 'c1', messageId: 's2', authorId: 'a2', delta: 'ok', sequence: 1 } as WsEvent)
+  apply({ type: 'message.delta', conversationId: 'c2', messageId: 's3', authorId: 'a1', delta: 'ok', sequence: 1 } as WsEvent)
+  flushStreamingDeltas()
+  expect(useMessages.getState().streaming.s2).toBeDefined()
+  expect(useMessages.getState().streaming.s3).toBeDefined()
 })

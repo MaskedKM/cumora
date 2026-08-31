@@ -125,6 +125,49 @@ func TestDeltaReporterFinishFlushesTailThenDone(t *testing.T) {
 	d.finish()
 }
 
+// #253 评审 P3-1:超 16K 字节的单块必须拆帧顺序上送——server 侧按
+// UTF-16 码元截 16K,而 UTF-8 字节数 ≥ 码元数恒成立,16K 字节分帧永不
+// 触截断,长代码回答不再出现中段空洞。
+func TestDeltaReporterSplitsOversizeFrames(t *testing.T) {
+	prev := deltaFlushWindow
+	deltaFlushWindow = 500 * time.Millisecond // 窗口内 push,靠 finish 冲
+	defer func() { deltaFlushWindow = prev }()
+
+	sink, srv := newDeltaSink(t)
+	d := newDeltaReporter(srv.URL, func(context.Context) (string, error) { return "tok", nil })
+
+	// 90KB 输入先被 64KB 流帽 rune 安全截停(21845 码=65535B 入流),
+	// 再按 16K 字节分帧:15999B×4 + 1539B → 5 帧文本 + 1 帧 done。
+	big := strings.Repeat("码", 30000)
+	want := strings.Repeat("码", 21845) // trimToBytes(65536) 的 rune 安全截
+	d.push("c1", big)
+	d.finish()
+
+	frames := sink.waitFor(t, 6)
+	var got strings.Builder
+	for i, f := range frames[:5] {
+		if f.Done {
+			t.Fatalf("frame %d must carry text, got done", i)
+		}
+		if len(f.Delta) > deltaFrameChunkBytes {
+			t.Fatalf("frame %d oversized: %d bytes", i, len(f.Delta))
+		}
+		if f.Sequence != i+1 {
+			t.Fatalf("frame %d sequence must be contiguous: got %d", i, f.Sequence)
+		}
+		if i > 0 && f.MessageID != frames[0].MessageID {
+			t.Fatalf("frame %d stream id drifted", i)
+		}
+		got.WriteString(f.Delta)
+	}
+	if got.String() != want {
+		t.Fatalf("chunked replay must equal capped original: got %d bytes, want %d", got.Len(), len(want))
+	}
+	if !frames[5].Done || frames[5].Delta != "" || frames[5].Sequence != 6 {
+		t.Fatalf("terminal must be empty done with next sequence: %+v", frames[5])
+	}
+}
+
 func TestDeltaReporterCapAndUnanchored(t *testing.T) {
 	prev := deltaFlushWindow
 	deltaFlushWindow = 10 * time.Millisecond
@@ -145,12 +188,24 @@ func TestDeltaReporterCapAndUnanchored(t *testing.T) {
 	d.push("c1", big)
 	d.push("c1", big)   // 80KB > 64KB cap:末 16KB 按帽截
 	d.push("c1", "xxx") // 已满帽:不再接受
-	frames := sink.waitFor(t, 1)
-	if len(frames[0].Delta) != deltaStreamCap {
-		t.Fatalf("stream must stop at the %d-byte cap, got %d bytes", deltaStreamCap, len(frames[0].Delta))
+	// #253 评审 P3-1 起,帽内文本也按 16K 字节分帧:总字节仍是帽,
+	// 但帧形为 ≤16K 的连续序号多帧(65536B → 5 帧)。
+	frames := sink.waitFor(t, 5)
+	gotBytes := 0
+	for i, f := range frames {
+		if len(f.Delta) > deltaFrameChunkBytes {
+			t.Fatalf("frame %d oversized: %d bytes", i, len(f.Delta))
+		}
+		if f.Sequence != i+1 {
+			t.Fatalf("frame %d sequence must be contiguous: %d", i, f.Sequence)
+		}
+		gotBytes += len(f.Delta)
+	}
+	if gotBytes != deltaStreamCap {
+		t.Fatalf("stream must stop at the %d-byte cap, got %d bytes", deltaStreamCap, gotBytes)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if got := len(sink.snapshot()); got != 1 {
+	if got := len(sink.snapshot()); got != 5 {
 		t.Fatalf("over-cap text must not report more frames, got %d", got)
 	}
 	d.finish()

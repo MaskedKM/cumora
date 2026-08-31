@@ -24,6 +24,9 @@ export interface MessagesState {
   byConvo: Record<string, Message[]>
   /** in-flight streaming bodies, keyed by message id */
   streaming: Record<string, { body: string; conversationId: string; authorId: string; sequence: number }>
+  /** #253 评审 P2:终局收口后的增量帧抑制窗,key `${convo}\u0000${author}`
+   *  → 抑制截止 ts。防终局后仍 in flight 的尾帧把瞬态气泡复活一个 RTT。 */
+  streamSuppressed: Record<string, number>
   /** which agents are currently typing in each conversation */
   typing: Record<string, string[]>
   loaded: Set<string>
@@ -163,6 +166,18 @@ function scheduleTypingExpiry(conversationId: string, agentId: string): void {
     }))
   }, TYPING_STALE_MS)
   typingExpiryTimers.set(typingKey(conversationId, agentId), timer)
+}
+
+// #253 评审 P2:daemon 只保证尾帧先于 done、不保证先于 message.new——
+// 终局落地后仍在途的尾帧会把瞬态气泡“复活”一个 RTT(灰显鬼泡)。
+// 收口时刻起 800ms 内对该 (convo,author) 的非 done 增量帧直接丢弃:
+// 丢帧只损瞬态(帧是增量块,终局 message.new 兜底全量);新 turn 在窗内
+// 起播的概率与代价(前缀少一段灰显文本)均可接受。done 帧不受抑制
+// (它只做退场清理,无文本)。
+const STREAM_SUPPRESS_MS = 800
+
+function streamSuppressionKey(conversationId: string, authorId: string): string {
+  return `${conversationId}\u0000${authorId}`
 }
 
 /** Retire the transient streaming entries of one author in one conversation
@@ -405,6 +420,7 @@ function mergeFetchedMessages(current: Message[] | undefined, incoming: Message[
 export const useMessages = create<MessagesState>((set, get) => ({
   byConvo: {},
   streaming: {},
+  streamSuppressed: {},
   typing: {},
   loaded: new Set(),
   loading: new Set(),
@@ -558,6 +574,12 @@ export const useMessages = create<MessagesState>((set, get) => ({
       const retiredStreaming = retireStreamingFor(
         { streaming: get().streaming }, e.conversationId, m.authorId,
       )
+      const suppressedKey = streamSuppressionKey(e.conversationId, m.authorId)
+      const suppressedUntil = Date.now() + STREAM_SUPPRESS_MS
+      set((s) => ({
+        ...retiredStreaming,
+        streamSuppressed: { ...s.streamSuppressed, [suppressedKey]: suppressedUntil },
+      }))
       set((s) => {
         const existing = s.byConvo[e.conversationId] ?? []
         // Match the optimistic bubble against the server echo. We have to
@@ -611,6 +633,12 @@ export const useMessages = create<MessagesState>((set, get) => ({
         // Terminal: drop the unflushed tail (the final body arrives via
         // message.new) and retire the streaming entry as before.
         deltaBatch.drop(e.messageId)
+        set((s0) => ({
+          streamSuppressed: {
+            ...s0.streamSuppressed,
+            [streamSuppressionKey(e.conversationId, e.authorId)]: Date.now() + STREAM_SUPPRESS_MS,
+          },
+        }))
         set((s) => {
           const { [e.messageId]: _drop, ...rest } = s.streaming
           return {
@@ -619,6 +647,17 @@ export const useMessages = create<MessagesState>((set, get) => ({
           }
         })
         return
+      }
+      const suppressedUntil = get().streamSuppressed[streamSuppressionKey(e.conversationId, e.authorId)]
+      if (suppressedUntil !== undefined) {
+        if (Date.now() >= suppressedUntil) {
+          set((s0) => {
+            const { [streamSuppressionKey(e.conversationId, e.authorId)]: _gone, ...rest } = s0.streamSuppressed
+            return { streamSuppressed: rest }
+          })
+        } else {
+          return
+        }
       }
       deltaBatch.push(e.messageId, e.conversationId, e.authorId, e.sequence, e.delta)
       if (deltaBatch.bufferedChars >= STREAMING_FLUSH_CHAR_CAP) {
@@ -894,6 +933,7 @@ export function bootMessagesStream() {
   useMessages.setState({
     byConvo: {},
     streaming: {},
+  streamSuppressed: {},
     typing: {},
     loaded: new Set(),
     loading: new Set(),

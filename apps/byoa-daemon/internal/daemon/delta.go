@@ -31,6 +31,11 @@ const (
 	// deltaStreamCap:单流上报总量帽(字节),对齐前端 64KB 合帧阀——
 	// 超帽即引擎在无界独白,截停上报,终局 message.new 兜底。
 	deltaStreamCap = 64 * 1024
+	// deltaFrameChunkBytes:单帧字节上限。server 侧按 UTF-16 码元截 16K,
+	// 而 UTF-8 字节数 ≥ UTF-16 码元数恒成立(ASCII 1:1,其余更省),故
+	// 16K 字节分帧永不触 server 截断——超长块(Claude 长代码回答常见)
+	// 不会再被静默截出中段空洞(#253 评审 P3-1)。
+	deltaFrameChunkBytes = 16000
 	// deltaSendTimeout:单帧上报上限(短请求,慢服务器不积压下一帧)。
 	deltaSendTimeout = 5 * time.Second
 )
@@ -122,17 +127,39 @@ func (d *deltaReporter) tick(conversationID string) {
 	}
 }
 
-// flushLocked:领走缓冲、定序、异步上送(调用方持 mu)。
+// splitOversize:超单帧帽的文本按 16K 字节 rune 安全拆片;不超帽时
+// 原样单片。返回文本片(顺序),序号由调用方定。
+func splitOversize(text string) []string {
+	if len(text) <= deltaFrameChunkBytes {
+		return []string{text}
+	}
+	var chunks []string
+	for len(text) > deltaFrameChunkBytes {
+		c := trimToBytes(text, deltaFrameChunkBytes)
+		chunks = append(chunks, c)
+		text = text[len(c):]
+	}
+	return append(chunks, text)
+}
+
+// flushLocked:领走缓冲、定序、异步上送(调用方持 mu)。超 16K 字节的
+// 块拆成多帧顺序上送(序号连续),在飞标志覆盖整批。
 func (d *deltaReporter) flushLocked(conversationID string, st *deltaStream) {
 	text := st.buffered.String()
 	st.buffered.Reset()
-	st.sequence++
-	seq := st.sequence
 	st.lastSend = time.Now()
 	st.sent += len(text)
+	chunks := splitOversize(text)
+	seqs := make([]int, len(chunks))
+	for i := range chunks {
+		st.sequence++
+		seqs[i] = st.sequence
+	}
 	st.inflight.Store(true)
 	go func() {
-		d.post(conversationID, st.id, text, seq, false)
+		for i, c := range chunks {
+			d.post(conversationID, st.id, c, seqs[i], false)
+		}
 		st.inflight.Store(false)
 		d.drain(conversationID, st)
 	}()
@@ -183,8 +210,12 @@ func (d *deltaReporter) finish() {
 		tail := st.buffered.String()
 		seq := st.sequence
 		if tail != "" {
-			seq++
-			d.post(conversationID, st.id, tail, seq, false)
+			// 尾帧同样分帧:turn 末尾的大块(长代码回答收尾)正是从
+			// finish 出口单帧直发的高发位,不分帧会被 server 截洞。
+			for _, c := range splitOversize(tail) {
+				seq++
+				d.post(conversationID, st.id, c, seq, false)
+			}
 		}
 		d.post(conversationID, st.id, "", seq+1, true)
 	}
