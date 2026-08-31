@@ -17,7 +17,6 @@ import { ChatHeader } from './ChatHeader'
 import { ThreadLoader, ThreadError, EmptyConversationState } from './chatStates'
 import { Composer } from './Composer'
 
-
 export function ChatPane() {
   const t = useT()
   const convoId = useApp((s) => s.selectedConversationId)

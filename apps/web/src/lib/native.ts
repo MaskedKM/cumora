@@ -295,7 +295,6 @@ export async function mediumHaptic(): Promise<void> {
   }
 }
 
-
 /** Light "tick" haptic — for crossing selection thresholds during a
  *  drag (e.g. swipe-action revealing a button, pull-to-refresh
  *  hitting the trigger point). Subtler than `tapHaptic`. */

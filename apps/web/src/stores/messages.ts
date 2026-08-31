@@ -547,8 +547,6 @@ export const useMessages = create<MessagesState>((set, get) => ({
         // list key (m.clientId ?? m.id) stays stable across the replacement
         // — otherwise the row remounts and re-animates.
         const merged: Message = prior?.clientId ? { ...m, clientId: prior.clientId } : m
-        if (prior?.clientId) {
-        }
         const without = existing.filter((x) => x !== prior && x.id !== m.id)
         let next = [...without, merged].sort((a, b) => {
           const sa = (a as { sequence?: number }).sequence ?? 0

@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConversations } from '@/stores/conversations'
 import { useT } from '@/lib/i18n'
 
-
-
 export function ThreadLoader() {
   const t = useT()
   return (
@@ -43,7 +41,6 @@ export function ThreadLoader() {
     </div>
   )
 }
-
 
 export function ThreadError({ message, onRetry }: { message: string; onRetry: () => void }) {
   const t = useT()
@@ -119,7 +116,6 @@ export function ThreadError({ message, onRetry }: { message: string; onRetry: ()
   )
 }
 
-
 export function EmptyConversationState() {
   const t = useT()
   // Live counts pulled straight from the store so the empty stage carries
@@ -193,7 +189,6 @@ export function EmptyConversationState() {
       if (blinkResetRef.current !== null) window.clearTimeout(blinkResetRef.current)
     }
   }, [])
-
 
   return (
     <main
