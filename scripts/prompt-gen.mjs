@@ -18,7 +18,9 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dir = (f) => join(root, f);
-const raw = (f) => readFileSync(dir("packages/prompt/" + f), "utf8");
+// CRLF 归一:编辑器/平台差异不得把 \r 烤进常量字节(§ 占位与内容一样逐字节
+// 进入生成物,漂移只许来自显式编辑)。
+const raw = (f) => readFileSync(dir("packages/prompt/" + f), "utf8").replaceAll("\r\n", "\n");
 const esc = (s) => s.replaceAll("`", "§");
 
 // 文件名 → [生成 Go 常量名, 所属目标]
@@ -48,15 +50,18 @@ const ${name} = \`${esc(raw(f))}\``)
     .join("\n\n");
 }
 
-// 共享文件(当前仅 skype 表情指南)双端内容必须一致 —— 生成前断言。
-function assertShared() {
-  const shared = SERVER.filter(([f]) => DAEMON.some(([g]) => g === f)).map(([f]) => f);
-  for (const f of shared) {
-    const s = raw(f);
-    if (s.includes("§")) throw new Error(`${f}: canonical 源不许出现 § 占位(直接写反引号)`);
+// canonical 源(全部六份,不限双端共享的)不许出现字面 §——esc() 只做
+// `→§ 单向替换,txt 里的字面 § 会原样进入生成物,被消费侧 untick/tick
+// 还原成反引号,静默篡改 prompt 内容且无任何守卫会响(P1 修复:原
+// assertShared 拦错了范围,只在双端共享文件上检查)。
+function assertNoSectionSign(files) {
+  for (const f of files) {
+    if (raw(f).includes("§")) {
+      throw new Error(`${f}: canonical 源不许出现 § 占位(直接写反引号)`);
+    }
   }
 }
-assertShared();
+assertNoSectionSign([...new Set([...SERVER, ...DAEMON].map(([f]) => f))]);
 
 writeFileSync(
   dir("apps/server-go/internal/agent/prompt_constants.gen.go"),

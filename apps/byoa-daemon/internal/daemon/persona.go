@@ -11,8 +11,9 @@ import "strings"
 // § → ` 的还原(下述原始字符串共用)。
 func tick(s string) string { return strings.ReplaceAll(s, "§", "`") }
 
-// twoDomainPrivacyRule:daemon.ts TWO_DOMAIN_PRIVACY_RULE(两域隐私边界,
-// standing prompt 通道上的表述——系统提示对 Claude/Codex 是更高权威)。
+// twoDomainPrivacyRule(常量在 persona_prompts.gen.go,源
+// packages/prompt/two-domain-privacy-rule.txt):两域隐私边界的 standing
+// prompt 通道表述——系统提示对 Claude/Codex 是更高权威。
 // personaHeader:人格头(CLAUDE.md / AGENTS.md 的全部内容)。personaFile/
 // skillsDir 随引擎不同(Claude:CLAUDE.md 与 .claude/skills/;Codex 的
 // AGENTS.md 内容保持 TS 原文的默认引用)。

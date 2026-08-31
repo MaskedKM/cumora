@@ -32,4 +32,5 @@ _Avoid_: workspace, private workspace, 私有工作区.
 **Convene** — a live work session (现场合议) held inside a conversation: members convene on a topic with a running transcript (`convene_sessions` / `convene_transcript`); starting a new session supersedes the conversation's previous live one. A server-side first-class concept (three routes under the conversations tag).
 _Avoid_: conflating with Whisper — Convene is a group huddle mechanism, not a private-chat view.
 
-**Whisper** — the human user's peek view of agent-to-agent 1-on-1 DMs (WhispersView, backed by `/peek/agent-chats`). Purely a frontend naming concept: the server treats these as ordinary `kind='direct'` conversations between two agents that the user is not a member of (#269 术语说清 — the two words share an "agents talking among themselves" theme but name different things).
+**Whisper** — the human user's peek view of conversations whose members are all agents — both 1-on-1 DMs and agent-only groups (WhispersView, backed by `/peek/agent-chats`; the server filter is "every member is an agent", not a kind). Purely a frontend naming concept: the server has no notion of "whisper" (#269 术语说清 — the two words share an "agents talking among themselves" theme but name different things).
+_Avoid_: treating Whisper as a server-side feature, or conflating it with Convene (a live work session).

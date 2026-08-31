@@ -210,22 +210,41 @@ test('[mirror-runtime] /cli inbox ↔ /runtime/inbox parity — two SELECTs, one
   // cliLoadInbox(mailbox.go,TS cli.ts 平价形态)与 LoadInbox(client.go,
   // LATERAL + ROW 同瞬决胜修形)是两条刻意保留的 SELECT,"合并单实现"在
   // 评审中否决(平价纪律 + 游标语义不同);#267 的"对账"以本测试钉住:
-  // 同种子下两入口的可见消息集必须一致,否则投递规则(静音/点名/引用
-  // 放行)在两侧漂移了。
+  // 四分支投递谓词(direct / 未静音 / @点名 / 被引用)在两入口必须一致
+  // 放行/拦截——任一侧单独改 mention 正则或删 quote 子查询都会在此爆。
   const { agentId, companyId, token } = await seedAgent()
   const humanId = await seedHuman(companyId)
+  // ① 未静音群:普通消息放行(分支 2),自身消息两侧皆拦。
   const convo = await seedConversation(companyId, [agentId, humanId])
   await convo.insertMessage(humanId, 'p1')
   await convo.insertMessage(agentId, 'self — never unread')
   await convo.insertMessage(humanId, 'p2')
+  // ② 静音群:普通消息两侧皆拦;@点名(分支 3)与被引用(分支 4)两侧皆放。
+  const muted = await seedConversation(companyId, [agentId, humanId])
+  await pool.query(
+    `INSERT INTO conversation_mutes (user_id, conversation_id) VALUES ($1, $2)`,
+    [agentId, muted.convId],
+  )
+  await muted.insertMessage(humanId, 'muted plain — dropped by both')
+  await muted.insertMessage(humanId, `hey @${agentId} — mention lets me through`)
+  const quotedId = await muted.insertMessage(agentId, 'agent anchor')
+  await pool.query(
+    `INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id, quoted_message_id)
+     VALUES ($1, $2, $3, 'text', $4, 4, $5, $6)`,
+    [`m-${randomUUID().slice(0, 8)}`, muted.convId, humanId, 'reply quoting agent — lets me through', companyId, quotedId],
+  )
+  // ③ 静音 direct:静音不拦 direct(分支 1)。
+  const dm = await seedConversation(companyId, [agentId, humanId], 'direct')
+  await dm.insertMessage(humanId, 'muted DM — direct lets me through')
   const runtimeRows = (await call('/runtime/inbox?probe=1', { method: 'GET', token })).body.rows as any[]
   const cli = await call('/runtime/cli', { token, body: { argv: ['inbox', '--json'] } })
   assert.equal(cli.status, 200)
   assert.equal(cli.body.ok, true)
   const cliRows = JSON.parse(cli.body.text) as any[]
   const ids = (rows: any[]) => rows.map((r) => r.id).sort()
-  assert.equal(cliRows.length, 2, 'own message is never unread on the CLI face either')
-  assert.deepEqual(ids(cliRows), ids(runtimeRows), 'CLI and runtime inbox see the same message set')
+  assert.equal(cliRows.length, 5, 'p1+p2 + mention + quoted + muted-DM; self and muted-plain excluded')
+  assert.deepEqual(ids(cliRows), ids(runtimeRows), 'CLI and runtime inbox agree on all four delivery branches')
+  assert.equal(runtimeRows.length, 5, 'runtime face sees the same five')
 })
 
 test('[mirror-runtime] /context marks unread/self and aggregates reactions', async () => {
