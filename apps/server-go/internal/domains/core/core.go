@@ -36,12 +36,16 @@ import (
 type Server struct {
 	DB  *sql.DB
 	RDB *redis.Client
+	// LivezPing:livez 的 Redis 硬依赖探活(#211)。根 mux 注册是生产
+	// 真正被调的路径;本 tag 的同名注册虽"无害冗余",仍同源注入,
+	// 不留一条语义落后的活探。
+	LivezPing httpx.RedisPing
 }
 
 var _ contract.ServerInterface = (*Server)(nil)
 
-func Mount(mux *http.ServeMux, db *sql.DB, rdb *redis.Client) {
-	_ = contract.HandlerFromMux(&Server{DB: db, RDB: rdb}, mux)
+func Mount(mux *http.ServeMux, db *sql.DB, rdb *redis.Client, livezPing httpx.RedisPing) {
+	_ = contract.HandlerFromMux(&Server{DB: db, RDB: rdb, LivezPing: livezPing}, mux)
 }
 
 /* ───────── 跨包委托(invitations 5 + search/og/inbound + health/livez) ───────── */
@@ -88,7 +92,7 @@ func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Livez(w http.ResponseWriter, r *http.Request) {
-	httpx.Livez(w, r)
+	httpx.Livez(s.LivezPing, w, r)
 }
 
 func (s *Server) AuthMe(w http.ResponseWriter, r *http.Request) {

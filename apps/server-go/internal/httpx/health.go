@@ -46,22 +46,42 @@ func WriteInternalError(w http.ResponseWriter, r *http.Request, err error) {
 	WriteError(w, http.StatusInternalServerError, msg)
 }
 
-// MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(无依赖)。
+// RedisPing:livez 的 Redis 硬依赖探活注入(#211)。闭包形态,httpx
+// 不直接依赖 go-redis(测试替身零成本);nil = 未注入(嵌入/测试场景),
+// livez 退回无依赖活探。
+type RedisPing func(ctx context.Context) error
+
+// MountHealth 挂 /api/health(带 pg 探活)与 /api/livez(进程活 + Redis)。
 // 形状对齐 TS baseline:{ok, ts(ms)};池耗尽时 1s 超时兜底返回确定性 503。
 // #187 批次 8:两 handler 导出为 Livez/Health(core tag 经 ServerInterface
 // 委托到此;根 mux 特定 pattern 优先于 /api/ 子树,绕过 auth 的既有
-// 语义不变 —— 单一函数体,双注册)。
+// 语义不变 —— 单一函数体,双注册)。#211:livez 从"无依赖活探"扩为
+// Redis 硬依赖显性面(注入 rping,语义见 Livez)。
 func MountHealth(mux *http.ServeMux, pool interface {
 	PingContext(ctx context.Context) error
-}) {
-	mux.HandleFunc("GET /api/livez", Livez)
+}, rping RedisPing) {
+	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, r *http.Request) {
+		Livez(rping, w, r)
+	})
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		Health(pool, w, r)
 	})
 }
 
-// Livez:无依赖活探。
-func Livez(w http.ResponseWriter, _ *http.Request) {
+// Livez:进程活 + Redis 硬依赖(#211)。Redis 不可达、或启动时已降级
+// NoopPublisher(事件面静默吞掉)时返回 503 —— 此前 Noop 降级只在启动
+// 日志 Warn 一行,HTTP 面保持假绿,是 8-31 事故三病之一;协同面
+// (docrelay,#216)在 Redis 挂时本就快败,livez 变红只是把同一事实抬到
+// 探活面。503 形状:{ok:false, error, ts};200 保持 {ok:true, ts}。
+func Livez(rping RedisPing, w http.ResponseWriter, _ *http.Request) {
+	if rping != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := rping(ctx); err != nil {
+			WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": err.Error(), "ts": time.Now().UnixMilli()})
+			return
+		}
+	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UnixMilli()})
 }
 
