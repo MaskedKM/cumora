@@ -2303,6 +2303,23 @@ type RecordLlmCallJSONBody map[string]interface{}
 // MemoryQueryJSONBody defines parameters for MemoryQuery.
 type MemoryQueryJSONBody = map[string]interface{}
 
+// RuntimeMessageDeltaJSONBody defines parameters for RuntimeMessageDelta.
+type RuntimeMessageDeltaJSONBody struct {
+	ConversationId string `json:"conversationId"`
+
+	// Delta 本帧追加的文本块(ACCUMULATE 语义);done=true 时可为空
+	Delta string `json:"delta"`
+
+	// Done true = 流结束(转瞬态
+	Done *bool `json:"done,omitempty"`
+
+	// MessageId 在途流的 id(daemon 铸造
+	MessageId string `json:"messageId"`
+
+	// Sequence 流内递增序号
+	Sequence *int `json:"sequence,omitempty"`
+}
+
 // PostNoticeJSONBody defines parameters for PostNotice.
 type PostNoticeJSONBody struct {
 	ConversationId string `json:"conversationId"`
@@ -2620,6 +2637,9 @@ type RecordLlmCallJSONRequestBody RecordLlmCallJSONBody
 
 // MemoryQueryJSONRequestBody defines body for MemoryQuery for application/json ContentType.
 type MemoryQueryJSONRequestBody = MemoryQueryJSONBody
+
+// RuntimeMessageDeltaJSONRequestBody defines body for RuntimeMessageDelta for application/json ContentType.
+type RuntimeMessageDeltaJSONRequestBody RuntimeMessageDeltaJSONBody
 
 // PostNoticeJSONRequestBody defines body for PostNotice for application/json ContentType.
 type PostNoticeJSONRequestBody PostNoticeJSONBody

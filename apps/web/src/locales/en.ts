@@ -1772,6 +1772,7 @@ export const en = {
   'msgview.removedFromGroup': 'from the group',
   'msgview.messageDeleted': '[message deleted]',
   'msgview.jumpToOriginal': 'Jump to original',
+  'msgview.streaming': 'streaming…',
   'msgview.typingIs': ' is typing…',
   'msgview.typingAre': ' are typing…',
   'msgview.typingSep': ', ',

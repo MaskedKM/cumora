@@ -2538,6 +2538,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtime/message-delta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 流式增量上屏(#210;delta 只广播不入库,终局以 reply 的 message.new 为准)
+         * @description daemon 把引擎产出的文本前缀按块上报(#210);服务端按租户发 message.delta,前端增量渲染,最终 body 由 /runtime/cli reply 的 message.new 收口(幂等替换)。authorId/companyId 取自 agent-runtime JWT,目标会话须为本 agent 的成员会话。
+         */
+        post: operations["runtimeMessageDelta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runtime/runs": {
         parameters: {
             query?: never;
@@ -8331,6 +8351,40 @@ export interface operations {
             content: {
                 "application/json": {
                     conversationId: string;
+                    done?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ok"];
+                };
+            };
+        };
+    };
+    runtimeMessageDelta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    conversationId: string;
+                    /** @description 在途流的 id(daemon 铸造 */
+                    messageId: string;
+                    /** @description 本帧追加的文本块(ACCUMULATE 语义);done=true 时可为空 */
+                    delta: string;
+                    /** @description 流内递增序号 */
+                    sequence?: number;
+                    /** @description true = 流结束(转瞬态 */
                     done?: boolean;
                 };
             };

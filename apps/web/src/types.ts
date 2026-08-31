@@ -117,6 +117,9 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
   failed?: boolean
   /** The request may have committed, but neither HTTP nor WS confirmed it. */
   unconfirmed?: boolean
+  /** Live agent stream (#210): synthesized from `message.delta` frames, never
+   *  persisted — the final `message.new` from the same author replaces it. */
+  streaming?: boolean
 }
 
 /** UI-only: starter-agent 模板的角色标签(非线上 wire 枚举) */

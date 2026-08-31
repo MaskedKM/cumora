@@ -2840,6 +2840,31 @@ paths:
                 done: { type: boolean }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/message-delta:
+    post:
+      tags: [runtime]
+      operationId: runtimeMessageDelta
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 流式增量上屏(#210;delta 只广播不入库,终局以 reply 的 message.new 为准)
+      description: >-
+        daemon 把引擎产出的文本前缀按块上报(#210);服务端按租户发
+        message.delta,前端增量渲染,最终 body 由 /runtime/cli reply 的
+        message.new 收口(幂等替换)。authorId/companyId 取自 agent-runtime
+        JWT,目标会话须为本 agent 的成员会话。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, messageId, delta]
+              properties:
+                conversationId: { type: string }
+                messageId: { type: string, description: 在途流的 id(daemon 铸造,终局 message.new 不与此配对——前端按 author 收口) }
+                delta: { type: string, description: 本帧追加的文本块(ACCUMULATE 语义);done=true 时可为空 }
+                sequence: { type: integer, description: 流内递增序号,起流分配 }
+                done: { type: boolean, description: true = 流结束(转瞬态,前端退场) }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /runtime/runs:
     post:
       tags: [runtime]

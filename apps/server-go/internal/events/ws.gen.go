@@ -67,7 +67,7 @@ type MessageNewEvent struct {
 }
 
 // MessageDeltaEvent —— message.delta(通道 cumora:msg.delta、scope=company)。
-// 流式增量(代理边打边发)。发布方归 #210 决策票;契约先行收录通道与载荷。
+// 流式增量(代理边打边发,#210 已激活)。daemon 铸流 id(messageId)与终局消息 id 不配对——前端按 (conversationId, authorId) 收口,message.new / done / 陈旧兜底三条退场路径幂等;delta 只上屏不入库。
 type MessageDeltaEvent struct {
 	Type           string `json:"type"`
 	CompanyID      string `json:"companyId,omitempty"`

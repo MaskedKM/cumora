@@ -49,6 +49,29 @@ func Typing(ctx context.Context, companyID, convID, agentID string, done bool) {
 	})
 }
 
+// MessageDelta 广播流式增量(#210 激活:发布方 = /runtime/message-delta,
+// daemon 把引擎产出的文本前缀按块上报)。delta 只上屏不入库——终局以
+// cli_reply 的 MessageNew 为准,前端按 (conversationId, authorId) 收口换
+// 真消息,故这里的 messageID 是 daemon 铸的在途流 id,不与终局消息配对。
+// companyId 为空时省键,但 wsx 桥拒路由无租户标记的事件——调用方必须给
+// 出真实租户(空串发布 = 死帧,不如不发)。
+func MessageDelta(ctx context.Context, companyID, convID, messageID, authorID, delta string, sequence int, done bool) {
+	if companyID == "" {
+		slog.Warn("message.delta publish skipped — empty companyId would be dropped by the wsx bridge", "conversationId", convID, "messageId", messageID)
+		return
+	}
+	_ = publishJSON(ctx, ChMessageDelta, MessageDeltaEvent{
+		Type:           EventMessageDelta,
+		CompanyID:      companyID,
+		ConversationID: convID,
+		MessageID:      messageID,
+		AuthorID:       authorID,
+		Delta:          delta,
+		Sequence:       sequence,
+		Done:           done,
+	})
+}
+
 // PublishRaw 供域包广播自定义通道(如 CH_BOARDS)。
 func PublishRaw(ctx context.Context, channel string, payload []byte) error {
 	return active.Publish(ctx, channel, payload)

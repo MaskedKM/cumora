@@ -80,10 +80,11 @@ func maxInt64(a, b int64) int64 {
 
 // codexSession:app-server JSON-RPC 上的持久会话。
 type codexSession struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	onLog func(string)
-	onHop func(HopReport)
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	onLog  func(string)
+	onHop  func(HopReport)
+	onText func(string) // #210 agentMessage 增量(delta 上报源)
 
 	mu sync.Mutex
 	// 状态(handshake 状态机)
@@ -131,6 +132,7 @@ func newCodexSession(bin string, spawnArgs []string, args SessionArgs) *codexSes
 	s := &codexSession{
 		onLog:            args.OnLog,
 		onHop:            args.OnHopUsage,
+		onText:           args.OnAssistantText,
 		threadID:         args.ResumeSessionID,
 		model:            args.Model,
 		carriesStanding:  args.StandingPrompt != "",
@@ -541,6 +543,14 @@ func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
 	}
 	if msg.Method == "item/agentMessage/delta" || msg.Method == "item/reasoning/textDelta" || msg.Method == "item/reasoning/summaryTextDelta" {
 		s.steerGate = false
+		// #210:agentMessage 的 token 级增量直接喂 delta 上报(reasoning
+		// 流不喂——那是没说出口的思考)。params.delta 形状不保证,缺键
+		// 静默跳过(delta 是尽力而为的瞬态体验)。
+		if msg.Method == "item/agentMessage/delta" && s.onText != nil {
+			if dt, ok := msg.Params["delta"].(string); ok && dt != "" {
+				s.onText(dt)
+			}
+		}
 		return effects
 	}
 	// 请求级错误(如 thread/start 失败)→ fail 在飞 turn。
