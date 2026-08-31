@@ -461,6 +461,8 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 			return // 403 已写响应
 		}
 	}
+	// 事务豁免(#213):tx 跨函数边界传递(releaseApprove/recordEvent
+	// 收 *sql.Tx),且有 404 fail() 响应分支,WithTx 闭包无法承载。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)

@@ -247,6 +247,9 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := "ws-" + shortID()
+	// 事务豁免(#213):插入失败有 unique-violation 409 分支,且各步 500
+	// 文案各异(tx failed/insert failed/member insert failed/commit failed),
+	// 单一错误通道无法等价映射。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "tx failed")

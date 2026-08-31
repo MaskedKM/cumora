@@ -6,14 +6,15 @@ package ship
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
-
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -392,46 +393,44 @@ func (s *Domain) cliShipCreate(ctx context.Context, parsed agent.Parsed, me, com
 		return agent.Err("one or more --builders are not active participants in this company")
 	}
 	id := "ship-" + agent.UUIDHex()
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	defer tx.Rollback()
 	problem, _ := parsed.FlagStr("problem")
 	outcome, _ := parsed.FlagStr("outcome")
 	contract, _ := parsed.FlagStr("contract")
 	buildersJSON, _ := agent.MarshalStrings(builderIDs)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO shipping_features
-		  (id,company_id,title,problem,desired_outcome,contract_summary,builder_ids,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$8)`,
-		id, companyID, title, problem, outcome, contract, buildersJSON, me); err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	for _, seed := range []struct {
-		title    string
-		method   string
-		position int
-	}{
-		{"Walk the critical user path", "user_path", 10},
-		{"Prove trace coverage and diagnostic evidence", "trace", 20},
-		{"Verify release notes and known gaps", "release_note", 30},
-	} {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO shipping_verifications (id,feature_id,title,method,required,builder_ids,position,created_by)
-			VALUES ($1,$2,$3,$4,TRUE,$5::jsonb,$6,$7)`,
-			"sv-"+agent.UUIDHex(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
-			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-		}
-	}
 	eventJSON, _ := json.Marshal(map[string]any{"title": title, "source": "agent-cli"})
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data)
+	// #213:收编 db.WithTx——各步失败均 ErrCode(err) 同构映射,响应字节不变。
+	if err := dbpkg.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO shipping_features
+			  (id,company_id,title,problem,desired_outcome,contract_summary,builder_ids,created_by,updated_by)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$8)`,
+			id, companyID, title, problem, outcome, contract, buildersJSON, me); err != nil {
+			return err
+		}
+		for _, seed := range []struct {
+			title    string
+			method   string
+			position int
+		}{
+			{"Walk the critical user path", "user_path", 10},
+			{"Prove trace coverage and diagnostic evidence", "trace", 20},
+			{"Verify release notes and known gaps", "release_note", 30},
+		} {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO shipping_verifications (id,feature_id,title,method,required,builder_ids,position,created_by)
+				VALUES ($1,$2,$3,$4,TRUE,$5::jsonb,$6,$7)`,
+				"sv-"+agent.UUIDHex(), id, seed.title, seed.method, buildersJSON, seed.position, me); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data)
 		 VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
-		"se-"+agent.UUIDHex(), companyID, id, me, string(eventJSON)); err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	if err := tx.Commit(); err != nil {
+			"se-"+agent.UUIDHex(), companyID, id, me, string(eventJSON)); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	return agent.OK(fmt.Sprintf("Created shipping contract %s for “%s”. Three required evidence squares were seeded. Add invariants and assign independent verifiers in the Ship panel.", id, title))
@@ -480,51 +479,49 @@ func (s *Domain) cliShipSquare(ctx context.Context, parsed agent.Parsed, me, com
 		"capturedAt": agent.ISONowMs(),
 		"via":        "agent-cli",
 	}})
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE shipping_verifications SET status=$1,owner_id=COALESCE(owner_id,$2),verified_by_id=CASE WHEN $3 THEN $2 ELSE verified_by_id END,
-		       evidence=CASE WHEN $4<>'' THEN $5::jsonb ELSE evidence END,notes=CASE WHEN $6<>'' THEN $6 ELSE notes END,
-		       completed_at=CASE WHEN $3 THEN NOW() ELSE NULL END,updated_at=NOW()
-		 WHERE id=$7 AND feature_id=$8`,
-		status, me, completing, evidence, string(proof), notes, squareID, featureID); err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	if status == "failed" {
+	// #213:收编 db.WithTx——各步失败均 ErrCode(err) 同构映射,响应字节不变。
+	if err := dbpkg.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO shipping_regressions
-			  (id,feature_id,source_verification_id,title,kind,expected,status,created_by)
-			 VALUES ($1,$2,$3,$4,'manual_replay',$5,'failing',$6)
-			 ON CONFLICT (source_verification_id) WHERE source_verification_id IS NOT NULL
-			 DO UPDATE SET status='failing',updated_at=NOW()`,
-			"rg-"+agent.UUIDHex(), featureID, squareID, "Replay failed square: "+squareTitle,
-			"The behavior proven by this square remains true", me); err != nil {
-			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
+			UPDATE shipping_verifications SET status=$1,owner_id=COALESCE(owner_id,$2),verified_by_id=CASE WHEN $3 THEN $2 ELSE verified_by_id END,
+			       evidence=CASE WHEN $4<>'' THEN $5::jsonb ELSE evidence END,notes=CASE WHEN $6<>'' THEN $6 ELSE notes END,
+			       completed_at=CASE WHEN $3 THEN NOW() ELSE NULL END,updated_at=NOW()
+			 WHERE id=$7 AND feature_id=$8`,
+			status, me, completing, evidence, string(proof), notes, squareID, featureID); err != nil {
+			return err
 		}
-		frictionProof := string(proof)
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO shipping_friction_reports
-			  (id,company_id,feature_id,reporter_id,source,source_key,title,description,severity,frequency,status,evidence)
-			 VALUES ($1,$2,$3,$4,'verification',$5,$6,$7,'high','once','open',$8::jsonb)
-			 ON CONFLICT (company_id,source_key) WHERE source_key IS NOT NULL
-			 DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
-			               last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
-			"fr-"+agent.UUIDHex(), companyID, featureID, me, "verification:"+squareID,
-			"Verification failed: "+squareTitle,
-			"An agent-reported proof failed and was promoted into friction plus a replayable regression.", frictionProof); err != nil {
-			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
+		if status == "failed" {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO shipping_regressions
+				  (id,feature_id,source_verification_id,title,kind,expected,status,created_by)
+				 VALUES ($1,$2,$3,$4,'manual_replay',$5,'failing',$6)
+				 ON CONFLICT (source_verification_id) WHERE source_verification_id IS NOT NULL
+				 DO UPDATE SET status='failing',updated_at=NOW()`,
+				"rg-"+agent.UUIDHex(), featureID, squareID, "Replay failed square: "+squareTitle,
+				"The behavior proven by this square remains true", me); err != nil {
+				return err
+			}
+			frictionProof := string(proof)
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO shipping_friction_reports
+				  (id,company_id,feature_id,reporter_id,source,source_key,title,description,severity,frequency,status,evidence)
+				 VALUES ($1,$2,$3,$4,'verification',$5,$6,$7,'high','once','open',$8::jsonb)
+				 ON CONFLICT (company_id,source_key) WHERE source_key IS NOT NULL
+				 DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
+				               last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
+				"fr-"+agent.UUIDHex(), companyID, featureID, me, "verification:"+squareID,
+				"Verification failed: "+squareTitle,
+				"An agent-reported proof failed and was promoted into friction plus a replayable regression.", frictionProof); err != nil {
+				return err
+			}
 		}
-	}
-	sqEvent, _ := json.Marshal(map[string]any{"id": squareID, "status": status, "via": "agent-cli"})
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data) VALUES ($1,$2,$3,$4,'verification.updated',$5::jsonb)`,
-		"se-"+agent.UUIDHex(), companyID, featureID, me, string(sqEvent)); err != nil {
-		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
-	}
-	if err := tx.Commit(); err != nil {
+		sqEvent, _ := json.Marshal(map[string]any{"id": squareID, "status": status, "via": "agent-cli"})
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO shipping_events (id,company_id,feature_id,actor_id,kind,data) VALUES ($1,$2,$3,$4,'verification.updated',$5::jsonb)`,
+			"se-"+agent.UUIDHex(), companyID, featureID, me, string(sqEvent)); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
 	}
 	suffix := ""

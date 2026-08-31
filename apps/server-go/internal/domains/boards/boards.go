@@ -221,6 +221,9 @@ func (s *Server) CreateBoard(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
 	description = httpx.UTF16Cap(description, 4000)
 	boardID := "board-" + authn.NewToken()[:12]
+	// 事务豁免(#213):各步失败的 500 文案各异(tx failed/insert failed/
+	// columns seed failed/commit failed),WithTx 单一错误通道抹平
+	// BeginTx/Commit 区分,响应字节无法等价。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "tx failed")

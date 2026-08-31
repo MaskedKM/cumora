@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 )
 
 // Domain:boards 域子包的接收器——嵌入 agent.Service(内核),方法体与
@@ -418,24 +419,23 @@ func (s *Domain) cliBoardCreate(ctx context.Context, parsed agent.Parsed, me, co
 		description = v
 	}
 	id := "board-" + agent.UUIDHex()[:12]
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return agent.ErrThrow(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO boards (id, company_id, title, description, created_by) VALUES ($1, $2, $3, $4, $5)`,
-		id, companyID, agent.UTF16Slice(title, 200), description, me); err != nil {
-		return agent.ErrThrow(err)
-	}
-	for i, seed := range []string{"Todo", "Doing", "Done"} {
+	// #213:收编 db.WithTx——各步失败均 ErrThrow(err),错误映射单一,
+	// 响应字节不变。
+	if err := dbpkg.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
-			"col-"+agent.UUIDHex()[:12], id, seed, (i+1)*1000); err != nil {
-			return agent.ErrThrow(err)
+			`INSERT INTO boards (id, company_id, title, description, created_by) VALUES ($1, $2, $3, $4, $5)`,
+			id, companyID, agent.UTF16Slice(title, 200), description, me); err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		for i, seed := range []string{"Todo", "Doing", "Done"} {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
+				"col-"+agent.UUIDHex()[:12], id, seed, (i+1)*1000); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return agent.ErrThrow(err)
 	}
 	s.publishBoardCli(companyID, "board.created", id, nil, nil, nil, nil, me)
