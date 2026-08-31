@@ -373,7 +373,7 @@ func (s *Server) ListCalendarEvents(w http.ResponseWriter, r *http.Request, para
 	sqlStr += ` ORDER BY start_at ASC LIMIT 1000`
 	rows, err := s.DB.QueryContext(r.Context(), sqlStr, args...)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -533,7 +533,7 @@ func (s *Server) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 			&recurrence, &e.Status, &e.LastFiredAt, &e.ReminderMinutes, &e.ReminderChannel,
 			&e.IsPrivate, &e.CreatedAt, &e.UpdatedAt)
 	if insertErr != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, insertErr)
 		return
 	}
 	e.Recurrence = recurrence
@@ -567,7 +567,7 @@ func (s *Server) GetCalendarEvent(w http.ResponseWriter, r *http.Request, id str
 		if err == sql.ErrNoRows {
 			httpx.WriteError(w, http.StatusNotFound, "event not found")
 		} else {
-			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			httpx.WriteInternalError(w, r, err)
 		}
 		return
 	}
@@ -744,7 +744,7 @@ func (s *Server) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request, id 
 		if err == sql.ErrNoRows {
 			httpx.WriteError(w, http.StatusNotFound, "event not found")
 		} else {
-			httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+			httpx.WriteInternalError(w, r, err)
 		}
 		return
 	}
@@ -762,7 +762,7 @@ func (s *Server) DeleteCalendarEvent(w http.ResponseWriter, r *http.Request, id 
 		`DELETE FROM calendar_events WHERE id = $1 AND company_id = $2 AND `+vis(3, 2),
 		id, companyID, me)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -792,7 +792,7 @@ func (s *Server) RunCalendarEventNow(w http.ResponseWriter, r *http.Request, id 
 		if err == sql.ErrNoRows {
 			httpx.WriteError(w, http.StatusNotFound, "event not found")
 		} else {
-			httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+			httpx.WriteInternalError(w, r, err)
 		}
 		return
 	}
@@ -823,7 +823,7 @@ func (s *Server) ListCalendarDispatches(w http.ResponseWriter, r *http.Request, 
 		 WHERE cd.event_id = $1 AND ce.company_id = $2
 		 ORDER BY cd.scheduled_for DESC LIMIT 200`, id, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()

@@ -378,11 +378,15 @@ func (s *Server) CreateCompany(w http.ResponseWriter, r *http.Request) {
 	baseSlug := slugify(name)
 	slug := baseSlug
 	id := "co-" + authn.NewToken()[:10]
+	// #214:接住被重试循环吞掉的最后一次错误(3 次撞 slug 全败才落到
+	// 循环外;非冲突错已在循环内 500 返回)。
+	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		_, err := s.DB.ExecContext(r.Context(), `
 			INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, $2, $3, $4)`,
 			id, name, slug, uid)
 		if err != nil {
+			lastErr = err
 			if strings.Contains(err.Error(), "duplicate key") {
 				slug = baseSlug + "-" + authn.NewToken()[:4]
 				id = "co-" + authn.NewToken()[:10]
@@ -423,7 +427,10 @@ func (s *Server) CreateCompany(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": id, "name": name, "slug": slug, "role": "owner"})
 		return
 	}
-	httpx.WriteError(w, http.StatusInternalServerError, "failed to create company after retries")
+	if lastErr == nil { // 不可达:循环只能经 continue(必置 lastErr)退出
+		lastErr = fmt.Errorf("failed to create company after retries")
+	}
+	httpx.WriteInternalError(w, r, lastErr)
 }
 
 // tierCompanies 对齐 TIER_LIMITS(free=3/pro=10/max=25)。

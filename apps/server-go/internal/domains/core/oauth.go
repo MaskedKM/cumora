@@ -766,7 +766,7 @@ func (s *Server) AuthStart(w http.ResponseWriter, r *http.Request, provider stri
 	}
 	state, err := oauthCreateState(r.Context(), deps.rdb, provider, returnURL, inviteToken)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "state mint failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, oauthAuthorizeURL(provider, state), http.StatusFound)

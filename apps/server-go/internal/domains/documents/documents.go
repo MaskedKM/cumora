@@ -101,7 +101,7 @@ func (s *Server) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		  FROM documents WHERE company_id = $1
 		 ORDER BY updated_at DESC LIMIT 200`, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -145,14 +145,14 @@ func (s *Server) CreateDocument(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.DB.ExecContext(r.Context(), `
 		INSERT INTO documents (id, company_id, title, created_by, conversation_id)
 		VALUES ($1, $2, $3, $4, $5)`, id, companyID, title, uid, convo); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	var d docRow
 	err := s.DB.QueryRowContext(r.Context(), docSelect, id, companyID).
 		Scan(&d.id, &d.title, &d.createdBy, &d.conversationID, &d.createdAt, &d.updatedAt)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "readback failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	events.DocChanged(r.Context(), companyID, id, "document.created", uid)
@@ -193,7 +193,7 @@ func (s *Server) RenameDocument(w http.ResponseWriter, r *http.Request, id strin
 		UPDATE documents SET title = $1, updated_at = NOW()
 		 WHERE id = $2 AND company_id = $3`, title, id, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -256,7 +256,7 @@ func (s *Server) SetDocumentCollaborators(w http.ResponseWriter, r *http.Request
 			 WHERE company_id = $1 AND id = ANY($2::text[]) AND departed_at IS NULL`,
 			companyID, ids)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "participants query failed")
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		known := map[string]bool{}
@@ -283,7 +283,7 @@ func (s *Server) SetDocumentCollaborators(w http.ResponseWriter, r *http.Request
 	if _, err := s.DB.ExecContext(r.Context(), `
 		UPDATE documents SET collaborators = $2::jsonb, updated_at = NOW() WHERE id = $1`,
 		id, raw); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	events.DocChanged(r.Context(), companyID, id, "document.updated", uid)
@@ -309,7 +309,7 @@ func (s *Server) DeleteDocument(w http.ResponseWriter, r *http.Request, id strin
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
 		`DELETE FROM documents WHERE id = $1`, id); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	events.DocChanged(r.Context(), companyID, id, "document.deleted", uid)

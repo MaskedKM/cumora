@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -238,7 +239,8 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 
 	if err := b.ensurePubsub(); err != nil {
 		// Redis 不可达:SSE 会话收不到任何扇出,等同半开——直接 503。
-		http.Error(w, "wake bus unavailable", http.StatusServiceUnavailable)
+		// 错误体 #214 起对齐全站 JSON {error} 形状(原为 http.Error 纯文本)。
+		httpx.WriteError(w, http.StatusServiceUnavailable, "wake bus unavailable")
 		return
 	}
 
@@ -267,7 +269,7 @@ func (b *Bus) Attach(agentID string, w http.ResponseWriter, reqCtx context.Conte
 			}
 			b.mu.Unlock()
 			slog.Warn("[wake-bus] redis subscribe failed", "agent", agentID, "err", err)
-			http.Error(w, "wake bus subscribe failed", http.StatusServiceUnavailable)
+			httpx.WriteError(w, http.StatusServiceUnavailable, "wake bus subscribe failed")
 			return
 		}
 	}

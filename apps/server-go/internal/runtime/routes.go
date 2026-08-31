@@ -203,6 +203,8 @@ func (s *Service) auth(next func(w http.ResponseWriter, r *http.Request, agentID
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("[runtime] handler panicked", "method", r.Method, "path", r.URL.Path, "panic", rec)
+				// 500 豁免(#214):panic recover 面无 error 对象;固定文案
+				// 对齐 TS withAgent 的 catch 形状。
 				httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
