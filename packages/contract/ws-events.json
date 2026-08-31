@@ -1,0 +1,965 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cumora.dev/contract/ws-events.json",
+  "title": "Cumora WebSocket 事件契约",
+  "description": "WS 广播面单一契约源(ADR 0004 延伸 · 票 #221)。#187 已把 HTTP 面全契约生成;本文件把 /ws 上的事件联合类型也收进契约:每个 $defs 条目是一个事件的载荷 schema,x-event 携带事件名 / Redis 通道 / 作用域元数据。scripts/contract-gen-ws.mjs 由此生成 TS(packages/contract/src/ws-events.d.ts,前端 client.ts 与集成 harness 消费)与 Go(apps/server-go/internal/events/ws.gen.go,publish.go 与 wsx 网关消费);npm run contract:gen 再生成,npm run contract:check 对账 CI 拦漂移。三个作用域:x-event.scope=company —— 公司域事件,经 Redis 通道发布、由 wsx 聊天桥按租户成员资格过滤转发(转发原始字节,客户端收到的帧即含 companyId);scope=doc —— 文档房间域,经 docrelay/sidecar 的 doc.* 通道,网关重建帧下发(companyId/authorId 不透出);scope=gateway —— 网关自身生成、只下发不上 Redis(hello / doc.sync / doc.error)。语义注记(逐字段等价于退役前的三份手写):消息载荷的时间键是 at、不是 createdAt,且双格式 —— agent/调度路径 httpx.ISOms(JS Date.toISOString 同形,毫秒三位),人类 HTTP 发送路径 time.RFC3339Nano;participants.* 的 statusUpdatedAt 由各发布方自定(存在/缺席可空)。Go 消息 id 是随机串、不可排序,排序键用 sequence。",
+  "type": "object",
+  "x-channels": {
+    "cumora:msg.new": {
+      "go": "ChMessageNew",
+      "ts": "CH_MESSAGE_NEW",
+      "description": "新消息广播。订阅方:wsx 聊天桥(扇出)+ sched 邮箱调度器(唤醒)。"
+    },
+    "cumora:msg.delta": {
+      "go": "ChMessageDelta",
+      "ts": "CH_MESSAGE_DELTA",
+      "description": "流式增量(#210 决策票管发布方;通道与载荷形状已入契约,Go 侧暂无发布方)。"
+    },
+    "cumora:typing": {
+      "go": "ChTyping",
+      "ts": "CH_TYPING",
+      "description": "输入态(开始/停止)。"
+    },
+    "cumora:status": {
+      "go": "ChStatus",
+      "ts": "CH_STATUS",
+      "description": "复合通道:participants.status / participants.avatar / participants.added / computers.status 四类事件共用。"
+    },
+    "cumora:reactions": {
+      "go": "ChReactions",
+      "ts": "CH_REACTIONS",
+      "description": "消息表情反应聚合。"
+    },
+    "cumora:polls": {
+      "go": "ChPolls",
+      "ts": "CH_POLLS",
+      "description": "投票状态(poll.updated)+ sched 调度唤醒。"
+    },
+    "cumora:group.pulled": {
+      "go": "ChGroupPulled",
+      "ts": "CH_GROUP_PULLED",
+      "description": "代理拉群通知。"
+    },
+    "cumora:convo.updated": {
+      "go": "ChConvoUpdated",
+      "ts": "CH_CONVO_UPDATED",
+      "description": "会话元数据补丁(conversation.updated)。"
+    },
+    "cumora:convene": {
+      "go": "ChConvene",
+      "ts": "CH_CONVENE",
+      "description": "convene 会话生命周期(convene)。"
+    },
+    "cumora:boards": {
+      "go": "ChBoards",
+      "ts": "CH_BOARDS",
+      "description": "看板变更(board.changed)。"
+    },
+    "cumora:docs": {
+      "go": "ChDocs",
+      "ts": "CH_DOCS",
+      "description": "文档索引变更(doc.changed)。"
+    },
+    "cumora:doc.update": {
+      "go": "ChDocUpdate",
+      "ts": "CH_DOC_UPDATE",
+      "description": "文档房间域:Yjs 增量(doc.update),docrelay 管,不经公司域聊天桥。"
+    },
+    "cumora:doc.awareness": {
+      "go": "ChDocAware",
+      "ts": "CH_DOC_AWARENESS",
+      "description": "文档房间域:awareness 光标/在场(doc.awareness),docrelay 管。"
+    },
+    "cumora:doc.mention": {
+      "go": "ChDocMention",
+      "ts": "CH_DOC_MENTION",
+      "description": "文档 @mention(doc.mention),走公司域通用桥(收件人不必开着文档)。"
+    },
+    "cumora:calendar.reminder": {
+      "go": "ChCalendarReminder",
+      "ts": "CH_CALENDAR_REMINDER",
+      "description": "日历提醒 toast(calendar.reminder)。"
+    },
+    "cumora:calendar.events": {
+      "go": "ChCalendarEvents",
+      "ts": "CH_CALENDAR_EVENTS",
+      "description": "日历行 CRUD/派发推进(calendar.changed)。"
+    }
+  },
+  "$defs": {
+    "MessageNewEvent": {
+      "type": "object",
+      "description": "一条新消息落库后的广播。message 为消息 wire 全量(shape = OpenAPI Message:at/quoted/email/poll/pollTallies 等),clientId 用于前端乐观气泡与 WS 回显去重(tempId 键配对)。",
+      "x-event": {
+        "type": "message.new",
+        "channel": "cumora:msg.new",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "message.new"
+        },
+        "companyId": {
+          "type": "string",
+          "description": "租户标记;Go 发布方为空串时整键省略(对齐 TS `companyId: x ?? undefined`)。"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "message": {
+          "$ref": "openapi.yaml#/components/schemas/Message",
+          "description": "消息 wire 形状(OpenAPI Message:时间键 at —— agent 路径 ISOms / 用户路径 RFC3339Nano;id 随机串不可排序,排序键 sequence)。"
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "message"
+      ]
+    },
+    "MessageDeltaEvent": {
+      "type": "object",
+      "description": "流式增量(代理边打边发)。发布方归 #210 决策票;契约先行收录通道与载荷。",
+      "x-event": {
+        "type": "message.delta",
+        "channel": "cumora:msg.delta",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "message.delta"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "authorId": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string",
+          "description": "本帧追加到 body 的文本块;客户端按 ACCUMULATE 语义累积。"
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "在途消息的序号,起流时分配。"
+        },
+        "done": {
+          "type": "boolean",
+          "description": "true = 流结束,最终 body 已落库。"
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "messageId",
+        "authorId",
+        "delta",
+        "sequence",
+        "done"
+      ]
+    },
+    "TypingEvent": {
+      "type": "object",
+      "description": "代理输入态:done=false 开始 / true 停止。",
+      "x-event": {
+        "type": "typing",
+        "channel": "cumora:typing",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "typing"
+        },
+        "companyId": {
+          "type": "string",
+          "x-go": {
+            "omitempty": false
+          },
+          "description": "Go events.Typing 恒带此键(空串也保留)——桥对空 companyId 的帧本就丢弃,语义等价。"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "agentId",
+        "done"
+      ]
+    },
+    "StatusEvent": {
+      "type": "object",
+      "description": "参与者在场/工作态翻转。statusUpdatedAt 缺席 = 广播方未提供(前端按 undefined 容忍)。",
+      "x-event": {
+        "type": "participants.status",
+        "channel": "cumora:status",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "participants.status"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "participantId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "openapi.yaml#/components/schemas/Status",
+          "x-go-type": "string"
+        },
+        "statusUpdatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "发布方时间语义:Go 侧 httpx.ISOms。"
+        }
+      },
+      "required": [
+        "type",
+        "participantId",
+        "status"
+      ]
+    },
+    "AvatarEvent": {
+      "type": "object",
+      "description": "代理头像(重)生成完毕;前端 participants store 原地补丁,不等 60s 刷新滴答。",
+      "x-event": {
+        "type": "participants.avatar",
+        "channel": "cumora:status",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "participants.avatar"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "participantId": {
+          "type": "string"
+        },
+        "avatarUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "participantId",
+        "avatarUrl"
+      ]
+    },
+    "ParticipantAddedEvent": {
+      "type": "object",
+      "description": "人类接受邀请(或以其他方式新镜像进公司 participants)。participant 为 ApiParticipant 的窄投影:前端 byId 原地 upsert 不再拉取;conversationId 在场时前端顺手补对应会话的成员表。",
+      "x-event": {
+        "type": "participants.added",
+        "channel": "cumora:status",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "participants.added"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string",
+          "description": "加入恰逢被加进某个会话(通常 #all-hands)时携带;缺席 = 仅入公司。"
+        },
+        "participant": {
+          "type": "object",
+          "description": "窄投影:仅渲染成员芯片/花名册所需字段(statusUpdatedAt 可为 null —— DB 行该列 NULL)。刻意不用 OpenAPI Participant 全量:该 wire 事件从不携带 bio/tools/systemPrompt 等列。",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "openapi.yaml#/components/schemas/ParticipantKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "initial": {
+              "type": "string"
+            },
+            "avatarBg": {
+              "type": "string"
+            },
+            "avatarUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "openapi.yaml#/components/schemas/Status"
+            },
+            "statusUpdatedAt": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "role",
+            "initial",
+            "avatarBg",
+            "avatarUrl",
+            "status",
+            "statusUpdatedAt"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "participant"
+      ]
+    },
+    "ComputerStatusEvent": {
+      "type": "object",
+      "description": "BYOA Computer(代理宿主)上线/离线/忙碌;Computers 面板与代理芯片即时反映宿主可用性。",
+      "x-event": {
+        "type": "computers.status",
+        "channel": "cumora:status",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "computers.status"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "computerId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "openapi.yaml#/components/schemas/ComputerStatus",
+          "x-go-type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "computerId",
+        "status"
+      ]
+    },
+    "ReactionsEvent": {
+      "type": "object",
+      "description": "某条消息的表情反应聚合(全量快照,非增量)。",
+      "x-event": {
+        "type": "message.reactions",
+        "channel": "cumora:reactions",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "message.reactions"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "reactions": {
+          "type": "array",
+          "description": "全量聚合:每 emoji 一条;mine 依接收者视角,users 供悬浮名单。",
+          "items": {
+            "$ref": "openapi.yaml#/components/schemas/ReactionEntry"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "messageId",
+        "reactions"
+      ]
+    },
+    "PollUpdatedEvent": {
+      "type": "object",
+      "description": "投票状态变更(投票/改票/手动或到期关闭):携带全量反规范化快照,渲染端原地补丁免重拉。",
+      "x-event": {
+        "type": "poll.updated",
+        "channel": "cumora:polls",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "poll.updated"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "poll": {
+          "$ref": "openapi.yaml#/components/schemas/PollPayload",
+          "description": "messages.poll 存储同形;关闭事件带 closedAt。"
+        },
+        "tallies": {
+          "type": "array",
+          "description": "逐选项聚合(count + voterIds);voterIds 稳定排序,跨事件 diff 便宜。",
+          "items": {
+            "$ref": "openapi.yaml#/components/schemas/PollTally"
+          }
+        },
+        "actorId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "null = 服务端到期清扫触发。"
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "messageId",
+        "poll",
+        "tallies",
+        "actorId"
+      ]
+    },
+    "ConversationUpdatedEvent": {
+      "type": "object",
+      "description": "会话元数据补丁(主题/标题);客户端外科手术式补丁,不重拉。",
+      "x-event": {
+        "type": "conversation.updated",
+        "channel": "cumora:convo.updated",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "conversation.updated"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "patch": {
+          "type": "object",
+          "properties": {
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "null = 清空话题。"
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "patch"
+      ]
+    },
+    "GroupPulledEvent": {
+      "type": "object",
+      "description": "代理拉群完成通知;前端刷新会话列表见新群。",
+      "x-event": {
+        "type": "group.pulled",
+        "channel": "cumora:group.pulled",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "group.pulled"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "pulledById": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "conversationId",
+        "pulledById"
+      ]
+    },
+    "ConveneEvent": {
+      "type": "object",
+      "description": "convene(临场圆桌)会话生命周期:轻载荷,前端收到后重拉全量。",
+      "x-event": {
+        "type": "convene",
+        "channel": "cumora:convene",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "convene"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "started",
+            "transcript",
+            "ended",
+            "tile"
+          ]
+        },
+        "data": {
+          "description": "按 kind 而异的自由载荷(tile 帧 = 布局瓦片等);契约不建模内部结构。",
+          "x-ts-type": "unknown"
+        }
+      },
+      "required": [
+        "type",
+        "sessionId",
+        "conversationId",
+        "kind"
+      ]
+    },
+    "BoardEvent": {
+      "type": "object",
+      "description": "看板变更广播。刻意粗粒度:携带 boardId,前端按需重拉该板;卡级形状回显供乐观渲染免拉取;mentions 回显供通知 toaster 在用户没盯着看板时也能响。",
+      "x-event": {
+        "type": "board.changed",
+        "channel": "cumora:boards",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "board.changed"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "board.created",
+            "board.updated",
+            "board.deleted",
+            "column.created",
+            "column.updated",
+            "column.deleted",
+            "card.created",
+            "card.updated",
+            "card.moved",
+            "card.deleted",
+            "comment.created",
+            "comment.deleted"
+          ]
+        },
+        "boardId": {
+          "type": "string"
+        },
+        "cardId": {
+          "type": "string"
+        },
+        "columnId": {
+          "type": "string"
+        },
+        "commentId": {
+          "type": "string"
+        },
+        "mentions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "变更实体里解析出的 @mention 目标 id。"
+        },
+        "actorId": {
+          "type": "string",
+          "description": "触发者;前端用于抑制自我通知。"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "boardId"
+      ]
+    },
+    "DocIndexEvent": {
+      "type": "object",
+      "description": "文档索引/元数据变更(内容同步走 doc.* 房间域通道;本事件只让客户端刷新文档列表,代理新文档即刻可见)。",
+      "x-event": {
+        "type": "doc.changed",
+        "channel": "cumora:docs",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.changed"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "document.created",
+            "document.updated",
+            "document.deleted"
+          ]
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "actorId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "documentId"
+      ]
+    },
+    "DocUpdateEvent": {
+      "type": "object",
+      "description": "Yjs 增量已应用到文档房间。base64 承载(WS 路径 JSON-only);originId 供发送方自己的连接回声抑制。Redis 总线上的载荷(sidecar → docrelay)多带 companyId/authorId;wsx 网关下发帧不透出这两键 —— 契约按并集建模(均可选)。",
+      "x-event": {
+        "type": "doc.update",
+        "channel": "cumora:doc.update",
+        "scope": "doc"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.update"
+        },
+        "companyId": {
+          "type": "string",
+          "description": "仅 Redis 总线载荷携带;网关下发帧无此键。"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "updateB64": {
+          "type": "string",
+          "description": "Base64 的 Yjs 增量字节(非全量 state)。"
+        },
+        "originId": {
+          "type": "string",
+          "description": "产生此更新的 WS 客户端/代理稳定 id。"
+        },
+        "authorId": {
+          "type": "string",
+          "description": "仅 Redis 总线载荷携带;活动通知用(通常为 user/agent id)。"
+        }
+      },
+      "required": [
+        "type",
+        "documentId",
+        "updateB64",
+        "originId"
+      ]
+    },
+    "DocAwarenessEvent": {
+      "type": "object",
+      "description": "awareness(光标/选区/在场)—— 临时态不落库,与 doc.update 同扇出路径。",
+      "x-event": {
+        "type": "doc.awareness",
+        "channel": "cumora:doc.awareness",
+        "scope": "doc"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.awareness"
+        },
+        "companyId": {
+          "type": "string",
+          "description": "仅 Redis 总线载荷携带;网关下发帧无此键。"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "updateB64": {
+          "type": "string"
+        },
+        "originId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "documentId",
+        "updateB64",
+        "originId"
+      ]
+    },
+    "DocSyncEvent": {
+      "type": "object",
+      "description": "文档订阅握手回执:订阅登记成功即下发全量 state(客户端以收到此帧 = 订阅建立)。",
+      "x-event": {
+        "type": "doc.sync",
+        "scope": "gateway"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.sync"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "stateB64": {
+          "type": "string",
+          "description": "Base64 的 Yjs 全量 state(区别于 updateB64 增量)。"
+        },
+        "originId": {
+          "type": "string",
+          "description": "网关为该连接分配的 origin id。"
+        }
+      },
+      "required": [
+        "type",
+        "documentId",
+        "stateB64",
+        "originId"
+      ]
+    },
+    "DocErrorEvent": {
+      "type": "object",
+      "description": "doc.* 帧服务端错误统一回执(订阅失败/未找到等);documentId 可能缺席(畸形帧无有效 id)。",
+      "x-event": {
+        "type": "doc.error",
+        "scope": "gateway"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.error"
+        },
+        "documentId": {
+          "type": "string",
+          "x-go": {
+            "omitempty": false
+          },
+          "description": "恒携带(空串 = 原帧无有效 id),对齐网关现状。"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "error"
+      ]
+    },
+    "DocMentionEvent": {
+      "type": "object",
+      "description": "文档内 @mention:载荷足以让渲染端零往返弹 toast(标题/提及者显示名/目标 id 列表),走公司域通用桥 —— 收件人不必开着该文档。",
+      "x-event": {
+        "type": "doc.mention",
+        "channel": "cumora:doc.mention",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "doc.mention"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "documentTitle": {
+          "type": "string"
+        },
+        "mentionerId": {
+          "type": "string"
+        },
+        "mentionerName": {
+          "type": "string"
+        },
+        "mentionedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "被提及的参与者 id;客户端按 includes(meId) 过滤。"
+        }
+      },
+      "required": [
+        "type",
+        "documentId",
+        "documentTitle",
+        "mentionerId",
+        "mentionerName",
+        "mentionedIds"
+      ]
+    },
+    "CalendarReminderEvent": {
+      "type": "object",
+      "description": "「距此日历事件触发还有 N 分钟」提醒。桥扇出到全公司,渲染端按 recipientUserIds.includes(meId) 过滤;接收者可为空(仅代理的事件 —— 桥照发,无渲染端匹配)。",
+      "x-event": {
+        "type": "calendar.reminder",
+        "channel": "cumora:calendar.reminder",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "calendar.reminder"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "occurrenceAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "本次触发对应的出现时刻(重复事件逐次计算)。"
+        },
+        "leadMinutes": {
+          "type": "integer",
+          "description": "触发时刻距 occurrenceAt 的分钟数,toast 文案用。"
+        },
+        "recipientUserIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "非空时仅这些人类用户弹 toast;代理刻意排除(已走派发路径唤醒)。"
+        },
+        "kind": {
+          "$ref": "openapi.yaml#/components/schemas/CalendarEventKind",
+          "x-go-type": "string"
+        },
+        "assigneeId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "toast 副标题展示用;null = 无指派。"
+        }
+      },
+      "required": [
+        "type",
+        "eventId",
+        "title",
+        "occurrenceAt",
+        "leadMinutes",
+        "recipientUserIds",
+        "kind",
+        "assigneeId"
+      ]
+    },
+    "CalendarEventChangedEvent": {
+      "type": "object",
+      "description": "日历行 CRUD / 派发器推进 last_fired_at。载荷刻意薄:客户端重拉受影响行(删除则丢弃),不做行内 diff —— 与 doc.changed 同思路,避免 router 与 CLI 两套编码器锁步。",
+      "x-event": {
+        "type": "calendar.changed",
+        "channel": "cumora:calendar.events",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "calendar.changed"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "event.created",
+            "event.updated",
+            "event.deleted",
+            "event.dispatched"
+          ]
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "actorId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "null = 服务端自身(到期清扫);非空时渲染端避免把 actor 自己的乐观写回显给自己。"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "eventId",
+        "actorId"
+      ]
+    },
+    "HelloEvent": {
+      "type": "object",
+      "description": "握手帧:握手完成即发(重连同发)。客户端以收到 hello = 连接完成,据此重放 doc.subscribe、冲刷断线攒批、重引数据;它是每条连接的第一帧。",
+      "x-event": {
+        "type": "hello",
+        "scope": "gateway"
+      },
+      "properties": {
+        "type": {
+          "const": "hello"
+        },
+        "instanceId": {
+          "type": "string",
+          "description": "服务端实例 id。"
+        },
+        "ts": {
+          "type": "integer",
+          "x-go-type": "int64",
+          "description": "epoch 毫秒(UnixMilli)。"
+        }
+      },
+      "required": [
+        "type",
+        "instanceId",
+        "ts"
+      ]
+    }
+  }
+}

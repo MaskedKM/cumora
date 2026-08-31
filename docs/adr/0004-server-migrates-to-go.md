@@ -112,3 +112,31 @@ runtime and dependency pains).
 - coverage 守卫升双形态:手写 `HandleFunc("GET /x")` 与生成
   `HandleFunc("GET "+options.BaseURL+"/x")` 同腿对账,零豁免表。
 - 余 17 tag 机械迁移(闭包工厂 → 接口方法)渐进消化,不再豁免。
+
+## WS 事件面契约化(#221,2026-08-31)
+
+- HTTP 面(#187 收官)之外的第三份手写锁步:WS 事件联合在 apps/web
+  client.ts、集成 harness 的 redis.ts、Go internal/events/publish.go +
+  wsx 网关(yjs-sidecar 另有一份 doc.* 内联副本)各写一遍,漂移只能运
+  行时发现——calendar.reminder/msg.delta 两个孤儿通道正是这样潜伏的。
+- 选型:纯 JSON Schema 单文件(packages/contract/ws-events.json)+
+  零依赖自写生成器(scripts/contract-gen-ws.mjs),不用 AsyncAPI——其
+  Go 生成器在离线/弱出口环境不可靠,且事件载荷需交叉引用既有 OpenAPI
+  组件(Message/Status/Poll…),JSON Schema 经 `openapi.yaml#/…` $ref
+  直连两份生成物(openapi-typescript 的 Schemas / oapi-codegen 的
+  contract 包语义)。生成器输出确定性:gofmt 字节形显式复刻(const `=`
+  列与字段列对齐、结构体正文零注释),双跑 diff 为零。
+- 双端产物:TS `packages/contract/src/ws-events.d.ts`(WsEvent 全量联合
+  / WsBroadcastEvent 总线联合 / WsChannels 通道映射)+ Go
+  `internal/events/ws.gen.go`(事件名与通道常量、CompanyChannels、逐
+  事件载荷结构体)。三端手写退役:client.ts 的 union 改 import;harness
+  与 sidecar 的接口改 re-export 且通道常量 `satisfies WsChannels[…]`
+  钉值;publish.go 与 wsx 网关改组生成结构体,通道/事件字面量清零。
+- 行为等价基线:逐事件字段与退役前一致(时间键 at 的 agent ISOms /
+  用户 RFC3339Nano 双语义、actorId 等可空键、typing.companyId 恒带等
+  以 x-go 注记逐键保真);Go 发布方深层载荷(message/poll 等)仍为
+  map[string]any——发布方从 DB 行动态构形,深层类型化留给消费端。
+- 守卫双卡:contract:check 再生对账(生成物漂移即红)+ 三端手写漂移
+  grep(client.ts/harness/sidecar/publish.go/wsx 不得再内联事件形状)。
+  域包 PublishRaw 发布点(domains/agent/sched)载荷字面量的收敛留后
+  续票,通道与事件名引用已全部走生成常量。

@@ -1,4 +1,5 @@
 import type { components } from '@cumora/contract'
+import type { WsEvent as WsServerEvent } from '@cumora/contract/ws-events'
 
 type Schemas = components['schemas']
 
@@ -54,9 +55,11 @@ export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
 export type MeResponse = Schemas['MeResponse']
 
-import type {Status,
+/* #221:Status/CalendarEventKind/ComputerStatus 原只被手写 WsEvent union 引用,
+ * 契约化后随之退役(事件载荷里的枚举由生成物直接引用契约 schema)。 */
+import type {
   BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
-  CalendarEvent, CalendarEventKind, CalendarEventStatus, CalendarDispatch, ComputerStatus, ComputerKind, EngineId,
+  CalendarEvent, CalendarEventStatus, CalendarDispatch, ComputerKind, EngineId,
 } from '@/types'
 import { getAuthToken, getActiveCompanyId } from '@/stores/auth'
 import { SERVER_ORIGIN, fetchJson, getDevModeEnabled } from './core'
@@ -790,66 +793,12 @@ export const api = {
 
 /* ============== WebSocket bridge ============== */
 
-export type WsEvent =
-  | { type: 'hello'; instanceId: string; ts: number }
-  | { type: 'message.new'; conversationId: string; message: ApiMessage }
-  | { type: 'message.delta'; conversationId: string; messageId: string; authorId: string; delta: string; sequence: number; done: boolean }
-  | { type: 'typing'; conversationId: string; agentId: string; done: boolean }
-  | { type: 'participants.status'; participantId: string; status: Status; statusUpdatedAt?: string }
-  | { type: 'participants.avatar'; participantId: string; avatarUrl: string }
-  | { type: 'computers.status'; computerId: string; status: ComputerStatus }
-  | { type: 'participants.added'; conversationId?: string; participant: {
-      id: string; kind: 'human' | 'agent'; name: string; role: string | null;
-      initial: string; avatarBg: string; avatarUrl: string | null;
-      status: Status; statusUpdatedAt: string | null;
-    } }
-  | { type: 'message.reactions'; conversationId: string; messageId: string; reactions: Array<{ emoji: string; count: number; mine?: boolean; users?: string[] }> }
-  | { type: 'group.pulled'; conversationId: string; pulledById: string }
-  | { type: 'conversation.updated'; conversationId: string; patch: { topic?: string | null; title?: string } }
-  | { type: 'convene'; sessionId: string; conversationId: string; kind: 'started' | 'transcript' | 'ended' | 'tile'; data?: unknown }
-  | { type: 'board.changed'; kind:
-        | 'board.created' | 'board.updated' | 'board.deleted'
-        | 'column.created' | 'column.updated' | 'column.deleted'
-        | 'card.created' | 'card.updated' | 'card.moved' | 'card.deleted'
-        | 'comment.created' | 'comment.deleted'
-      boardId: string; cardId?: string; columnId?: string; commentId?: string
-      mentions?: string[]; actorId?: string }
-  | { type: 'doc.sync'; documentId: string; stateB64: string; originId: string }
-  | { type: 'doc.update'; documentId: string; updateB64: string; originId: string }
-  | { type: 'doc.awareness'; documentId: string; updateB64: string; originId: string }
-  | { type: 'doc.error'; documentId?: string; error: string }
-  | { type: 'doc.changed'; kind: 'document.created' | 'document.updated' | 'document.deleted'; documentId: string; actorId?: string }
-  | { type: 'doc.mention'; documentId: string; documentTitle: string; mentionerId: string; mentionerName: string; mentionedIds: string[] }
-  | {
-      type: 'calendar.reminder'
-      eventId: string
-      title: string
-      occurrenceAt: string
-      leadMinutes: number
-      /** Server limits this to humans only; renderer further filters by
-       *  meId === one-of(recipientUserIds) before showing the toast. */
-      recipientUserIds: string[]
-      kind: CalendarEventKind
-      assigneeId: string | null
-    }
-  | {
-      /** A calendar row was created / updated / deleted, or the dispatcher
-       *  advanced its last_fired_at. Payload is thin — clients refetch the
-       *  affected row (or drop it on delete) rather than diffing inline.
-       *  Mirrors the `doc.changed` shape. */
-      type: 'calendar.changed'
-      kind: 'event.created' | 'event.updated' | 'event.deleted' | 'event.dispatched'
-      eventId: string
-      actorId: string | null
-    }
-  | {
-      type: 'poll.updated'
-      conversationId: string
-      messageId: string
-      poll: import('../types.js').PollPayload
-      tallies: import('../types.js').PollTally[]
-      actorId: string | null
-    }
+/* #221:WS 事件联合类型退役手写 —— 契约生成(packages/contract/ws-events.json
+ * → npm run contract:gen 出 @cumora/contract/ws-events)。新增/修改事件改契
+ * 约一处,本文件的 WsEvent 随再生自动跟上;CI 手写漂移守卫(contract-check.sh)
+ * 拦回到此处内联事件形状的写法。逐事件载荷语义(时间键 at 而非 createdAt、
+ * agent ISOms / 用户 RFC3339Nano 双格式、Go 消息 id 随机串)见契约文件。 */
+export type WsEvent = WsServerEvent
 
 type Listener = (e: WsEvent) => void
 

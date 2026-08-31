@@ -52,7 +52,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** WebSocket gateway (chat/ws bus) */
+        /** WebSocket gateway (chat/ws bus;事件载荷契约见 ws-events.json,#221) */
         get: {
             parameters: {
                 query?: never;

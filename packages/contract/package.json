@@ -3,7 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "OpenAPI 单一契约源与双侧代码生成产物(#48 填充:oapi-codegen / openapi-typescript)",
+  "description": "单一契约源与双侧代码生成产物(#48 HTTP 面:oapi-codegen / openapi-typescript;#221 WS 事件面:contract-gen-ws.mjs)",
   "types": "./src/schema.d.ts",
+  "exports": {
+    ".": { "types": "./src/schema.d.ts" },
+    "./ws-events": { "types": "./src/ws-events.d.ts" }
+  },
   "scripts": {}
 }
