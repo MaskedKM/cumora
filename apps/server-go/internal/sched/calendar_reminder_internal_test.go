@@ -4,6 +4,8 @@
 package sched
 
 import (
+	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
@@ -141,5 +143,83 @@ func TestSanitizeReminderSubject(t *testing.T) {
 	}
 	if got := sanitizeReminderSubject("One", 60); got != "In 1 hour: One" {
 		t.Fatalf("hour singular = %q", got)
+	}
+}
+
+/* ───────── #251:窗口投影的并发确定性(claim-first 的纯函数面) ───────── */
+
+// TestReminderSlotProjectionStableAcrossWindow:同一事件窗口内任意 now
+// (含亚毫秒抖动)投影出的槽位恒同一——并发 tick 无论在窗口内何时投影,
+// (event_id, scheduled_for) claim 键全等,落库唯一键吸收重复抢注;窗口
+// 在槽位处关闭(one-shot 不回发;循环事件则投影到下一个槽位,每槽位至多
+// 一发)。真库 ON CONFLICT 的并发吸收归镜像套件,这里钉键的确定性。
+func TestReminderSlotProjectionStableAcrossWindow(t *testing.T) {
+	start := mustTime(t, "2026-08-31T12:00:00Z")
+	lead := 15 * time.Minute
+	windowStart := start.Add(-lead)
+	for off := time.Duration(0); off < lead; off += 7 * time.Second {
+		for _, jitter := range []time.Duration{0, 1, 777 * time.Microsecond} {
+			now := windowStart.Add(off + jitter)
+			slot, due := reminderSlot(start, nil, lead, now)
+			if !due {
+				t.Fatalf("now=%s inside window must project as due", now.Format(time.RFC3339Nano))
+			}
+			if !slot.Equal(start) {
+				t.Fatalf("slot drifted across window: %s vs %s", slot, start)
+			}
+		}
+	}
+	if _, due := reminderSlot(start, nil, lead, start); due {
+		t.Fatal("one-shot window must close at slot boundary")
+	}
+	rule := &recurrenceRule{Freq: "daily", Interval: 1}
+	next, due := reminderSlot(start, rule, lead, start.Add(24*time.Hour-lead+time.Minute))
+	if !due || !next.Equal(start.Add(24*time.Hour)) {
+		t.Fatalf("post-slot now must project to the NEXT slot, got %s due=%v", next, due)
+	}
+}
+
+// TestReminderSlotConcurrentProjectionDeterministic(-race 面):多
+// goroutine 各带随机 now、共享同一 *recurrenceRule 指针并发投影同一
+// 事件,全部收敛到同一槽位——"同槽位并发 claim 只一胜"的键确定性前提;
+// -race 同时钉共享规则的只读安全。
+func TestReminderSlotConcurrentProjectionDeterministic(t *testing.T) {
+	start := mustTime(t, "2026-08-31T12:00:00Z")
+	rule := &recurrenceRule{Freq: "daily", Interval: 1}
+	lead := 30 * time.Minute
+	windowStart := start.Add(24*time.Hour - lead) // 第二槽位(次日 12:00)的窗口
+	want := start.Add(24 * time.Hour)
+
+	const workers, perWorker = 32, 200
+	var wg sync.WaitGroup
+	slots := make(chan time.Time, workers*perWorker)
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for i := 0; i < perWorker; i++ {
+				off := time.Duration(rng.Int63n(int64(lead - time.Millisecond)))
+				jitter := time.Duration(rng.Int63n(1000)) * time.Microsecond
+				slot, due := reminderSlot(start, rule, lead, windowStart.Add(off+jitter))
+				if !due {
+					t.Errorf("in-window projection must be due (off=%s jitter=%s)", off, jitter)
+					return
+				}
+				slots <- slot
+			}
+		}(int64(g))
+	}
+	wg.Wait()
+	close(slots)
+	n := 0
+	for s := range slots {
+		n++
+		if !s.Equal(want) {
+			t.Fatalf("concurrent projection diverged: %s vs %s", s, want)
+		}
+	}
+	if n != workers*perWorker {
+		t.Fatalf("projections collected = %d, want %d", n, workers*perWorker)
 	}
 }

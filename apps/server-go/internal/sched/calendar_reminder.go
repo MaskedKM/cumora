@@ -507,8 +507,8 @@ func (s *S) RunCalendarReminderTick(ctx context.Context) int {
 
 // StartCalendarReminderScheduler:周期 tick;ENABLE_CALENDAR_REMINDER
 // ='false' 或 CALENDAR_REMINDER_INTERVAL_MS<=0 关闭(门控风格对齐
-// ENABLE_*/INTERVAL 家族)。#215 形态:select{ctxBG.Done, ticker.C} +
-// tick 级 panic 隔离,cancelBoot 即停。
+// ENABLE_*/INTERVAL 家族)。#215 形态:ctx 驱动 + tick 级 panic 隔离,
+// cancelBoot 即停;循环体在 RunWorkerLoop(#251 抽缝)。
 func (s *S) StartCalendarReminderScheduler() {
 	if config.Getenv("ENABLE_CALENDAR_REMINDER") == "false" {
 		return
@@ -518,26 +518,10 @@ func (s *S) StartCalendarReminderScheduler() {
 		slog.Info("[calendar] reminder scheduler disabled (CALENDAR_REMINDER_INTERVAL_MS=0)")
 		return
 	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctxBG.Done():
-				return
-			case <-ticker.C:
-				func() {
-					defer func() {
-						if rec := recover(); rec != nil {
-							slog.Error("[calendar] reminder tick panicked", "recover", rec)
-						}
-					}()
-					if n := s.RunCalendarReminderTick(ctxBG); n > 0 {
-						slog.Info("[calendar] reminder tick sent", "count", n)
-					}
-				}()
-			}
+	RunWorkerLoop(ctxBG, interval, "[calendar] reminder", func(ctx context.Context) {
+		if n := s.RunCalendarReminderTick(ctx); n > 0 {
+			slog.Info("[calendar] reminder tick sent", "count", n)
 		}
-	}()
+	})
 	slog.Info("[calendar] reminder scheduler running", "interval_ms", interval)
 }
