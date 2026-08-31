@@ -3,9 +3,9 @@ import { consumeSuspendedFragment, consumeWaitlistFragment } from '@/admin/fragm
 import { api } from '@/api/client'
 import { AuthGate } from '@/components/AuthGate'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import {clearPendingInvite,consumeInviteFromUrl,
-  getPendingInvite, 
-  InviteAcceptScreen, 
+import {
+  consumeInviteFromUrl, getPendingInvite, clearPendingInvite,
+  InviteAcceptScreen,
 } from '@/components/InviteAcceptScreen'
 import { NotificationToasts } from '@/components/NotificationToasts'
 import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
