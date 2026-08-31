@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, ws, type ApiConversation } from '@/api/client'
+import { api, ws, type ApiConversation, type ApiMessage } from '@/api/client'
 import type { Conversation } from '@/types'
 import { useApp } from '@/stores/app'
 import { commitIfContextCurrent, useAuth } from '@/stores/auth'
@@ -61,12 +61,26 @@ function renderSystemPreview(
   }
 }
 
-function fromApi(c: ApiConversation): Conversation {
-  const last = c.lastMessage
-  // Empty string when there's no message yet — the row renderer skips the
-  // preview line entirely so an empty conversation doesn't show a stray "—".
+/** previewForMessage 的入参面:事件载荷 ApiMessage(message.new)与列表
+ *  端点 lastMessage 的共同结构子集——两者字段兼容但类型不同形
+ *  (lastMessage 无 conversationId/sequence,事件侧 createdAt 可选)。 */
+interface PreviewMessage {
+  authorId: string
+  kind: string
+  body: string
+  tool?: unknown
+  email?: { direction?: string; subject?: string | null } | null
+  attachment?: { name?: string | null; kind?: string } | null
+}
+
+/** Sidebar preview line for a message — the single derivation shared by
+ *  fromApi (full reload) and the message.new surgical patch (#220), so a
+ *  patched row is byte-identical to what a reload would have produced.
+ *  Empty string when there's no message yet — the row renderer skips the
+ *  preview line entirely so an empty conversation doesn't show a stray "—". */
+function previewForMessage(last: PreviewMessage): string {
   let preview = ''
-  if (last) {
+  {
     // Resolve the author's DISPLAY NAME from the participants store. If the
     // participant isn't loaded yet, omit the author prefix entirely — never
     // fall back to the raw id (which may carry a server-side collision
@@ -124,6 +138,12 @@ function fromApi(c: ApiConversation): Conversation {
       preview = authorName ? `${authorName}: ${trimmedBody.slice(0, 100)}` : trimmedBody.slice(0, 100)
     }
   }
+  return preview
+}
+
+function fromApi(c: ApiConversation): Conversation {
+  const last = c.lastMessage
+  const preview = last ? previewForMessage(last) : ''
   return {
     id: c.id,
     kind: c.kind,
@@ -207,6 +227,62 @@ export const useConversations = create<ConversationsState>((set) => ({
   },
 }))
 
+/** Apply a message.new to the sidebar row in place (#220): preview /
+ *  lastMessageId / lastAt* refresh, unread bumps only when the user isn't
+ *  reading the conversation, and the row re-takes its position under the
+ *  server's list order (pinned first, then recency — conversations.go
+ *  `ORDER BY c.pinned DESC, c.updated_at DESC`). Falls back to one reload
+ *  when the row isn't loaded yet (a patch can't invent the row).
+ *  Exported for conversations.patch.test.ts. */
+export function applyMessageEvent(conversationId: string, m: ApiMessage, isActive: boolean): void {
+  const meId = useAuth.getState().user?.id
+  const bumpUnread = !isActive && m.authorId !== meId
+  // 事件载荷的时间键是 `at`(契约 schema.d.ts 注释:仅 WS message.new
+  // 携带,REST 列表才用 createdAt);REST 形态兜底,双缺再回退"现在"。
+  const createdAt = m.at ?? m.createdAt ?? new Date().toISOString()
+  const ts = Date.parse(createdAt)
+  if (useConversations.getState().list.every((c) => c.id !== conversationId)) {
+    // 行未加载(他端新建会话竞态):补丁发明不出新行,回退一次 reload
+    // (在 setState 外判定,保持 updater 纯函数)。
+    void useConversations.getState().reload()
+    return
+  }
+  useConversations.setState((s) => {
+    const prev = s.list.find((c) => c.id === conversationId)
+    if (!prev) return s
+    // 陈旧帧丢弃。数值比较——Go 的 RFC3339Nano 会去小数尾零,纯字符串
+    // 字典序会被 "…00.5Z" vs "…00.500000001Z" 这类形态判反。相等的
+    // 时间戳只在同 id 时才视为重放:agent 路径的 at 是毫秒精度,同毫秒
+    // 的两条不同消息是真消息,不能当重放吃掉。
+    const prevTs = Date.parse(prev.lastAtIso)
+    if (prevTs > ts || (prevTs === ts && prev.lastMessageId === m.id)) return s
+    const next: Conversation = {
+      ...prev,
+      preview: previewForMessage(m),
+      lastMessageId: m.id,
+      lastAt: timeFromIso(createdAt),
+      lastAtIso: createdAt,
+      // 未读记账:活跃=视为已读(markRead 已发);本人消息不自我计数,
+      // 但也不抹掉此前他人的未读(对齐服务端 unread SQL 的语义——只是
+      // 不计本人消息);他人消息本地 +1。
+      unread: isActive ? undefined : bumpUnread ? (prev.unread ?? 0) + 1 : prev.unread,
+    }
+    const list = s.list.filter((c) => c.id !== conversationId)
+    // 服务端序 ORDER BY pinned DESC, updated_at DESC:第二键对置顶块
+    // 同样生效,刚收消息的行按时间插到所在分区内的 newest 位置(置顶
+    // 区整体在前)。
+    let insertAt = list.length
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i]
+      if (row.pinned && !next.pinned) continue
+      if (!row.pinned && next.pinned) { insertAt = i; break }
+      if (Date.parse(row.lastAtIso) <= ts) { insertAt = i; break }
+    }
+    list.splice(insertAt, 0, next)
+    return { list }
+  })
+}
+
 // WS bindings are attached once for the page lifetime; data reload runs
 // on every call so workspace switches (App.tsx remounts the tree on
 // companyId change) pick up the new tenant's data.
@@ -227,14 +303,24 @@ export function bootConversations() {
       return
     }
     if (e.type === 'message.new' || e.type === 'group.pulled') {
-      // If a new message arrives for the conversation the user is currently
-      // viewing, treat it as already-seen — mark read on the server BEFORE we
-      // reload, so the badge never blinks up to 1 just to drop back to 0.
+      // message.new patches the row in place (#220): with several agents
+      // replying concurrently, one HTTP list refetch per message was a
+      // request storm with full-list re-renders. The open conversation
+      // keeps its server read-state in step via markRead alone (no
+      // refetch — the transcript itself lives in the messages store).
       const active = useApp.getState().selectedConversationId
-      if (e.type === 'message.new' && e.conversationId === active) {
-        void api.markRead(e.conversationId).then(() => useConversations.getState().reload())
+      if (e.type === 'message.new') {
+        const isActive = e.conversationId === active
+        if (isActive) {
+          // Treated as already-seen: mark read BEFORE the patch so the
+          // badge never blinks up to 1 just to drop back to 0.
+          void api.markRead(e.conversationId).catch(() => { /* offline: next open retries */ })
+        }
+        applyMessageEvent(e.conversationId, e.message, isActive)
         return
       }
+      // group.pulled can introduce a conversation the client has never
+      // loaded — a patch can't invent the row, so this stays a reload.
       void useConversations.getState().reload()
     } else if (e.type === 'conversation.updated') {
       // Surgical patch — apply patch fields to the matching conversation in
