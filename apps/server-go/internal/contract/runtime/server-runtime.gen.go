@@ -60,6 +60,9 @@ type ServerInterface interface {
 	// 记忆检索
 	// (POST /runtime/memory/query)
 	MemoryQuery(w http.ResponseWriter, r *http.Request)
+	// 流式增量上屏(#210;delta 只广播不入库,终局以 reply 的 message.new 为准)
+	// (POST /runtime/message-delta)
+	RuntimeMessageDelta(w http.ResponseWriter, r *http.Request)
 	// 系统通知
 	// (POST /runtime/notices)
 	PostNotice(w http.ResponseWriter, r *http.Request)
@@ -419,6 +422,26 @@ func (siw *ServerInterfaceWrapper) MemoryQuery(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.MemoryQuery(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RuntimeMessageDelta operation middleware
+func (siw *ServerInterfaceWrapper) RuntimeMessageDelta(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, AgentRuntimeJWTScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RuntimeMessageDelta(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -965,6 +988,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/inbox-triage/payload", wrapper.InboxTriagePayload)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/llm-calls", wrapper.RecordLlmCall)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/memory/query", wrapper.MemoryQuery)
+	m.HandleFunc("POST "+options.BaseURL+"/runtime/message-delta", wrapper.RuntimeMessageDelta)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/notices", wrapper.PostNotice)
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/persona", wrapper.LoadPersona)
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/roster", wrapper.LoadRoster)

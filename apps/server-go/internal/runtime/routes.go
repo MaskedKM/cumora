@@ -30,14 +30,14 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
-// Mount:runtime tag(34 路由)走契约生成物(#187 批次 9)。34 个接口
+// Mount:runtime tag(35 路由)走契约生成物(#187 批次 9)。35 个接口
 // 方法均为 `s.auth(s.handleX)` 薄包装 —— handler 体零触碰,鉴权语义
 // (Bearer agent-runtime JWT + panic 兜底)与逐路由包装完全同源。
 func (s *Service) Mount(mux *http.ServeMux) {
 	_ = contract.HandlerFromMux(&Server{Svc: s}, mux)
 }
 
-// Server:runtime tag 的 ServerInterface 实现 —— 34 个薄包装到
+// Server:runtime tag 的 ServerInterface 实现 —— 35 个薄包装到
 // *Service 的 s.auth(s.handleX)。独立类型而非直接挂 *Service:后者
 // 经嵌入 *agent.Service 已有 LoadInbox/LoadContext/LoadClimate/
 // LoadFaces 同名业务方法(daemon/内部调用面,签名不同),接口方法名
@@ -46,7 +46,7 @@ type Server struct{ Svc *Service }
 
 var _ contract.ServerInterface = (*Server)(nil)
 
-/* ───────── ServerInterface 薄包装(34 条,体在下方 handle* 不动) ───────── */
+/* ───────── ServerInterface 薄包装(35 条,体在下方 handle* 不动) ───────── */
 
 func (h *Server) WakeStream(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleWakeStream)(w, r)
@@ -118,6 +118,10 @@ func (h *Server) StatusHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 func (h *Server) RuntimeTyping(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleTyping)(w, r)
+}
+
+func (h *Server) RuntimeMessageDelta(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleMessageDelta)(w, r)
 }
 
 func (h *Server) StartRun(w http.ResponseWriter, r *http.Request) {

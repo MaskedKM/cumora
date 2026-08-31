@@ -67,6 +67,34 @@ func TestFanoutDropsUntaggedAndMalformed(t *testing.T) {
 	}
 }
 
+// TestFanoutMessageDeltaRouting:#210 —— message.delta 与其它公司域事件
+// 同一道路由:带租户标记按成员资格转发(原样字节),无标记拒路由(发布
+// 方漏打标是 bug,不能静默放行)。
+func TestFanoutMessageDeltaRouting(t *testing.T) {
+	g := &Gateway{}
+	inA := newTestConn("co-a")
+	inB := newTestConn("co-b")
+	g.hub.add(inA)
+	g.hub.add(inB)
+
+	tagged := `{"type":"message.delta","companyId":"co-a","conversationId":"cv1","messageId":"ds-1","authorId":"a1","delta":"hel","sequence":1,"done":false}`
+	g.fanout([]byte(tagged))
+	if got := len(inA.outbound); got != 1 {
+		t.Fatalf("member conn got %d message.delta frames, want 1", got)
+	}
+	if raw := <-inA.outbound; string(raw) != tagged {
+		t.Fatalf("delta payload not forwarded verbatim: %s", raw)
+	}
+	if got := len(inB.outbound); got != 0 {
+		t.Fatalf("non-member conn got %d delta frames, want 0 (tenant isolation)", got)
+	}
+
+	g.fanout([]byte(`{"type":"message.delta","conversationId":"cv1","messageId":"ds-1","authorId":"a1","delta":"lo","sequence":2,"done":true}`)) // 无 companyId
+	if got := len(inA.outbound); got != 0 {
+		t.Fatalf("untagged message.delta must not route, got %d frames", got)
+	}
+}
+
 func TestEnqueueChatBackpressure(t *testing.T) {
 	c := newTestConn("co-a") // outbound 容量 2
 	for i := 0; i < 5; i++ {

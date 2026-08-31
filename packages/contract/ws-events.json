@@ -13,7 +13,7 @@
     "cumora:msg.delta": {
       "go": "ChMessageDelta",
       "ts": "CH_MESSAGE_DELTA",
-      "description": "流式增量(#210 决策票管发布方;通道与载荷形状已入契约,Go 侧暂无发布方)。"
+      "description": "流式增量(#210 已激活:发布方 = server-go /runtime/message-delta,daemon 把引擎产出前缀按块上报;终局以 cumora:msg.new 的 message.new 收口)。订阅方:wsx 聊天桥(按租户成员资格扇出)。"
     },
     "cumora:typing": {
       "go": "ChTyping",
@@ -119,7 +119,7 @@
     },
     "MessageDeltaEvent": {
       "type": "object",
-      "description": "流式增量(代理边打边发)。发布方归 #210 决策票;契约先行收录通道与载荷。",
+      "description": "流式增量(代理边打边发,#210 已激活)。daemon 铸流 id(messageId)与终局消息 id 不配对——前端按 (conversationId, authorId) 收口,message.new / done / 陈旧兜底三条退场路径幂等;delta 只上屏不入库。",
       "x-event": {
         "type": "message.delta",
         "channel": "cumora:msg.delta",
@@ -136,7 +136,8 @@
           "type": "string"
         },
         "messageId": {
-          "type": "string"
+          "type": "string",
+          "description": "在途流 id(daemon 铸造);与终局 message.new 的消息 id 不配对——收口按 (conversationId, authorId)。"
         },
         "authorId": {
           "type": "string"
@@ -147,11 +148,11 @@
         },
         "sequence": {
           "type": "integer",
-          "description": "在途消息的序号,起流时分配。"
+          "description": "流内递增序号,起流从 1 分配。"
         },
         "done": {
           "type": "boolean",
-          "description": "true = 流结束,最终 body 已落库。"
+          "description": "true = 流结束(终局仍以 message.new 为准;done 是 daemon 侧退场兜底)。"
         }
       },
       "required": [

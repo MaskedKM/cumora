@@ -18,18 +18,19 @@ export interface MessageNewEvent {
   message: Schemas['Message']
 } // scope: company,通道 cumora:msg.new
 
-/** 流式增量(代理边打边发)。发布方归 #210 决策票;契约先行收录通道与载荷。 */
+/** 流式增量(代理边打边发,#210 已激活)。daemon 铸流 id(messageId)与终局消息 id 不配对——前端按 (conversationId, authorId) 收口,message.new / done / 陈旧兜底三条退场路径幂等;delta 只上屏不入库。 */
 export interface MessageDeltaEvent {
   type: 'message.delta'
   companyId?: string
   conversationId: string
+  /** 在途流 id(daemon 铸造);与终局 message.new 的消息 id 不配对——收口按 (conversationId, authorId)。 */
   messageId: string
   authorId: string
   /** 本帧追加到 body 的文本块;客户端按 ACCUMULATE 语义累积。 */
   delta: string
-  /** 在途消息的序号,起流时分配。 */
+  /** 流内递增序号,起流从 1 分配。 */
   sequence: number
-  /** true = 流结束,最终 body 已落库。 */
+  /** true = 流结束(终局仍以 message.new 为准;done 是 daemon 侧退场兜底)。 */
   done: boolean
 } // scope: company,通道 cumora:msg.delta
 
