@@ -1,27 +1,26 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { consumeSuspendedFragment, consumeWaitlistFragment } from '@/admin/fragments'
+import { api } from '@/api/client'
+import { AuthGate } from '@/components/AuthGate'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import {clearPendingInvite,consumeInviteFromUrl,
+  getPendingInvite, 
+  InviteAcceptScreen, 
+} from '@/components/InviteAcceptScreen'
+import { NotificationToasts } from '@/components/NotificationToasts'
+import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
+import { Onboarding } from '@/desktop/Onboarding'
+import { isNotificationWindow, isWebAppHost } from '@/lib/runtime'
 import { useIsMobile } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useAuth } from '@/stores/auth'
-import { useMessages, bootMessagesStream } from '@/stores/messages'
-import { bootParticipants, useParticipants } from '@/stores/participants'
-import { bootConversations, isMuted, useConversations } from '@/stores/conversations'
-import { bootWhispers, useWhispers } from '@/stores/whispers'
 import { bootComputers, useComputers } from '@/stores/computers'
-import { Onboarding } from '@/desktop/Onboarding'
+import { bootConversations, isMuted, useConversations } from '@/stores/conversations'
+import { bootMessagesStream, useMessages } from '@/stores/messages'
+import { bootParticipants, useParticipants } from '@/stores/participants'
 import { usePrefs } from '@/stores/preferences'
-import { api } from '@/api/client'
-import { AuthGate } from '@/components/AuthGate'
-import { NotificationToasts } from '@/components/NotificationToasts'
-import { NotificationWindow } from '@/components/NotificationWindow'
-import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { isNotificationWindow, isWebAppHost } from '@/lib/runtime'
+import { bootWhispers, useWhispers } from '@/stores/whispers'
 import { WebShell } from '@/web/WebShell'
-import {
-  InviteAcceptScreen, consumeInviteFromUrl,
-  getPendingInvite, clearPendingInvite,
-} from '@/components/InviteAcceptScreen'
-import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
-import { consumeWaitlistFragment, consumeSuspendedFragment } from '@/admin/fragments'
 
 // Route-level code splitting (#144b): the three UI shells (desktop /
 // mobile / admin) and the two rare OAuth-gate screens each load as their
@@ -36,6 +35,13 @@ const WaitlistConfirmedScreen = lazy(() =>
   import('@/admin/WaitlistConfirmedScreen').then((m) => ({ default: m.WaitlistConfirmedScreen })))
 const SuspendedScreen = lazy(() =>
   import('@/admin/SuspendedScreen').then((m) => ({ default: m.SuspendedScreen })))
+// The Electron notification window is a SEPARATE BrowserWindow that loads
+// this bundle with a `#notifications` hash — only that instance ever
+// renders NotificationWindow. Keeping the import static forced framer-motion
+// into the entry chunk for every main-window user; lazy means the
+// animation lib is fetched only by the window that animates (#218).
+const NotificationWindow = lazy(() =>
+  import('@/components/NotificationWindow').then((m) => ({ default: m.NotificationWindow })))
 
 /** Neutral full-viewport placeholder while a shell chunk loads — keeps
  *  the flash to a blank frame instead of a layout jump. */
@@ -187,8 +193,15 @@ export function App() {
   // The Electron notification BrowserWindow loads this same React bundle
   // with a `#notifications` hash. Bypass everything else (auth, stores,
   // routing) and just render the toast stack — it receives payloads over
-  // IPC from the main window.
-  if (isNotificationWindow) return <NotificationWindow />
+  // IPC from the main window. Lazy chunk (see declaration site): the
+  // ShellFallback keeps the window blank-but-sized for the one fetch.
+  if (isNotificationWindow) {
+    return (
+      <Suspense fallback={<ShellFallback />}>
+        <NotificationWindow />
+      </Suspense>
+    )
+  }
 
   // Waitlist landing — handleCallback redirects here with `#waitlist=1`
   // when a brand-new OAuth visitor hit the gate. Consume the fragment
