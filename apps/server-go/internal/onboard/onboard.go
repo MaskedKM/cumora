@@ -1,6 +1,6 @@
 // onboard —— 起步团队种子(#60 平移):配对后一次性投放 starter agents、
 // owner↔agent DM、#all-hands 群。三个阶段各自 one-shot(公司列时间戳守
-// 卫),重复配对不复活已删队友。对齐 server/src/onboardCompany.ts。
+// 卫),重复配对不复活已删队友。对齐 已退役 TS server 的 onboardCompany.ts。
 package onboard
 
 import (

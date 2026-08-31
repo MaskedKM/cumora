@@ -1,5 +1,5 @@
 // events —— Redis 事件广播(#53):Go 侧消息/typing 事件的 publish 面。
-// 通道与载荷对齐 server/src/redis.ts 的 MessageNewEvent/TypingEvent。
+// 通道与载荷对齐 已退役 TS server 的 redis.ts 的 MessageNewEvent/TypingEvent。
 package events
 
 import (

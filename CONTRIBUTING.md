@@ -40,7 +40,7 @@ Run the same gates CI runs. All of these must pass:
 ```bash
 npm run lint               # Biome lint (autofix with `npm run lint:fix`)
 npm run typecheck          # frontend types
-npm run server:typecheck   # server types
+npm run integration:typecheck   # integration-test types
 npm test                   # unit tests (node:test) for server + workers
 npm run test:integration   # integration suite (needs local Postgres + Redis)
 npm run guard:big-brain    # architecture guard, see below
@@ -54,8 +54,9 @@ rules are on; noisy or intentional-pattern style rules (and the a11y
 group, tracked as separate follow-up work) are off.
 
 Both TypeScript projects are `strict`. There are no frontend unit tests yet;
-server and worker logic is covered by `server/src/__tests__` and
-`server/src/__integration__`.
+server behavior is covered by the MIRROR acceptance suite in
+`tests/integration/` (runner: `npm run test:integration`), sidecar and
+workers by their own unit tests.
 
 ## Two architecture invariants (enforced in CI)
 

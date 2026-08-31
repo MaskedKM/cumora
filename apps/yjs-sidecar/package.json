@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.2",
   "type": "module",
-  "description": "Yjs collaborative-documents sidecar (doc collab; the one TS service kept after the Go migration — self-contained since #142, no server/src imports)",
+  "description": "Yjs collaborative-documents sidecar (doc collab; the one TS service kept after the Go migration — self-contained since #142, no imports from the retired server tree)",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",

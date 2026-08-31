@@ -1,5 +1,5 @@
 // invite_email —— 邀请邮件(#68 评审 F11 接线):POST /companies/:id/
-// invitations 的 sendEmail 分支。对齐 server/src/invitation-email.ts:
+// invitations 的 sendEmail 分支。对齐 已退役 TS server 的 invitation-email.ts:
 // EMAIL_DOMAIN 未配 → skipped:'no_email_config';已配 → 经 email 域
 // provider 发送(mock 或 Resend),失败只回报 emailDelivery 不炸创建。
 package invitations

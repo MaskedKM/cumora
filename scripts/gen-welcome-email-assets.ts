@@ -10,7 +10,7 @@
  *   email/welcome-hero.png   ← 1536x1024 painterly cloudscape, GPT-Image-2
  *   email/logo.png           ← mirror of public/logo.png for inline use
  *
- * The welcome-mail helper in server/src/admin.ts builds URLs as
+ * The welcome-mail helper in the retired TS server (admin.ts) built URLs as
  *   `${R2_PUBLIC_BASE}/email/welcome-hero.png`
  * and embeds them in the HTML body, so re-running this script silently
  * updates the artwork everyone receives going forward (no DB write, no
@@ -32,7 +32,7 @@ import OpenAI from 'openai'
 import { readFile } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { storage } from './server/src/storage.js'
+import { storage } from '../tests/integration/harness/storage.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 

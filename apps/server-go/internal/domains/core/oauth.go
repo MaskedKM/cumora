@@ -2,7 +2,7 @@
 // provider 表驱动(google/github),state 铸造/单次消费走 Redis(仅存
 // sha256,5min TTL,GETDEL),回调换码取档后三路 find-or-create(已链 →
 // 跨链补绑 → 新建+个人区),会话 token 走 URL fragment 重定向(绝不落
-// query/日志)。逐段对齐 server/src/oauth.ts;env 直读与
+// query/日志)。逐段对齐 已退役 TS server 的 oauth.ts;env 直读与
 // CUMORA_OAUTH_<P>_BASE 覆盖同 TS 侧(metrics 直读先例,双跑同桩)。
 package core
 

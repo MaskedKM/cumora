@@ -13,7 +13,7 @@ from source via tsx, hand-duplicated API types on both sides of the wire
 (no zod, no codegen), and a large npm dependency tree. The stated pains
 are structural boundaries, contract drift, and the TS runtime itself
 (deployment artifact, memory footprint, dependency upkeep, language
-discipline). Yjs collaborative-document sync (`server/src/documents/`)
+discipline). Yjs collaborative-document sync (the TS tree's `documents/` subsystem, now `apps/yjs-sidecar/`)
 is the one subsystem with no mature equivalent outside the JS ecosystem
 (Rust's `yrs`/y-sweet aside).
 
@@ -38,7 +38,7 @@ behind a reverse proxy, and cut over in one switch with the old TS server
 retained as rollback.
 
 The BYOA daemon joins the migration. Its source currently squats in
-`server/src/agents/computer/` (~5.9k LOC, bundled across the tree into
+the TS server's `agents/computer/` (~5.9k LOC, bundled across the tree into
 the `agent-cli` shim) and is deleted with the TS server, so "leave it in
 TS" was never a zero-cost default. The daemon shape itself is retained —
 an outbound push channel plus a local engine spawner is the

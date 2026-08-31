@@ -1,6 +1,6 @@
 // email/inbound —— 入站邮件门回调(#58):Cloudflare Email Worker →
 // POST /webhooks/email/inbound(raw body + HMAC-SHA256 签名)。
-// 对齐 server/src/api/inbound-email.ts:签名常时比较、Message-ID 幂等、
+// 对齐 已退役 TS server 的 api/inbound-email.ts:签名常时比较、Message-ID 幂等、
 // SES 回声启发式去重、附件本地落盘、按收件人扇出(agent/人类/external 发
 // 送者解析)、竞态唯一键冲突折叠为 dedup。
 package email

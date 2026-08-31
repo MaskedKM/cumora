@@ -1,6 +1,6 @@
-/** yjs-sidecar 自持 env(#142:内联自 server/src/env.ts 并裁剪)。
+/** yjs-sidecar 自持 env(#142:内联自退役 TS server 的 env.ts 并裁剪)。
  *
- * 退役清尾:sidecar 不再穿透引用 server/src。此处只保留 sidecar 及其
+ * 退役清尾:sidecar 不再穿透引用退役 server 树。此处只保留 sidecar 及其
  * infra(pool/redis/storage)消费的字段;缺关键连接串即退,语义与原
  * 件一致。进程经 main.ts 的 `dotenv/config` 捡起仓库根 .env。
  */

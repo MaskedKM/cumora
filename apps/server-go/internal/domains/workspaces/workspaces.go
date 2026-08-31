@@ -1,6 +1,6 @@
 // domains/workspaces —— 工作区域(#56):建区/列表/详情(成员范围推导)/
 // 显式成员/关联三件套/文件列读写/安全解绑。文件安全对齐
-// server/src/workspaces/core.ts 的双层防逃逸(resolve 归一 + realpath 复检,
+// 已退役 TS server 的 workspaces/core.ts 的双层防逃逸(resolve 归一 + realpath 复检,
 // 新建文件回退父目录 realpath)。真目录 IO(非 mock)。
 package workspaces
 

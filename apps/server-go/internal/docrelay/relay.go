@@ -1,5 +1,5 @@
 // docrelay —— Go server 侧文档 relay(#55 · ADR 0004),对端为
-// server/src/documents/relay.ts。职责:①持有本实例 WS 订阅表,把
+// 已退役 TS server 的 documents/relay.ts。职责:①持有本实例 WS 订阅表,把
 // sidecar 经 Redis CH_DOC_UPDATE/CH_DOC_AWARENESS 扇出的事件按
 // originId 回声抑制后推给各 WS 订阅者;②把客户端的房间操作经
 // sidecar 内表面 HTTP 转发(协议契约见 apps/yjs-sidecar/src/http.ts)。

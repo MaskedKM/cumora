@@ -1,7 +1,7 @@
 // agent 包 prompt_constants —— GLOBAL_RULES / AGENT_VOICE_RULES /
 // SKYPE_EMOTICONS_GUIDE 的逐字节 Go 转录。§ 是反引号占位(Go 原始字符串
 // 不能内嵌反引号);untick 在 init 时替换。改动须与 TS 三处源同步:
-// server/src/agents/personas.ts、agent-voice.ts、skype-emoticons.ts。
+// 已退役 TS server 的 agents/personas.ts、agent-voice.ts、skype-emoticons.ts。
 package agent
 
 import "strings"

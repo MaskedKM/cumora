@@ -1,6 +1,6 @@
 // push/fanout —— 触达扇出:sendToUsers(双平台)、notifyMessage(消息
 // 推送载荷)、computeMessageRecipients(成员−作者−静音−在线)。对齐
-// server/src/push.ts 下半部。
+// 已退役 TS server 的 push.ts 下半部。
 package push
 
 import (

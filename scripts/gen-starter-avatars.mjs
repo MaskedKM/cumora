@@ -4,12 +4,12 @@
  * (public/starter-avatars/{atlas,iris,bram,nova}.png).
  *
  * These are the four agents auto-seeded into every new company by
- * server/src/onboardCompany.ts. By baking their portraits in as static
+ * the retired TS server's onboardCompany.ts. By baking their portraits in as static
  * defaults, fresh workspaces no longer have to wait on (or pay for) an
  * image-gen call before the starter team has a face.
  *
  * The prompt + visual signature are an EXACT mirror of
- * `generateAndPersistAvatar` (server/src/api/router.ts) — same agent ids
+ * `generateAndPersistAvatar` (retired TS api/router.ts) — same agent ids
  * feed into the same FNV-1a hash → same pools → same prompt text. If
  * later the user hits the /agents/:id/avatar/regen path on a starter,
  * they get a visually-consistent re-roll of the same character.
@@ -43,7 +43,7 @@ if (!apiKey) {
   process.exit(1)
 }
 
-/* ============== Mirror of server/src/api/router.ts ============== */
+/* ============== Mirror of the retired TS server's api/router.ts ============== */
 
 // FNV-1a — must match hashStr() in router.ts exactly.
 function hashStr(s) {
@@ -59,7 +59,7 @@ function pickFromHash(arr, h, salt) {
   return arr[((h ^ salt) >>> 0) % arr.length]
 }
 
-// Exact copy of VISUAL_DIMENSIONS from server/src/api/router.ts. Keep these
+// Exact copy of VISUAL_DIMENSIONS from the retired TS server's api/router.ts. Keep these
 // in sync if the server-side pools are revised.
 const VISUAL_DIMENSIONS = {
   age: ['21', '22', '22', '23', '23', '24', '24', '25', '25', '26', '26', '27', '28', '29', '31', '32'],

@@ -24,7 +24,7 @@ const (
 //
 // 验收镜像盖章(#55 起):CUMORA_GO_FAKE_AUTH=1 时信任 x-test-user 头
 // 直接注入 uid——对齐 TS 镜像脚手架的伪造 auth 盖章(见
-// server/src/__integration__/_helpers.ts 的 buildApiTestApp),使
+// 已退役 TS server 的 __integration__/_helpers.ts 的 buildApiTestApp),使
 // MIRROR_BASE 双跑能测认证面。仅限本地双跑,生产不得开。
 func Authn(db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

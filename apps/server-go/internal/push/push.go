@@ -1,5 +1,5 @@
 // push —— 推送(#59):APNs(iOS)/FCM(Android)发送面 + 消息触达扇出。
-// 对齐 server/src/push.ts + fcm.ts:凭据缺失软关停(启动告警一次,
+// 对齐 已退役 TS server 的 push.ts + fcm.ts:凭据缺失软关停(启动告警一次,
 // 发送路径 no-op);死令牌软禁用;在线用户(WS avail)不推送。
 package push
 

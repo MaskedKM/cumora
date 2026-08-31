@@ -393,11 +393,12 @@ jobs:
       - name: Lint (Biome)
         run: npm run lint
       # `npm run typecheck` delegates to the apps/web workspace (root has
-      # no tsconfig since the monorepo move); server keeps its own config.
+      # no tsconfig since the monorepo move); the integration-test suite
+      # (#206, ex server/) keeps its own config.
       - name: tsc (client)
         run: npm run typecheck
-      - name: tsc (server)
-        run: npm run server:typecheck
+      - name: tsc (integration tests)
+        run: npm run integration:typecheck
       # #142:sidecar 是 workspace 成员,首次纳入 tsc 面(此前仅 tsx 直跑)。
       - name: tsc (yjs-sidecar)
         run: npm run sidecar:typecheck
@@ -446,11 +447,11 @@ jobs:
               await c.end();
             }
           })().catch(e=>{console.error(e);process.exit(1)})'
-          # schema:各片的 Go 服(run-integration-tests.mjs)启动时应用
+          # schema:各片的 Go 服(tests/integration/run.mjs)启动时应用
       # One shard per database + Redis instance (pub/sub is instance-wide
       # — separate Redis DB indexes would still cross-talk). Shards run
       # in parallel; each stays internally serial via
-      # --test-concurrency=1 (run-integration-tests.mjs). SUT 二进制先
+      # --test-concurrency=1 (tests/integration/run.mjs). SUT 二进制先
       # 建一次,三片经 INTEGRATION_GO_BIN 复用(不竞抢构建)。sed -u
       # keeps the [shardN] prefixes unbuffered so the interleaved step
       # output stays live and readable.

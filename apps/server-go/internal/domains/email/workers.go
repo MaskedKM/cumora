@@ -1,5 +1,5 @@
 // email/workers —— 出站重试与附件 GC 任务(#58,受管任务组形态)。
-// 对齐 server/src/email-retry.ts / email-gc.ts:
+// 对齐 已退役 TS server 的 email-retry.ts / email-gc.ts:
 //
 //	重试:SKIP LOCKED 认领到期失败行,保线程/收件人/附件重发,退避
 //	60s·5m·30m·2h·6h·24h,封顶后 next_retry_at=NULL(终态)。

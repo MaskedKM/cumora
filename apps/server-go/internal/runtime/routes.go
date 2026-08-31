@@ -1,4 +1,4 @@
-// runtime 包 routes —— /runtime/* HTTP 面(对齐 server/src/agents/runtime/
+// runtime 包 routes —— /runtime/* HTTP 面(对齐 已退役 TS server 的 agents/runtime/
 // server.ts):BYOA daemon 专属端点,逐一手 AgentRuntimeClient 方法。认证:
 // 每请求携带 agent-runtime JWT(Authorization: Bearer);agentId 一律取自
 // token 而非请求体——被 compromise 的 daemon 冒充不了别人的 agent。

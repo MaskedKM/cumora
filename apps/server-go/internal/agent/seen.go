@@ -1,4 +1,4 @@
-// agent 包 seen —— 对齐 server/src/agents/seen-boundary.ts。
+// agent 包 seen —— 对齐 已退役 TS server 的 agents/seen-boundary.ts。
 // 每 (agent, 会话) 的"已见 seq"边界(Redis 短 TTL):cumora reply 的新鲜度
 // 预检靠它发现"compose 窗口期间同伴发了言"。为什么用 Redis 而非
 // conversation_reads:last_read_at 同时是 loadInbox 的游标,动它会清空

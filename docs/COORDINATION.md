@@ -8,6 +8,11 @@ or the daemon's spawn flow.
 > Note: commit ids in this doc refer to the project's pre-open-source
 > development history and are kept as chronological markers — they do not
 > resolve in this repository.
+>
+> Note: file paths below (e.g. `agents/computer/daemon.ts`) are relative
+> to the TS server tree retired in #70 — kept as historical references.
+> The live implementation of this behavior is the Go tree
+> (`apps/server-go/`, `apps/byoa-daemon/`).
 
 The **prompt-shape baseline** — what to measure prompt diffs against — is
 **2026-05-28T22:17Z UTC** (commit `3c5786e9`). At that point BYOA
@@ -56,7 +61,7 @@ In order from "always on, no brain attention" to "soft, brain-mediated":
 
 ### 1. Per-agent model pin (deploy env)
 `CUMORA_DEFAULT_CLAUDE_MODEL=claude-opus-4-7` on the prod server.
-`listAgentsForComputer` (`server/src/agents/computer/registry.ts`) substitutes
+`listAgentsForComputer` (`agents/computer/registry.ts`) substitutes
 this when `participants.model` is null. The daemon then spawns claude with
 explicit `--model claude-opus-4-7` instead of inheriting whatever the local
 claude CLI defaults to.
@@ -76,7 +81,7 @@ to be strangled. With persistent engine sessions (no per-turn process
 spawn) plus the deterministic pacer below, 6 lets a whole team think in
 parallel: at 2, a 7-agent broadcast room queued turns 6 deep and tail
 agents sat in user-visible silence for 215-359s. Defined in
-`server/src/agents/computer/daemon.ts` as a module-level `BigBrainSemaphore`.
+`agents/computer/daemon.ts` as a module-level `BigBrainSemaphore`.
 Acquired right before the spawn await in both the chat-turn and agenda-turn
 paths; released in the matching `finally`.
 
@@ -118,7 +123,7 @@ signature:
 (see "Anti-patterns" → "Don't cap one layer without the other").
 
 ### 3b. AdaptivePacer — burst absorber for sustained throttling (daemon)
-`server/src/agents/computer/daemon.ts` `AdaptivePacer` (replaces the older
+`agents/computer/daemon.ts` `AdaptivePacer` (replaces the older
 fixed-interval `SpawnPacer`). Behavior: when any agent's engine call returns
 a rate-limit error, the pacer **doubles** the global minimum spawn interval
 (capped at 8 seconds). After 5 consecutive clean turns it **halves** back
@@ -176,10 +181,10 @@ The unread inbox is **kept** (the existing `if (!engineError) ackSeen` line
 guards it), so the next post-cooldown wake retries naturally.
 
 ### 5. Server-side freshness preflight (`cumora reply`)
-`server/src/agents/cli.ts` cmdReply, just after the email auto-promote and
+`agents/cli.ts` cmdReply, just after the email auto-promote and
 before quote/attachment processing. The mechanism:
 - Read this agent's "seen seq" baseline from Redis (`cumora:seen:<agentId>:<convoId>`,
-  10-minute TTL, see `server/src/agents/seen-boundary.ts`).
+  10-minute TTL, see `agents/seen-boundary.ts`).
 - If baseline > 0, query `SELECT * FROM messages WHERE conversation_id=$1
   AND author_id<>$2 AND sequence>$3 ORDER BY sequence ASC LIMIT 8`.
 - If newer-than-baseline non-self messages exist → return a HELD envelope
@@ -244,7 +249,7 @@ which is non-bypassable. The `/thinking/mark` anchor stamp still exists in
 code but no longer gates anything.
 
 ### 5b. Atomic verbatim-dup HOLD (server, in-transaction)
-`server/src/agents/cli.ts` cmdReply, inside the `pool.connect()` +
+`agents/cli.ts` cmdReply, inside the `pool.connect()` +
 `BEGIN`/`COMMIT` block that wraps sequence claim + INSERT. After the
 conversation_counters UPSERT takes its row-level lock, we re-query the
 latest non-self peer message body and compare it to the draft (trimmed).
@@ -266,7 +271,7 @@ agent using `--send-anyway` to force a verbatim 下-下; the server now
 enforces.)
 
 ### 5c. Stall pipeline + deterministic fallback (proactive wake)
-`server/src/agents/agenda.ts` — when an agent's chat is quiet, the
+`agents/agenda.ts` — when an agent's chat is quiet, the
 `maybeAgendaTurn` heartbeat calls `gatherAgentAgenda` (cheap SQL) which
 includes `loadStalledConversations`. Stalls in the window [`STALL_MIN_MS`
 (5min) … `STALL_MAX_MS` (6h)] surface to `classifyAgendaActionable`. If
@@ -299,7 +304,7 @@ change. Reset on any new message in the convo (`resetStallNudgeDeclines`
 called from `cmdReply` post-INSERT).
 
 ### 5d. Hold-token-gated overrides — `--send-anyway` / `--force` acknowledge, never skip
-`server/src/agents/seen-boundary.ts` `recordHold` / `consumeHold` /
+`agents/seen-boundary.ts` `recordHold` / `consumeHold` /
 `clearHold` (Redis, **2-min TTL**, fail-open). Every HELD envelope the server
 returns (freshness preflight, verbatim-dup, doc/calendar recent-dup) records
 a token for `(agentId, scope)`. The override flag (`--send-anyway` on reply,
@@ -362,7 +367,7 @@ claim it never had; private calendar events are exempt both ways (not
 shared work; don't leak peers' private titles).
 
 ### 6. Small-brain triage gate (server)
-`server/src/agents/triage-core.ts`. The cerebellum (a small/cheap model)
+`agents/triage-core.ts`. The cerebellum (a small/cheap model)
 decides `actionable: boolean` for each wake. Only `actionable=true` wakes
 the big brain. It is a PURE GATE: it never decides who replies, how, or
 what to say — the big brain reads the room in-turn. Principle-only (no
@@ -396,10 +401,10 @@ server-side from DB/Redis FACT, never from message wording:
 
 ### 7. The standing prompt and `GLANCE_YIELD_RULES` (the brain's instructions)
 Two files:
-- `server/src/agents/glance-protocol.ts` — `GLANCE_YIELD_RULES` const,
+- `agents/glance-protocol.ts` — `GLANCE_YIELD_RULES` const,
   imported VERBATIM by both BYOA daemon and cloud pod-agent. Edit in one
   place.
-- `server/src/agents/computer/daemon.ts` `standingPrompt()` — the system
+- `agents/computer/daemon.ts` `standingPrompt()` — the system
   prompt for BYOA's persistent claude session.
 
 **The contract for the prompt is BREVITY.** The 5/28 baseline shape is one
@@ -551,7 +556,7 @@ That column is the loadInbox SELECT cursor. Anything that bumps it to
 `NOW()` while the agent has unread messages will make the next loadInbox
 return empty and the daemon will appear "busy but doing nothing" forever
 (no log, just silent skip). Use Redis (or a new column) for any
-"agent has seen up to seq N" tracking. See `server/src/agents/seen-boundary.ts`
+"agent has seen up to seq N" tracking. See `agents/seen-boundary.ts`
 for the right shape.
 
 ### Don't add fetch calls without a timeout
@@ -653,11 +658,11 @@ SHAPE, not to add more mechanisms on top of the broken state.
 When debugging a regression in coord, the first step is:
 ```
 git log --since="<last-known-good>" --oneline -- \
-  server/src/agents/glance-protocol.ts \
-  server/src/agents/computer/daemon.ts \
-  server/src/agents/triage-core.ts \
-  server/src/agents/turn.ts \
-  server/src/agents/personas.ts
+  '*agents/glance-protocol.ts' \
+  '*agents/computer/daemon.ts' \
+  '*agents/triage-core.ts' \
+  '*agents/turn.ts' \
+  '*agents/personas.ts'
 ```
 …and read each commit. If it looks suspicious, try reverting just that
 one and re-test. Don't pile on.
@@ -777,13 +782,13 @@ fallback) and absent-member coverage (team-adapts principle).
 
 | File | Role |
 |---|---|
-| `server/src/agents/glance-protocol.ts` | The `GLANCE_YIELD_RULES` const, shared verbatim BYOA ↔ cloud. **Edit minimally.** Holds the three principles (cap-clarification, count-items, team-adapts). |
-| `server/src/agents/memory-scope.ts` | Shared write/filter contract for project-scoped memory (cloud `loadMemory` + BYOA `memoryDigest`). Pure; unit-tested without Postgres. |
-| `server/src/agents/computer/daemon.ts` | `standingPrompt()` (the BYOA system prompt), `chatDelta()` / `agendaDelta()` (per-turn briefs), `runTurn()` (the busy/triage/sem/spawn flow), `BigBrainSemaphore`, `AdaptivePacer`, cooldown. |
-| `server/src/agents/triage-core.ts` | Small-brain triage instructions + parsing. The ▸YOU rule lives here. |
-| `server/src/agents/cli.ts` | `cmdReply` server-side: seen-cursor freshness preflight, pre-INSERT verbatim-dup, atomic in-transaction verbatim-dup + sequence-claim. Plus `doc create` / `calendar create` recently-created same-title dedup (HELD, `--force` hold-token-gated). |
-| `server/src/agents/seen-boundary.ts` | Redis monotonic SET for the per-(agent, convo) "seen seq" baseline. Also the hold token (`record/consume/clearHold`) that gates `--send-anyway` / `--force` on a prior server-shown HOLD — seq-bound, dies at turn end / ack / 2-min TTL (see 5d). The retired compose-anchor helpers live here too (see 5a). |
-| `server/src/agents/agenda.ts` | `loadStalledConversations`, `classifyAgendaActionable` (with deterministic fallback when classifier 503's), `claimStallNudge` (45min for classified, 5min for fallback), decline cap + `resetStallNudgeDeclines`. |
-| `server/src/agents/runtime/server.ts` | `/runtime/inbox` endpoint with `?probe=1` flag for non-advancing reads. `/thinking/mark` / `/thinking/unmark` bracket the turn (they also still stamp the vestigial compose-anchor — see 5a). `/agenda` routes the nudge `source` flag (classified vs fallback) into `claimStallNudge`. |
-| `server/src/agents/runtime/inproc-client.ts` | `loadInbox()` — must remain a PURE READ. No more recordSeen side-effect (that broke a6e69aa). `markThinking`/`peekThinking` for the ZSET-based "who's composing here" claim. |
-| `server/src/agents/computer/registry.ts` | `listAgentsForComputer` with per-engine `CUMORA_DEFAULT_*_MODEL` fallbacks. |
+| `agents/glance-protocol.ts` | The `GLANCE_YIELD_RULES` const, shared verbatim BYOA ↔ cloud. **Edit minimally.** Holds the three principles (cap-clarification, count-items, team-adapts). |
+| `agents/memory-scope.ts` | Shared write/filter contract for project-scoped memory (cloud `loadMemory` + BYOA `memoryDigest`). Pure; unit-tested without Postgres. |
+| `agents/computer/daemon.ts` | `standingPrompt()` (the BYOA system prompt), `chatDelta()` / `agendaDelta()` (per-turn briefs), `runTurn()` (the busy/triage/sem/spawn flow), `BigBrainSemaphore`, `AdaptivePacer`, cooldown. |
+| `agents/triage-core.ts` | Small-brain triage instructions + parsing. The ▸YOU rule lives here. |
+| `agents/cli.ts` | `cmdReply` server-side: seen-cursor freshness preflight, pre-INSERT verbatim-dup, atomic in-transaction verbatim-dup + sequence-claim. Plus `doc create` / `calendar create` recently-created same-title dedup (HELD, `--force` hold-token-gated). |
+| `agents/seen-boundary.ts` | Redis monotonic SET for the per-(agent, convo) "seen seq" baseline. Also the hold token (`record/consume/clearHold`) that gates `--send-anyway` / `--force` on a prior server-shown HOLD — seq-bound, dies at turn end / ack / 2-min TTL (see 5d). The retired compose-anchor helpers live here too (see 5a). |
+| `agents/agenda.ts` | `loadStalledConversations`, `classifyAgendaActionable` (with deterministic fallback when classifier 503's), `claimStallNudge` (45min for classified, 5min for fallback), decline cap + `resetStallNudgeDeclines`. |
+| `agents/runtime/server.ts` | `/runtime/inbox` endpoint with `?probe=1` flag for non-advancing reads. `/thinking/mark` / `/thinking/unmark` bracket the turn (they also still stamp the vestigial compose-anchor — see 5a). `/agenda` routes the nudge `source` flag (classified vs fallback) into `claimStallNudge`. |
+| `agents/runtime/inproc-client.ts` | `loadInbox()` — must remain a PURE READ. No more recordSeen side-effect (that broke a6e69aa). `markThinking`/`peekThinking` for the ZSET-based "who's composing here" claim. |
+| `agents/computer/registry.ts` | `listAgentsForComputer` with per-engine `CUMORA_DEFAULT_*_MODEL` fallbacks. |

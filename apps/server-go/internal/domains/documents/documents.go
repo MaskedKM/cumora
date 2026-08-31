@@ -1,6 +1,6 @@
 // domains/documents —— 文档域(#55):CRUD + 协作者治理 + doc.changed
 // 事件。协同编辑的 WS 帧面在 wsx 网关、房间状态在 yjs-sidecar。
-// 行为对齐 server/src/api/router.ts 的 /documents 段。
+// 行为对齐 已退役 TS server 的 api/router.ts 的 /documents 段。
 // #139 试点:实现 contract.ServerInterface(documents tag)——路由注册
 // 与路径参数由契约生成物接管(pattern 即规范);请求体解码保留手写:
 // TS 的 String(x ?? ”)/typeof-filter 强转与生成类型的指针/严格解码

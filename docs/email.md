@@ -97,7 +97,7 @@ EMAIL_DOMAIN=cumora.ai
 EMAIL_INBOUND_HMAC_SECRET=<openssl rand -hex 32>
 ```
 
-Restart the server. The migration (`server/src/db/migrate.ts`) runs
+Restart the server. The migration (TS-era `db/migrate.ts`; now the Go boot migrations) runs
 automatically and adds the `participants.email`, `email_messages`,
 `email_contacts` tables.
 
@@ -250,7 +250,7 @@ participant ids (`aurora`); ids are resolved against the agent's tenant.
 
 ## Heartbeat integration
 
-`server/src/agents/idle.ts` runs every `IDLE_INTERVAL_MS` (default
+The idle heartbeat (TS-era `agents/idle.ts`) runs every `IDLE_INTERVAL_MS` (default
 15 min). Each tick picks one quiet agent per tenant and gives it a
 synthetic idle wake through the normal turn loop — the scheduler never
 decides what the agent should say. Before waking the brain, a cheap

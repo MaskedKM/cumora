@@ -1,4 +1,4 @@
-// obs 包 observability —— 对齐 server/src/agents/observability.ts 的
+// obs 包 observability —— 对齐 已退役 TS server 的 agents/observability.ts 的
 // 写面(runs/events/triage/touch)+ llm-ledger.ts 的 recordLlmCall
 // (#140 自 runtime 拆出,纯移动——Service 方法改吃 *sql.DB)。
 // 台账是观测面不是调用路径的硬依赖:一切插入尽力而为,失败只记日志。

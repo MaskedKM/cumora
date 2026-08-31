@@ -2,7 +2,7 @@
 // Sign in with Apple。与 Google/GitHub OAuth(换码 → userinfo)不同,
 // Apple 把 OIDC identity_token 直接交给客户端,服务端的职责是对着
 // Apple 公布的 JWKS 验 RS256 签名并取出稳定的 sub + email。无浏览器
-// 重定向,会话 token 以 JSON 返回。逐段对齐 server/src/apple.ts 与
+// 重定向,会话 token 以 JSON 返回。逐段对齐 已退役 TS server 的 apple.ts 与
 // oauth.ts handleAppleNativeSignIn(router.ts 718–765)。
 //
 // 已验证 claims 的语义(见 apple.ts 头注):

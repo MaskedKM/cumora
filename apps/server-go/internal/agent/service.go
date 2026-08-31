@@ -1,5 +1,5 @@
 // agent 包 service —— #60 运行时服务面的依赖容器。
-// 对齐 server/src/agents/runtime/(server.ts + inproc-client.ts + wake-bus.ts)
+// 对齐 已退役 TS server 的 agents/runtime/(server.ts + inproc-client.ts + wake-bus.ts)
 // 的服务端:HTTP 面 + 数据面 + 唤醒总线。
 package agent
 

@@ -6,7 +6,7 @@
  *   → SSE /runtime/wake-stream(本 spec 内联的最小 echo runtime 消费)
  *   → POST /runtime/cli reply → WS message.new → UI 实时上屏。
  *
- * SUT 与 vite preview 由 server/run-integration-tests.mjs 的
+ * SUT 与 vite preview 由 tests/integration/run.mjs 的
  * INTEGRATION_E2E 形态自建;Go 无 CORS,页面侧同源走 preview 代理
  * (localStorage 'cumora.serverUrl' 指向 WEB_BASE,压掉烘焙的 5181)。
  * 登录态不经 OAuth(AuthScreen 无表单):pg 直种 sessions 行 +

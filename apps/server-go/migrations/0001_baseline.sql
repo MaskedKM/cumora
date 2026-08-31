@@ -1,6 +1,6 @@
 -- Go 侧迁移基线(#51 起,#70 固化全量)。
--- 历史说明:本文件曾是空占位——schema 一直由 TS 迁移器(server/src/db/
--- migrate.ts,goose)管辖;#70 TS 退役时,其最终 schema 经 pg_dump 从
+-- 历史说明:本文件曾是空占位——schema 一直由 TS 迁移器(已退役 TS
+-- server 树的 db/migrate.ts,goose)管辖;#70 TS 退役时,其最终 schema 经 pg_dump 从
 -- 正典测试库固化于此,自此 Go 迁移自足(全新库一步到正典)。
 -- 已记账过旧版 0001 的库(生产、本地 cumora_test)不会重跑本文件——
 -- 它们的 schema 本就由 TS 迁移器铺就,与本基线等价。

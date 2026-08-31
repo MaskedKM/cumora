@@ -33,7 +33,7 @@ if (!apiKey) {
 }
 
 // Prompt designed to slot into the existing agent-portrait family
-// (see server/src/api/router.ts:generateAndPersistAvatar for that prompt).
+// (see the retired TS server's api/router.ts:generateAndPersistAvatar for that prompt).
 // Key constraints: editorial-illustration style (NOT photo-real), painterly
 // brushwork, warm coral/cream palette, square frame, head-and-shoulders
 // composition that crops cleanly to a circle, NO text/logos.

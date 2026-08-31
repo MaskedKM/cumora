@@ -1,7 +1,7 @@
 /**
  * #147④ 最小 e2e 冒烟的 Playwright 配置。
  * SUT(Go server + sidecar + mock LLM + 一次性 pg/redis)与 vite preview
- * 由 server/run-integration-tests.mjs 的 INTEGRATION_E2E 形态自建 —— 本
+ * 由 tests/integration/run.mjs 的 INTEGRATION_E2E 形态自建 —— 本
  * 配置只管测试面;端点经环境变量注入:
  *   CUMORA_E2E_WEB_BASE  vite preview 页面源
  *   CUMORA_E2E_API_BASE  Go SUT origin(测试里写进 localStorage

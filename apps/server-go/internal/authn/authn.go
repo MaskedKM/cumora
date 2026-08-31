@@ -1,4 +1,4 @@
-// authn —— 会话令牌解析(#52),行为对齐 server/src/auth.ts:
+// authn —— 会话令牌解析(#52),行为对齐 已退役 TS server 的 auth.ts:
 // sha256(token) base64url 存库;30 天硬过期 + 14 天空闲过期;
 // JOIN users 过 suspension/deletion 门;命中即滑动更新 last_used_at。
 package authn
