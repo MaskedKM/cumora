@@ -240,7 +240,10 @@ func main() {
 	mux.Handle("/api/", httpx.Recover()(httpx.WriteDeadline(5*time.Minute)(authMiddleware(coreRouter))))
 	// 后续域(#53 会话起)同样:各自 Mount 后经 authMiddleware 串接。
 
-	srv := newHTTPServer(cfg.ListenAddr, mux)
+	// CORS 全局挂载(TS app.use 平价,覆盖 /api、/uploads、/runtime;
+	// 非浏览器客户端不带 Origin 零影响):#70 退役时随 server/src 删除,
+	// 2026-08-31 打包桌面端全新登录被拦后补齐。
+	srv := newHTTPServer(cfg.ListenAddr, httpx.CORS()(mux))
 
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)
