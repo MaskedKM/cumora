@@ -20,6 +20,7 @@ import (
 	"time"
 
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/workspaces"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -247,33 +248,30 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := "ws-" + shortID()
-	// 事务豁免(#213):插入失败有 unique-violation 409 分支,且各步 500
-	// 文案各异(tx failed/insert failed/member insert failed/commit failed),
-	// 单一错误通道无法等价映射。
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
+	// #235 收编 db.WithTx:#214 后各步 500 均为 WriteInternalError(err)
+	// 同构映射,#213 豁免的"文案各异"半理由消失;剩余 unique-violation
+	// 409 分支由外层 isUniqueViolation(errors.As pg 23505)二分表达——
+	// WithTx 将 fn 错误原样回传,23505 只可能来自 workspaces INSERT
+	// (member INSERT 撞的是刚建区的全新 id;schema 无 DEFERRABLE 约束,
+	// Commit 阶段不会补出 23505),回滚路径与手写版一致,响应字节不变。
 	var createdAt time.Time
-	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO workspaces (id, company_id, name, folder_path)
-		VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(r.Context(), `
+			INSERT INTO workspaces (id, company_id, name, folder_path)
+			VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(r.Context(), `
+			INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+			id, uid); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		if isUniqueViolation(err) {
 			httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 			return
 		}
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
-		id, uid); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

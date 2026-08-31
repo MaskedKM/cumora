@@ -404,9 +404,9 @@ func oauthRandHex(n int) string {
 // oauthFindOrCreate:事务三路;Path C 尾段(建区)受 inviteToken 门控。
 // sub2api 供给(#109 延后):本部署 SUB2API_* 未配置,门保留为 no-op。
 func oauthFindOrCreate(ctx context.Context, db *sql.DB, p string, profile *oauthProfile, inviteToken *string) (*oauthCompletion, error) {
-	// 事务豁免(#213):三路分支两次 mid-body Commit(Path A/B)、Path C
-	// 显式 Rollback 后改走 db(非 tx)写 waitlist,尾段另有 slug
-	// SAVEPOINT 嵌套,WithTx 单提交点无法表达。
+	// 事务豁免(#213,#235 复审仍留):三路分支两次 mid-body Commit
+	// (Path A/B)、Path C 显式 Rollback 后改走 db(非 tx)写 waitlist,
+	// 尾段另有 slug SAVEPOINT 嵌套,WithTx 单提交点无法表达。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

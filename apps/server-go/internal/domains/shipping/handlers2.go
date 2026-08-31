@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -461,176 +462,164 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 			return // 403 已写响应
 		}
 	}
-	// 事务豁免(#213):混合错误面——switch 内约 10 个 4xx fail() 分支,
-	// 且双 500 通道响应体不同(内联 Exec 错误走 WriteInternalError,
-	// releaseApprove 尾部 Exec 错误走 fail(500)→writeShipError)。
-	// (tx 传参本身不是障碍:WithTx 闭包拿到的 *sql.Tx 可原样下传;
-	// #214 错误面统一后此豁免首选二轮收编——actionErr 已是单一汇聚
-	// 通道,外层 errors.As 二分即可表达。)
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
+	// #235 收编 db.WithTx(#213 豁免的"双 500 通道文案各异"半理由已被
+	// #214 抹平:内联 Exec 错误均走 WriteInternalError(err);releaseApprove
+	// 尾部的 fail(500) 仍是 *shippingError 域错,经 fn 原样回传)。
+	// tx 传参不是障碍:闭包拿到的 *sql.Tx 原样下传 releaseApprove/
+	// recordEvent;错误在外层经 writeShipError 二分(*shippingError →
+	// WriteError 保留 4xx/域错响应体,其余 → WriteInternalError),
+	// 各路径响应字节与手写版一致。
 	var environment, status string
 	var releaseNotes, rollbackPlan sql.NullString
 	var baseline []byte
-	err = tx.QueryRowContext(r.Context(),
-		`SELECT environment, status, release_notes, rollback_plan, baseline
-		   FROM shipping_releases WHERE id = $1 AND feature_id = $2 FOR UPDATE`,
-		releaseID, feature.id).Scan(&environment, &status, &releaseNotes, &rollbackPlan, &baseline)
-	if err != nil {
-		writeShipError(w, r, fail(http.StatusNotFound, "release not found"))
-		return
-	}
-	var actionErr *shippingError
-	switch action {
-	case "approve":
-		actionErr = releaseApprove(r, tx, feature, releaseID, environment, status, releaseNotes, rollbackPlan, baseline, actor)
-	case "start":
-		if environment == "production" {
-			if status != "approved" {
+	err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(r.Context(),
+			`SELECT environment, status, release_notes, rollback_plan, baseline
+			   FROM shipping_releases WHERE id = $1 AND feature_id = $2 FOR UPDATE`,
+			releaseID, feature.id).Scan(&environment, &status, &releaseNotes, &rollbackPlan, &baseline); err != nil {
+			return fail(http.StatusNotFound, "release not found")
+		}
+		var actionErr *shippingError
+		switch action {
+		case "approve":
+			actionErr = releaseApprove(r, tx, feature, releaseID, environment, status, releaseNotes, rollbackPlan, baseline, actor)
+		case "start":
+			if environment == "production" {
+				if status != "approved" {
+					actionErr = fail(http.StatusConflict, "release is not approved to start")
+				}
+			} else if status != "planned" && status != "approved" {
 				actionErr = fail(http.StatusConflict, "release is not approved to start")
 			}
-		} else if status != "planned" && status != "approved" {
-			actionErr = fail(http.StatusConflict, "release is not approved to start")
-		}
-		if actionErr == nil {
-			if _, err := tx.ExecContext(r.Context(),
-				`UPDATE shipping_releases SET status='running', started_by=$1, started_at=NOW(), updated_at=NOW() WHERE id=$2`,
-				actor, releaseID); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-			if _, err := tx.ExecContext(r.Context(),
-				`UPDATE shipping_features SET status='releasing', updated_by=$1, updated_at=NOW() WHERE id=$2`,
-				actor, feature.id); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-		}
-	case "succeed":
-		evidence := body.jsonArray("evidence", 100)
-		if status != "running" {
-			actionErr = fail(http.StatusConflict, "only a running release can succeed")
-		} else if len(evidence) == 0 {
-			actionErr = fail(http.StatusConflict, "a successful release requires smoke evidence")
-		}
-		if actionErr == nil {
-			var dueAt any
-			if environment == "production" {
-				dueAt = time.Now().Add(24 * time.Hour)
-			}
-			if _, err := tx.ExecContext(r.Context(), `
-				UPDATE shipping_releases SET status='succeeded', smoke_evidence=$1::jsonb,
-				       completed_at=NOW(), readback_due_at=COALESCE(readback_due_at,$2), updated_at=NOW() WHERE id=$3`,
-				mustJSONString(evidence), dueAt, releaseID); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-			if environment == "production" {
+			if actionErr == nil {
 				if _, err := tx.ExecContext(r.Context(),
-					`UPDATE shipping_features SET status='watching', updated_by=$1, updated_at=NOW() WHERE id=$2`,
+					`UPDATE shipping_releases SET status='running', started_by=$1, started_at=NOW(), updated_at=NOW() WHERE id=$2`,
+					actor, releaseID); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(r.Context(),
+					`UPDATE shipping_features SET status='releasing', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 					actor, feature.id); err != nil {
-					httpx.WriteInternalError(w, r, err)
-					return
+					return err
 				}
 			}
-		}
-	case "fail":
-		evidence := body.jsonArray("evidence", 100)
-		if status != "running" {
-			actionErr = fail(http.StatusConflict, "only a running release can fail")
-		} else if len(evidence) == 0 {
-			actionErr = fail(http.StatusConflict, "a failed release requires diagnostic evidence")
-		}
-		if actionErr == nil {
-			if _, err := tx.ExecContext(r.Context(),
-				`UPDATE shipping_releases SET status='failed', smoke_evidence=$1::jsonb, completed_at=NOW(), updated_at=NOW() WHERE id=$2`,
-				mustJSONString(evidence), releaseID); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
+		case "succeed":
+			evidence := body.jsonArray("evidence", 100)
+			if status != "running" {
+				actionErr = fail(http.StatusConflict, "only a running release can succeed")
+			} else if len(evidence) == 0 {
+				actionErr = fail(http.StatusConflict, "a successful release requires smoke evidence")
 			}
-			if _, err := tx.ExecContext(r.Context(),
-				`UPDATE shipping_features SET status='ready', updated_by=$1, updated_at=NOW() WHERE id=$2`,
-				actor, feature.id); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-		}
-	case "readback_pass", "readback_fail":
-		evidence := body.jsonArray("evidence", 100)
-		if environment != "production" || status != "succeeded" {
-			actionErr = fail(http.StatusConflict, "readback applies only to successful production releases")
-		} else if len(evidence) == 0 {
-			actionErr = fail(http.StatusConflict, "readback requires production evidence")
-		}
-		if actionErr == nil {
-			rbStatus := "passed"
-			if action == "readback_fail" {
-				rbStatus = "failed"
-			}
-			if _, err := tx.ExecContext(r.Context(), `
-				UPDATE shipping_releases SET readback_status=$1, readback_evidence=$2::jsonb, updated_at=NOW() WHERE id=$3`,
-				rbStatus, mustJSONString(evidence), releaseID); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-			if action == "readback_fail" {
+			if actionErr == nil {
+				var dueAt any
+				if environment == "production" {
+					dueAt = time.Now().Add(24 * time.Hour)
+				}
 				if _, err := tx.ExecContext(r.Context(), `
-					INSERT INTO shipping_friction_reports
-					  (id,company_id,feature_id,reporter_id,source,source_key,title,description,severity,frequency,status,evidence)
-					VALUES ($1,$2,$3,$4,'production-readback',$5,$6,$7,'critical','frequent','open',$8::jsonb)
-					ON CONFLICT (company_id, source_key) WHERE source_key IS NOT NULL
-					DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
-					              last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
-					randID("fr"), companyID, feature.id, actor, "readback:"+releaseID,
-					"Production readback failed: "+feature.title,
-					"Observed production behavior diverged from the release baseline; investigate and add a replayable regression.",
-					mustJSONString(evidence)); err != nil {
-					httpx.WriteInternalError(w, r, err)
-					return
+					UPDATE shipping_releases SET status='succeeded', smoke_evidence=$1::jsonb,
+					       completed_at=NOW(), readback_due_at=COALESCE(readback_due_at,$2), updated_at=NOW() WHERE id=$3`,
+					mustJSONString(evidence), dueAt, releaseID); err != nil {
+					return err
+				}
+				if environment == "production" {
+					if _, err := tx.ExecContext(r.Context(),
+						`UPDATE shipping_features SET status='watching', updated_by=$1, updated_at=NOW() WHERE id=$2`,
+						actor, feature.id); err != nil {
+						return err
+					}
+				}
+			}
+		case "fail":
+			evidence := body.jsonArray("evidence", 100)
+			if status != "running" {
+				actionErr = fail(http.StatusConflict, "only a running release can fail")
+			} else if len(evidence) == 0 {
+				actionErr = fail(http.StatusConflict, "a failed release requires diagnostic evidence")
+			}
+			if actionErr == nil {
+				if _, err := tx.ExecContext(r.Context(),
+					`UPDATE shipping_releases SET status='failed', smoke_evidence=$1::jsonb, completed_at=NOW(), updated_at=NOW() WHERE id=$2`,
+					mustJSONString(evidence), releaseID); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(r.Context(),
+					`UPDATE shipping_features SET status='ready', updated_by=$1, updated_at=NOW() WHERE id=$2`,
+					actor, feature.id); err != nil {
+					return err
+				}
+			}
+		case "readback_pass", "readback_fail":
+			evidence := body.jsonArray("evidence", 100)
+			if environment != "production" || status != "succeeded" {
+				actionErr = fail(http.StatusConflict, "readback applies only to successful production releases")
+			} else if len(evidence) == 0 {
+				actionErr = fail(http.StatusConflict, "readback requires production evidence")
+			}
+			if actionErr == nil {
+				rbStatus := "passed"
+				if action == "readback_fail" {
+					rbStatus = "failed"
+				}
+				if _, err := tx.ExecContext(r.Context(), `
+					UPDATE shipping_releases SET readback_status=$1, readback_evidence=$2::jsonb, updated_at=NOW() WHERE id=$3`,
+					rbStatus, mustJSONString(evidence), releaseID); err != nil {
+					return err
+				}
+				if action == "readback_fail" {
+					if _, err := tx.ExecContext(r.Context(), `
+						INSERT INTO shipping_friction_reports
+						  (id,company_id,feature_id,reporter_id,source,source_key,title,description,severity,frequency,status,evidence)
+						VALUES ($1,$2,$3,$4,'production-readback',$5,$6,$7,'critical','frequent','open',$8::jsonb)
+						ON CONFLICT (company_id, source_key) WHERE source_key IS NOT NULL
+						DO UPDATE SET occurrence_count=shipping_friction_reports.occurrence_count+1,
+						              last_seen_at=NOW(),updated_at=NOW(),status='open',evidence=EXCLUDED.evidence`,
+						randID("fr"), companyID, feature.id, actor, "readback:"+releaseID,
+						"Production readback failed: "+feature.title,
+						"Observed production behavior diverged from the release baseline; investigate and add a replayable regression.",
+						mustJSONString(evidence)); err != nil {
+						return err
+					}
+					if _, err := tx.ExecContext(r.Context(),
+						`UPDATE shipping_features SET status='building', updated_by=$1, updated_at=NOW() WHERE id=$2`,
+						actor, feature.id); err != nil {
+						return err
+					}
+				}
+			}
+		case "rollback":
+			if status != "running" && status != "succeeded" && status != "failed" {
+				actionErr = fail(http.StatusConflict, "only an active or completed release can be rolled back")
+			}
+			reason := body.text("reason", 4000)
+			if actionErr == nil && reason == "" {
+				actionErr = fail(http.StatusConflict, "rollback requires a reason")
+			}
+			if actionErr == nil {
+				if _, err := tx.ExecContext(r.Context(), `
+					UPDATE shipping_releases SET status='rolled_back', rolled_back_at=NOW(), rollback_reason=$1, updated_at=NOW() WHERE id=$2`,
+					reason, releaseID); err != nil {
+					return err
 				}
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_features SET status='building', updated_by=$1, updated_at=NOW() WHERE id=$2`,
 					actor, feature.id); err != nil {
-					httpx.WriteInternalError(w, r, err)
-					return
+					return err
 				}
 			}
 		}
-	case "rollback":
-		if status != "running" && status != "succeeded" && status != "failed" {
-			actionErr = fail(http.StatusConflict, "only an active or completed release can be rolled back")
+		if actionErr != nil {
+			return actionErr
 		}
-		reason := body.text("reason", 4000)
-		if actionErr == nil && reason == "" {
-			actionErr = fail(http.StatusConflict, "rollback requires a reason")
-		}
-		if actionErr == nil {
-			if _, err := tx.ExecContext(r.Context(), `
-				UPDATE shipping_releases SET status='rolled_back', rolled_back_at=NOW(), rollback_reason=$1, updated_at=NOW() WHERE id=$2`,
-				reason, releaseID); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-			if _, err := tx.ExecContext(r.Context(),
-				`UPDATE shipping_features SET status='building', updated_by=$1, updated_at=NOW() WHERE id=$2`,
-				actor, feature.id); err != nil {
-				httpx.WriteInternalError(w, r, err)
-				return
-			}
-		}
-	}
-	if actionErr != nil {
-		writeShipError(w, r, actionErr)
-		return
-	}
-	_ = recordEvent(r.Context(), tx, companyID, feature.id, actor, "release."+action,
-		map[string]any{"releaseId": releaseID, "evidence": body.jsonArray("evidence", 100)})
-	if err := tx.Commit(); err != nil {
-		httpx.WriteInternalError(w, r, err)
+		// 事件失败不阻断(手写版 `_ =` 语义保留:不回滚、不影响提交)。
+		_ = recordEvent(r.Context(), tx, companyID, feature.id, actor, "release."+action,
+			map[string]any{"releaseId": releaseID, "evidence": body.jsonArray("evidence", 100)})
+		return nil
+	})
+	if err != nil {
+		// 二分:*shippingError(4xx 域错与 releaseApprove 尾部 fail(500))
+		// → WriteError 原响应体;其余(BeginTx/内联 Exec/Commit)→
+		// WriteInternalError,与手写版双通道逐路径一致。
+		writeShipError(w, r, err)
 		return
 	}
 	detail, serr := detailFeature(r.Context(), s.DB, companyID, feature.id)
