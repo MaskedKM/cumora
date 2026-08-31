@@ -180,7 +180,7 @@ func RenderPollForMessage(messageID string, p Poll) []string {
 	return renderPollBlock(messageID, p.parsed)
 }
 
-// PollPayload / PollOption:poll 消息模型(pollPayload 居 cli_read2,
+// PollPayload / PollOption:poll 消息模型(pollPayload 居 cli_read,
 // cli_poll 命令面与读路径共用)的导出别名。
 type PollPayload = pollPayload
 type PollOption = cliPollOption

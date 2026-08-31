@@ -173,6 +173,14 @@ func (p cliParsed) joinBodyArgs(start int) string {
 	return strings.Join(parts, " ")
 }
 
+// positionalFrom:切片越界安全。
+func positionalFrom(p cliParsed, from int) []string {
+	if from >= len(p.positional) {
+		return nil
+	}
+	return p.positional[from:]
+}
+
 // cliTokenize:把单条命令行按 bash 风格拆词(空白分词;"…" 与 '…' 成对
 // 引号内不分词;引号内不处理转义)。
 func cliTokenize(line string) []string {
