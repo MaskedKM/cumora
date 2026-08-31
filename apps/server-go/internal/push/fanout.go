@@ -270,7 +270,7 @@ func (s *Server) RegisterPushDevice(w http.ResponseWriter, r *http.Request) {
 		  app_version = COALESCE(EXCLUDED.app_version, push_devices.app_version),
 		  device_model = COALESCE(EXCLUDED.device_model, push_devices.device_model)`,
 		newID("pd-"), uid, platform, token, appV, modelV); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})

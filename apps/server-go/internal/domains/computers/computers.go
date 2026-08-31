@@ -68,7 +68,7 @@ func (s *Server) RequestPairingCode(w http.ResponseWriter, r *http.Request) {
 	}
 	code, _, err := reg.IssuePairingCode(r.Context(), s.DB, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_ = uid

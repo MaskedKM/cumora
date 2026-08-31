@@ -23,10 +23,12 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 }
 
 // WriteInternalError:TS errorHandler 非 HttpError 分支的合一(#141,
-// 122 处裸 err.Error() 500 收编)——恒 slog 排障;对外复刻 TS 的 dev/prod
-// 分流:NODE_ENV≠production 保留 err.message(TS 设计特性:不翻日志即可
-// 排障),production 收敛通用文案关泄漏。三处不进本助手:devtools 头像
-// 502 与 apple 400 是 TS baseline 无条件透传;waitlist approve 的受控
+// 122 处裸 err.Error() 500 收编;#214 再收编 76 处裸
+// WriteError(w,500,静态文案)——dev 文案从静态串变 err.Error(),
+// production 变通用文案,状态码不变)——恒 slog 排障;对外复刻 TS 的
+// dev/prod 分流:NODE_ENV≠production 保留 err.message(TS 设计特性:不翻
+// 日志即可排障),production 收敛通用文案关泄漏。三处不进本助手:devtools
+// 头像 502 与 apple 400 是 TS baseline 无条件透传;waitlist approve 的受控
 // 域错走原 WriteError。
 //
 // 已知有意分歧(#184 评审 P1):TS 另有约 10 个端点是 handler 内显式

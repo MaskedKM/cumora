@@ -252,7 +252,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// 单一错误通道无法等价映射。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "tx failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -264,17 +264,17 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if _, err := tx.ExecContext(r.Context(), `
 		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
 		id, uid); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "member insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
@@ -288,7 +288,7 @@ func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureDefault(r.Context(), s.DB, companyID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "default workspace provisioning failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
@@ -297,7 +297,7 @@ func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		 WHERE w.company_id = $1 AND w.unbound_at IS NULL
 		 GROUP BY w.id ORDER BY w.created_at ASC`, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -344,7 +344,7 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 		    ON p.id = m.participant_id AND p.company_id = $2
 		 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "members query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer explicitRows.Close()
@@ -368,7 +368,7 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 		allRows, err := s.DB.QueryContext(r.Context(),
 			`SELECT id FROM participants WHERE company_id = $1 AND departed_at IS NULL`, companyID)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "participants query failed")
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer allRows.Close()
@@ -400,7 +400,7 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 			"ARRAY["+strings.Join(placeholders, ",")+"]::text[]"),
 			append([]any{companyID}, toAny(derivedOnly)...)...)
 		if err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "implicit members query failed")
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		defer rows.Close()
@@ -424,7 +424,7 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 		SELECT target_kind, target_id, created_at FROM workspace_associations
 		 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "associations query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer assocRows.Close()
@@ -551,7 +551,7 @@ func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id s
 		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING`, ws.id, pid, uid)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -583,7 +583,7 @@ func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, i
 		`DELETE FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
 		ws.id, participantId)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -643,7 +643,7 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
 		assocID, ws.id, companyID, kind, targetID, uid)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -699,7 +699,7 @@ func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Reque
 		DELETE FROM workspace_associations WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
 		ws.id, companyID, kind, targetId)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -743,7 +743,7 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 	}
 	entries, err := os.ReadDir(abs)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "readdir failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if len(entries) > 500 {
@@ -796,7 +796,7 @@ func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id st
 	}
 	content, err := os.ReadFile(abs)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "read failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -856,11 +856,11 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "mkdir failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "write failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
@@ -893,7 +893,7 @@ func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id stri
 			httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, "unbind failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})

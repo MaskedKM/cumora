@@ -5,6 +5,7 @@ package httpx
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -56,6 +57,31 @@ func WriteDeadline(d time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Recover:/api 链 panic 兜底(#214)。此前域 handler panic 走 net/http
+// 默认路径——每连接单独 goroutine 里未被捕获的 panic 会让连接被服务端
+// 直接切断,客户端拿到的是连接重置而非可辨识的 500。对齐 runtime 侧
+// withAgent 的既有 recover 先例(runtime/routes.go 的 auth 中间件):
+// slog.Error 带 method/path/panic + 500 JSON {"error":"internal error"}
+// (纯逻辑分支,无 error 对象——与该先例同款豁免)。放链最外层,随后
+// 续 WriteDeadline → Authn;panic 响应已完成 handler 生命期,不与写期限
+// 交互。header 已写出的中途 panic 下 WriteHeader 会打 superfluous 告警,
+// 与 runtime 先例同样接受(TS 侧由 errorHandler 兜 try/catch 面,等价)。
+func Recover() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Error("[api] handler panicked", "method", r.Method, "path", r.URL.Path, "panic", rec)
+					// 500 豁免(#214):panic recover 面无 error 对象;固定
+					// 文案对齐 runtime 先例与 TS withAgent 的 catch 形状。
+					WriteError(w, http.StatusInternalServerError, "internal error")
+				}
+			}()
 			next.ServeHTTP(w, r)
 		})
 	}

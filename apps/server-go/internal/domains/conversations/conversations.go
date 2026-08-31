@@ -154,7 +154,7 @@ func (s *Server) SetTopic(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE conversations SET topic = $2, updated_at = NOW() WHERE id = $1`, convID, topic); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "topic": topic})
@@ -188,7 +188,7 @@ func (s *Server) SetTitle(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE conversations SET title = $2, updated_at = NOW() WHERE id = $1`, convID, title); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "title": title})
@@ -217,7 +217,7 @@ func (s *Server) TogglePin(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE conversations SET pinned = $2, updated_at = NOW() WHERE id = $1`, convID, pinned); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "pinned": pinned})
@@ -260,7 +260,7 @@ func (s *Server) SetMute(w http.ResponseWriter, r *http.Request, id string) {
 		INSERT INTO conversation_mutes (conversation_id, user_id, muted_until) VALUES ($1, $2, $3::timestamptz)
 		ON CONFLICT (conversation_id, user_id) DO UPDATE SET muted_until = $3::timestamptz`,
 		convID, uid, until); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "muted": true, "mutedUntil": until})
@@ -307,7 +307,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request, id string) {
 	nj, _ := json.Marshal(next)
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE conversations SET members = $2::jsonb, updated_at = NOW() WHERE id = $1`, convID, nj); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	postSystemMessage(r.Context(), s.DB, convID, companyID, uid, "joined", body.ID)
@@ -340,7 +340,7 @@ func (s *Server) LeaveConversation(w http.ResponseWriter, r *http.Request, id st
 	nj, _ := json.Marshal(next)
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE conversations SET members = $2::jsonb, updated_at = NOW() WHERE id = $1`, convID, nj); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "members": next})
@@ -394,7 +394,7 @@ func (s *Server) GetReplies(w http.ResponseWriter, r *http.Request, id string, r
 		  FROM messages m WHERE m.conversation_id = $1 AND m.quoted_message_id = $2
 		 ORDER BY m.sequence ASC`, convID, rootID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -462,7 +462,7 @@ func (s *Server) GetConversations(w http.ResponseWriter, r *http.Request) {
 		WHERE cmv.participant_id = $1 AND c.company_id = $2
 		ORDER BY c.pinned DESC, c.updated_at DESC`, uid, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -607,7 +607,7 @@ func (s *Server) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO conversations (id, kind, title, topic, members, pinned, company_id, project_id)
 		VALUES ($1, 'group', $2, $3, $4::jsonb, FALSE, $5, $6)`,
 		id, title, topic, membersJSON, companyID, projectID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_, _ = s.DB.ExecContext(r.Context(),
@@ -655,7 +655,7 @@ func (s *Server) OpenDirect(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.DB.ExecContext(r.Context(), `
 		INSERT INTO conversations (id, kind, title, members, company_id)
 		VALUES ($1, 'direct', '', $2::jsonb, $3)`, id, membersJSON, companyID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_, _ = s.DB.ExecContext(r.Context(),
@@ -746,7 +746,7 @@ func (s *Server) GetMessages(w http.ResponseWriter, r *http.Request, id string, 
 	q += fmt.Sprintf(" ORDER BY m.sequence DESC LIMIT %d", limit)
 	rows, err := s.DB.QueryContext(r.Context(), q, args...)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -895,10 +895,10 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 			ConversationID: convID, CompanyID: companyID, AuthorID: uid, Body: body.Body,
 		})
 		if err != nil {
-			// TS router.ts:3344 显式 catch:console.error + 500 无条件透传
-			// msg(非 errorHandler 面)——不进 WriteInternalError。
-			slog.Warn("email auto-promote failed", "conv", convID, "err", err)
-			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			// TS router.ts:3344 显式 catch 是 500 无条件透传 msg(非
+			// errorHandler 面);#214 起随 #184 既定方向收编进
+			// WriteInternalError(dev 透传 err、production 通用文案)。
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		status := http.StatusBadGateway
@@ -937,15 +937,13 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 	// 区分 BeginTx 与 Commit;幂等重放分支还需 mid-body 回滚 + 202 短路。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		slog.Warn("sendMessage begin tx failed", "conv", convID, "err", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback() // 提交后为 no-op
 	var sequence int64
 	if sequence, err = dbpkg.AllocSequence(r.Context(), tx, convID); err != nil {
-		slog.Warn("sendMessage sequence upsert failed", "conv", convID, "err", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "sequence failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	msgID := "m-" + authn.NewToken()[:12]
@@ -971,8 +969,7 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 			tx.QueryRowContext(r.Context(),
 				`SELECT id, sequence FROM messages WHERE conversation_id = $1 AND author_id = $2 AND client_id = $3`,
 				convID, uid, body.ClientID).Scan(&persistedID, &persistedSeq) == nil) {
-			slog.Warn("sendMessage insert failed", "conv", convID, "err", err)
-			httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"id": persistedID, "sequence": persistedSeq})
@@ -980,13 +977,11 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	msgID, sequence = persistedID, persistedSeq
 	if _, err := tx.ExecContext(r.Context(), `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convID); err != nil {
-		slog.Warn("sendMessage updated_at bump failed", "conv", convID, "err", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		slog.Warn("sendMessage commit failed", "conv", convID, "err", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	broadcastMsg := map[string]any{

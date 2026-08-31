@@ -94,8 +94,10 @@ test('sendMessage 第二步失败 → 事务整体回滚,counter 无孤儿行', 
   const boom = await call(`/conversations/${convId}/messages`, {
     method: 'POST', body: JSON.stringify({ body: 'boom-1' }),
   })
-  assert.equal(boom.status, 500)            // insert failed
-  assert.equal(boom.json.error, 'insert failed')
+  assert.equal(boom.status, 500)
+  // #214 收敛:dev 面透出真实 pg 错误(此前是静态标签 'insert failed')——
+  // 匹配注入的 boom 标记,比钉死实现细节文案更能证明"真错误浮出"。
+  assert.match(boom.json.error, /tx probe: injected text insert failure/)
   // counter 行整体回滚(旧行为:counter 孤儿行残留 next=2,序号从此断档)
   assert.equal(await nextSeq(), null)
   await dropBooms()

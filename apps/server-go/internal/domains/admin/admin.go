@@ -83,7 +83,7 @@ func setSettingJSON(w http.ResponseWriter, r *http.Request, db *sql.DB, key, val
 		    SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
 		key, valJSON, updatedBy)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "settings write failed")
+		httpx.WriteInternalError(w, r, err)
 		return false
 	}
 	return true
@@ -218,20 +218,20 @@ func cerebellumRead(db *sql.DB) (cerebellumPlain, error) {
 	return out, nil
 }
 
-func buildSettingsResponse(w http.ResponseWriter, db *sql.DB) {
+func buildSettingsResponse(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	c, err := cerebellumRead(db)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	waitlist, err := getSettingBool(db, "waitlist_enabled")
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	signups, err := getSettingBool(db, "signups_paused")
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	configured, suffix := apiKeyStatus(db)
@@ -252,7 +252,7 @@ func (s *Server) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(w, r, s.DB); !ok {
 		return
 	}
-	buildSettingsResponse(w, s.DB)
+	buildSettingsResponse(w, r, s.DB)
 }
 
 // settingsPut:类型门部分更新(对齐 admin-router.ts 113–137):
@@ -338,6 +338,10 @@ func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
 			// 绝不能装作成功。
 			enc, encOK := encryptApiKey(skey)
 			if !encOK {
+				// 500 豁免(#214):encryptApiKey 只回 (string, bool) 无
+				// error 对象;固定文案即失败原因本身(密钥未配置),与 TS
+				// throw 的显式文案透传等价,收编进 WriteInternalError 反而
+				// 丢失这条可操作信息。
 				httpx.WriteError(w, http.StatusInternalServerError, "CUMORA_SECRETS_KEY is not configured on the server")
 				return
 			}
@@ -351,7 +355,7 @@ func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "no settings to update")
 		return
 	}
-	buildSettingsResponse(w, s.DB)
+	buildSettingsResponse(w, r, s.DB)
 }
 
 func mustJSON(v any) string {
@@ -367,7 +371,7 @@ func (s *Server) AdminAvailableEngines(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.QueryContext(r.Context(),
 		`SELECT available_engines FROM computers WHERE status = 'online' AND revoked_at IS NULL`)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()

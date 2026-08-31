@@ -178,7 +178,7 @@ func (s *Server) ListBoards(w http.ResponseWriter, r *http.Request) {
 		SELECT id, title, description, created_by, created_at, updated_at
 		  FROM boards WHERE company_id = $1 ORDER BY updated_at DESC`, companyID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -226,7 +226,7 @@ func (s *Server) CreateBoard(w http.ResponseWriter, r *http.Request) {
 	// BeginTx/Commit 区分,响应字节无法等价。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "tx failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -234,7 +234,7 @@ func (s *Server) CreateBoard(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO boards (id, company_id, title, description, created_by)
 		VALUES ($1, $2, $3, NULLIF($4,''), $5)`,
 		boardID, companyID, title, description, uid); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	// 自动种 Todo/Doing/Done 三列(baseline 语义)
@@ -242,12 +242,12 @@ func (s *Server) CreateBoard(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(r.Context(), `
 			INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
 			"col-"+authn.NewToken()[:12], boardID, col, (i+1)*1000); err != nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "columns seed failed")
+			httpx.WriteInternalError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "commit failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	boardEvent(r.Context(), companyID, "board.created", boardID, map[string]any{"actorId": uid})
@@ -368,7 +368,7 @@ func (s *Server) UpdateBoard(w http.ResponseWriter, r *http.Request, id string) 
 	args = append(args, boardID)
 	if _, err := s.DB.ExecContext(r.Context(),
 		fmt.Sprintf("UPDATE boards SET %s, updated_at = NOW() WHERE id = $%d", strings.Join(sets, ", "), len(args)), args...); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	boardEvent(r.Context(), companyID, "board.updated", boardID, map[string]any{"actorId": uid})
@@ -382,7 +382,7 @@ func (s *Server) DeleteBoard(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	boardID := id
 	if _, err := s.DB.ExecContext(r.Context(), `DELETE FROM boards WHERE id = $1`, boardID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	boardEvent(r.Context(), companyID, "board.deleted", boardID, map[string]any{"actorId": uid})
@@ -489,7 +489,7 @@ func (s *Server) AddBoardColumn(w http.ResponseWriter, r *http.Request, bid stri
 	if _, err := s.DB.ExecContext(r.Context(), `
 		INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
 		colID, boardID, title, pos); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	boardEvent(r.Context(), companyID, "column.created", boardID, map[string]any{"columnId": colID, "actorId": uid})
@@ -528,7 +528,12 @@ func (s *Server) UpdateBoardColumn(w http.ResponseWriter, r *http.Request, bid s
 		fmt.Sprintf("UPDATE board_columns SET %s WHERE id = $%d AND board_id = $%d",
 			strings.Join(sets, ", "), len(args)-1, len(args)), args...)
 	if err != nil || res == nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		// res==nil 分支按 database/sql 契约不可达(err==nil ⇒ res 非 nil),
+		// 兜底造错防 WriteInternalError 解引用 nil。
+		if err == nil {
+			err = fmt.Errorf("column update returned nil result")
+		}
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -548,7 +553,7 @@ func (s *Server) DeleteBoardColumn(w http.ResponseWriter, r *http.Request, bid s
 	res, err := s.DB.ExecContext(r.Context(),
 		`DELETE FROM board_columns WHERE id = $1 AND board_id = $2`, colID, boardID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -613,7 +618,7 @@ func (s *Server) CreateCard(w http.ResponseWriter, r *http.Request, id string) {
 		INSERT INTO board_cards (id, board_id, column_id, title, description, position, assignee_id, mentions, created_by)
 		VALUES ($1, $2, $3, $4, NULLIF($5,''), $6, $7, $8::jsonb, $9)`,
 		cardID, boardID, columnID, title, description, position, assignee, mj, uid); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_, _ = s.DB.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
@@ -720,7 +725,7 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 	if _, err := s.DB.ExecContext(r.Context(),
 		fmt.Sprintf("UPDATE board_cards SET %s, updated_at = NOW() WHERE id = $%d AND board_id = $%d",
 			strings.Join(sets, ", "), len(args)-1, len(args)), args...); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "update failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_, _ = s.DB.ExecContext(r.Context(), `UPDATE boards SET updated_at = NOW() WHERE id = $1`, boardID)
@@ -761,7 +766,7 @@ func (s *Server) DeleteCard(w http.ResponseWriter, r *http.Request, bid string, 
 	res, err := s.DB.ExecContext(r.Context(),
 		`DELETE FROM board_cards WHERE id = $1 AND board_id = $2`, cardID, boardID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -789,7 +794,7 @@ func (s *Server) ListCardComments(w http.ResponseWriter, r *http.Request, bid st
 		SELECT id, author_id, body, mentions::text, created_at
 		  FROM board_card_comments WHERE card_id = $1 ORDER BY created_at ASC`, cardID)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "query failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -842,7 +847,7 @@ func (s *Server) AddCardComment(w http.ResponseWriter, r *http.Request, bid stri
 	if _, err := s.DB.ExecContext(r.Context(), `
 		INSERT INTO board_card_comments (id, card_id, author_id, body, mentions)
 		VALUES ($1, $2, $3, $4, $5::jsonb)`, commentID, cardID, uid, text, mj); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "insert failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	_, _ = s.DB.ExecContext(r.Context(), `UPDATE board_cards SET updated_at = NOW() WHERE id = $1`, cardID)
@@ -867,7 +872,7 @@ func (s *Server) DeleteCardComment(w http.ResponseWriter, r *http.Request, bid s
 		`DELETE FROM board_card_comments WHERE id = $1 AND card_id = $2 AND author_id = $3`,
 		commentID, cardID, uidNow)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "delete failed")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {

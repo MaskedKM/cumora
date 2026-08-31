@@ -201,13 +201,15 @@ func main() {
 	// shipping 全子面(#125,#117-f):feature 契约机/验证方格/发布/
 	// 回读/回归/摩擦,16 路由。
 	shipping.Mount(coreRouter, pool)
-	// /api/* 统一入口:写期限兜底(#136,非流式面)→ 认证中间件 → core
-	// 域;域未挂载的路径落到 JSON 404 兜底(baseline 形状
-	// {error:'not found'},#53 起域渐挂期间的平价)。
+	// /api/* 统一入口:panic 兜底(#214,最外层——域 handler panic 不再
+	// 走 net/http 默认路径变成连接重置,而是 500 JSON)→ 写期限兜底
+	// (#136,非流式面)→ 认证中间件 → core 域;域未挂载的路径落到
+	// JSON 404 兜底(baseline 形状 {error:'not found'},#53 起域渐挂
+	// 期间的平价)。
 	coreRouter.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 	})
-	mux.Handle("/api/", httpx.WriteDeadline(5*time.Minute)(authMiddleware(coreRouter)))
+	mux.Handle("/api/", httpx.Recover()(httpx.WriteDeadline(5*time.Minute)(authMiddleware(coreRouter))))
 	// 后续域(#53 会话起)同样:各自 Mount 后经 authMiddleware 串接。
 
 	srv := newHTTPServer(cfg.ListenAddr, mux)

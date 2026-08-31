@@ -704,7 +704,7 @@ func StartConvene(db *sql.DB, w http.ResponseWriter, r *http.Request, id string)
 	if err := db.QueryRowContext(r.Context(),
 		`SELECT title, members::text FROM conversations WHERE id = $1`, id).
 		Scan(&convoTitle, &membersJSON); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "conversation "+id+" not found")
+		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	// F6:Go 侧无服务端编排,会话无人终结——新会话开场即了结本会话
