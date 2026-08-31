@@ -10,8 +10,9 @@
  * has no notion of it.
  */
 import { create } from 'zustand'
-import { api, ws, type ApiWhisper, type ApiWhisperMessage } from '@/api/client'
+import { api, type ApiWhisper, type ApiWhisperMessage } from '@/api/client'
 import { commitIfContextCurrent } from '@/stores/auth'
+import { bindWsEvents } from '@/lib/wsBinding'
 
 export interface WhispersState {
   list: ApiWhisper[]
@@ -78,14 +79,12 @@ export const useWhispers = create<WhispersState>((set) => ({
 }))
 
 // Data reload runs on every call; WS binding only attaches once.
-let wsBound = false
+/** WS 绑定 token —— 与旧 `wsBound` 布尔同一守护语义(#220 ②)。 */
+const wsToken = { bound: false }
 export function bootWhispers() {
   void useWhispers.getState().loadList()
-  if (wsBound) return
-  wsBound = true
-  ws.connect()
-  ws.on((e) => {
-    if (e.type === 'hello') {
+  bindWsEvents(wsToken, {
+    hello: () => {
       // WS (re)connected — Redis pubsub didn't queue events for the gap,
       // so any `message.new` on a peeked agent↔agent thread is gone.
       // Refresh the list (covers msgCount / updatedAt) and any per-thread
@@ -93,45 +92,45 @@ export function bootWhispers() {
       void useWhispers.getState().refreshList()
       const opened = Object.keys(useWhispers.getState().byId)
       for (const id of opened) void useWhispers.getState().loadMessages(id)
-      return
-    }
-    if (e.type !== 'message.new') return
-    // Only react if this new message belongs to a conversation we're
-    // already tracking as a "whisper" (agent ↔ agent). If yes, append it
-    // and refresh the list so msgCount / updatedAt stay current.
-    const list = useWhispers.getState().list
-    const isPeekable = list.some((w) => w.id === e.conversationId)
-    if (!isPeekable) {
-      // New conversation might have just been created (an agent kicked
-      // off a fresh DM with another agent). Refetch the list so it
-      // appears in the peek tab on the next read.
+    },
+    'message.new': (e) => {
+      // Only react if this new message belongs to a conversation we're
+      // already tracking as a "whisper" (agent ↔ agent). If yes, append it
+      // and refresh the list so msgCount / updatedAt stay current.
+      const list = useWhispers.getState().list
+      const isPeekable = list.some((w) => w.id === e.conversationId)
+      if (!isPeekable) {
+        // New conversation might have just been created (an agent kicked
+        // off a fresh DM with another agent). Refetch the list so it
+        // appears in the peek tab on the next read.
+        void useWhispers.getState().refreshList()
+        return
+      }
+      // Normalize timestamp shape — WS payload uses `at`, the HTTP shape
+      // (and the Bubble renderer) reads `createdAt`.
+      const m = e.message
+      const rawAt = (m as { at?: string; createdAt?: string }).at
+      const wm: ApiWhisperMessage = {
+        id: m.id,
+        conversationId: e.conversationId,
+        authorId: m.authorId,
+        kind: m.kind,
+        body: m.body,
+        sequence: m.sequence,
+        tool: (m as { tool?: ApiWhisperMessage['tool'] }).tool ?? null,
+        createdAt: (m as { createdAt?: string }).createdAt ?? rawAt ?? new Date().toISOString(),
+      }
+      useWhispers.setState((s) => {
+        const existing = s.byId[e.conversationId] ?? []
+        if (existing.some((x) => x.id === wm.id)) return {}
+        const next = [...existing, wm].sort((a, b) => a.sequence - b.sequence)
+        return { byId: { ...s.byId, [e.conversationId]: next } }
+      })
+      // Refresh the list so msgCount + updated_at order are accurate.
+      // Use refreshList (not loadList) — loadList wipes byId, which would
+      // flash the open thread empty until the refetch completes.
       void useWhispers.getState().refreshList()
-      return
-    }
-    // Normalize timestamp shape — WS payload uses `at`, the HTTP shape
-    // (and the Bubble renderer) reads `createdAt`.
-    const m = e.message
-    const rawAt = (m as { at?: string; createdAt?: string }).at
-    const wm: ApiWhisperMessage = {
-      id: m.id,
-      conversationId: e.conversationId,
-      authorId: m.authorId,
-      kind: m.kind,
-      body: m.body,
-      sequence: m.sequence,
-      tool: (m as { tool?: ApiWhisperMessage['tool'] }).tool ?? null,
-      createdAt: (m as { createdAt?: string }).createdAt ?? rawAt ?? new Date().toISOString(),
-    }
-    useWhispers.setState((s) => {
-      const existing = s.byId[e.conversationId] ?? []
-      if (existing.some((x) => x.id === wm.id)) return {}
-      const next = [...existing, wm].sort((a, b) => a.sequence - b.sequence)
-      return { byId: { ...s.byId, [e.conversationId]: next } }
-    })
-    // Refresh the list so msgCount + updated_at order are accurate.
-    // Use refreshList (not loadList) — loadList wipes byId, which would
-    // flash the open thread empty until the refetch completes.
-    void useWhispers.getState().refreshList()
+    },
   })
 }
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { api, ws, type ApiDocument } from '@/api/client'
+import { api, type ApiDocument } from '@/api/client'
+import { bindWsEvents } from '@/lib/wsBinding'
 
 interface DocumentsState {
   list: ApiDocument[]
@@ -56,9 +57,12 @@ export const useDocuments = create<DocumentsState>((set, get) => ({
   },
 }))
 
-ws.on((ev) => {
-  if (ev.type !== 'doc.changed') return
-  const state = useDocuments.getState()
-  if (!state.loaded) return
-  void state.reload()
-})
+// 模块加载即接入(#220 ② 换用绑定帮手):不发起连接 —— WS 连接由
+// boot 系列 store 负责,这里只消费事件,与原裸 `ws.on` 行为一致。
+bindWsEvents({ bound: false }, {
+  'doc.changed': () => {
+    const state = useDocuments.getState()
+    if (!state.loaded) return
+    void state.reload()
+  },
+}, { connect: false })

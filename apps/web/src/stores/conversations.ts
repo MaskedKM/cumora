@@ -1,8 +1,9 @@
 import { create } from 'zustand'
-import { api, ws, type ApiConversation, type ApiMessage } from '@/api/client'
+import { api, type ApiConversation, type ApiMessage } from '@/api/client'
 import type { Conversation } from '@/types'
 import { useApp } from '@/stores/app'
 import { commitIfContextCurrent, useAuth } from '@/stores/auth'
+import { bindWsEvents } from '@/lib/wsBinding'
 import { useMessages } from '@/stores/messages'
 import { useParticipants } from '@/stores/participants'
 
@@ -286,43 +287,40 @@ export function applyMessageEvent(conversationId: string, m: ApiMessage, isActiv
 // WS bindings are attached once for the page lifetime; data reload runs
 // on every call so workspace switches (App.tsx remounts the tree on
 // companyId change) pick up the new tenant's data.
-let wsBound = false
+/** WS 绑定 token —— 与旧 `wsBound` 布尔同一守护语义(#220 ②)。 */
+const wsToken = { bound: false }
 export function bootConversations() {
   void useConversations.getState().load()
-  if (wsBound) return
-  wsBound = true
-  ws.connect()
-  ws.on((e) => {
-    if (e.type === 'hello') {
+  bindWsEvents(wsToken, {
+    hello: () => {
       // WS (re)connected — Redis pubsub didn't queue events for the gap,
       // so any `message.new` / `group.pulled` / `conversation.updated`
       // that fired while we were disconnected is gone. Refetch the list
       // so last-message previews and unread badges backfill without a
       // manual page refresh.
       void useConversations.getState().reload()
-      return
-    }
-    if (e.type === 'message.new' || e.type === 'group.pulled') {
-      // message.new patches the row in place (#220): with several agents
-      // replying concurrently, one HTTP list refetch per message was a
-      // request storm with full-list re-renders. The open conversation
-      // keeps its server read-state in step via markRead alone (no
-      // refetch — the transcript itself lives in the messages store).
+    },
+    // message.new patches the row in place (#220): with several agents
+    // replying concurrently, one HTTP list refetch per message was a
+    // request storm with full-list re-renders. The open conversation
+    // keeps its server read-state in step via markRead alone (no
+    // refetch — the transcript itself lives in the messages store).
+    'message.new': (e) => {
       const active = useApp.getState().selectedConversationId
-      if (e.type === 'message.new') {
-        const isActive = e.conversationId === active
-        if (isActive) {
-          // Treated as already-seen: mark read BEFORE the patch so the
-          // badge never blinks up to 1 just to drop back to 0.
-          void api.markRead(e.conversationId).catch(() => { /* offline: next open retries */ })
-        }
-        applyMessageEvent(e.conversationId, e.message, isActive)
-        return
+      const isActive = e.conversationId === active
+      if (isActive) {
+        // Treated as already-seen: mark read BEFORE the patch so the
+        // badge never blinks up to 1 just to drop back to 0.
+        void api.markRead(e.conversationId).catch(() => { /* offline: next open retries */ })
       }
-      // group.pulled can introduce a conversation the client has never
-      // loaded — a patch can't invent the row, so this stays a reload.
+      applyMessageEvent(e.conversationId, e.message, isActive)
+    },
+    // group.pulled can introduce a conversation the client has never
+    // loaded — a patch can't invent the row, so this stays a reload.
+    'group.pulled': () => {
       void useConversations.getState().reload()
-    } else if (e.type === 'conversation.updated') {
+    },
+    'conversation.updated': (e) => {
       // Surgical patch — apply patch fields to the matching conversation in
       // place without a full network reload.
       useConversations.setState((s) => ({
@@ -334,6 +332,6 @@ export function bootConversations() {
           return next
         }),
       }))
-    }
+    },
   })
 }
