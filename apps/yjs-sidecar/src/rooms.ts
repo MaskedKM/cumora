@@ -18,6 +18,7 @@
  * applying the same update twice is a no-op.
  */
 import * as Y from 'yjs'
+import type { PoolClient } from 'pg'
 import { pool } from './infra/pool.js'
 import {
   redis, sub, publish,
@@ -54,6 +55,9 @@ interface Room {
   subs: Set<DocSubscriber>
   /** Updates since last snapshot — drives the compaction threshold. */
   updatesSinceSnapshot: number
+  /** #254:同房间 compaction 串行链 —— 上一个未收尾前新的只能排队,
+   *  防止多个 compaction 周期互相用别人的锚裁自己的行。 */
+  compactChain: Promise<void>
   /** Set during cold-load to coalesce concurrent waiters. */
   loaded: Promise<void>
   /** Marked true after the doc is hydrated from DB; flips OFF doc.on('update')
@@ -91,8 +95,8 @@ const evictions = new Map<string, NodeJS.Timeout>()
  *  echo-suppressed when they originated here. */
 const INSTANCE_ORIGIN = `instance:${env.INSTANCE_ID}`
 
-async function loadSnapshot(documentId: string): Promise<{ state: Uint8Array | null; lastIncluded: bigint }> {
-  const { rows } = await pool.query<{ state_bytes: Buffer; snapshot_at_update_id: string }>(
+async function loadSnapshotOf(client: PoolClient, documentId: string): Promise<{ state: Uint8Array | null; lastIncluded: bigint }> {
+  const { rows } = await client.query<{ state_bytes: Buffer; snapshot_at_update_id: string }>(
     `SELECT state_bytes, snapshot_at_update_id
        FROM document_snapshots
       WHERE document_id = $1`,
@@ -103,18 +107,37 @@ async function loadSnapshot(documentId: string): Promise<{ state: Uint8Array | n
   return { state: new Uint8Array(row.state_bytes), lastIncluded: BigInt(row.snapshot_at_update_id) }
 }
 
-async function loadUpdatesAfter(
-  documentId: string,
-  afterId: bigint,
-): Promise<Array<{ id: bigint; bytes: Uint8Array }>> {
-  const { rows } = await pool.query<{ id: string; update_bytes: Buffer }>(
-    `SELECT id, update_bytes
-       FROM document_updates
-      WHERE document_id = $1 AND id > $2
-      ORDER BY id ASC`,
-    [documentId, afterId.toString()],
-  )
-  return rows.map((r) => ({ id: BigInt(r.id), bytes: new Uint8Array(r.update_bytes) }))
+async function hydrateDoc(documentId: string, doc: Y.Doc): Promise<void> {
+  // #254:快照行与 tail 行必须取自同一个数据库一致性视图。两条独立
+  // SELECT 之间若恰有 compaction 事务提交(原子地换锚+裁行),先读到的
+  // 旧锚配上裁后的行集会漏掉 (旧锚, 新锚] 区间的帧。REPEATABLE READ
+  // 下事务内两条 SELECT 共享同一快照,冷加载要么看到压缩前、要么压缩后
+  // 的完整世界,不存在中间态。
+  const client = await pool.connect()
+  let snap: { state: Uint8Array | null; lastIncluded: bigint }
+  let tail: Array<Uint8Array>
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
+    snap = await loadSnapshotOf(client, documentId)
+    const { rows } = await client.query<{ update_bytes: Buffer }>(
+      `SELECT id, update_bytes
+         FROM document_updates
+        WHERE document_id = $1 AND id > $2
+        ORDER BY id ASC`,
+      [documentId, snap.lastIncluded.toString()],
+    )
+    tail = rows.map((r) => new Uint8Array(r.update_bytes))
+    await client.query('COMMIT')
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+    throw e
+  } finally {
+    client.release()
+  }
+  if (snap.state) Y.applyUpdate(doc, snap.state, 'hydrate')
+  for (const u of tail) {
+    Y.applyUpdate(doc, u, 'hydrate')
+  }
 }
 
 async function persistUpdate(documentId: string, authorId: string, bytes: Uint8Array): Promise<void> {
@@ -131,30 +154,67 @@ async function persistUpdate(documentId: string, authorId: string, bytes: Uint8A
   ).catch(() => { /* swallow — list ordering is best-effort */ })
 }
 
-async function maybeCompact(room: Room): Promise<void> {
-  if (room.updatesSinceSnapshot < COMPACT_AFTER_UPDATES) return
-  // Snapshot the current state and find the latest update id covered.
-  const state = Y.encodeStateAsUpdate(room.doc)
+/** #254 compaction 收敛根因修复 —— 顺序即正确性,两个要点:
+ *
+ * 1) 先锚定、后取态。单写者进程内,一个 update 行的内容必然在它的
+ *    INSERT 派发之前就已应用进 room.doc(apply → queuePending → flush →
+ *    persistUpdate)。因此 `SELECT MAX(id)` 放在 `encodeStateAsUpdate`
+ *    之前:锚 = T1 时刻可见行的最大 id,取态发生在 T1 之后的 T2;任意
+ *    id ≤ 锚 的行提交于 T1 之前,其内容进 doc 的时间更早,故 T2 的快照
+ *    态必然包含它 → `DELETE id <= 锚` 不丢数据;T1 之后才落库的行其
+ *    序列 id 必然更大(nextval 单调),只会在冷加载时作为 tail 幂等重放。
+ *    旧实现先取态后读 MAX:合批竞态下 MAX 会看到取态之后才提交的迟到
+ *    批,锚指到快照没覆盖的行,DELETE 把这批裁掉 → 持久层永久丢段。
+ * 2) 快照 upsert 与裁行同一事务。读者要么看到「旧快照 + 旧行全集」,
+ *    要么「新快照 + 裁后行集」,不会读到半翻转状态;ON CONFLICT 的行
+ *    锁顺带把跨进程的并发 compaction 在 DB 层串行化。 */
+async function compactRoom(room: Room): Promise<void> {
   const { rows } = await pool.query<{ max_id: string | null }>(
     `SELECT MAX(id)::text AS max_id FROM document_updates WHERE document_id = $1`,
     [room.documentId],
   )
   const maxId = rows[0]?.max_id ? BigInt(rows[0].max_id) : 0n
-  await pool.query(
-    `INSERT INTO document_snapshots (document_id, state_bytes, snapshot_at_update_id, updated_at)
-     VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (document_id)
-       DO UPDATE SET state_bytes = EXCLUDED.state_bytes,
-                     snapshot_at_update_id = EXCLUDED.snapshot_at_update_id,
-                     updated_at = NOW()`,
-    [room.documentId, Buffer.from(state), maxId.toString()],
-  )
-  // Trim updates that are now safely captured in the snapshot.
-  await pool.query(
-    `DELETE FROM document_updates WHERE document_id = $1 AND id <= $2`,
-    [room.documentId, maxId.toString()],
-  )
+  const state = Y.encodeStateAsUpdate(room.doc)
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(
+      `INSERT INTO document_snapshots (document_id, state_bytes, snapshot_at_update_id, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (document_id)
+         DO UPDATE SET state_bytes = EXCLUDED.state_bytes,
+                       snapshot_at_update_id = EXCLUDED.snapshot_at_update_id,
+                       updated_at = NOW()`,
+      [room.documentId, Buffer.from(state), maxId.toString()],
+    )
+    await client.query(
+      `DELETE FROM document_updates WHERE document_id = $1 AND id <= $2`,
+      [room.documentId, maxId.toString()],
+    )
+    await client.query('COMMIT')
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+function maybeCompact(room: Room): Promise<void> {
+  if (room.updatesSinceSnapshot < COMPACT_AFTER_UPDATES) return Promise.resolve()
+  // #254:阈值计数在第一个 await 之前就地清零,并把本房间的 compaction
+  // 排进串行链。合批的 cap / 窗口 / 关停三条 flush 腿能在同一轮 210 帧
+  // 内先后越过阈值(旧实现的清零在三个异步查询之后才执行,期间计数
+  // 一直是 ≥200),于是同时开出 2~3 个交叠的 compaction:各自取态、
+  // 各自锚定、各自 DELETE,快照行最终是谁后落谁(乱序版本),而裁行
+  // 却按各自的 maxId 执行 —— 中间帧被裁掉、快照又没含它,冷加载永久
+  // 无法收敛。清零若不放在 await 之前,异步收尾时的回写还会把后续帧
+  // 的计数一并抹掉。
   room.updatesSinceSnapshot = 0
+  const run = room.compactChain.then(() => compactRoom(room))
+  // 链不因单次失败断裂;失败本身照常向调用方冒泡(flushPendingNow 有 catch 告警)。
+  room.compactChain = run.catch(() => {})
+  return run
 }
 
 /** #145 合帧:窗口内到达的 update 按 authorId 分组、增量合并;窗口到点
@@ -224,15 +284,6 @@ export async function flushAllPending(): Promise<void> {
   await Promise.allSettled(work)
 }
 
-async function hydrateDoc(documentId: string, doc: Y.Doc): Promise<void> {
-  const snap = await loadSnapshot(documentId)
-  if (snap.state) Y.applyUpdate(doc, snap.state, 'hydrate')
-  const tail = await loadUpdatesAfter(documentId, snap.lastIncluded)
-  for (const u of tail) {
-    Y.applyUpdate(doc, u.bytes, 'hydrate')
-  }
-}
-
 function roomKey(documentId: string): string {
   return documentId
 }
@@ -255,6 +306,7 @@ async function getOrCreateRoom(documentId: string, companyId: string): Promise<R
     doc,
     subs: new Set(),
     updatesSinceSnapshot: 0,
+    compactChain: Promise.resolve(),
     hydrated: false,
     loaded: Promise.resolve(),
     pending: new Map(),
