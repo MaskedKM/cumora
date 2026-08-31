@@ -162,26 +162,37 @@ test('compaction: 210 raw updates still trigger snapshot + correct replay', asyn
   }
   await flushAllPending()
 
-  // 200 帧阈值在合批下照样触发 maybeCompact —— 轮询等快照落盘。
+  // 200 帧阈值在合批下照样触发 maybeCompact —— 但它挂在 flush 腿上是
+  // fire-and-forget 的:flushAllPending 只等「本批」落库,不等更早 cap
+  // 批触发的 compaction 收尾,也不等仍在途的 INSERT 提交。#254 根因已
+  // 在实现侧修掉(compaction 同房间串行 + 阈值计数先清零 + 锚定先于
+  // 取态 + 换锚/裁行同事务),此处的等待条件因此必须是「收敛不变量」
+  // —— snapshot + tail 重放 == 全量 210 步态 —— 而非「快照行存在」:
+  // 行存在只证明 compaction 开过工,不证明 tail 行集的可见性已稳定。
+  // 该等待方式不会掩盖真回归:若实现再次丢段(旧行为是被 DELETE 永久
+  // 裁掉、迟读也不恢复),重放永远收敛不到全量,轮询照样超时失败。
+  const expected = local.getText('content').toString()
   const deadline = Date.now() + 5_000
-  let snap: { state_bytes: Buffer; snapshot_at_update_id: string } | undefined
-  while (Date.now() < deadline) {
+  let lastDiag = 'snapshot row not seen yet'
+  let converged = false
+  while (Date.now() < deadline && !converged) {
     const { rows } = await pool.query<{ state_bytes: Buffer; snapshot_at_update_id: string }>(
       `SELECT state_bytes, snapshot_at_update_id FROM document_snapshots WHERE document_id = $1`,
       [DOC],
     )
-    if (rows[0]) { snap = rows[0]; break }
+    const snap = rows[0]
+    if (snap) {
+      const tail = (await rowsFor(DOC)).filter((r) => BigInt(r.id) > BigInt(snap.snapshot_at_update_id))
+      const got = replay(tail, snap.state_bytes)
+      if (got === expected) {
+        converged = true
+        break
+      }
+      lastDiag = `snapshot_at=${snap.snapshot_at_update_id} tail_rows=${tail.length} replay_len=${got.length}/${expected.length}`
+    }
     await new Promise((r) => setTimeout(r, 200))
   }
-  assert.ok(snap, 'snapshot row must exist after 210 updates')
-
-  const tail = (await rowsFor(DOC)).filter((r) => BigInt(r.id) > BigInt(snap!.snapshot_at_update_id))
-  const expected = local.getText('content').toString()
-  assert.equal(
-    replay(tail, snap.state_bytes),
-    expected,
-    'snapshot + tail replay must converge to the full 210-step state',
-  )
+  assert.ok(converged, `snapshot + tail replay must converge to the full 210-step state (last: ${lastDiag})`)
 })
 
 // 防御:房间不清理会让 eviction 定时器挂着进程 —— force-exit 由 test runner 处理,
