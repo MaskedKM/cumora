@@ -57,6 +57,7 @@ type claudeSession struct {
 	stdin           io.WriteCloser
 	onLog           func(string)
 	onHop           func(HopReport)
+	onText          func(string) // #210 assistant 文本前缀(delta 上报源)
 	carriesStanding bool
 
 	mu                     sync.Mutex
@@ -85,6 +86,7 @@ func newClaudeSession(bin string, argv []string, args SessionArgs, carriesStandi
 	s := &claudeSession{
 		onLog:           args.OnLog,
 		onHop:           args.OnHopUsage,
+		onText:          args.OnAssistantText,
 		carriesStanding: carriesStanding,
 		sid:             args.ResumeSessionID,
 		pending:         nil,
@@ -337,6 +339,7 @@ func (s *claudeSession) onStdoutLine(line string) {
 		s.curModel = evModel
 	}
 	onHop := s.onHop
+	onText := s.onText
 	s.mu.Unlock()
 	// 逐跳台账:每条 {assistant, message:{model, usage}} 是本轮一次出站
 	// 模型调用;终止 result 事件带全轮总和(只作轮总账,不重复记账)。
@@ -359,6 +362,13 @@ func (s *claudeSession) onStdoutLine(line string) {
 			s.hopStart = nowMS()
 		}
 		s.mu.Unlock()
+	}
+	// #210:assistant 文本块 = 已产出前缀,喂 delta 上报(尽力而为,
+	// 不打断流)。thinking/tool_use 不算——只报"说出口"的部分。
+	if ev.Type == "assistant" && ev.Message != nil && onText != nil {
+		if txt := assistantTextBlocks(ev.Message.Content); txt != "" {
+			onText(txt + "\n\n") // 逐事件段落分隔(一次性路径同款)
+		}
 	}
 	// 原生自动压缩观测(telemetry)。
 	if ev.Subtype == "status" && ev.Status == "compacting" && onLog != nil {

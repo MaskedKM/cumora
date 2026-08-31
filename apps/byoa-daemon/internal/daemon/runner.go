@@ -83,6 +83,8 @@ type AgentRunner struct {
 	// 逐跳台账:当前在飞 run 的 id(hops 挂回 run)+ 缓冲上报器。
 	currentRunID string
 	reporter     *hopReporter
+	// deltas:#210 流式增量上报器(引擎已产出前缀 → /runtime/message-delta)。
+	deltas *deltaReporter
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -102,6 +104,9 @@ func newAgentRunner(cfg *DaemonConfig, agent AgentInfo, adapter EngineAdapter) *
 		cancel:      cancel,
 	}
 	r.reporter = newHopReporter(cfg.ServerURL, func(ctx context.Context) (string, error) {
+		return r.ensureToken()
+	})
+	r.deltas = newDeltaReporter(cfg.ServerURL, func(ctx context.Context) (string, error) {
 		return r.ensureToken()
 	})
 	return r
@@ -305,6 +310,7 @@ func (r *AgentRunner) ensureEngineSession() EngineSession {
 		StandingPrompt:  r.standingPrompt(),
 		OnLog:           func(line string) { r.logEngineLine(line) },
 		OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
+		OnAssistantText: func(text string) { r.onEngineText(text) },
 	})
 	r.mu.Lock()
 	r.engineSession = newSess
@@ -722,6 +728,11 @@ func (r *AgentRunner) runTurn(reason string) error {
 	r.lastWakeConvo = ""
 	r.mu.Unlock()
 	defer func() {
+		// #210:turn 终结——冲净 delta 尾帧并补 done(终局仍以 cli reply
+		// 的 message.new 为准;done 只兜"turn 没回帖"的退场)。
+		if r.deltas != nil {
+			r.deltas.finish()
+		}
 		r.mu.Lock()
 		r.busy = false
 		pending := r.pendingRerun && !r.stopped
@@ -802,6 +813,7 @@ func (r *AgentRunner) runTurn(reason string) error {
 			ResumeSessionID: r.currentSession(),
 			OnLog:           func(line string) { r.logEngineLine(line) },
 			OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
+			OnAssistantText: func(text string) { r.onEngineText(text) },
 		}
 		res = r.adapter.Run(r.ctx, args)
 		if res.SessionID != "" {
@@ -856,6 +868,25 @@ func (r *AgentRunner) onEngineHop(rep HopReport) {
 	r.mu.Unlock()
 	hop.Usage = &rep.Usage
 	r.reporter.push(hop)
+}
+
+// onEngineText:#210 引擎已产出文本前缀 → delta 上报。归因与 hop 台账
+// 同款:锚定当前 wake 会话(轮中 steer 会重锚);无锚定会话(纯 poll
+// 轮)丢弃——宁缺勿把独白错投到不相干会话。段落分隔由文本源负责
+// (Claude 逐事件补空行;codex token 增量原样)。
+func (r *AgentRunner) onEngineText(text string) {
+	if r.deltas == nil || text == "" {
+		return
+	}
+	convo := func() string {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.lastWakeConvo
+	}()
+	if convo == "" {
+		return
+	}
+	r.deltas.push(convo, text)
 }
 
 // beatRun:长 turn 保活——先一拍再每 RUN_HEARTBEAT_MS(10min 陈旧清扫

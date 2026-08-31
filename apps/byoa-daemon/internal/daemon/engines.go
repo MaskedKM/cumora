@@ -81,6 +81,9 @@ type RunArgs struct {
 	ResumeSessionID string // "" = 新会话
 	OnLog           func(string)
 	OnHopUsage      func(HopReport)
+	// OnAssistantText:#210 —— 引擎流输出的文本前缀(Claude 逐跳
+	// assistant 文本块)。nil = 该引擎/路径无增量可报,流式上屏自然降级。
+	OnAssistantText func(text string)
 }
 
 // RunResult:一次性 turn 产物。SessionID 非空则落盘供下轮 resume。
@@ -140,6 +143,8 @@ type SessionArgs struct {
 	StandingPrompt  string // 不变量系统提示;空 = 无
 	OnLog           func(string)
 	OnHopUsage      func(HopReport)
+	// OnAssistantText:#210 —— 见 RunArgs 同名字段。
+	OnAssistantText func(text string)
 }
 
 // EngineSession:一个 agent 的长活引擎进程。Send 串行调用(一次一个
@@ -410,9 +415,37 @@ func countAssistantContent(content any) (toolUses, textChars int) {
 	return toolUses, textChars
 }
 
+// assistantTextBlocks:assistant 消息 content 数组里的文本块(thinking
+// /tool_use 不算——只报模型真正"说出口"的前缀);多块以空行拼接。
+// 畸形载荷返回空串(不抛)。#210 delta 上报的文本源。
+func assistantTextBlocks(content any) string {
+	arr, ok := content.([]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "text" {
+			if txt, ok := m["text"].(string); ok {
+				// 块级 Trim:块首尾空白是 markdown 段落边距,无语义;
+				// 块内原文保留。
+				if trimmed := strings.TrimSpace(txt); trimmed != "" {
+					parts = append(parts, trimmed)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // sniffStdoutLine:一次性路径的 JSON 嗅探(session_id / result usage /
-// model / assistant 逐跳),与 ClaudeSession 的持久路径同形。
-func sniffStdoutLine(line string, st *sniffState, onHop func(HopReport)) {
+// model / assistant 逐跳 + #210 assistant 文本前缀),与 ClaudeSession
+// 的持久路径同形。
+func sniffStdoutLine(line string, st *sniffState, onHop func(HopReport), onText func(string)) {
 	if !strings.HasPrefix(line, "{") {
 		return
 	}
@@ -459,6 +492,11 @@ func sniffStdoutLine(line string, st *sniffState, onHop func(HopReport)) {
 		onHop(hop)
 	} else if st.hopStart == 0 && (obj.Type == "assistant" || obj.Type == "user" || obj.Type == "system") {
 		st.hopStart = nowMS()
+	}
+	if obj.Type == "assistant" && obj.Message != nil && onText != nil {
+		if txt := assistantTextBlocks(obj.Message.Content); txt != "" {
+			onText(txt + "\n\n") // 逐事件段落分隔(持久路径同款)
+		}
 	}
 	if obj.Type == "result" {
 		st.hopStart = 0
@@ -510,7 +548,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 						return
 					}
 					pushTail(&stdoutTail, cleaned)
-					sniffStdoutLine(cleaned, st, args.OnHopUsage)
+					sniffStdoutLine(cleaned, st, args.OnHopUsage, args.OnAssistantText)
 					if args.OnLog != nil {
 						args.OnLog(cleaned)
 					}
@@ -523,7 +561,7 @@ func spawnEngine(ctx context.Context, plan spawnPlan, argv []string, args RunArg
 						return
 					}
 					pushTail(&stdoutTail, cleaned)
-					sniffStdoutLine(cleaned, st, args.OnHopUsage)
+					sniffStdoutLine(cleaned, st, args.OnHopUsage, args.OnAssistantText)
 					if args.OnLog != nil {
 						args.OnLog(cleaned)
 					}
