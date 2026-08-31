@@ -43,11 +43,16 @@ export interface WsBindOptions {
  *  门闸,等价旧代码里 `if (wsBound) return` 块只跑一次的语义。 */
 export function bindWsEvents(
   token: { bound: boolean },
-  handlers: WsEventHandlers,
+  rawHandlers: WsEventHandlers,
   opts?: WsBindOptions,
 ): boolean {
   if (token.bound) return false
   token.bound = true
+  // Null 原型包装:查表只可能命中显式登记的键(评审 P3)。裸对象上
+  // `handlers['__proto__']` 这类畸形 type 会取到 Object.prototype 并在
+  // 调用时抛错,炸断 WsClient.onmessage 的 listener 循环 —— 同帧后续
+  // store 全部失联回归原 if 链没有的问题。
+  const handlers = Object.assign(Object.create(null), rawHandlers) as WsEventHandlers
   if (opts?.connect !== false) ws.connect()
   ws.on((e) => {
     // 查表分发:key 与 e.type 同源,运行时命中的 handler 形参类型
