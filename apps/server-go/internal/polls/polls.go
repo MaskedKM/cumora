@@ -219,6 +219,8 @@ func (a *CastVoteArgs) normalize() []string {
 // CastVote 替换式投票:空 optionIds ⇒ 撤回;single 模式 >1 拒绝。
 func CastVote(ctx context.Context, db *sql.DB, a CastVoteArgs) (UpdatedEvent, *PollError) {
 	requested := a.normalize()
+	// 事务豁免(#213):BeginTx 失败 errf(500,"tx failed") 与 Commit 失败
+	// errf(500,"commit failed") 文案不同,WithTx 错误通道无法区分二者。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return UpdatedEvent{}, errf(500, "tx failed")
@@ -304,6 +306,8 @@ type CloseArgs struct {
 
 // ClosePoll 关闭投票。已关闭 ⇒ 幂等返回 nil(不重播)。manual 非作者 ⇒ 403。
 func ClosePoll(ctx context.Context, db *sql.DB, a CloseArgs) (*UpdatedEvent, *PollError) {
+	// 事务豁免(#213):已关闭幂等路径 mid-body early-Commit 后短路返回
+	// nil,WithTx 单一提交点无法表达。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, errf(500, "tx failed")

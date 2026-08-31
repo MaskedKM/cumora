@@ -144,6 +144,8 @@ func approveWaitlistRow(ctx context.Context, db *sql.DB, waitlistID, decidedBy s
 	fail := func(status int, msg string) (string, string, int, error) {
 		return "", "", status, errors.New(msg)
 	}
+	// 事务豁免(#213):事务体内嵌 SAVEPOINT company_ins 的 slug 撞名重试,
+	// 且 fail() 4xx 元组贯穿全函数,WithTx 单错误通道无法承载。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", "", 0, err

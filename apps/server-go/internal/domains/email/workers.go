@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	core "github.com/MaskedKM/cumora/apps/server-go/internal/email"
 )
 
@@ -48,46 +49,44 @@ type retryRow struct {
 // claimDueRetries:事务内 SKIP LOCKED 认领,行内 next_retry_at 前推 5 分钟
 // 防同副本下一 tick 重抓。
 func claimDueRetries(ctx context.Context, db *sql.DB, limit int) ([]retryRow, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `
-		SELECT em.message_id, em.company_id, em.smtp_message_id, em.in_reply_to,
-		       em.references_chain, em.subject, em.from_addr, em.to_addrs, em.cc_addrs,
-		       m.body, em.auto_submitted, em.retry_attempts
-		  FROM email_messages em JOIN messages m ON m.id = em.message_id
-		 WHERE em.direction = 'out' AND em.transport_status = 'failed'
-		   AND em.next_retry_at IS NOT NULL AND em.next_retry_at <= NOW()
-		 ORDER BY em.next_retry_at ASC
-		 LIMIT $1
-		 FOR UPDATE SKIP LOCKED`, limit)
-	if err != nil {
-		return nil, err
-	}
 	due := []retryRow{}
-	for rows.Next() {
-		var r retryRow
-		if rows.Scan(&r.MessageID, &r.CompanyID, &r.SmtpMessageID, &r.InReplyTo,
-			&r.ReferencesChain, &r.Subject, &r.FromAddr, &r.ToAddrs, &r.CCAddrs,
-			&r.Body, &r.AutoSubmitted, &r.RetryAttempts) == nil {
-			due = append(due, r)
+	// #213:收编 db.WithTx——各步失败均原样返回 err,错误映射单一。
+	if err := dbpkg.WithTx(ctx, db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT em.message_id, em.company_id, em.smtp_message_id, em.in_reply_to,
+			       em.references_chain, em.subject, em.from_addr, em.to_addrs, em.cc_addrs,
+			       m.body, em.auto_submitted, em.retry_attempts
+			  FROM email_messages em JOIN messages m ON m.id = em.message_id
+			 WHERE em.direction = 'out' AND em.transport_status = 'failed'
+			   AND em.next_retry_at IS NOT NULL AND em.next_retry_at <= NOW()
+			 ORDER BY em.next_retry_at ASC
+			 LIMIT $1
+			 FOR UPDATE SKIP LOCKED`, limit)
+		if err != nil {
+			return err
 		}
-	}
-	rows.Close()
-	if len(due) > 0 {
-		ids := make([]string, len(due))
-		for i, r := range due {
-			ids[i] = r.MessageID
+		for rows.Next() {
+			var r retryRow
+			if rows.Scan(&r.MessageID, &r.CompanyID, &r.SmtpMessageID, &r.InReplyTo,
+				&r.ReferencesChain, &r.Subject, &r.FromAddr, &r.ToAddrs, &r.CCAddrs,
+				&r.Body, &r.AutoSubmitted, &r.RetryAttempts) == nil {
+				due = append(due, r)
+			}
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE email_messages SET next_retry_at = NOW() + INTERVAL '5 minutes'
-			  WHERE message_id = ANY($1::text[])`, ids); err != nil {
-			return nil, err
+		rows.Close()
+		if len(due) > 0 {
+			ids := make([]string, len(due))
+			for i, r := range due {
+				ids[i] = r.MessageID
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE email_messages SET next_retry_at = NOW() + INTERVAL '5 minutes'
+				  WHERE message_id = ANY($1::text[])`, ids); err != nil {
+				return err
+			}
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return due, nil

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	agent "github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 )
 
 // Domain:域子包接收器——嵌入 agent.Service(内核),方法体与拆包前逐字
@@ -502,28 +503,27 @@ func (s *Domain) CmdMute(ctx context.Context, parsed agent.Parsed) agent.Result 
 	if kind == "direct" {
 		return agent.Err("direct conversations always deliver; mute a group instead")
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return agent.ErrThrow(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO conversation_mutes (user_id, conversation_id, muted_at, muted_until)
-	     VALUES ($1, $2, NOW(), $3)
-	     ON CONFLICT (user_id, conversation_id)
-	     DO UPDATE SET muted_at = NOW(), muted_until = EXCLUDED.muted_until`,
-		me, conversationID, sqlUTCTime(until, hasUntil)); err != nil {
-		return agent.ErrThrow(err)
-	}
-	// 静音是明确的收兵:封住当前未读尾巴,follow 恢复后不回放积压。
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
-	     VALUES ($1, $2, NOW())
-	     ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`,
-		me, conversationID); err != nil {
-		return agent.ErrThrow(err)
-	}
-	if err := tx.Commit(); err != nil {
+	// #213:收编 db.WithTx——各步失败均 ErrThrow(err),错误映射单一,
+	// 响应字节不变。
+	if err := dbpkg.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO conversation_mutes (user_id, conversation_id, muted_at, muted_until)
+		     VALUES ($1, $2, NOW(), $3)
+		     ON CONFLICT (user_id, conversation_id)
+		     DO UPDATE SET muted_at = NOW(), muted_until = EXCLUDED.muted_until`,
+			me, conversationID, sqlUTCTime(until, hasUntil)); err != nil {
+			return err
+		}
+		// 静音是明确的收兵:封住当前未读尾巴,follow 恢复后不回放积压。
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+		     VALUES ($1, $2, NOW())
+		     ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_at = NOW()`,
+			me, conversationID); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		return agent.ErrThrow(err)
 	}
 	s.ClearHold(me, "reply:"+conversationID)

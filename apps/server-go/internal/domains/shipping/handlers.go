@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/shipping"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -175,54 +176,49 @@ func (s *Server) CreateShippingFeature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := randID("ship")
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO shipping_features
-		  (id, company_id, project_id, conversation_id, document_id, board_card_id,
-		   title, problem, desired_outcome, contract_summary, priority, risk_level,
-		   release_target, builder_ids, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)`,
-		id, companyID, nullStrPtr(links.projectID), nullStrPtr(links.conversationID),
-		nullStrPtr(links.documentID), nullStrPtr(links.boardCardID),
-		title, body.text("problem", 20000), body.text("desiredOutcome", 20000), body.text("contractSummary", 20000),
-		body.enumValue("priority", priorities, "medium"), body.enumValue("riskLevel", riskLevels, "medium"),
-		nullStrPtr(body.optText("releaseTarget", 2000)), mustJSONString(builderIDs), uid); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	// 三张默认必答格(user_path/trace/release_note)——ready 门的地基。
-	defaults := []struct {
-		title    string
-		method   string
-		position int
-	}{
-		{"Walk the critical user path", "user_path", 10},
-		{"Prove trace coverage and diagnostic evidence", "trace", 20},
-		{"Verify release notes and known gaps", "release_note", 30},
-	}
-	for _, sq := range defaults {
+	// #213:收编 db.WithTx——各步失败均 WriteInternalError(err) 同构映射,
+	// 响应字节不变;detail 回查与 201 留在提交后。
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(r.Context(), `
-			INSERT INTO shipping_verifications
-			  (id, feature_id, title, description, method, required, builder_ids, position, created_by)
-			VALUES ($1,$2,$3,$4,$5,TRUE,$6::jsonb,$7,$8)`,
-			randID("sv"), id, sq.title, "", sq.method, mustJSONString(builderIDs), sq.position, uid); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
+			INSERT INTO shipping_features
+			  (id, company_id, project_id, conversation_id, document_id, board_card_id,
+			   title, problem, desired_outcome, contract_summary, priority, risk_level,
+			   release_target, builder_ids, created_by, updated_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)`,
+			id, companyID, nullStrPtr(links.projectID), nullStrPtr(links.conversationID),
+			nullStrPtr(links.documentID), nullStrPtr(links.boardCardID),
+			title, body.text("problem", 20000), body.text("desiredOutcome", 20000), body.text("contractSummary", 20000),
+			body.enumValue("priority", priorities, "medium"), body.enumValue("riskLevel", riskLevels, "medium"),
+			nullStrPtr(body.optText("releaseTarget", 2000)), mustJSONString(builderIDs), uid); err != nil {
+			return err
 		}
-	}
-	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO shipping_events (id, company_id, feature_id, actor_id, kind, data)
-		VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
-		randID("se"), companyID, id, uid, mustJSONString(map[string]any{"title": title})); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
+		// 三张默认必答格(user_path/trace/release_note)——ready 门的地基。
+		defaults := []struct {
+			title    string
+			method   string
+			position int
+		}{
+			{"Walk the critical user path", "user_path", 10},
+			{"Prove trace coverage and diagnostic evidence", "trace", 20},
+			{"Verify release notes and known gaps", "release_note", 30},
+		}
+		for _, sq := range defaults {
+			if _, err := tx.ExecContext(r.Context(), `
+				INSERT INTO shipping_verifications
+				  (id, feature_id, title, description, method, required, builder_ids, position, created_by)
+				VALUES ($1,$2,$3,$4,$5,TRUE,$6::jsonb,$7,$8)`,
+				randID("sv"), id, sq.title, "", sq.method, mustJSONString(builderIDs), sq.position, uid); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(r.Context(), `
+			INSERT INTO shipping_events (id, company_id, feature_id, actor_id, kind, data)
+			VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
+			randID("se"), companyID, id, uid, mustJSONString(map[string]any{"title": title})); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -341,27 +337,23 @@ func (s *Server) UpdateShippingFeature(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	values = append(values, uid, featureID, companyID)
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `
-		UPDATE shipping_features SET `+strings.Join(sets, ", ")+`, updated_by = $`+itoa(len(values)-2)+`, updated_at = NOW()
-		  WHERE id = $`+itoa(len(values)-1)+` AND company_id = $`+itoa(len(values)), values...); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if nextBuilderIDs != nil {
-		if _, err := tx.ExecContext(r.Context(),
-			`UPDATE shipping_verifications SET builder_ids = $1::jsonb, updated_at = NOW() WHERE feature_id = $2`,
-			mustJSONString(nextBuilderIDs), featureID); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
+	// #213:收编 db.WithTx——各步失败均 WriteInternalError(err) 同构映射,
+	// 响应字节不变;事件补记与 detail 回查留在提交后。
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(r.Context(), `
+			UPDATE shipping_features SET `+strings.Join(sets, ", ")+`, updated_by = $`+itoa(len(values)-2)+`, updated_at = NOW()
+			  WHERE id = $`+itoa(len(values)-1)+` AND company_id = $`+itoa(len(values)), values...); err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		if nextBuilderIDs != nil {
+			if _, err := tx.ExecContext(r.Context(),
+				`UPDATE shipping_verifications SET builder_ids = $1::jsonb, updated_at = NOW() WHERE feature_id = $2`,
+				mustJSONString(nextBuilderIDs), featureID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

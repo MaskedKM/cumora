@@ -461,6 +461,12 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 			return // 403 已写响应
 		}
 	}
+	// 事务豁免(#213):混合错误面——switch 内约 10 个 4xx fail() 分支,
+	// 且双 500 通道响应体不同(内联 Exec 错误走 WriteInternalError,
+	// releaseApprove 尾部 Exec 错误走 fail(500)→writeShipError)。
+	// (tx 传参本身不是障碍:WithTx 闭包拿到的 *sql.Tx 可原样下传;
+	// #214 错误面统一后此豁免首选二轮收编——actionErr 已是单一汇聚
+	// 通道,外层 errors.As 二分即可表达。)
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)

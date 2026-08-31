@@ -932,6 +932,9 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 	// (此前 updated_at 失败被 `_,_=` 吞)。事务形态对齐
 	// runtime/cli_reply.go。赢在原子性不在时延:BEGIN/COMMIT 各加一趟
 	// 往返,真正的往返大头(前置认证查询无缓存)另票(#141)。
+	// 事务豁免(#213):错误映射非单一——BeginTx/取序失败→500
+	// "sequence failed",插入/提交失败→500 "insert failed",WithTx 无法
+	// 区分 BeginTx 与 Commit;幂等重放分支还需 mid-body 回滚 + 202 短路。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		slog.Warn("sendMessage begin tx failed", "conv", convID, "err", err)

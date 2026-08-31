@@ -10,6 +10,7 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	emaildomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
 	invitationsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
 	ogdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/og"
@@ -244,46 +246,47 @@ func (s *Server) PutPreferences(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// errAccountGone:DeleteAccount 事务内首查未命中(已软删/不存在)的 404
+// 语义经 WithTx 错误通道回传,外层映射回原响应(#213:响应字节不变)。
+var errAccountGone = errors.New("account already deleted or not found")
+
 func (s *Server) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
 		return
 	}
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
-
 	var email sql.NullString
-	err = tx.QueryRowContext(r.Context(),
-		`SELECT email FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&email)
-	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "account already deleted or not found")
-		return
-	}
-	// 软删 + PII 全清(哨兵邮箱保 UNIQUE + 审计线索;对齐 baseline 字段集)
-	sentinel := "deleted+" + uid + "@cumora.invalid"
-	if _, err := tx.ExecContext(r.Context(), `
-		UPDATE users SET deleted_at = NOW(), email = $2, display_name = 'Deleted user',
-		  password_hash = NULL, avatar_url = NULL, email_verified_at = NULL
-		WHERE id = $1`, uid, sentinel); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	for _, q := range []string{
-		`DELETE FROM sessions WHERE user_id = $1`,
-		`DELETE FROM ws_tickets WHERE user_id = $1`,
-		`DELETE FROM user_identities WHERE user_id = $1`,
-		`UPDATE participants SET departed_at = NOW() WHERE id = $1 AND kind = 'human' AND departed_at IS NULL`,
-	} {
-		if _, err := tx.ExecContext(r.Context(), q, uid); err != nil {
-			httpx.WriteInternalError(w, r, err)
+	// #213:收编 db.WithTx——各步失败均 WriteInternalError(err) 同构映射,
+	// 响应字节不变;审计行(goroutine)留在提交后。
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(r.Context(),
+			`SELECT email FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&email); err != nil {
+			return errAccountGone
+		}
+		// 软删 + PII 全清(哨兵邮箱保 UNIQUE + 审计线索;对齐 baseline 字段集)
+		sentinel := "deleted+" + uid + "@cumora.invalid"
+		if _, err := tx.ExecContext(r.Context(), `
+			UPDATE users SET deleted_at = NOW(), email = $2, display_name = 'Deleted user',
+			  password_hash = NULL, avatar_url = NULL, email_verified_at = NULL
+			WHERE id = $1`, uid, sentinel); err != nil {
+			return err
+		}
+		for _, q := range []string{
+			`DELETE FROM sessions WHERE user_id = $1`,
+			`DELETE FROM ws_tickets WHERE user_id = $1`,
+			`DELETE FROM user_identities WHERE user_id = $1`,
+			`UPDATE participants SET departed_at = NOW() WHERE id = $1 AND kind = 'human' AND departed_at IS NULL`,
+		} {
+			if _, err := tx.ExecContext(r.Context(), q, uid); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, errAccountGone) {
+			httpx.WriteError(w, http.StatusNotFound, "account already deleted or not found")
 			return
 		}
-	}
-	if err := tx.Commit(); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

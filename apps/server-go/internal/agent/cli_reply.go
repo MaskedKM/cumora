@@ -372,6 +372,9 @@ func (s *Service) cliCmdReply(ctx context.Context, parsed cliParsed) cliResult {
 	 * 的并发 reply 串行化过临界区;持锁期间重查最后一条同伴帖(已提交
 	 * 可见),逐字重复则 ROLLBACK+HELD —— 关掉读-写窗口的 TOCTOU。 */
 	messageID := "m-" + uuidHex()
+	// 事务豁免(#213):锁内复检命中逐字重复时显式 tx.Rollback() 并保留
+	// 其错误映射,回滚后还有 Redis 副作用(RecordSeen/RecordHold)与定制
+	// HELD 文案;WithTx 吞回滚错误,无法等价重构。
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return cliErrThrow(err)

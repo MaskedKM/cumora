@@ -8,12 +8,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"strings"
 	"time"
 
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -262,6 +264,13 @@ func adminChangeTier(ctx context.Context, db *sql.DB, userID, tier string) bool 
 	return n > 0
 }
 
+// adminSuspend 的 4xx 语义经 WithTx 错误通道回传,外层映射回原响应
+// (#213:响应字节不变):目标不存在 404;已停用 409。
+var (
+	errSuspendTargetMissing   = errors.New("suspend target missing")
+	errSuspendTargetSuspended = errors.New("suspend target already suspended")
+)
+
 // adminSuspendUser:suspendUser —— 盖停用戳 + 同事务清 session(无
 // "已标停用但旧 token 仍活"窗口);幂等冲突 409;审计行事务外补记。
 // 返回 false 时已把细分错误(404/409)写进响应。
@@ -270,37 +279,34 @@ func adminSuspendUser(w http.ResponseWriter, r *http.Request, db *sql.DB, userID
 		httpx.WriteError(w, http.StatusConflict, "cannot suspend yourself")
 		return false
 	}
-	tx, err := db.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return false
-	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(r.Context(), `
-		UPDATE users SET suspended_at = NOW(), suspension_reason = $2, suspended_by = $3
-		 WHERE id = $1 AND suspended_at IS NULL`, userID, reason, adminID)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return false
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// 用户不存在 vs 已停用:补一刀读区分报错。
-		var one int
-		exists := tx.QueryRowContext(r.Context(), `SELECT 1 FROM users WHERE id = $1`, userID).Scan(&one) == nil
-		_ = tx.Rollback()
-		if !exists {
-			httpx.WriteError(w, http.StatusNotFound, "user not found")
-		} else {
-			httpx.WriteError(w, http.StatusConflict, "user is already suspended")
+	// #213:收编 db.WithTx——除 404/409 哨兵外各步失败均
+	// WriteInternalError(err) 同构映射,响应字节不变;审计行留在提交后。
+	if err := dbpkg.WithTx(r.Context(), db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(r.Context(), `
+			UPDATE users SET suspended_at = NOW(), suspension_reason = $2, suspended_by = $3
+			 WHERE id = $1 AND suspended_at IS NULL`, userID, reason, adminID)
+		if err != nil {
+			return err
 		}
-		return false
-	}
-	if _, err := tx.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return false
-	}
-	if err := tx.Commit(); err != nil {
-		httpx.WriteInternalError(w, r, err)
+		if n, _ := res.RowsAffected(); n == 0 {
+			// 用户不存在 vs 已停用:补一刀读区分报错。
+			var one int
+			if tx.QueryRowContext(r.Context(), `SELECT 1 FROM users WHERE id = $1`, userID).Scan(&one) != nil {
+				return errSuspendTargetMissing
+			}
+			return errSuspendTargetSuspended
+		}
+		_, err = tx.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id = $1`, userID)
+		return err
+	}); err != nil {
+		switch {
+		case errors.Is(err, errSuspendTargetMissing):
+			httpx.WriteError(w, http.StatusNotFound, "user not found")
+		case errors.Is(err, errSuspendTargetSuspended):
+			httpx.WriteError(w, http.StatusConflict, "user is already suspended")
+		default:
+			httpx.WriteInternalError(w, r, err)
+		}
 		return false
 	}
 	adminAudit(db, adminID, "user_suspend", map[string]any{"targetUserId": userID, "reason": nullStrAny(reason)})
