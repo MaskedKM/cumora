@@ -53,6 +53,18 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	// 生产安全默认门(#212):危险配置拒启不带病运行;非生产侧的
+	// 回退提示也在内(开发回退密钥 / 生产缺 CUMORA_SECRETS_KEY)。
+	if violations := config.ProdEnvViolations(os.Getenv); len(violations) > 0 {
+		for _, v := range violations {
+			slog.Error("unsafe production config — refusing to start", "violation", v)
+		}
+		os.Exit(1)
+	}
+	for _, warn := range config.EnvFallbackWarnings(os.Getenv) {
+		slog.Warn(warn)
+	}
+
 	pool, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("pg connect failed", "err", err)

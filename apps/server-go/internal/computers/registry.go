@@ -312,6 +312,9 @@ func ResolveDevice(ctx context.Context, db *sql.DB, token string) (computerID, c
 
 /* ───────────── agent 运行时 JWT(HS256,自管) ───────────── */
 
+// agentRuntimeSecret:开发回退密钥仅供本地/集成双跑;生产拒启守卫在
+// cmd/server 的 config.ProdEnvViolations(NODE_ENV=production 且未设密钥
+// 时进程直接退出,不会走到这里)。
 func agentRuntimeSecret() string {
 	if s := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")); s != "" {
 		return s
