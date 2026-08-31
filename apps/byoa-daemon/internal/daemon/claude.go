@@ -72,6 +72,9 @@ type claudeSession struct {
 	stderrTail, stdoutTail []string
 	steerQueue             []string
 	turnTimer              *time.Timer
+	// turnsDone:#259 首声层是会话级语义——仅首个 turn 用 Arm(首声窗),
+	// 后续轮 ArmIdle(大上下文 prefill 的常规静默不是病)。
+	turnsDone bool
 	// wd:#259 活性看门狗——空闲/工具在飞/首声三层,替代墙钟判死默认。
 	wd *activityWatchdog
 	// pumps:stdout/stderr 读者;waitExit 须等它们排干再 Wait(StdoutPipe
@@ -94,11 +97,12 @@ func newClaudeSession(bin string, argv []string, args SessionArgs, carriesStandi
 		pending:         nil,
 	}
 	s.cmd = cmd
-	// #259:判死动作与墙钟超时同形——结算在飞 turn(124)+杀进程,daemon
-	// 下一唤醒 --resume。
+	// #259:判死动作——只在真有在飞 turn 被我们结算时才杀进程(fire 与
+	// 正常结算撞窗时 pending 已 nil,健康会话不得陪葬)。
 	s.wd = newActivityWatchdog(func(reason string) {
-		s.settle(RunResult{ExitCode: 124, Err: reason, SessionID: s.SessionID()})
-		s.Stop()
+		if s.settle(RunResult{ExitCode: 124, Err: reason, SessionID: s.SessionID()}) {
+			s.Stop()
+		}
 	})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -171,8 +175,13 @@ func (s *claudeSession) Send(prompt string) RunResult {
 	ch := make(chan RunResult, 1)
 	s.pending = ch
 	s.pendStderr, s.pendStdout = nil, nil
-	// #259:活性看门狗开表(首声层先行;每条 stdout/stderr 事件重置)。
-	s.wd.Arm()
+	// #259:活性看门狗开表——首声层仅首个 turn,后续轮直接空闲窗。
+	if s.turnsDone {
+		s.wd.ArmIdle()
+	} else {
+		s.turnsDone = true
+		s.wd.Arm()
+	}
 	// 选配失控保险(默认关):超窗 abort + 重spawn(下一唤醒 --resume)。
 	if to := turnTimeoutMS(); to > 0 {
 		s.turnTimer = time.AfterFunc(time.Duration(to)*time.Millisecond, func() {
@@ -434,8 +443,9 @@ func (s *claudeSession) onStdoutLine(line string) {
 	}
 }
 
-// settle:结算在飞 turn(幂等;无在飞则丢弃)。
-func (s *claudeSession) settle(r RunResult) {
+// settle:结算在飞 turn(幂等;无在飞则丢弃)。返回是否真的送达——
+// #259 watchdog 的 fire 据此决定要不要杀进程(撞窗时健康会话不陪葬)。
+func (s *claudeSession) settle(r RunResult) bool {
 	s.wd.Disarm()
 	s.mu.Lock()
 	timer := s.turnTimer
@@ -448,7 +458,9 @@ func (s *claudeSession) settle(r RunResult) {
 	}
 	if ch != nil {
 		ch <- r
+		return true
 	}
+	return false
 }
 
 // die:进程死亡——标记死亡并 fail 在飞 turn。空闲死亡也留痕(整队会话

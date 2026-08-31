@@ -88,7 +88,9 @@ type codexSession struct {
 
 	mu sync.Mutex
 	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
-	wd *activityWatchdog
+	// turnsDone:首声层仅首个 turn(会话级语义,大上下文 prefill 不是病)。
+	wd        *activityWatchdog
+	turnsDone bool
 	// 状态(handshake 状态机)
 	threadID         string
 	threadWasResume  bool
@@ -156,16 +158,18 @@ func newCodexSession(bin string, spawnArgs []string, args SessionArgs) *codexSes
 	}
 	s.threadReq = &threadReq
 
-	// #259:判死动作——结算在飞 turn(124)+杀进程,下一唤醒 --resume。
+	// #259:判死动作——只在真有在飞 turn 被结算时才杀进程(撞窗时健康
+	// 会话不得陪葬),下一唤醒 --resume。
 	s.wd = newActivityWatchdog(func(reason string) {
 		s.mu.Lock()
 		ch := s.pending
 		s.pending = nil
 		threadID := s.threadID
 		s.mu.Unlock()
-		if ch != nil {
-			ch <- RunResult{ExitCode: 124, Err: reason, SessionID: threadID}
+		if ch == nil {
+			return
 		}
+		ch <- RunResult{ExitCode: 124, Err: reason, SessionID: threadID}
 		s.Stop()
 	})
 
@@ -283,7 +287,13 @@ func (s *codexSession) Send(prompt string) RunResult {
 	}
 	ch := make(chan RunResult, 1)
 	s.pending = ch
-	s.wd.Arm() // #259 活性看门狗开表(首声层先行)
+	// #259 活性看门狗开表——首声层仅首个 turn,后续轮直接空闲窗。
+	if s.turnsDone {
+		s.wd.ArmIdle()
+	} else {
+		s.turnsDone = true
+		s.wd.Arm()
+	}
 	s.turnStart = s.cum
 	if s.ready && s.threadID != "" {
 		s.startTurnLocked(prompt)

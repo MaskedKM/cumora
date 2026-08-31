@@ -779,7 +779,15 @@ func (r *AgentRunner) runTurn(reason string) error {
 	var res RunResult
 	fc := turnFailure{Class: fcUnknown, Retryable: false, ResumeSafe: true}
 	attempts := 0
+	retryCap := maxTurnRetries()
 	for {
+		if attempts > 0 {
+			// 重试轮重铸 token:轮首铸的可能已过期(判死窗口可达 30min+),
+			// 过期 token 会让引擎内 shim 401 → 被误分类 credential。
+			if t, terr := r.ensureToken(); terr == nil {
+				token = t
+			}
+		}
 		sess := r.ensureEngineSession()
 		if sess != nil {
 			// 轮中每 2s 捕获会话 id(TS:第一轮被硬杀后盘上仍留可 resume 的
@@ -844,11 +852,11 @@ func (r *AgentRunner) runTurn(reason string) error {
 			r.mu.Unlock()
 			r.setSessionID("")
 		}
-		if !fc.Retryable || attempts > maxTurnRetries() {
+		if !fc.Retryable || attempts > retryCap {
 			break
 		}
 		backoff := turnRetryBackoff() * time.Duration(attempts)
-		r.logEngineLine(fmt.Sprintf("[turn] failure class=%s attempt %d/%d — local retry in %s (#262)", fc.Class, attempts, maxTurnRetries(), backoff))
+		r.logEngineLine(fmt.Sprintf("[turn] failure class=%s attempt %d/%d — local retry in %s (#262)", fc.Class, attempts, retryCap, backoff))
 		select {
 		case <-time.After(backoff):
 		case <-r.ctx.Done():
@@ -865,10 +873,12 @@ func (r *AgentRunner) runTurn(reason string) error {
 	if res.Err != "" {
 		status = "failed"
 		visibleErr = r.visibleEngineError(res.ExitCode, res.Err)
-		summary = truncate(visibleErr, 2000)
-		if fc.Class != fcUnknown || attempts > 0 {
-			summary = fmt.Sprintf("[turn-fail class=%s attempts=%d] %s", fc.Class, attempts, summary)
-		}
+		// 前缀先拼再截断,保证分类标不被截掉。
+		summary = fmt.Sprintf("[turn-fail class=%s attempts=%d] %s", fc.Class, attempts, visibleErr)
+		summary = truncate(summary, 2000)
+	} else if attempts > 0 {
+		// 成功但经历过重试:留痕,观测重试命中率(nit-7)。
+		summary = fmt.Sprintf("[turn-recovered attempts=%d] %s", attempts, summary)
 	}
 	if run.RunID != "" {
 		runtimeBest(r.ctx, r.cfg.ServerURL, "/runs/"+run.RunID+"/finish", token,

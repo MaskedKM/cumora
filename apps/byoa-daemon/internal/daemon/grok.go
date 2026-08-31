@@ -134,7 +134,9 @@ type grokSession struct {
 
 	mu sync.Mutex
 	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
+	// turnsDone:首声层仅首个 turn(会话级语义,大上下文 prefill 不是病)。
 	wd               *activityWatchdog
+	turnsDone        bool
 	sid              string
 	model            string // pin(可空)
 	curModel         string // ACP 流实际播报的模型(_x.ai/models/update)
@@ -169,7 +171,8 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 		sessionNewParams: map[string]any{"cwd": args.Home, "mcpServers": []any{}, "_meta": meta},
 		sessionWasLoad:   args.ResumeSessionID != "",
 	}
-	// #259:判死动作——结算在飞 turn(124)+杀进程,下一唤醒 --resume。
+	// #259:判死动作——只在真有在飞 turn 被结算时才杀进程(撞窗时健康
+	// 会话不得陪葬),下一唤醒 --resume。
 	s.wd = newActivityWatchdog(func(reason string) {
 		s.mu.Lock()
 		ch := s.pending
@@ -177,9 +180,10 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 		s.pendingID = nil
 		sid := s.sid
 		s.mu.Unlock()
-		if ch != nil {
-			ch <- RunResult{ExitCode: 124, Err: reason, SessionID: sid}
+		if ch == nil {
+			return
 		}
+		ch <- RunResult{ExitCode: 124, Err: reason, SessionID: sid}
 		s.Stop()
 	})
 	cmd := exec.Command(bin, spawnArgs...)
@@ -286,7 +290,13 @@ func (s *grokSession) Send(prompt string) RunResult {
 	}
 	ch := make(chan RunResult, 1)
 	s.pending = ch
-	s.wd.Arm() // #259 活性看门狗开表(首声层先行)
+	// #259 活性看门狗开表——首声层仅首个 turn,后续轮直接空闲窗。
+	if s.turnsDone {
+		s.wd.ArmIdle()
+	} else {
+		s.turnsDone = true
+		s.wd.Arm()
+	}
 	s.pendingStart = nowMS()
 	if s.ready && s.sid != "" {
 		s.startPromptLocked(prompt)

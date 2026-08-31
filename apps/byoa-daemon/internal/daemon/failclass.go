@@ -34,29 +34,48 @@ type turnFailure struct {
 
 // classifyTurnFailure:对失败 turn 的 Err/ExitCode 做标记匹配。匹配顺序
 // 即优先级:具体类(凭证/上下文/坏请求)先于一般类(网络),engine-timeout
-// (watchdog/墙钟的 124)先于网络(超时字样两义)。全不中 → engine-crash
-// (进程非零退出)/unknown。成功态(Err=="" && ExitCode==0)不该进来。
+// (watchdog/墙钟的 124)先于网络(超时字样两义)。
+//
+// 误报方向纪律(评审 #276 定):分类输入混有引擎 stdout/stderr 尾巴与
+// 模型错误正文——① 裸数字子串("401"/"503")会命中 "retry after 503ms"
+// 之类正文,数字一律带语境锚定("http 5xx"/"error 5xx"/空格分词);
+// ② 不可逆动作(resume-unsafe 弃会话)的类别(context-overflow)只认
+// 高特异短语;③ 可重试类(network)误报方向是多一次无害重试,允许宽松词。
+// 全不中 → engine-crash(进程非零退出)/unknown。成功态不该进来。
 func classifyTurnFailure(res RunResult) turnFailure {
 	s := strings.ToLower(res.Err)
-	// 服务端可见形态会带 exit code 前缀;detail 已在 Err 里,原样匹配。
 	switch {
-	case containsAny(s, "401", "403", "invalid api key", "api key not valid",
-		"authentication", "unauthorized", "credential", "expired token"):
+	case containsAny(s,
+		// 凭证类:只认高特异形态(裸 401/403 会误报成正文数字)。
+		"invalid api key", "api key not valid", "incorrect api key",
+		"unauthorized", "authentication", "credential", "expired token",
+		"forbidden", "http 401", "http 403", "error 401", "error 403",
+		"status 401", "status 403", " 401 ", " 403 ", "(401)", "(403)"):
 		return turnFailure{Class: fcCredential, Retryable: false, ResumeSafe: true}
-	case containsAny(s, "context window", "context length", "context_length_exceeded",
-		"prompt is too long", "too many tokens", "maximum context", "context overflow",
-		"exceeds the maximum", "compaction failed"):
+	case containsAny(s,
+		// 上下文溢出:唯一触发不可逆弃会话的类——只认引擎自述的上下文
+		// 短语("exceeds the maximum" 这类泛语会误伤文件大小等正文)。
+		"context window", "context length", "context_length_exceeded",
+		"prompt is too long", "context overflow", "context limit",
+		"too many tokens", "maximum context", "token limit",
+		"conversation too long", "input too long", "compaction failed"):
 		return turnFailure{Class: fcContextOverflow, Retryable: true, ResumeSafe: false}
-	case containsAny(s, "invalid request", "invalid_request", "malformed", "unsupported",
-		"not found (404)", "unknown parameter", "unexpected role"):
+	case containsAny(s,
+		"invalid request", "invalid_request", "malformed",
+		"not found (404)", "unknown parameter", "unexpected role",
+		"unsupported", "bad request"):
 		return turnFailure{Class: fcBadRequest, Retryable: false, ResumeSafe: true}
 	case res.ExitCode == 124 || containsAny(s, "idle watchdog", "turn_timeout_ms"):
 		return turnFailure{Class: fcEngineTimeout, Retryable: true, ResumeSafe: true}
-	case containsAny(s, "econnrefused", "connection refused", "connection reset",
-		"connection error", "socket hang up", "etimedout", "timeout", "timed out",
-		"deadline exceeded", "fetch failed", "network", "overloaded", "temporarily",
-		"service unavailable", "529", "502", "503", "504", "proxy", "tunnel",
-		"unexpected eof", "epipe", "stream error", "rate limit"):
+	case containsAny(s,
+		// 网络:误报方向=多一次无害重试,可宽松;数字仍带锚。
+		"econnrefused", "connection refused", "connection reset",
+		"connection error", "socket hang up", "etimedout", "timeout",
+		"timed out", "deadline exceeded", "fetch failed", "network",
+		"overloaded", "service unavailable", "bad gateway",
+		"temporarily", "proxy", "tunnel", "unexpected eof", "epipe",
+		"stream error", "rate limit", "http 5", "error 5", "status 5",
+		" 502 ", " 503 ", " 504 ", " 529 ", "(502)", "(503)", "(504)", "(529)"):
 		return turnFailure{Class: fcNetwork, Retryable: true, ResumeSafe: true}
 	case res.ExitCode != 0:
 		return turnFailure{Class: fcEngineCrash, Retryable: true, ResumeSafe: true}

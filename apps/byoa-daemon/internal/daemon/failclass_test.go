@@ -21,6 +21,15 @@ func TestClassifyTurnFailure(t *testing.T) {
 		{"坏请求", RunResult{ExitCode: 1, Err: "invalid_request_error: unknown parameter"}, fcBadRequest, false, true},
 		{"进程崩", RunResult{ExitCode: 2, Err: "process exited with code 2"}, fcEngineCrash, true, true},
 		{"无标志非零", RunResult{ExitCode: 1, Err: ""}, fcEngineCrash, true, true},
+		// 优先级冲突(评审 #276 P2-3)。
+		{"凭证先于上下文", RunResult{ExitCode: 1, Err: "401 unauthorized: context window would exceed"}, fcCredential, false, true},
+		{"engine-timeout 先于 network", RunResult{ExitCode: 124, Err: "engine idle watchdog — connection timeout"}, fcEngineTimeout, true, true},
+		// 误报免疫(评审 #276 P1-3):裸数字/泛语正文不得触发高特异类。
+		{"正文 4013ms 非 credential", RunResult{ExitCode: 1, Err: "retry after 4013ms"}, fcEngineCrash, true, true},
+		{"正文 503ms 非 network 裸数字", RunResult{ExitCode: 1, Err: "next poll in 503ms"}, fcEngineCrash, true, true},
+		{"泛语 exceeds the maximum 非 overflow", RunResult{ExitCode: 1, Err: "file exceeds the maximum size"}, fcEngineCrash, true, true},
+		// unknown 分支。
+		{"零退出无错 → unknown 不重试", RunResult{ExitCode: 0, Err: ""}, fcUnknown, false, true},
 	}
 	for _, c := range cases {
 		got := classifyTurnFailure(c.res)
