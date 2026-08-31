@@ -2,12 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConversations } from '@/stores/conversations'
 import { useT } from '@/lib/i18n'
 
-/** Soft "Coming soon" popover anchored beneath the trigger. Auto-dismisses
- *  after a beat; also closes on outside-click or Escape. The sparkle
- *  drifts gently so the bubble feels alive rather than static. */
-
-
-
 export function ThreadLoader() {
   const t = useT()
   return (
@@ -47,7 +41,6 @@ export function ThreadLoader() {
     </div>
   )
 }
-
 
 export function ThreadError({ message, onRetry }: { message: string; onRetry: () => void }) {
   const t = useT()
@@ -123,7 +116,6 @@ export function ThreadError({ message, onRetry }: { message: string; onRetry: ()
   )
 }
 
-
 export function EmptyConversationState() {
   const t = useT()
   // Live counts pulled straight from the store so the empty stage carries
@@ -197,7 +189,6 @@ export function EmptyConversationState() {
       if (blinkResetRef.current !== null) window.clearTimeout(blinkResetRef.current)
     }
   }, [])
-
 
   return (
     <main

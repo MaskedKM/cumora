@@ -18,7 +18,7 @@ const LS_PATH = 'cumora.cliLocalPath'
 
 /** Shown (and used verbatim in the command) until the user types a path —
  *  visibly wrong-but-editable beats a silently broken copy. */
-export const LOCAL_CLI_PLACEHOLDER = '~/Code/cumora/apps/byoa-daemon/cumora'
+export const LOCAL_CLI_PLACEHOLDER = '~/.local/bin/cumora'
 
 export function useCliLaunch(): {
   method: CliMethod

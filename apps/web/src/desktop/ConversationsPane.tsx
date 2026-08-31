@@ -1,26 +1,27 @@
 import type React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useApp } from '@/stores/app'
-import { useAuth, useMe } from '@/stores/auth'
-import { useConversations, isMuted } from '@/stores/conversations'
-import { useMessages } from '@/stores/messages'
-import { useParticipants } from '@/stores/participants'
+import { type ApiProject, type ApiSearchResults, api } from '@/api/client'
 import { Avatar } from '@/components/Avatar'
-import { PreviewText } from '@/components/PreviewText'
-import { HiveAvatar } from '@/components/HiveAvatar'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { GroupCreator } from '@/components/GroupCreator'
+import { HiveAvatar } from '@/components/HiveAvatar'
+import { IMail, IPlus, ISearch } from '@/components/icons'
+import { PreviewText } from '@/components/PreviewText'
 import { ResizeHandle } from '@/components/ResizeHandle'
-import { ISearch, IMail, IPlus } from '@/components/icons'
+import { type MessageKey, useLocale, useT } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { api, type ApiProject, type ApiSearchResults } from '@/api/client'
-import { useLocale, useT, type MessageKey } from '@/lib/i18n'
+import { useApp } from '@/stores/app'
+import { useAuth, useMe } from '@/stores/auth'
+import { isMuted, useConversations } from '@/stores/conversations'
+import { useMessages } from '@/stores/messages'
+import { useParticipants } from '@/stores/participants'
+
+import type { Conversation, Participant } from '@/types'
 
 /** The reactive translator, threaded into the helpers below so they stay
  *  pure and their callers' components re-render on a locale switch. */
 type Translator = ReturnType<typeof useT>
-import type { Conversation, Participant } from '@/types'
 
 const staticFilters = ['All', 'Unread', 'Agents', 'Humans', 'Groups', 'Email', 'Whispers'] as const
 type StaticFilter = (typeof staticFilters)[number]
@@ -111,19 +112,6 @@ function matches(c: Conversation, f: Filter, byId: Record<string, { kind: string
   if (f === 'Agents') return c.kind === 'direct' && !isHumanChat
   return true
 }
-
-function _ClusterAvatar() {
-  return (
-    <div
-      className="w-11 h-11 rounded-full relative grid place-items-center text-white font-display font-medium text-base"
-      style={{
-        background: 'conic-gradient(from 0deg, #B57BFF 0% 25%, var(--coral) 25% 50%, #6B7BE6 50% 75%, var(--gold) 75% 100%)',
-        boxShadow: 'inset 0 0 0 3px var(--cloud)',
-      }}
-    >⌘</div>
-  )
-}
-
 function TeamAvatar() {
   return (
     <div className="w-11 h-11 rounded-full relative grid place-items-center text-white font-display font-medium text-base"

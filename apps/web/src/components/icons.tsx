@@ -26,17 +26,8 @@ export const IAgents = (p: IconProps) => (
 export const IAgent = (p: IconProps) => (
   <svg {...base} {...p}><circle cx="10" cy="9" r="3.5"/><path d="M4.5 20c0-3.3 2.5-6 5.5-6s5.5 2.7 5.5 6"/><path d="M18 4l.7 1.8 1.8.7-1.8.7L18 9l-.7-1.8-1.8-.7 1.8-.7L18 4z"/></svg>
 )
-export const ITasks = (p: IconProps) => (
-  <svg {...base} {...p}><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
-)
-export const IMemory = (p: IconProps) => (
-  <svg {...base} {...p}><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h4M16 3h6v6"/><path d="M21 3l-5.5 5.5"/></svg>
-)
 export const IObserve = (p: IconProps) => (
   <svg {...base} {...p}><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20h16M7 20v-3M12 20v-2M17 20v-3"/></svg>
-)
-export const ISettings = (p: IconProps) => (
-  <svg {...base} {...p}><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>
 )
 export const ISearch = (p: IconProps) => (
   <svg {...base} {...p}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
@@ -64,9 +55,6 @@ export const IPin = (p: IconProps) => (
 )
 export const IMore = (p: IconProps) => (
   <svg {...base} {...p}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
-)
-export const IPhone = (p: IconProps) => (
-  <svg {...base} {...p}><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>
 )
 export const IFile = (p: IconProps) => (
   <svg {...base} {...p}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M14 13H8M14 17H8"/></svg>

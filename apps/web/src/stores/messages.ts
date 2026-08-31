@@ -547,12 +547,6 @@ export const useMessages = create<MessagesState>((set, get) => ({
         // list key (m.clientId ?? m.id) stays stable across the replacement
         // — otherwise the row remounts and re-animates.
         const merged: Message = prior?.clientId ? { ...m, clientId: prior.clientId } : m
-        if (prior?.clientId) {
-          console.info('[message-delivery]', {
-            phase: 'client.confirmed', via: 'ws', status: 'sent',
-            clientId: prior.clientId, messageId: m.id,
-          })
-        }
         const without = existing.filter((x) => x !== prior && x.id !== m.id)
         let next = [...without, merged].sort((a, b) => {
           const sa = (a as { sequence?: number }).sequence ?? 0
@@ -794,9 +788,6 @@ export async function sendUserMessage(
           )
       return { byConvo: { ...s.byConvo, [convoId]: next } }
     })
-    console.info('[message-delivery]', {
-      phase: 'client.confirmed', via: 'http', status: 'sent', clientId, messageId: realId,
-    })
   } catch (err) {
     console.warn('[messages] send failed', err)
     const failed = isDefinitiveSendFailure(err)
@@ -806,11 +797,6 @@ export async function sendUserMessage(
         m.id === tempId ? { ...m, pending: false, failed, unconfirmed: !failed } : m,
       )
       return { byConvo: { ...s.byConvo, [convoId]: next } }
-    })
-    console.info('[message-delivery]', {
-      phase: failed ? 'client.failed' : 'client.unconfirmed',
-      via: 'http', status: failed ? 'failed' : 'unconfirmed',
-      clientId, httpStatus: err instanceof ApiError ? err.status : undefined,
     })
   }
 }
