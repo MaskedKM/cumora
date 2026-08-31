@@ -1,6 +1,6 @@
 // cli_poll —— agent CLI 的 poll 命令面(#89)。引擎已固化到
 // internal/polls(#121,HTTP/CLI/清扫器三路共用);本文件只做参数整理、
-// 输出格式化与本地类型(agent.PollPayload 等,cli_read2 读路径共用)的桥接。
+// 输出格式化与本地类型(agent.PollPayload 等,cli_read 读路径共用)的桥接。
 package poll
 
 import (
