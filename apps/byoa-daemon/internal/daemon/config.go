@@ -1,5 +1,5 @@
-// daemon 包 —— BYOA daemon 的 Go 骨架(#63),对齐
-// server/src/agents/computer/daemon.ts 的协议面:配对、心跳、agent 同步、
+// daemon 包 —— BYOA daemon 的 Go 骨架(#63),对齐(已退役 TS server
+// 树中)agents/computer/daemon.ts 的协议面:配对、心跳、agent 同步、
 // wake-stream 消费(SSE + 重连退避 + 轮询兜底)、run 生命周期上报、
 // 会话恢复(session 落盘跨重启 resume)。引擎本体是 #64–#66;
 // 本包只定义 EngineAdapter 接口 + 测试用 stub 引擎。

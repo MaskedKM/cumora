@@ -1,4 +1,4 @@
-// costing 包 cost —— 对齐 server/src/agents/cost.ts 的 token→成本核算
+// costing 包 cost —— 对齐 已退役 TS server 的 agents/cost.ts 的 token→成本核算
 // (#140 自 runtime 拆出,纯移动)。缓存感知定价:triage(冷会话,全额
 // 输入)对照大脑 turn(命中缓存,~0.1×)才是诚实比较。价格按 1M token
 // 计;仅运营方经 CUMORA_MODEL_PRICES_JSON 提供的费率算 verified,种子

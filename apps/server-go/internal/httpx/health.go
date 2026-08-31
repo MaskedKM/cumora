@@ -1,5 +1,5 @@
 // httpx —— 域路由的公共助手(#51)。契约事实源:packages/contract/openapi.yaml;
-// 镜像断言(server/src/__integration__/mirror-*.test.ts)是行为基准。
+// 镜像断言(tests/integration/mirror-*.test.ts)是行为基准。
 package httpx
 
 import (

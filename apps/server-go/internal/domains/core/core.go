@@ -1,7 +1,7 @@
 // domains/core —— 认证/me/companies 域(#52):/api/auth/me、/api/auth/logout、
 // /api/auth/ws-ticket、/api/me、/api/me/quota、/api/me/preferences、
 // /api/me/account(DELETE)、/api/companies(list/create)。
-// 行为对齐 server/src/api/router.ts 同名 handler;契约见 packages/contract。
+// 行为对齐 已退役 TS server 的 api/router.ts 同名 handler;契约见 packages/contract。
 // #187 批次 8:core tag(23 路由)走 ServerInterface——13 原生方法 +
 // invitations 5/search/og/inbound/health/livez 十条导出面委托。
 package core

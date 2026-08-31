@@ -37,8 +37,8 @@ jobs:
       - run: npm ci
       - name: tsc (client)
         run: npm run typecheck
-      - name: tsc (server)
-        run: npm run server:typecheck
+      - name: tsc (integration tests)
+        run: npm run integration:typecheck
 
   quality:
     name: Guards + unit + integration

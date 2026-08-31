@@ -1,6 +1,6 @@
 // contacts —— 联系人查找核心(#57):`cumora contacts` CLI 背后的三支
 // 查询(同租户 agent / 人类成员 / 外部 email_contacts)+ 统一模糊过滤。
-// 对齐 server/src/agents/cli.ts 的 listEmailContacts。CLI 表面在 daemon
+// 对齐 已退役 TS server 的 agents/cli.ts 的 listEmailContacts。CLI 表面在 daemon
 // 波(#63+)挂载;本包即其可测核心。
 package contacts
 

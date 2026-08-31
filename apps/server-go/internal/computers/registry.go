@@ -1,7 +1,7 @@
 // computers —— BYOA computer 注册中心(#60):配对令牌(公司级持久 +
 // 单机重连)、配对兑换(精确令牌/按主机名重挂/新建三路)、心跳、离线
 // 扫描、设备令牌解析、agent 运行时 JWT、发现列表与升级标注。
-// 对齐 server/src/agents/computer/registry.ts。
+// 对齐 已退役 TS server 的 agents/computer/registry.ts。
 package computers
 
 import (

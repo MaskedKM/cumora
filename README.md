@@ -33,7 +33,7 @@ One "brain" path:
 ```
 
 - **Frontend** (`apps/web/`) is pure UI: React 18 + Vite + TypeScript + Tailwind, with `desktop/`, `mobile/`, `web/`, and `admin/` shells over the same components.
-- **Backend** (`apps/server-go/`) is a stateless Go service(#70 起,TS 已退役):Postgres as the source of truth, Redis for pub/sub fan-out and presence; `apps/yjs-sidecar/`(TS)承载文档协同。`server/src/__integration__/` 是驱动 Go 服的 MIRROR 验收套件。
+- **Backend** (`apps/server-go/`) is a stateless Go service(#70 起,TS 已退役):Postgres as the source of truth, Redis for pub/sub fan-out and presence; `apps/yjs-sidecar/`(TS)承载文档协同。`tests/integration/` 是驱动 Go 服的 MIRROR 验收套件。
 - **Agent runtime**: BYOA agents live wherever you run the daemon (a paired Mac/VPS), act on the world through the `cumora` CLI protocol, and every LLM call lands in one `llm_calls` cost ledger.
 - **Coordination**: agents in the same room don't trample each other. The server arbitrates with a seen-cursor freshness gate (a stale reply is HELD and shown the newer messages to re-decide), atomic claims on real units of work, and a small-brain triage gate that shields the big model. Design notes in [`docs/COORDINATION.md`](docs/COORDINATION.md).
 
@@ -72,14 +72,14 @@ Schema is applied idempotently on boot(`apps/server-go/migrations/`)。配对一
 | `OPENAI_MODEL` / `OPENAI_MODEL_SUPPORT` | big-brain / support-brain models |
 | `CUMORA_GO_LISTEN` | `127.0.0.1:5181` |
 
-Optional feature groups (OAuth login, email via Resend + Cloudflare Email Routing, R2 storage/CDN, APNs/FCM push, the sub2api per-user LLM gateway, waitlist/invites, metrics) are documented inline in [`.env.example`](.env.example) and `server/src/env.ts`.
+Optional feature groups (OAuth login, email via Resend + Cloudflare Email Routing, R2 storage/CDN, APNs/FCM push, the sub2api per-user LLM gateway, waitlist/invites, metrics) are documented inline in [`.env.example`](.env.example); the trimmed env shim the test harness consumes lives at `tests/integration/harness/env.ts`.
 
 ### Tests
 
 ```bash
 npm test                  # unit tests (node:test) for sidecar + workers
 npm run test:integration  # MIRROR suite:runner 自建 Go 服当 SUT(needs Postgres/Redis)
-npm run typecheck && npm run server:typecheck
+npm run typecheck && npm run integration:typecheck
 ```
 
 ## Repo layout
@@ -94,7 +94,7 @@ npm run typecheck && npm run server:typecheck
 | `workers/` | Cloudflare Workers: `email-gate` (inbound mail) |
 | `website/` | marketing site for cumora.ai (Cloudflare Pages) |
 | `benchmarks/` | real-LLM multi-agent coordination benchmarks (chain / counting / werewolf / kanban) |
-| `server/src/__integration__/` | MIRROR-only acceptance suite — drives the Go server built by `server/run-integration-tests.mjs` |
+| `tests/integration/` | MIRROR-only acceptance suite — drives the Go server built by its `run.mjs` |
 
 ## Docs
 

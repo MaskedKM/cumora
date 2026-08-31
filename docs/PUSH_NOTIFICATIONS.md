@@ -19,11 +19,11 @@ recipient calculation) is already in the repo.
 | `@capacitor/push-notifications` plugin | `package.json` + `ios/App/Podfile`-equivalent SPM bundle (synced by `npx cap sync ios`) |
 | AppDelegate APNs callbacks → Capacitor bridge | `ios/App/App/AppDelegate.swift` |
 | `aps-environment` entitlement | `ios/App/App/App.Debug.entitlements` (development) + `ios/App/App/App.Release.entitlements` (production) — selected automatically by Xcode build config |
-| `push_devices` table | `server/src/db/migrate.ts` |
-| `POST /push/register` / `POST /push/unregister` | `server/src/api/router.ts` (near the bottom) |
-| APNs sender (HTTP/2 + ES256 JWT, no third-party lib) | `server/src/push.ts` |
-| FCM sender (HTTP v1, service-account JWT) | `server/src/fcm.ts` |
-| Recipient filter (skips author, currently-online users, muted convos) | `computeMessageRecipients` in `server/src/push.ts` |
+| `push_devices` table | TS-era `db/migrate.ts` (retired; schema via Go migrations) |
+| `POST /push/register` / `POST /push/unregister` | TS-era `api/router.ts` (retired) |
+| APNs sender (HTTP/2 + ES256 JWT, no third-party lib) | TS-era `push.ts` (retired) |
+| FCM sender (HTTP v1, service-account JWT) | TS-era `fcm.ts` (retired) |
+| Recipient filter (skips author, currently-online users, muted convos) | `computeMessageRecipients` in TS-era `push.ts` (retired) |
 | Outbound dispatch on new message | inside POST `/conversations/:id/messages` |
 | Client lifecycle (request perms, register, deep-link, sign-out) | `apps/web/src/lib/push.ts` + `apps/web/src/mobile/MobileApp.tsx` + `apps/web/src/mobile/MobileMe.tsx` |
 | User preference `notify.push` (in-app kill switch) | `TOGGLE_PREFS` in `apps/web/src/mobile/MobileMe.tsx` |
@@ -118,7 +118,7 @@ key needed at App Store submission.
 The Android path mirrors iOS with a different sender: the same
 `@capacitor/push-notifications` plugin registers an FCM token
 (`platform='android'` in `push_devices`), and the server sends via the
-FCM HTTP v1 API (`server/src/fcm.ts`) authenticated with a Firebase
+FCM HTTP v1 API (TS-era `fcm.ts` (retired)) authenticated with a Firebase
 service account — set `FCM_SERVICE_ACCOUNT_JSON` (inline JSON) or
 `FCM_SERVICE_ACCOUNT_PATH`. The Android client build additionally needs
 your own `android/app/google-services.json` — copy

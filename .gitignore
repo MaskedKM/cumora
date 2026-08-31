@@ -70,7 +70,7 @@ server/k8s/*.prod.yaml
 docs/HANDOFF.md
 android/app/google-services.json
 
-# integration runner 的临时 Go 服二进制(server/run-integration-tests.mjs)
+# integration runner 的临时 Go 服二进制(tests/integration/run.mjs)
 apps/server-go/.integration-server-bin
 
 # 误入库的本地构建 ELF(PR #151 评审 M2,#131)——源外产物一律不入库

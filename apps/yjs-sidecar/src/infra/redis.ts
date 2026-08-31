@@ -1,4 +1,4 @@
-/** yjs-sidecar 自持 redis 面(#142:自 server/src/redis.ts 裁剪内联)。
+/** yjs-sidecar 自持 redis 面(#142:自退役 TS server 的 redis.ts 裁剪内联)。
  *
  * 只保留 sidecar 消费的:双客户端(命令 + 阻塞订阅)、文档协同两通道、
  * publish(doc.update / doc.awareness)。全套通道表与事件类型留在

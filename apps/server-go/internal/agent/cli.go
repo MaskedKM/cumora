@@ -1,4 +1,4 @@
-// /runtime/cli 世界动作命令面(#89):TS server/src/agents/cli.ts 的 runCli
+// /runtime/cli 世界动作命令面(#89):TS 树(已退役)agents/cli.ts 的 runCli
 // 等价物。daemon 的引擎经 cumora shim 把 argv POST 到本路由,服务端解析
 // 子命令、执行 DB+广播行为、返回 CliResult。文本输出与 TS 逐字节对齐
 // (mirror 测试为准)。

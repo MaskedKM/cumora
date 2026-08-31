@@ -1,7 +1,7 @@
 // email —— 邮件核心(#58 出站半边):地址解析/铸造、主题与 HTML 清洗、
 // Provider 发送(Resend/mock)、messages+email_messages 原子持久化、
 // email 会话线程(in-reply-to/references 归并 + 成员修补)。
-// 对齐 server/src/email.ts 与 router.ts 的 resolveHttp* 三件。
+// 对齐 已退役 TS server 的 email.ts 与 router.ts 的 resolveHttp* 三件。
 package email
 
 import (

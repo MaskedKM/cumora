@@ -2,7 +2,7 @@
 // 401 'authentication required' / 403 'admin only')+ settings 读写(两个
 // 开关 + 六个 Cerebellum Route 字段;API key AES-256-GCM 落库、只回
 // {configured, suffix} 永不回明文,ADR 0001)+ /me 门探 + 在线 computer
-// 引擎并集。逐段对齐 server/src/api/admin-router.ts + cerebellum-settings.ts
+// 引擎并集。逐段对齐 已退役 TS server 的 api/admin-router.ts + cerebellum-settings.ts
 // + admin.ts(requireAdmin/getSettings/setSetting);users/waitlist/stats/
 // observability-llm 子面留待完整化票(本部署单管理员,settings+engines
 // 为配对页与路由开关的刚需)。

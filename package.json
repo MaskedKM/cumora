@@ -27,13 +27,13 @@
     "build": "npm run build -w apps/web",
     "preview": "npm run preview -w apps/web",
     "typecheck": "npm run typecheck -w apps/web",
-    "server:typecheck": "tsc -p server/tsconfig.json --noEmit",
+    "integration:typecheck": "tsc -p tests/integration/tsconfig.json --noEmit",
     "sidecar:typecheck": "tsc -p apps/yjs-sidecar/tsconfig.json --noEmit",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "test": "node --import tsx --test --test-force-exit \"apps/yjs-sidecar/src/**/*.test.ts\" \"workers/**/*.test.ts\"",
     "web:test": "npm run test -w apps/web",
-    "test:integration": "node server/run-integration-tests.mjs",
+    "test:integration": "node tests/integration/run.mjs",
     "icons": "python3 scripts-make-mac-icon.py && npx -y electron-icon-builder -i build/icon.png -o build --flatten && node scripts-sync-electron-dev-icon.mjs",
     "electron:dev": "concurrently -k -n web,electron -c blue,cyan \"npm:dev\" \"wait-on tcp:5180 tcp:5181 && cross-env-shell ELECTRON_RENDERER_URL=http://localhost:5180 electron .\"",
     "electron:start": "electron .",
@@ -50,7 +50,7 @@
     "contract:check": "bash scripts/contract-check.sh",
     "sidecar:dev": "tsx watch apps/yjs-sidecar/src/main.ts",
     "sidecar:start": "tsx apps/yjs-sidecar/src/main.ts",
-    "test:e2e": "INTEGRATION_E2E=1 node server/run-integration-tests.mjs"
+    "test:e2e": "INTEGRATION_E2E=1 node tests/integration/run.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",

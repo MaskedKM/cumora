@@ -1,4 +1,4 @@
-/** yjs-sidecar 自持 pg 池(#142:自 server/src/db/pool.ts 原样内联,
+/** yjs-sidecar 自持 pg 池(#142:自退役 TS server 的 db/pool.ts 原样内联,
  * 仅改 env 导入路径——连接参数/超时语义逐字保留)。 */
 import { Pool } from 'pg'
 import { env } from './env.js'

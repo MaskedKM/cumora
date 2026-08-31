@@ -16,7 +16,7 @@ type Config struct {
 	MigrationsDir string
 	RedisURL      string
 	// Yjs sidecar 内表面(127.0.0.1+token,ADR 0004)与 relay 实例标识。
-	// 变量名对齐 server/src/env.ts。
+	// 变量名对齐 已退役 TS server 的 env.ts。
 	YjsSidecarURL     string
 	YjsSidecarToken   string
 	YjsSidecarTimeout int // ms

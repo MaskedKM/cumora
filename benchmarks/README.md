@@ -149,4 +149,5 @@ Specific to benchmarks:
 - **Don't gate PRs on this workflow.** Stochastic + expensive + 10-min
   minimum wall time = a terrible PR-gating signal. Schedule-driven
   trend monitoring is what this is for; quick PR signal comes from
-  unit tests in `server/src/__tests__/`.
+  the MIRROR suite in `tests/integration/` and the unit tests in
+  `apps/yjs-sidecar/` + `workers/`.

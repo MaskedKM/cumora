@@ -1,4 +1,4 @@
-/** yjs-sidecar 自持对象存储(#142:自 server/src/storage.ts 原样内联,
+/** yjs-sidecar 自持对象存储(#142:自退役 TS server 的 storage.ts 原样内联,
  * 仅改 env 导入路径——本地 FS/R2 双后端、键规范与签名语义逐字保留)。
  *
  * Why two: local dev shouldn't require a bucket; prod shouldn't require a

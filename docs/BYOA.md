@@ -165,7 +165,8 @@ from their own agenda — Kanban cards and due calendar slots — via
 
 ## Engine integration
 
-`server/src/agents/computer/engine.ts` defines one `EngineAdapter` per
+The engine layer (TS-era shape: `agents/computer/engine.ts` in the retired
+server tree, now the Go daemon) defines one `EngineAdapter` per
 engine (`claude`, `codex`, `grok`, `cursor`, `zcode`). Persistent per-agent sessions
 are preferred when the CLI exposes one; Cursor and zcode use one-shot `run()` for every wake.
 
@@ -387,8 +388,8 @@ npx cumora@latest agent computer --pair <code> [--server <url>]
 
 - (#67/#70)The daemon now ships as the Go binary from
   `apps/byoa-daemon/` — self-update via the server's Releases feed. The
-  legacy TS shim (`agent-cli/`, esbuild-bundled from
-  `server/src/agents/computer/`) retired with the TS server; `npx
+  legacy TS shim (`agent-cli/`, esbuild-bundled from the retired TS
+  server's `agents/computer/`) retired with the TS server; `npx
   cumora@latest` keeps working for the last published version, new
   installs use the release binary.
 - `--install-service` installs the daemon as a supervised service

@@ -1,4 +1,4 @@
-// wakebus —— 唤醒总线(#60),对齐 server/src/agents/runtime/wake-bus.ts。
+// wakebus —— 唤醒总线(#60),对齐 已退役 TS server 的 agents/runtime/wake-bus.ts。
 // 把 wake/steer 事件经 Redis pub/sub(cumora:wake:<agentId>)路由到持有该
 // agent SSE 长连接的本实例:首个本地订阅者挂上时 SUBSCRIBE,最后一个断开
 // 时 UNSUBSCRIBE;Deliver 发布事件并返回接收端数(0 = 全集群无在线 Pod,

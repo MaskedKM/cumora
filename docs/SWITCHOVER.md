@@ -16,7 +16,7 @@ systemd --user
 ├─ cumora-go.service      Go HTTP @ 127.0.0.1:5181(cumora-server)
 ├─ cumora-sidecar.service yjs-sidecar @ 5182(node/TS,共用)
 ├─ cumora-daemon.service  byoa-daemon(Go,agent computer --server :5181)
-└─ cumora-ts.service      [stopped] ← 回切兜底(tsx server/src/index.ts)
+└─ cumora-ts.service      [stopped,已随 #70 删除] ← 回切兜底(原 TS 入口 index.ts)
 ```
 
 ## 前置(全部满足才可切)
@@ -93,9 +93,10 @@ systemctl --user start cumora-go.service     # 回到 Go,复跑观察清单 1–
 
 用户提前点头跳过观察期,TS 全套退役:
 
-- **仓库**:server/src 运行时删除(保留 `__integration__` MIRROR-only
-  套件 + harness 四件:db/pool、redis、env(裁)、agents/runtime/jwt、
-  email 种子切片);`agent-cli/`、`bin/cumora`、`scripts/dual-backend/`
+- **仓库**:TS server 运行时整体删除(当时保留的 `__integration__`
+  MIRROR-only 套件 + harness 四件:db/pool、redis、env(裁)、
+  agents/runtime/jwt、email 种子切片,已于 #206 迁至
+  `tests/integration/`);`agent-cli/`、`bin/cumora`、`scripts/dual-backend/`
   删除;CI tests job 换 golang:1.24-bookworm + setup-node(runner 自建
   Go 服当 SUT);契约守卫提取腿换 Go `HandleFunc`(#117 豁免表)。
 - **生产机**:卸载 `cumora-ts.service`;旧 `cumora.service`(TS daemon,

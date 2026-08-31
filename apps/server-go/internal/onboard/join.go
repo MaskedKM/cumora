@@ -1,6 +1,6 @@
 // join —— #all-hands 自动入组(#68 评审 F7 合一)。此前 core/agents/
 // invitations 三处各持一副本:core 变体缺系统消息与 redis 扇出,另两副
-// 本缺扇出。此处按 server/src/onboardCompany.ts joinAllHands 全量对齐:
+// 本缺扇出。此处按 已退役 TS server 的 onboardCompany.ts joinAllHands 全量对齐:
 // 组未建 no-op;成员幂等追加;kind='system' 入组消息;CH_MESSAGE_NEW
 // 广播;human/agent 再发 CH_STATUS participants.added(前端 byId 库补
 // 人,否则系统行引用无人认识的 participantId)。

@@ -1,8 +1,8 @@
 // domains/calendar —— 日历域(#57):事件 CRUD(隐私可见性子句贯穿
 // 读/改/删)、手动触发 dispatch、dispatch 历史。调度 tick(到期扫描+
 // reminder)归 #60 运行时服务面;本包只交付 dispatchEvent 供 run-now
-// 调用。行为对齐 server/src/api/router.ts 的 /calendar 段与
-// server/src/calendar.ts 的 dispatchEvent。
+// 调用。行为对齐 已退役 TS server 的 api/router.ts 的 /calendar 段与
+// 已退役 TS server 的 calendar.ts 的 dispatchEvent。
 package calendar
 
 import (

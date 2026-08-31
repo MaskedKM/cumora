@@ -1,4 +1,4 @@
-// agent 包 personas —— 对齐 server/src/agents/personas.ts + agent-voice.ts
+// agent 包 personas —— 对齐 已退役 TS server 的 agents/personas.ts + agent-voice.ts
 // + skype-emoticons.ts:persona 解析(进程内缓存)、团队花名册、完整系统提示。
 // 提示常量逐字节对齐 TS 版——BYOA daemon 与云侧必须拿到同一份人格。
 package agent
