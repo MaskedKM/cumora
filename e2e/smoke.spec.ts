@@ -25,6 +25,8 @@ const COMPANY = 'c-e2e-smoke'
 const SESSION_TOKEN = `e2e-session-${Date.now()}`
 const HUMAN_MSG = `冒烟:人来话 ${Date.now()}`
 const REPLY_MSG = `冒烟:atlas 回声 ${Date.now()}`
+/** #210:终局前的流式前缀(daemon delta 上报的最小合成)。 */
+const DELTA_TEXT = `冒烟:atlas 流式前缀 ${Date.now()}`
 
 /** Node 侧 harness 调用:fake-auth 头直连 SUT。 */
 async function apiCall(path: string, init: RequestInit = {}, extraHeaders: Record<string, string> = {}) {
@@ -42,12 +44,16 @@ async function apiCall(path: string, init: RequestInit = {}, extraHeaders: Recor
   return res.json() as Promise<Record<string, unknown>>
 }
 
-/** 消费 SSE wake-stream 的最小 "echo agent runtime":收到 wake 帧就对
- * 该会话 cli-reply 一句冒烟文本。等价于 mirror-scheduler 触发 + 真实
- * byoa-daemon 回复的最小合成,走的全是生产面(runtime JWT 鉴权)。 */
-async function startEchoRuntime(bearer: string): Promise<() => void> {
+/** 消费 SSE wake-stream 的最小 "echo agent runtime":收到 wake 帧先走
+ * #210 流式增量(POST /runtime/message-delta 上报前缀),等 spec 确认
+ * 前缀已上屏(releaseReply)再 cli-reply 终局。等价于 mirror-scheduler
+ * 触发 + 真实 byoa-daemon(deltaReporter → cli reply)的最小合成,走
+ * 的全是生产面(runtime JWT 鉴权)。 */
+async function startEchoRuntime(bearer: string): Promise<{ stop: () => void; releaseReply: () => void }> {
   const ac = new AbortController()
   const replied = new Set<string>()
+  let releaseReply!: () => void
+  const replyGate = new Promise<void>((r) => { releaseReply = r })
   void (async () => {
     try {
       const res = await fetch(`${API}/runtime/wake-stream`, {
@@ -74,6 +80,17 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
           const frame = JSON.parse(data) as { conversationId?: string }
           if (!frame.conversationId || replied.has(frame.conversationId)) continue
           replied.add(frame.conversationId)
+          // #210 流式前缀:两帧 delta(daemon 铸流 id,与终局 id 不配对)。
+          const streamId = `ds-e2e-${Date.now()}`
+          for (const [i, chunk] of [[1, DELTA_TEXT.slice(0, 8)], [2, DELTA_TEXT.slice(8)]] as const) {
+            const d = await fetch(`${API}/runtime/message-delta`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+              body: JSON.stringify({ conversationId: frame.conversationId, messageId: streamId, delta: chunk, sequence: i, done: false }),
+            })
+            console.error(`[echo-rt] delta seq=${i} → ${d.status}`)
+          }
+          await replyGate // 等 spec 断言"前缀先上屏"再发终局(保序确定)
           const r = await fetch(`${API}/runtime/cli`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
@@ -86,7 +103,7 @@ async function startEchoRuntime(bearer: string): Promise<() => void> {
       console.error(`[echo-rt] exited: ${e instanceof Error ? e.message : String(e)}`)
     }
   })()
-  return () => ac.abort()
+  return { stop: () => ac.abort(), releaseReply }
 }
 
 test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) => {
@@ -128,7 +145,7 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
     // 入 USER —— 显式去掉,让 device token 语义真实生效)。
     'x-test-user': '',
   }) as { token: string }
-  const stopRuntime = await startEchoRuntime(rt.token)
+  const echoRt = await startEchoRuntime(rt.token)
 
   // ── 4) 浏览器:注入登录态,进桌面壳 ──
   page.on('websocket', (ws) => console.error(`[ws] open ${ws.url()}`))
@@ -164,8 +181,14 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
   // 转发 → 浏览器 WS message.new → stores/messages applyEvent 上屏。
   // 全程停在 Atlas 会话、无 refetch/切会话 —— 断言的就是实时推送面
   // 本身(REST 重取兜底的旧形态随 #202 关闭)。
-  await expect(transcript.getByText(REPLY_MSG)).toBeVisible({ timeout: 30_000 })
+  // ── 6b) #210:delta 先到 → 增量渲染(灰显流式气泡),再放行终局 ──
+  await expect(transcript.getByText(DELTA_TEXT)).toBeVisible({ timeout: 15_000 })
+  echoRt.releaseReply()
 
-  stopRuntime()
+  // ── 6c) message.new 收口:真回复上屏,瞬态前缀被幂等替换(不残留)──
+  await expect(transcript.getByText(REPLY_MSG)).toBeVisible({ timeout: 30_000 })
+  await expect(transcript.getByText(DELTA_TEXT)).toHaveCount(0)
+
+  echoRt.stop()
   await pg.end()
 })
