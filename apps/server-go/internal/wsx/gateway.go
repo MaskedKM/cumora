@@ -41,6 +41,7 @@ type conn struct {
 	// (#216)同走此队列——relay 扇出协程不被任何订阅者的慢写阻塞。
 	outbound      chan []byte
 	dropAnnounced uint32 // 背压丢帧只告警一次(atomic)
+	docClosed     uint32 // doc 帧掐线只告警一次(独立于丢帧,atomic)
 	wcancel       context.CancelFunc
 }
 
@@ -327,6 +328,9 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		return g.relay.BroadcastAwareness(ctx, documentID, companyID, c.originID, update)
 
 	case "doc.mention.notify":
+		if _, ok := c.docSubs[documentID]; !ok {
+			return nil // 必须先订阅(对齐 update/awareness;唯一发送方仅在 synced 后触发)
+		}
 		raw, _ := msg["mentionedIds"].([]any)
 		requested := make([]string, 0, len(raw))
 		for _, v := range raw {

@@ -165,8 +165,12 @@ func (c *conn) enqueueChat(raw []byte) {
 // 语义不同:doc.update 是 yjs 增量,静默丢失会让该客户端的状态悄然
 // 分歧(hello 重同步不覆盖协同帧)——所以队列满时**直接掐线**,让
 // 客户端重连重订阅、从 sidecar 重取全量 state,这是唯一安全路径。
-// 掐线在 fanout 协程上是非阻塞的(cancel+Close 立即返回,拆链由
-// readLoop 的 defer 统一完成)。
+// 掐线必须真非阻塞:CloseNow 只关 rwc(纯本地,无锁争用无网络等待);
+// **不能用 Close()**——它会 5s 写 close 帧 + 5s 等对端握手,且与写
+// 协程停滞中的 Write 抢同一把 writeFrameMu,恰好撞上"客户端停滞"
+// 这个触发场景,fanout 协程还是会被拖住(评审 P1)。拆链由 readLoop
+// 的 defer 统一完成。告警用独立标志:聊天丢帧的 dropAnnounced 先置位
+// 时不能吞掉掐线这条更严重的日志。
 func (c *conn) enqueueDoc(payload any) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -175,12 +179,12 @@ func (c *conn) enqueueDoc(payload any) {
 	select {
 	case c.outbound <- raw:
 	default:
-		if atomic.CompareAndSwapUint32(&c.dropAnnounced, 0, 1) {
+		if atomic.CompareAndSwapUint32(&c.docClosed, 0, 1) {
 			slog.Warn("ws doc consumer behind — closing connection for full resync", "user", c.userID)
 		}
 		if c.wcancel != nil {
 			c.wcancel()
 		}
-		_ = c.ws.Close(websocket.StatusGoingAway, "doc consumer too slow")
+		_ = c.ws.CloseNow()
 	}
 }
