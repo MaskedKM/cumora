@@ -54,8 +54,15 @@ func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actor
 	s.Sched.WakeMentionedAgents(companyID, mentions, actorID)
 }
 
-// ctxBG:fire-and-forget 后台写共用的父上下文。
+// ctxBG:fire-and-forget 后台写与 worker 循环共用的父上下文。默认
+// Background;SetBaseContext 由 cmd/server 在 boot 期、任何 Start* 之前
+// 注入可取消的 ctx(#215:优雅停机对后台任务生效——此前恒 Background,
+// 停机对这里的消费者全部无效)。goroutine 启动即建立 happens-before,
+// 注入后不再改写。
 var ctxBG = context.Background()
+
+// SetBaseContext:见 ctxBG 注释。须在 worker 启动前调用(boot 期单线程)。
+func SetBaseContext(ctx context.Context) { ctxBG = ctx }
 
 // envIntRaw / getenv:调度/议程面(#140 拆出)同名助手的本包副本
 // (scanner 的间隔/门控 env 仍在此读)。
