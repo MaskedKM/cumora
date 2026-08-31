@@ -158,10 +158,10 @@ func stripHtml(html string) string {
 
 var extSanRe = regexp.MustCompile(`[^a-z0-9]`)
 
-// putAttachment 本地存储:UPLOAD_DIR(server/uploads)/<key>;与 TS 本地
-// storage.put 同布局。
+// putAttachment 本地存储:uploads 根(config.UploadsDir(),#208 统一
+// 认 CUMORA_UPLOADS_DIR)/<key>;与 TS 本地 storage.put 同布局。
 func putAttachment(key string, bytes []byte, mimeType string) error {
-	root := config.EmailUploadDir()
+	root := config.UploadsDir()
 	full := filepath.Join(root, filepath.FromSlash(key))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err

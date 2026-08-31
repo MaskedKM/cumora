@@ -219,7 +219,9 @@ func PickOrphans(inStorage map[string]time.Time, inDB map[string]bool, now time.
 	return out
 }
 
-func uploadsRoot() string { return config.EmailUploadDir() }
+// uploadsRoot:GC 扫描根,与入站写入同一解析点(config.UploadsDir(),
+// #208)——env 只认写侧不认读侧时,附件会落新目录却永不被 GC。
+func uploadsRoot() string { return config.UploadsDir() }
 
 // RunGcTick:枚举前缀 → 对账 DB → 删孤儿。幂等(多副本安全)。
 func RunGcTick(ctx context.Context, db *sql.DB) (inspected, deleted int) {

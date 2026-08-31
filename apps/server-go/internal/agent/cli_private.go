@@ -1062,7 +1062,8 @@ func cliAssertInside(root, abs string) string {
 	return ""
 }
 
-// cliEnsureDefaultWorkspace:默认区惰性自愈(server/uploads/workspaces/<cid>)。
+// cliEnsureDefaultWorkspace:默认区惰性自愈(<uploads 根>/workspaces/<cid>,
+// 根经 config.UploadsDir() 统一解析)。
 func (s *Service) cliEnsureDefaultWorkspace(ctx context.Context, tenant string) error {
 	var one int
 	err := s.DB.QueryRowContext(ctx,

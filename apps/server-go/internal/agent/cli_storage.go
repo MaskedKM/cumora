@@ -1,7 +1,8 @@
 // /runtime/cli 附件存储(#89):storage.ts 本地模式的 Go 等价 —— 键落
-// UPLOAD_DIR,URL /uploads/<key>(与 TS 静态处理器同形;R2 模式待存储
-// 抽象票接入,镜像测试走本地模式)。附件对象进 messages.attachment
-// (jsonb 列,PG 自行按键长排序,序列化键序无对齐负担)。
+// config.UploadsDir() 解析的 uploads 根(#208),URL /uploads/<key>(与
+// TS 静态处理器同形;R2 模式待存储抽象票接入,镜像测试走本地模式)。
+// 附件对象进 messages.attachment(jsonb 列,PG 自行按键长排序,序列化
+// 键序无对齐负担)。
 package agent
 
 import (

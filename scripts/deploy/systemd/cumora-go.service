@@ -7,9 +7,14 @@ After=network-online.target cumora-sidecar.service
 Wants=cumora-sidecar.service
 
 [Service]
-# cwd=仓库根:webapp 静态面与 TS 同规解析(dist/、server/uploads/ 相对 cwd)
+# cwd=仓库根:webapp 静态面与 TS 同规解析(dist/ 相对 cwd)。uploads 根
+# 不再吃 cwd 默认(#208):生产数据必须落仓外,经 env 注入;两栈
+# (Go 写/静态读 + sidecar 写)同值,缺一侧即"上传成功但不可见"。
+# 迁移既有 server/uploads/ 数据的步骤见 docs/SWITCHOVER.md「#208 上传
+# 数据迁出工作树」。
 WorkingDirectory=%h/Code/cumora
 EnvironmentFile=%h/Code/cumora/.env
+Environment=CUMORA_UPLOADS_DIR=%h/.local/share/cumora/uploads
 Environment=CUMORA_GO_LISTEN=127.0.0.1:5181
 Environment=CUMORA_GO_MIGRATIONS=%h/Code/cumora/apps/server-go/migrations
 ExecStart=%h/Code/cumora/apps/server-go/cumora-server

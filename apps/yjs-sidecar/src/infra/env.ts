@@ -35,6 +35,10 @@ export const env = {
   YJS_FLUSH_MAX_PENDING: positiveInt('YJS_FLUSH_MAX_PENDING', 32),
   // redis.ts 消费(pod 形态懒连接)
   CUMORA_RUNTIME_CLIENT: process.env.CUMORA_RUNTIME_CLIENT ?? '',
+  // #208:本地 FS 存储根(storage.ts)。与 Go 服 config.UploadsDir()
+  // 同键同默认(server/uploads 相对 cwd)——两栈靠共享 cwd+共享 env
+  // 写进同一目录;生产经 systemd 注入仓外路径。空串=未设(走默认)。
+  CUMORA_UPLOADS_DIR: process.env.CUMORA_UPLOADS_DIR ?? '',
   // storage.ts 消费(文档快照/内联图片附件;R2 全空=本地 FS 模式)
   R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID ?? '',
   R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY ?? '',

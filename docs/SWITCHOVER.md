@@ -46,6 +46,60 @@ systemctl --user start cumora-daemon.service    # journalctl 观察 pair/心跳
 
 > 端口互斥:起 cumora-ts 前必须 stop cumora-go(反之亦然)。
 
+## #208 上传数据迁出工作树(存活期一次性,先于或随任意发版做)
+
+背景:uploads 根此前默认 `server/uploads/`(gitignore 的工作树内,重新
+clone / 换机即丢且无备份);且 `CUMORA_UPLOADS_DIR` 只被写侧认,读侧
+(静态服务/OAuth 头像镜像)、email 域(入站附件/GC)与 workspaces 默认区
+不认——设 env 会精神分裂。#208 起六处 + sidecar 统一走
+`config.UploadsDir()`(`CUMORA_UPLOADS_DIR` > 旧键 `UPLOAD_DIR` >
+cwd 相对 `server/uploads`),两个单元注入仓外路径。迁移步骤:
+
+```bash
+# 0) 前置:本 checkout 已含 #208,重装单元拿注入的
+#    Environment=CUMORA_UPLOADS_DIR=%h/.local/share/cumora/uploads
+bash scripts/deploy/install-units.sh
+
+# 1) 建目标目录(与单元注入值一致)
+mkdir -p ~/.local/share/cumora
+
+# 2) 停写侧:go(上传/OAuth 头像/email 附件)与 sidecar(文档快照/
+#    内联图片)两栈都写;daemon 不写 uploads,但三件套一并重启最稳
+systemctl --user stop cumora-go.service cumora-sidecar.service
+
+# 3) 存量数据整体搬家(mv 同盘原子;跨盘先 rsync -a 再删源)
+mv ~/Code/cumora/server/uploads ~/.local/share/cumora/uploads
+
+# 4) workspaces 存量行修路径:folder_path 落库时是绝对路径(以 cwd
+#    钉死),搬家后必须同构改写,否则默认区文件列表指向旧位置:
+psql "$DATABASE_URL" -c "
+UPDATE workspaces
+   SET folder_path = replace(folder_path,
+        '$HOME/Code/cumora/server/uploads',
+        '$HOME/.local/share/cumora/uploads')
+ WHERE folder_path LIKE '$HOME/Code/cumora/server/uploads/%';"
+
+# 4b) 改写核验:应返回 0(历史上若有非本机 cwd 的异构实例产生的行,
+#     LIKE 模式会漏改,漏网行在文件列表处 400 且静默——核验兜住它;
+#     返回非 0 时逐行人工改写)
+psql "$DATABASE_URL" -tAc "
+SELECT count(*) FROM workspaces
+ WHERE folder_path LIKE '$HOME/Code/cumora/server/uploads/%';"
+
+# 4c) email 附件例外:历史上若给 Go 设过 UPLOAD_DIR 指到别处,那份
+#     email-attachments 不在上述 mv 覆盖内,需单独 mv 到新根(未设过
+#     则忽略本条)
+# 5) 重启三件套并核验
+systemctl --user start cumora-sidecar.service cumora-go.service cumora-daemon.service
+curl -s localhost:5181/api/livez   # 200
+```
+
+核验(观察清单 7 的加强版):传一张图 → `/uploads/…` URL 取回 200 →
+`ls ~/.local/share/cumora/uploads/attachments/` 出现新文件,且
+`~/Code/cumora/server/uploads` 不再存在/不新增。回退 = 反向 mv + 反向
+UPDATE + 还原单元(数据本身与代码解耦,任一方向都只动文件系统与
+workspaces 行)。
+
 ## 观察清单(核心路径,全绿才算切换成立)
 
 | # | 路径 | 验证 |

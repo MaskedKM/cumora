@@ -29,9 +29,10 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import 'dotenv/config'
 
@@ -262,6 +263,13 @@ if (!process.env.EMAIL_DOMAIN) process.env.EMAIL_DOMAIN = 'cumora.local'
 if (!process.env.EMAIL_INBOUND_HMAC_SECRET) process.env.EMAIL_INBOUND_HMAC_SECRET = 'integration-test-secret'
 if (!process.env.CUMORA_SECRETS_KEY) process.env.CUMORA_SECRETS_KEY = 'integration-secrets-key'
 
+// #208:uploads 根钉到每-run 临时目录(覆盖 .env 里可能残留的同名值,
+// 保持套件 hermetic)。Go 服(webapp 静态读/写)、sidecar、测试子进程
+// 三方共享此值——uploads-dir.test.ts 据此断言上传/静态/OAuth 头像/
+// email 附件+GC 全部命中 env 目录而非 git 工作树内的 server/uploads。
+// 退出路径(bail/runTestChild)best-effort 清掉。
+process.env.CUMORA_UPLOADS_DIR = await mkdtemp(join(tmpdir(), 'cumora-it-uploads-'))
+
 // Redis isolation(见文件头)。auto 栈是一次性实例(pub/sub 实例级隔离,
 // 无需 db 序号);显式给的 REDIS_URL 若指向本机且未带 db 序号,强制追加
 // /5——与常驻服务器(默认 db0)分道,防 wake-claim SETNX 被偷
@@ -319,6 +327,7 @@ function bail(msg, code = 1) {
   killAll()
   mockLLM?.close()
   if (!process.env.INTEGRATION_GO_BIN) rm(GO_BIN, { force: true }).catch(() => {})
+  rm(process.env.CUMORA_UPLOADS_DIR, { recursive: true, force: true }).catch(() => { /* best effort */ })
   // auto 栈是本 runner 起的,任何失败路径都得拆干净再退(#146)。
   if (autoStack) void teardownAutoStack().finally(() => process.exit(code))
   else process.exit(code)
@@ -476,12 +485,17 @@ spawnChild('go-server', GO_BIN, [], {
     CUMORA_AUTH_RETURN_ALLOWLIST: 'http://localhost:5180/',
     YJS_SIDECAR_URL: `http://127.0.0.1:${SIDECAR_PORT}`,
     YJS_SIDECAR_TOKEN: 't',
+    // #208:GC tick 压到 1s 让 uploads-dir.test.ts 能观测孤儿删除(默认
+    // 24h)。安全:GC 只删 >1h 且无 DB 引用的文件,而 CUMORA_UPLOADS_DIR
+    // 是每-run 新生的空目录——worker 对本套件的真实上传件是 no-op。
+    EMAIL_GC_INTERVAL_MS: '1000',
   },
 })
 if (!(await waitFor(GO_BASE, 30_000))) {
   bail('BOOT-FAILED: Go server never came up')
 }
 console.log(`[integration] SUT up: ${GO_BASE} (sidecar :${SIDECAR_PORT}, mock :${MOCK_PORT})`)
+console.log(`[integration] uploads dir (#208): ${process.env.CUMORA_UPLOADS_DIR}`)
 
 /** 测试子进程的统一收尾:退出时杀尽子进程、关 mock、删二进制、拆 auto 栈。 */
 function runTestChild(cmd, args, extraEnv = {}, opts = {}) {
@@ -499,6 +513,8 @@ function runTestChild(cmd, args, extraEnv = {}, opts = {}) {
     killAll()
     mockLLM.close()
     if (builtHere) rm(GO_BIN, { force: true }).catch(() => { /* best effort */ })
+    // #208:每-run uploads 临时目录一并 best-effort 拆除。
+    rm(process.env.CUMORA_UPLOADS_DIR, { recursive: true, force: true }).catch(() => { /* best effort */ })
     if (autoStack) void teardownAutoStack().finally(() => process.exit(code ?? 1))
     else process.exit(code ?? 1)
   })

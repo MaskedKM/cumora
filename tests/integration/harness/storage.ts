@@ -81,8 +81,16 @@ export function signedUrlExpiresSoon(raw: string, leewaySeconds = 300): boolean 
 
 /** Local fallback directory. Same path the static handler historically
  *  served from, so existing /uploads/<file> URLs keep working after the
- *  abstraction lands. */
-export const UPLOAD_DIR = resolve(process.cwd(), 'server/uploads')
+ *  abstraction lands.
+ *
+ *  #208: CUMORA_UPLOADS_DIR overrides the default — the runner sets it to a
+ *  per-run temp dir so tests assert uploads land where the env points (same
+ *  key and default as the Go server's config.UploadsDir() and the sidecar's
+ *  storage.ts — all three resolve CUMORA_UPLOADS_DIR the same way here,
+ *  the runner never sets the legacy UPLOAD_DIR key). */
+export const UPLOAD_DIR = process.env.CUMORA_UPLOADS_DIR
+  ? resolve(process.env.CUMORA_UPLOADS_DIR)
+  : resolve(process.cwd(), 'server/uploads')
 
 /** One enumerated object. lastModifiedMs is the storage backend's notion
  *  of when the object was last written — GC uses it to spare keys that
@@ -286,7 +294,7 @@ function buildStorage(): Storage {
       publicBase: env.R2_PUBLIC_BASE,
     })
   }
-  console.log('[storage] local mode · server/uploads/ (set R2_* env to use R2)')
+  console.log(`[storage] local mode · ${UPLOAD_DIR} (set R2_* env to use R2)`)
   return new LocalStorage()
 }
 
