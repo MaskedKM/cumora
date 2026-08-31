@@ -4,9 +4,13 @@ Description=Cumora yjs-sidecar (doc collab)
 After=network-online.target
 
 [Service]
-# cwd=仓库根使 --import tsx 能解析根 node_modules 里的 tsx
+# cwd=仓库根使 --import tsx 能解析根 node_modules 里的 tsx。本地 FS 存储
+# 根不再吃 cwd 默认(#208):与 cumora-go.service 注入同值(%h 由 systemd
+# 展开为用户家目录),文档快照/内联图片附件直落仓外数据目录,Go 静态
+# 面同目录可取。
 WorkingDirectory=%h/Code/cumora
 EnvironmentFile=%h/Code/cumora/.env
+Environment=CUMORA_UPLOADS_DIR=%h/.local/share/cumora/uploads
 Environment=YJS_SIDECAR_PORT=5182
 # 切换日前由 runbook 生成并写入 .env(YJS_SIDECAR_TOKEN),两栈同源读取
 ExecStart=%h/.nvm/versions/node/v22.22.0/bin/node --import tsx apps/yjs-sidecar/src/main.ts

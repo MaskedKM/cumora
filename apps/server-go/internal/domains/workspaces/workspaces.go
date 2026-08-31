@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/workspaces"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
@@ -78,8 +79,9 @@ func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow
 	return w, true
 }
 
-// ensureDefault 惰性建默认区(自愈;产品管理目录 server/uploads/workspaces/
-// <companyId>,对齐 TS storage.ts 的 UPLOAD_DIR=resolve(cwd,'server/uploads'))。
+// ensureDefault 惰性建默认区(自愈;产品管理目录 <uploads 根>/workspaces/
+// <companyId>,uploads 根经 config.UploadsDir() 统一解析——#208 前硬编码
+// server/uploads 相对 cwd,设 env 会被无视)。
 // 必须 Abs 化再落库:folder_path 的唯一约束与双重绑定防御都以绝对路径为
 // 不变量,CWD 变了也不能搬家。
 func ensureDefault(ctx context.Context, db *sql.DB, companyID string) error {
@@ -88,7 +90,7 @@ func ensureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 		`SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`, companyID).Scan(&exists); err == nil && exists {
 		return nil
 	}
-	folder := filepath.Join("server", "uploads", "workspaces", companyID)
+	folder := filepath.Join(config.UploadsDir(), "workspaces", companyID)
 	if abs, err := filepath.Abs(folder); err == nil {
 		folder = abs
 	}

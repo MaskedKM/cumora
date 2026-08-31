@@ -26,7 +26,10 @@ import (
 
 func Mount(mux *http.ServeMux) {
 	cwd, _ := os.Getwd()
-	uploadDir := filepath.Join(cwd, "server", "uploads")
+	// #208:uploads 根统一走 config.UploadsDir()(CUMORA_UPLOADS_DIR >
+	// 旧键 UPLOAD_DIR > cwd 相对 server/uploads)——与写侧同一解析点,
+	// 设 env 后上传/读取不再精神分裂。
+	uploadDir := config.UploadsDir()
 	distDir := filepath.Join(cwd, "dist")
 	indexPath := filepath.Join(distDir, "index.html")
 	_, indexErr := os.Stat(indexPath)

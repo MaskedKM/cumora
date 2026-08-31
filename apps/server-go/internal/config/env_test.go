@@ -107,23 +107,39 @@ func TestBakedAccessors(t *testing.T) {
 		t.Errorf("AdminEmails = %v", got)
 	}
 
+	// #208:三段解析链 CUMORA_UPLOADS_DIR > UPLOAD_DIR(旧键)> 默认,
+	// 各段语义见 env.go 注释(主键不 trim、旧键 trim、Clean 去尾斜杠)。
 	t.Setenv("CUMORA_UPLOADS_DIR", "")
+	t.Setenv("UPLOAD_DIR", "")
 	if got := UploadsDir(); got != filepath.Join("server", "uploads") {
 		t.Errorf("UploadsDir fallback = %q", got)
 	}
-	t.Setenv("CUMORA_UPLOADS_DIR", " /data/up ") // 不 trim(原调用点语义)
+	t.Setenv("CUMORA_UPLOADS_DIR", " /data/up ") // 主键不 trim(原调用点语义)
 	if got := UploadsDir(); got != " /data/up " {
 		t.Errorf("UploadsDir raw = %q", got)
 	}
-
+	t.Setenv("CUMORA_UPLOADS_DIR", "/data/up/") // 尾斜杠 Clean 掉,防前缀校验漂移
+	if got := UploadsDir(); got != "/data/up" {
+		t.Errorf("UploadsDir clean = %q", got)
+	}
+	// 主键空 + 旧键 UPLOAD_DIR(TS 时代 email 域契约):trim 后生效。
+	t.Setenv("CUMORA_UPLOADS_DIR", "")
 	t.Setenv("UPLOAD_DIR", "  ")
-	if got := EmailUploadDir(); got != filepath.Join("server", "uploads") {
-		t.Errorf("EmailUploadDir blank fallback = %q", got)
+	if got := UploadsDir(); got != filepath.Join("server", "uploads") {
+		t.Errorf("UploadsDir blank legacy = %q", got)
 	}
 	t.Setenv("UPLOAD_DIR", " /data/mail ")
-	if got := EmailUploadDir(); got != "/data/mail" {
-		t.Errorf("EmailUploadDir trim = %q", got)
+	if got := UploadsDir(); got != "/data/mail" {
+		t.Errorf("UploadsDir legacy trim = %q", got)
 	}
+	// 主键优先于旧键。
+	t.Setenv("CUMORA_UPLOADS_DIR", "/data/up")
+	t.Setenv("UPLOAD_DIR", "/legacy ")
+	if got := UploadsDir(); got != "/data/up" {
+		t.Errorf("UploadsDir primary precedence = %q", got)
+	}
+	t.Setenv("UPLOAD_DIR", "")
+	t.Setenv("CUMORA_UPLOADS_DIR", "")
 
 	t.Setenv("INVITE_BASE_URL", "")
 	t.Setenv("AUTH_DONE_URL", "https://done/")

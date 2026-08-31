@@ -120,21 +120,21 @@ func EmailInboundHMACSecret() string { return os.Getenv("EMAIL_INBOUND_HMAC_SECR
 
 /* ───────────── 上传目录 ───────────── */
 
-// UploadsDir:CUMORA_UPLOADS_DIR 原始值(不 trim),空时回退
-// server/uploads(相对 cwd,与 TS 本地 storage.put 同布局)。原
-// agent/cli_storage.go 与 domains/uploads 双份同形 fallback 的合一。
+// UploadsDir:全仓 uploads 根的单一解析点(#208)——写侧(domains/
+// uploads、agent/cli_storage)、读侧(webapp 静态服务、core/oauth 头像
+// 镜像)、email 域(入站附件、GC 根)与 workspaces 默认区全部经此取
+// 路径,禁止再散落字面量。
+//
+// 解析链:CUMORA_UPLOADS_DIR > UPLOAD_DIR(退役 TS 时代的旧键,email
+// 域历史契约,保留兼容) > server/uploads(相对 cwd,与 TS 本地
+// storage.put 同布局)。新值仅做 filepath.Clean(去尾斜杠,防
+// Join/前缀校验形态漂移),空白语义保留:主键不 trim、旧键 trim。
 func UploadsDir() string {
 	if d := os.Getenv("CUMORA_UPLOADS_DIR"); d != "" {
-		return d
+		return filepath.Clean(d)
 	}
-	return filepath.Join("server", "uploads")
-}
-
-// EmailUploadDir:UPLOAD_DIR(trim 后判空),空时回退 server/uploads。
-// 原 domains/email 的 inbound/workers 双份同形 fallback 的合一。
-func EmailUploadDir() string {
-	if dir := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); dir != "" {
-		return dir
+	if d := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); d != "" {
+		return filepath.Clean(d)
 	}
 	return filepath.Join("server", "uploads")
 }

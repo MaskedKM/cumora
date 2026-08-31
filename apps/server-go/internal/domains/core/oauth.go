@@ -321,8 +321,8 @@ func MirrorAvatar(userID, providerURL string) string { return oauthMirrorAvatar(
 
 // oauthMirrorAvatar:拉 provider 头像转存本地(同源,免第三方 URL 轮换
 // /CORS);任何失败回退原 URL,绝不阻断登录。mime 白名单 + 2MB 上限 +
-// 5s 超时;本地上传模式即 storage.put 语义(server/uploads/<key> →
-// /uploads/<key>)。
+// 5s 超时;本地上传模式即 storage.put 语义(uploads 根经 config.
+// UploadsDir() 统一解析,#208:<key> → /uploads/<key>)。
 func oauthMirrorAvatar(userID, providerURL string) string {
 	if providerURL == "" {
 		return ""
@@ -351,8 +351,7 @@ func oauthMirrorAvatar(userID, providerURL string) string {
 		return providerURL
 	}
 	key := "avatars/" + userID + "." + ext
-	cwd, _ := os.Getwd()
-	full := filepath.Join(cwd, "server", "uploads", filepath.FromSlash(key))
+	full := filepath.Join(config.UploadsDir(), filepath.FromSlash(key))
 	if os.MkdirAll(filepath.Dir(full), 0o755) != nil {
 		return providerURL
 	}
