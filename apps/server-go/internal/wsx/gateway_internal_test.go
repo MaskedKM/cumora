@@ -260,8 +260,9 @@ func TestGatewayHelloFirstFrameUnderChattyFanout(t *testing.T) {
 				case <-stop:
 					return
 				default:
+					// 忙碌扇出(不睡):把"hello 晚于注册"类回归从概率
+					// 性(~1/24)放大到近确定红(#257 评审 P3-1 实验)。
 					g.fanout(payload)
-					time.Sleep(200 * time.Microsecond)
 				}
 			}
 		}()
@@ -411,6 +412,9 @@ func TestGatewayMembershipFilterRealConns(t *testing.T) {
 	}
 	readJSON(t, member, 2*time.Second, &hello)
 	readJSON(t, outsider, 2*time.Second, &hello)
+	// hello 读完 ≠ hub.add 已落地(两次拨号 RTT 常掩盖):显式等齐再扇出,
+	// 消除理论上的注册竞态(#257 评审 P3-3,对齐 close 测试的 waitUntil 模式)。
+	waitUntil(t, "both conns registered in hub", func() bool { return hubSize(g) == 2 })
 
 	eventA := `{"type":"message.new","companyId":"co-a","conversationId":"cv1","message":{"id":"ma"}}`
 	eventB := `{"type":"message.new","companyId":"co-b","conversationId":"cv2","message":{"id":"mb"}}`
