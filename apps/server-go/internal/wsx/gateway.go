@@ -17,6 +17,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/docrelay"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/coder/websocket"
 	"github.com/redis/go-redis/v9"
@@ -144,8 +145,9 @@ func (g *Gateway) loadMemberships(userID string) map[string]struct{} {
 // helloFrame 对齐 TS ws.ts:握手完成即发,重连(新连接替换旧连接)
 // 同样发。客户端(WsClient/yjsClient 及各 store)以收到 hello = 连接
 // (重连)完成,据此重放 doc.subscribe、冲刷断线攒批、重引数据。
-func helloFrame(instanceID string) map[string]any {
-	return map[string]any{"type": "hello", "instanceId": instanceID, "ts": time.Now().UnixMilli()}
+// 载荷结构体来自契约生成(#221:ws.gen.go HelloEvent)。
+func helloFrame(instanceID string) events.HelloEvent {
+	return events.HelloEvent{Type: events.EventHello, InstanceID: instanceID, Ts: time.Now().UnixMilli()}
 }
 
 func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +244,7 @@ func (g *Gateway) readLoop(c *conn) {
 		if err := g.handleDocFrame(ctx, c, msg); err != nil {
 			// 对齐 TS:doc.* 帧的服务端错误统一 doc.error 'server error'
 			docID, _ := msg["documentId"].(string)
-			c.send(map[string]any{"type": "doc.error", "documentId": docID, "error": "server error"})
+			c.send(events.DocErrorEvent{Type: events.EventDocError, DocumentID: docID, Error: "server error"})
 		}
 	}
 }
@@ -262,7 +264,7 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		}
 		companyID, ok := g.docCompanyFor(ctx, documentID, c.userID)
 		if !ok {
-			c.send(map[string]any{"type": "doc.error", "documentId": documentID, "error": "not found"})
+			c.send(events.DocErrorEvent{Type: events.EventDocError, DocumentID: documentID, Error: "not found"})
 			return nil
 		}
 		s := &docrelay.Subscriber{
@@ -271,15 +273,15 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 			// (原 c.send 持锁阻塞写,一个停滞客户端每帧最多拖住全实例
 			// 的 doc 扇出 10s)——改投每连接有界出站队列,由写协程落笔。
 			OnUpdate: func(update []byte, originID string) {
-				c.enqueueDoc(map[string]any{
-					"type": "doc.update", "documentId": documentID,
-					"updateB64": base64.StdEncoding.EncodeToString(update), "originId": originID,
+				c.enqueueDoc(events.DocUpdateEvent{
+					Type: events.EventDocUpdate, DocumentID: documentID,
+					UpdateB64: base64.StdEncoding.EncodeToString(update), OriginID: originID,
 				})
 			},
 			OnAwareness: func(update []byte, originID string) {
-				c.enqueueDoc(map[string]any{
-					"type": "doc.awareness", "documentId": documentID,
-					"updateB64": base64.StdEncoding.EncodeToString(update), "originId": originID,
+				c.enqueueDoc(events.DocAwarenessEvent{
+					Type: events.EventDocAwareness, DocumentID: documentID,
+					UpdateB64: base64.StdEncoding.EncodeToString(update), OriginID: originID,
 				})
 			},
 		}
@@ -289,9 +291,9 @@ func (g *Gateway) handleDocFrame(ctx context.Context, c *conn, msg map[string]an
 		}
 		c.docSubs[documentID] = &docSub{sub: s, companyID: companyID}
 		c.docCompanies[documentID] = companyID
-		c.send(map[string]any{
-			"type": "doc.sync", "documentId": documentID,
-			"stateB64": base64.StdEncoding.EncodeToString(initial), "originId": c.originID,
+		c.send(events.DocSyncEvent{
+			Type: events.EventDocSync, DocumentID: documentID,
+			StateB64: base64.StdEncoding.EncodeToString(initial), OriginID: c.originID,
 		})
 		return nil
 

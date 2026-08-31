@@ -30,33 +30,17 @@ sub.on('error', (e) => console.error('[redis sub]', e))
  * Yjs binary updates are base64-encoded into the JSON envelope so they
  * fan out through the same Redis bus + WS path as every other event.
  * `originId` is the WS client (or agent) that produced the update so the
- * fan-out can echo-suppress on the sender's own socket. */
-export const CH_DOC_UPDATE = 'cumora:doc.update'
-export const CH_DOC_AWARENESS = 'cumora:doc.awareness'
+ * fan-out can echo-suppress on the sender's own socket.
+ *
+ * #221 契约化:doc.update / doc.awareness 载荷类型退役手写,来自契约生成物
+ * @cumora/contract/ws-events(packages/contract/ws-events.json 再生);通道常量
+ * 值用 `satisfies WsChannels[...]` 钉在契约上。 */
+import type { DocUpdateEvent, DocAwarenessEvent, WsChannels } from '@cumora/contract/ws-events'
 
-interface TenantTagged { companyId?: string }
+export type { DocUpdateEvent, DocAwarenessEvent }
 
-export interface DocUpdateEvent extends TenantTagged {
-  type: 'doc.update'
-  documentId: string
-  /** Base64-encoded Y.js update bytes (incremental, not full state). */
-  updateB64: string
-  /** Stable id of whatever produced this update. WS subscribers ignore
-   *  events whose originId matches the id their socket carries. */
-  originId: string
-  /** Free-form author for activity / "agent just edited" notices. Usually
-   *  a user id or agent id; may be the same as originId. */
-  authorId: string
-}
-
-/** Awareness (cursors, selection, presence info) — ephemeral, not
- *  persisted. Same fan-out path as updates. */
-export interface DocAwarenessEvent extends TenantTagged {
-  type: 'doc.awareness'
-  documentId: string
-  updateB64: string
-  originId: string
-}
+export const CH_DOC_UPDATE = 'cumora:doc.update' satisfies WsChannels['doc.update']
+export const CH_DOC_AWARENESS = 'cumora:doc.awareness' satisfies WsChannels['doc.awareness']
 
 export async function publish(channel: string, event: DocUpdateEvent | DocAwarenessEvent): Promise<void> {
   await redis.publish(channel, JSON.stringify(event))

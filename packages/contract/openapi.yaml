@@ -10,15 +10,20 @@ info:
 
     ## WebSocket / SSE 事件面描述策略
 
-    本规范只描述 HTTP 面。两条长连接通道不建模为 paths:
+    本规范描述 HTTP 面。长连接通道:
 
     - **WebSocket `/ws`** — 实时事件广播(message.new/delta、typing、participants/
-      computers 状态、board/doc/calendar 变更等,载荷见 web 端 WsEvent 联合类型)。
-      连接鉴权走 `/auth/ws-ticket` 票据。
-    - **SSE `/runtime/wake-stream`** — daemon 唤醒流(wake/steer 两类事件)。
+      computers 状态、board/doc/calendar 变更等)。连接鉴权走 `/auth/ws-ticket`
+      票据。事件载荷自 #221 起契约化:逐事件 schema 见同目录 `ws-events.json`
+      (单一 JSON Schema 契约源,`npm run contract:gen` 再生 TS `src/ws-events.d.ts`
+      与 Go `internal/events/ws.gen.go`,三端手写类型已退役)。
+    - **SSE `/runtime/wake-stream`** — daemon 唤醒流(wake/steer 两类事件);载荷
+      形状暂不入契约(#49 的 wire 级验收镜像测试承载——同一套测试跑 TS 与 Go,
+      差异即回归)。
 
-    两条通道的载荷形状刻意不入 components(逐事件契约由 #49 的 wire 级验收镜像
-    测试承载——同一套测试跑 TS 与 Go,差异即回归);规范只负责 HTTP 面。
+    WS 事件载荷不进本文件的 components:事件面走独立 JSON Schema 契约文件,
+    避免把 $defs 级联混入 HTTP 生成管线(oapi-codegen / openapi-typescript 输出
+    保持面干净);两文件通过 `openapi.yaml#/components/schemas/*` $ref 共享组件。
 
     ## 鉴权
 
@@ -61,7 +66,7 @@ paths:
           description: Missing key
   /ws:
     get:
-      summary: WebSocket gateway (chat/ws bus)
+      summary: WebSocket gateway (chat/ws bus;事件载荷契约见 ws-events.json,#221)
       responses:
         '101':
           description: Switching Protocols
