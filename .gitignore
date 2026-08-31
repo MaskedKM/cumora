@@ -76,9 +76,9 @@ apps/server-go/.integration-server-bin
 # 误入库的本地构建 ELF(PR #151 评审 M2,#131)——源外产物一律不入库
 apps/server-go/og-server
 apps/server-go/migrate
-# #131: 用户上传件(真实头像/附件,磁盘保留不入库)、file-snapshots 测试残留
-server/server/uploads/
-server/file-snapshots/
+# #131: 用户上传件(真实头像/附件,磁盘保留不入库)。file-snapshots
+# 已随 #207 归档删除;server/uploads/ 主键保留至 #208 迁出后移除。
+server/uploads/
 
 # Playwright e2e (#147)
 playwright-report/

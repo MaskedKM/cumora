@@ -62,7 +62,8 @@ APNS_TOPIC=io.cumora.app            # matches the bundle id
 APNS_ENV=development                # sandbox endpoint for Debug builds
 ```
 
-### Production (GKE — see `server/k8s/cumora-server.gke.yaml` for a deployment template)
+### Production (self-hosted single box — ADR 0003 retired the GKE/k8s
+stack; the old `server/k8s/` template no longer exists)
 
 Two Secrets:
 
@@ -88,14 +89,15 @@ Two Secrets:
    The mount is declared `optional: true` so pods boot cleanly even
    when this secret is absent — the push path soft-disables itself.
 
-3. **Apply the deployment** to pick up the new volume mount:
+3. **Restart the service** to pick up the new env + key file:
    ```sh
-   kubectl apply -f <your-deployment>.yaml
-   kubectl rollout restart deployment/cumora-server
+   systemctl --user restart cumora-go.service   # 三件套之一,其余同理
    ```
 
-If you change the Key ID later, update `APNS_KEY_PATH` in your
-deployment manifest to match the new filename inside the secret.
+If you change the Key ID later, put the new `.p8` at the same
+`APNS_KEY_PATH` and restart again. The key file is read at process
+start; a missing/invalid key soft-disables the APNs path (same as the
+old `optional: true` mount semantics).
 
 ### Dev ↔ prod entitlement matching
 

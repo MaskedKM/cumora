@@ -28,11 +28,10 @@ systemd --user
    cd apps/server-go && ./godocker.sh build -o cumora-server ./cmd/server
    cd ../byoa-daemon && ./godocker.sh build -o cumora ./cmd/cumora
    ```
-3. **schema 补齐**:TS 迁移是 ensureSchema 幂等 DDL(advisory-lock、
-   可重入),对生产库只前进不回滚:
-   ```bash
-   npm run migrate   # DATABASE_URL 指生产 cumora 库
-   ```
+3. **schema 补齐**:Go 服启动时自动应用 goose 迁移(db.Migrate,advisory
+   lock,可重入,只前进不回滚);需手工前置时用
+   `cd apps/server-go && ./godocker.sh run ./cmd/migrate`(DATABASE_URL
+   指生产 cumora 库)。旧 TS 的 `npm run migrate` 已随 #70 退役。
 4. **sidecar token**:.env 追加 `YJS_SIDECAR_TOKEN=<openssl rand -base64 24>`
    (两栈同源读取;TS 此前无 token 也可用,Go 未配 token 会告警)。
 5. **安装单元**:`bash scripts/deploy/install-units.sh`(只装不启)。
