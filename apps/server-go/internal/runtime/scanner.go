@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
@@ -330,7 +329,9 @@ func ResetBackgroundScannerForTests() {
 
 // StartScanner: 周期 kick;ENABLE_SCANNER='false' 关闭。
 // TS 门控是字面 !== 'false'(仅精确串关闭)。#215:ctx 驱动(ctxBG 取消
-// 即停——原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
+// 即停——原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。循环体
+// 复用 sched.RunWorkerLoop(#251 抽缝,共享实现的停机/panic 隔离语义
+// 钉于 sched 包单测)。
 func (s *Service) StartScanner() {
 	if config.Getenv("ENABLE_SCANNER") == "false" {
 		return
@@ -341,24 +342,6 @@ func (s *Service) StartScanner() {
 	if interval <= 0 {
 		interval = 1
 	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctxBG.Done():
-				return
-			case <-ticker.C:
-				func() {
-					defer func() {
-						if rec := recover(); rec != nil {
-							slog.Error("[scanner] tick panicked", "recover", rec)
-						}
-					}()
-					s.RunBackgroundScans(ctxBG)
-				}()
-			}
-		}
-	}()
+	sched.RunWorkerLoop(ctxBG, interval, "[scanner]", s.RunBackgroundScans)
 	slog.Info("[boot] background scanner running", "interval_ms", interval)
 }

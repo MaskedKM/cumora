@@ -7,6 +7,8 @@ package sched
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 )
@@ -41,3 +43,32 @@ var ctxBG = context.Background()
 
 // SetBaseContext:见 ctxBG 注释。须在 worker 启动前调用(boot 期单线程)。
 func SetBaseContext(ctx context.Context) { ctxBG = ctx }
+
+// RunWorkerLoop:周期 worker 的共享循环体(#215 形态,#251 自各 Start*
+// 抽缝):select{ctx.Done, ticker.C} + tick 级 panic 隔离 + defer
+// ticker.Stop。抽成可注入 tick 的独立函数后,停机语义(ctx cancel 后
+// tick 不再执行)与 panic 隔离可在无 DB/Redis 的 -race 单测里钉住;
+// idle/calendar 两处 Start* 传 ctxBG 与各自 tick,生产行为逐字不变
+// (label 拼出与原日志一致的 "<label> tick panicked")。导出供
+// runtime/scanner 复用(它有同形循环与自己的 ctxBG)。
+func RunWorkerLoop(ctx context.Context, intervalMS int64, label string, tick func(context.Context)) {
+	ticker := time.NewTicker(time.Duration(intervalMS) * time.Millisecond)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							slog.Error(label+" tick panicked", "recover", rec)
+						}
+					}()
+					tick(ctx)
+				}()
+			}
+		}
+	}()
+}

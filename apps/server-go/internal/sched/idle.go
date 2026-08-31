@@ -223,7 +223,8 @@ func RandHex12() string {
 
 // StartIdleScheduler: 周期 tick;ENABLE_IDLE='false' 或 IDLE_INTERVAL_MS<=0
 // 关闭。TS 门控是字面 !== 'false'。#215:ctx 驱动(ctxBG 取消即停——
-// 原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。
+// 原返回的 ticker.Stop 被调用方丢弃,停机对循环无效)。循环体在
+// RunWorkerLoop(#251 抽缝,语义钉于其单测)。
 func (s *S) StartIdleScheduler() {
 	if config.Getenv("ENABLE_IDLE") == "false" {
 		return
@@ -232,25 +233,7 @@ func (s *S) StartIdleScheduler() {
 	if interval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctxBG.Done():
-				return
-			case <-ticker.C:
-				func() {
-					defer func() {
-						if rec := recover(); rec != nil {
-							slog.Error("[idle] tick panicked", "recover", rec)
-						}
-					}()
-					s.RunIdleTick(ctxBG)
-				}()
-			}
-		}
-	}()
+	RunWorkerLoop(ctxBG, interval, "[idle]", s.RunIdleTick)
 	slog.Info("[boot] idle scheduler running",
 		"interval_ms", interval, "min_quiet_min", idleMinQuietMin())
 }
