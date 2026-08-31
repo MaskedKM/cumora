@@ -932,9 +932,11 @@ func (s *Server) SendMessage(w http.ResponseWriter, r *http.Request, id string) 
 	// (此前 updated_at 失败被 `_,_=` 吞)。事务形态对齐
 	// runtime/cli_reply.go。赢在原子性不在时延:BEGIN/COMMIT 各加一趟
 	// 往返,真正的往返大头(前置认证查询无缓存)另票(#141)。
-	// 事务豁免(#213):错误映射非单一——BeginTx/取序失败→500
-	// "sequence failed",插入/提交失败→500 "insert failed",WithTx 无法
-	// 区分 BeginTx 与 Commit;幂等重放分支还需 mid-body 回滚 + 202 短路。
+	// 事务豁免(#213,#235 复审仍留):#213 的"sequence failed/
+	// insert failed 文案区分"理由已被 #214 抹平(各步失败均为
+	// WriteInternalError(err) 同构);仍豁免因 clientId 幂等重放分支需
+	// mid-body 回滚(退掉本次预占的序号)+ 202 短路——2xx 走回滚路径
+	// 出口,WithTx 单一错误通道需带载荷哨兵才能表达,手写形态更直白。
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)

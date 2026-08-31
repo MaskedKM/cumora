@@ -520,9 +520,10 @@ func Accept(db *sql.DB, w http.ResponseWriter, r *http.Request, token string) {
 		userAvatar = avatarURL.String
 	}
 	// 事务:F OR UPDATE 防两单用邀请并发双赢。
-	// 事务豁免(#213):函数体内 9 处 rollback()+写响应分支(4xx 文案
-	// 各异、isMember 回滚后写 200、tier 403 动态文案),哨兵错误集无法
-	// 在合理复杂度下保持响应字节等价。
+	// 事务豁免(#213,#235 复审仍留):函数体内 9 处 rollback()+写响应
+	// 分支(4xx 文案各异、isMember 回滚后写 200、tier 403 动态文案)——
+	// 非"500 文案各异"类,#214 未触及;哨兵错误集无法在合理复杂度下
+	// 保持响应字节等价。
 	tx, err := db.BeginTx(r.Context(), nil)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)

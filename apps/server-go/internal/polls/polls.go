@@ -219,8 +219,11 @@ func (a *CastVoteArgs) normalize() []string {
 // CastVote 替换式投票:空 optionIds ⇒ 撤回;single 模式 >1 拒绝。
 func CastVote(ctx context.Context, db *sql.DB, a CastVoteArgs) (UpdatedEvent, *PollError) {
 	requested := a.normalize()
-	// 事务豁免(#213):BeginTx 失败 errf(500,"tx failed") 与 Commit 失败
-	// errf(500,"commit failed") 文案不同,WithTx 错误通道无法区分二者。
+	// 事务豁免(#213,#235 复审仍留):引擎面 500 不在 #214 收敛范围
+	// (errf 静态文案经 pollHttpError→WriteError 原样透传,无 dev/prod
+	// 分流),"tx failed"/"vote replace failed"/"vote insert failed"/
+	// "commit failed" 四段文案仍 client-visible,且 WithTx 单一错误通道
+	// 无法区分 BeginTx 与 Commit——需阶段化错误 API(另议)才能收编。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return UpdatedEvent{}, errf(500, "tx failed")
@@ -306,8 +309,9 @@ type CloseArgs struct {
 
 // ClosePoll 关闭投票。已关闭 ⇒ 幂等返回 nil(不重播)。manual 非作者 ⇒ 403。
 func ClosePoll(ctx context.Context, db *sql.DB, a CloseArgs) (*UpdatedEvent, *PollError) {
-	// 事务豁免(#213):已关闭幂等路径 mid-body early-Commit 后短路返回
-	// nil,WithTx 单一提交点无法表达。
+	// 事务豁免(#213,#235 复审仍留):已关闭幂等路径 mid-body early-Commit
+	// 后短路返回 nil(提交只读事务后不再执行 UPDATE),WithTx 单一提交点
+	// 无法表达;begin/commit 500 文案区分同 CastVote(引擎面未经 #214)。
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, errf(500, "tx failed")

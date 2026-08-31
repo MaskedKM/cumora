@@ -15,6 +15,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/boards"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -221,32 +222,28 @@ func (s *Server) CreateBoard(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(httpx.JSStringOrNullish(descRaw))
 	description = httpx.UTF16Cap(description, 4000)
 	boardID := "board-" + authn.NewToken()[:12]
-	// 事务豁免(#213):各步失败的 500 文案各异(tx failed/insert failed/
-	// columns seed failed/commit failed),WithTx 单一错误通道抹平
-	// BeginTx/Commit 区分,响应字节无法等价。
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO boards (id, company_id, title, description, created_by)
-		VALUES ($1, $2, $3, NULLIF($4,''), $5)`,
-		boardID, companyID, title, description, uid); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	// 自动种 Todo/Doing/Done 三列(baseline 语义)
-	for i, col := range []string{"Todo", "Doing", "Done"} {
+	// #235 收编 db.WithTx:#214 后四步失败均为 WriteInternalError(err)
+	// 同构映射,#213 豁免理由("tx failed/insert failed/columns seed
+	// failed/commit failed 文案各异")消失——WithTx 将 BeginTx/fn/Commit
+	// 错误原样回传,各路径写入的 err 对象与手写版一致,响应字节不变;
+	// 事件广播留在提交后。
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(r.Context(), `
-			INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
-			"col-"+authn.NewToken()[:12], boardID, col, (i+1)*1000); err != nil {
-			httpx.WriteInternalError(w, r, err)
-			return
+			INSERT INTO boards (id, company_id, title, description, created_by)
+			VALUES ($1, $2, $3, NULLIF($4,''), $5)`,
+			boardID, companyID, title, description, uid); err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		// 自动种 Todo/Doing/Done 三列(baseline 语义)
+		for i, col := range []string{"Todo", "Doing", "Done"} {
+			if _, err := tx.ExecContext(r.Context(), `
+				INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, $3, $4)`,
+				"col-"+authn.NewToken()[:12], boardID, col, (i+1)*1000); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
