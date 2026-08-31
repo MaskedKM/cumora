@@ -1,25 +1,41 @@
-# Cumora Go HTTP 服务(#69 切换日起的默认后端)。
+# Cumora Go HTTP 服务(#69 切换日起的默认后端;#211 起二进制走 release 制品)。
 # 安装:scripts/deploy/install-units.sh → ~/.config/systemd/user/
-# 端口 5181 与 TS 回切单元互斥,二者只能起一个(runbook 编排)。
+# 部署:bash scripts/deploy/deploy-release.sh <tag>(下载 go-release.yml 制品
+#   → sha256 校验 → ~/.local/share/cumora/releases/<ver>/ → 原子切 current
+#   symlink → 重启三件套)
+# 版本核验:readlink ~/.local/share/cumora/current 与 cat …/current/VERSION,
+#   systemctl status 显示的 ExecStart 即经 symlink 寻址 —— 与 release 制品对得上。
 [Unit]
 Description=Cumora Go HTTP server
+# 启动顺序(#211 三件套 enable 链):sidecar(其 ExecStartPost healthz 门)
+# → go → daemon。pg/redis 是系统级服务,用户管理器无法对其 After= 排序;
+# 该缺口由 livez 显性化(#211:Redis 不可达/降级 Noop → /api/livez 503,
+# 不再假绿)+ server boot 探活带界重试兜住。
 After=network-online.target cumora-sidecar.service
 Wants=cumora-sidecar.service
 
 [Service]
-# cwd=仓库根:webapp 静态面与 TS 同规解析(dist/ 相对 cwd)。uploads 根
-# 不再吃 cwd 默认(#208):生产数据必须落仓外,经 env 注入;两栈
-# (Go 写/静态读 + sidecar 写)同值,缺一侧即"上传成功但不可见"。
-# 迁移既有 server/uploads/ 数据的步骤见 docs/SWITCHOVER.md「#208 上传
-# 数据迁出工作树」。
+# cwd=仓库根:webapp 静态面与 TS 同规解析(dist/ 相对 cwd);.env 仍从
+# 工作树读。二进制与 migrations 已随 #211 切到 release 制品(下方
+# current symlink),工作树只剩源码形态依赖(sidecar/前端)。
 WorkingDirectory=%h/Code/cumora
 EnvironmentFile=%h/Code/cumora/.env
 Environment=CUMORA_UPLOADS_DIR=%h/.local/share/cumora/uploads
 Environment=CUMORA_GO_LISTEN=127.0.0.1:5181
-Environment=CUMORA_GO_MIGRATIONS=%h/Code/cumora/apps/server-go/migrations
-ExecStart=%h/Code/cumora/apps/server-go/cumora-server
+# migrations 随制品落 releases/<ver>/migrations(#211):二进制与 schema
+# 同版本落盘,不再吃工作树(手工构建落后 HEAD 96+ 提交即带病部署的
+# 8-31 形态由此根除)。
+Environment=CUMORA_GO_MIGRATIONS=%h/.local/share/cumora/current/migrations
+ExecStart=%h/.local/share/cumora/current/cumora-server
 Restart=always
 RestartSec=3
+# ExecStartPost 探针(#211):最坏 60×(2s curl+1s sleep)≈180s 内 /api/livez
+# 即算启动完成。语义要点:200 与 503 都算"进程已就绪" —— 503 是 Redis
+# 依赖红的诚实信号(livez 本身活着),重启修不了 Redis,反而会把可观测
+# 的红打成 connection refused 的重启循环;连接始终建立不起来(崩溃/
+# 端口未起)才判失败,交 Restart=always 自愈。
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do curl -s --max-time 2 http://127.0.0.1:5181/api/livez >/dev/null 2>&1 && exit 0; sleep 1; done; echo cumora-server did not answer /api/livez within 180s >&2; exit 1'
+TimeoutStartSec=200
 
 [Install]
 WantedBy=default.target

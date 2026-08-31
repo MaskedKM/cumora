@@ -79,7 +79,6 @@ func main() {
 	slog.Info("schema at baseline", "migrations", cfg.MigrationsDir)
 
 	mux := http.NewServeMux()
-	httpx.MountHealth(mux, pool)
 
 	// Redis(#55 引入):文档协同的跨进程扇出链路(Go relay ← sidecar)
 	// 必须有真订阅端;publish 面从 Noop 升级为真广播。不可达时降级
@@ -97,16 +96,44 @@ func main() {
 	} else {
 		rdb = redis.NewClient(ropts)
 	}
-	if rdb != nil && rdb.Ping(ctxBoot).Err() != nil {
-		slog.Warn("redis unreachable — events degrade to noop, doc collab unavailable", "url", cfg.RedisURL)
-		rdb = nil
+	// boot 探活带界重试(#211):机器重启时用户单元可能先于系统 redis
+	// 就绪,一次 ping 失败就永久 Noop 的竞态窗口由此收窄(5×2s;Redis
+	// 正常时首次即过,零额外延迟)。仍失败才降级 —— 之后 livez 持续
+	// 503 显性示警,而非假绿。
+	if rdb != nil {
+		redisUp := rdb.Ping(ctxBoot).Err() == nil
+		for i := 0; !redisUp && i < 4; i++ {
+			time.Sleep(2 * time.Second)
+			redisUp = rdb.Ping(ctxBoot).Err() == nil
+		}
+		if !redisUp {
+			slog.Warn("redis unreachable — events degrade to noop, doc collab unavailable; /api/livez will report 503 until restart", "url", cfg.RedisURL)
+			rdb = nil
+		}
 	}
+	eventsLive := false
 	if rdb != nil {
 		events.SetPublisher(events.RedisPublisher{RDB: rdb})
+		eventsLive = true
 		defer rdb.Close()
 	} else {
 		events.SetPublisher(events.NoopPublisher{})
 	}
+
+	// livez 扩 Redis 硬依赖(#211,8-31 事故三病之三):boot 降级 Noop
+	// 或运行中 Redis 不可达时 /api/livez 返回 503 —— 不再让"事件静默
+	// 吞掉"披着假绿。与 #216 docrelay 降级姿态一致:协同面本就快败,
+	// livez 变红只是把同一事实抬到探活面。注意降级判定是 boot 时一次
+	// 性的:Redis 中途恢复后 livez 转绿 ≠ 事件面恢复(Noop 不会自愈,
+	// 需 restart cumora-go)—— 探活闭包把 eventsLive 挡在 ping 之前,
+	// 降级实例保持红,运维一眼可知要重启。core tag 的冗余注册同源注入。
+	livezPing := func(ctx context.Context) error {
+		if !eventsLive {
+			return errors.New("redis unreachable at boot — events degraded to noop; fix redis/REDIS_URL then restart cumora-go (restart alone cannot recover a bad REDIS_URL)")
+		}
+		return rdb.Ping(ctx).Err()
+	}
+	httpx.MountHealth(mux, pool, livezPing)
 
 	relay := docrelay.New(cfg.YjsSidecarURL, cfg.YjsSidecarToken, cfg.YjsSidecarTimeout, cfg.InstanceID)
 	relay.Boot(ctxBoot, rdb)
@@ -176,7 +203,7 @@ func main() {
 	// 认证中间件(有令牌即解析注入,不拒绝——requireAuth 语义在各 handler)
 	authMiddleware := httpx.Authn(pool)
 	coreRouter := http.NewServeMux()
-	core.Mount(coreRouter, pool, rdb)
+	core.Mount(coreRouter, pool, rdb, livezPing)
 	conversations.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
 	workspaces.Mount(coreRouter, pool)

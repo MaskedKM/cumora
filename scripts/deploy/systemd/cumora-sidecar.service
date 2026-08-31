@@ -1,6 +1,12 @@
 # Cumora yjs-sidecar(文档协同;node/TS 存续,两栈共用)。
+# #211 说明:sidecar 是 node/TS 源码形态,不在 go-release.yml 制品内,
+# 仍从仓库工作树运行;二进制面(server/daemon)已切 release 制品。
 [Unit]
 Description=Cumora yjs-sidecar (doc collab)
+# 无 go 依赖:sidecar 是独立 HTTP 服务(:5182),server(docrelay)才是
+# 它的客户端 —— 排序是 cumora-go After= 本单元,而非相反;pg/redis 为
+# 系统级服务,用户管理器无法排序,缺连接时进程自身崩溃循环交
+# Restart=always 收敛。
 After=network-online.target
 
 [Service]
@@ -16,6 +22,13 @@ Environment=YJS_SIDECAR_PORT=5182
 ExecStart=%h/.nvm/versions/node/v22.22.0/bin/node --import tsx apps/yjs-sidecar/src/main.ts
 Restart=always
 RestartSec=3
+# ExecStartPost 探针(#211):最坏 30×(2s curl+1s sleep)≈90s 内 /internal/healthz
+# 就绪 —— 200 与 401 都算(该面需 Bearer token,401 即"进程活着且鉴权
+# 面在岗");始终无应答(启动崩溃)才判失败交 Restart 自愈。此探针同
+# 时是三件套 enable 链的第一道门:cumora-go After= 本单元,healthz 探针
+# 通过后 go 才启动。
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do curl -s --max-time 2 http://127.0.0.1:5182/internal/healthz >/dev/null 2>&1 && exit 0; sleep 1; done; echo yjs-sidecar did not answer /internal/healthz within 90s >&2; exit 1'
+TimeoutStartSec=110
 
 [Install]
 WantedBy=default.target

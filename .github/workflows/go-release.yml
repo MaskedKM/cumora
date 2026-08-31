@@ -6,9 +6,10 @@ name: Go Release
 #     的事故类别由此根除;fork PR 永不触发。
 #   - 矩阵:linux / darwin × amd64 / arm64,单 job 交叉编译(纯 Go,
 #     CGO_ENABLED=0,免 per-target runner)。
-#   - 制品:每平台一个 tar.gz(cumora-server + cumora-daemon)+
-#     SHA256SUMS;daemon 的自更新只认自家 releases 的这套资产(下载、
-#     校验、原子自替换)。
+#   - 制品:每平台一个 tar.gz(cumora-server + cumora-daemon +
+#     migrations/,#211 起随包,部署目录自包含)+ SHA256SUMS;daemon 的
+#     自更新只认自家 releases 的这套资产(下载、校验、原子自替换),
+#     server 侧部署走 scripts/deploy/deploy-release.sh 同一套。
 #   - 跑在 ser8 自托管 runner(golang:1.24-alpine 容器,同 pr.yml go job
 #     范式):GitHub-hosted 分钟数被账号 billing 锁拦,而自托管 job 派发
 #     不受影响(锁生效期间 ser8 的 Runner maintenance 照常跑绿)。发布
@@ -94,6 +95,12 @@ jobs:
             os="${t%/*}"; arch="${t#*/}"
             dir="dist/cumora-${os}-${arch}"
             mkdir -p "$dir"
+            # #211:制品自带 migrations —— 版本化部署目录(releases/<ver>/)
+            # 自包含,二进制与 schema 同版本落盘,systemd 不再指仓库工作树。
+            # daemon 自更新只按 basename 抽 cumora-daemon
+            # (selfupdate.go extractDaemonFromTarGz),多出的 migrations/
+            # 对其零影响。
+            cp -r apps/server-go/migrations "$dir/migrations"
             # 两个嵌套 Go 模块:须在各自模块目录内构建(无根 go.mod/go.work)
             (cd apps/byoa-daemon && \
               CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
@@ -115,8 +122,9 @@ jobs:
           cat > /tmp/notes.md <<'NOTES'
           自托管二进制发布(linux/darwin × amd64/arm64)。
 
-          - `cumora-<os>-<arch>.tar.gz` 内含 `cumora-server` 与 `cumora-daemon`
-          - `SHA256SUMS` 全量校验(daemon 自更新强制核对)
+          - `cumora-<os>-<arch>.tar.gz` 内含 `cumora-server`、`cumora-daemon` 与 `migrations/`
+          - `SHA256SUMS` 全量校验(daemon 自更新与 server 部署脚本均强制核对)
+          - server 部署:`bash scripts/deploy/deploy-release.sh <tag>`(下载→校验→`~/.local/share/cumora/releases/<ver>`→切 current symlink→重启三件套)
           - daemon 安装:`cumora-daemon agent computer --pair <code> --server <url> && cumora-daemon agent computer --install-service`
           - 自更新:仅查本 releases;supervised 形态空闲时自动下载→校验→自替换→重启
           - npm 包 `cumora` 已停版,见其 README

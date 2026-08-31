@@ -1,7 +1,11 @@
-# Cumora BYOA daemon(Go 单二进制,#69 切换日替换 ~/.config/systemd/user/cumora.service)。
+# Cumora BYOA daemon(Go 单二进制,#69 切换日替换 ~/.config/systemd/user/cumora.service;
+# #211 起二进制走 release 制品,与 cumora-server 同一 current symlink 寻址)。
 # CLI 面与 TS agent-cli 同构(agent computer --server …),daemon.env 原样沿用。
 [Unit]
 Description=Cumora BYOA daemon (Go)
+# #211 enable 链第三环:daemon 是 go(:5181 /runtime 面)的客户端
+# (wake-stream SSE + 心跳),After+Wants 表达依赖;go 就绪(其
+# ExecStartPost livez 门)后才启动。
 After=network-online.target cumora-go.service
 Wants=cumora-go.service
 
@@ -16,9 +20,15 @@ Environment=PATH=/home/masked/.npm/_npx/302120fbb92394c3/node_modules/.bin:/home
 # 注意 systemd 里 EnvironmentFile 会覆盖同名 Environment 键:未来 .env
 # 若添 PATH/CUMORA_GO_LISTEN 等会静默改写钉扎值,加键前先核对单元。
 EnvironmentFile=%h/.cumora/daemon.env
-ExecStart=%h/Code/cumora/apps/byoa-daemon/cumora agent computer --server http://localhost:5181
+# #211:release 制品内的 daemon(deploy-release.sh 落盘并 chmod 0755)。
+# 自更新(supervised)会 EvalSymlinks 后原子自替换 releases/<ver>/ 内的
+# 本体 —— 目录名停留在部署版本属预期,daemon 启动日志会报真实版本。
+ExecStart=%h/.local/share/cumora/current/cumora-daemon agent computer --server http://localhost:5181
 Restart=always
 RestartSec=5
+# 无 ExecStartPost 探针:daemon 无 HTTP 面(它是 go 的轮询客户端,不是
+# 服务端),进程死活由 Restart=always 承接;领取健康看
+# journalctl --user -u cumora-daemon 与 server 侧 /runtime 观察面。
 
 [Install]
 WantedBy=default.target
