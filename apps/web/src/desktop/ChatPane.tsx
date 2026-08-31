@@ -360,6 +360,7 @@ export function ChatPane() {
           <Virtuoso
             ref={virtuosoRef}
             className="h-full"
+            role="log"
             data={list}
             firstItemIndex={firstItemIndex}
             followOutput="auto"

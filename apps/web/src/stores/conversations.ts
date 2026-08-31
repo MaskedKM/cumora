@@ -237,51 +237,46 @@ export const useConversations = create<ConversationsState>((set) => ({
 export function applyMessageEvent(conversationId: string, m: ApiMessage, isActive: boolean): void {
   const meId = useAuth.getState().user?.id
   const bumpUnread = !isActive && m.authorId !== meId
-  // 事件侧 createdAt 类型可选;实况恒在,缺省回退"现在"——活事件的诚实
-  // 时间戳(比丢弃或纪元零好,零值会被守卫误判为陈旧帧)。
-  const createdAt = m.createdAt ?? new Date().toISOString()
+  // 事件载荷的时间键是 `at`(契约 schema.d.ts 注释:仅 WS message.new
+  // 携带,REST 列表才用 createdAt);REST 形态兜底,双缺再回退"现在"。
+  const createdAt = m.at ?? m.createdAt ?? new Date().toISOString()
+  const ts = Date.parse(createdAt)
+  if (useConversations.getState().list.every((c) => c.id !== conversationId)) {
+    // 行未加载(他端新建会话竞态):补丁发明不出新行,回退一次 reload
+    // (在 setState 外判定,保持 updater 纯函数)。
+    void useConversations.getState().reload()
+    return
+  }
   useConversations.setState((s) => {
-    const idx = s.list.findIndex((c) => c.id === conversationId)
-    if (idx === -1) {
-      void useConversations.getState().reload()
-      return s
-    }
-    const prev = s.list[idx]
-    // Out-of-order or replayed frame (hello backfill races a live event):
-    // message ids are random server-side tokens (not orderable), so recency
-    // is judged on createdAt. Compared NUMERICALLY via Date.parse — Go's
-    // RFC3339Nano trims trailing fractional zeros, which breaks plain
-    // string ordering ("…00.5Z" sorts after "…00.500000001Z"). Equal
-    // (sub-millisecond collapse) = replay: never move the row backwards,
-    // and a replay must not double-bump unread.
-    if (Date.parse(prev.lastAtIso) >= Date.parse(createdAt)) return s
+    const prev = s.list.find((c) => c.id === conversationId)
+    if (!prev) return s
+    // 陈旧帧丢弃。数值比较——Go 的 RFC3339Nano 会去小数尾零,纯字符串
+    // 字典序会被 "…00.5Z" vs "…00.500000001Z" 这类形态判反。相等的
+    // 时间戳只在同 id 时才视为重放:agent 路径的 at 是毫秒精度,同毫秒
+    // 的两条不同消息是真消息,不能当重放吃掉。
+    const prevTs = Date.parse(prev.lastAtIso)
+    if (prevTs > ts || (prevTs === ts && prev.lastMessageId === m.id)) return s
     const next: Conversation = {
       ...prev,
       preview: previewForMessage(m),
       lastMessageId: m.id,
       lastAt: timeFromIso(createdAt),
       lastAtIso: createdAt,
-      // Reading it live → treated as seen (server markRead already fired);
-      // own messages from another surface never self-unread.
-      unread: bumpUnread ? (prev.unread ?? 0) + 1 : undefined,
+      // 未读记账:活跃=视为已读(markRead 已发);本人消息不自我计数,
+      // 但也不抹掉此前他人的未读(对齐服务端 unread SQL 的语义——只是
+      // 不计本人消息);他人消息本地 +1。
+      unread: isActive ? undefined : bumpUnread ? (prev.unread ?? 0) + 1 : prev.unread,
     }
     const list = s.list.filter((c) => c.id !== conversationId)
-    let insertAt: number
-    if (next.pinned) {
-      // Pinned rows keep their top block; a pinned conversation that just
-      // received a message returns to the END of that block (recency
-      // doesn't reorder inside the block — the server sort doesn't either).
-      insertAt = list.findIndex((c) => !c.pinned)
-      if (insertAt === -1) insertAt = list.length
-    } else {
-      // Unpinned: first row (pinned gap aside) that is older-or-equal to
-      // this message; fall through to append when everything is newer.
-      insertAt = list.findIndex((c) => !c.pinned)
-      if (insertAt === -1) insertAt = list.length
-      for (let i = insertAt; i < list.length; i++) {
-        if (Date.parse(list[i].lastAtIso) <= Date.parse(createdAt)) { insertAt = i; break }
-        insertAt = i + 1
-      }
+    // 服务端序 ORDER BY pinned DESC, updated_at DESC:第二键对置顶块
+    // 同样生效,刚收消息的行按时间插到所在分区内的 newest 位置(置顶
+    // 区整体在前)。
+    let insertAt = list.length
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i]
+      if (row.pinned && !next.pinned) continue
+      if (!row.pinned && next.pinned) { insertAt = i; break }
+      if (Date.parse(row.lastAtIso) <= ts) { insertAt = i; break }
     }
     list.splice(insertAt, 0, next)
     return { list }
