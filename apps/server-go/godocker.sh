@@ -14,4 +14,5 @@ exec docker run --rm --network host \
   -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false \
   -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath \
   -e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY \
+  -e DATABASE_URL -e CUMORA_GO_MIGRATIONS \
   golang:1.24-alpine go "$cmd" "$@"

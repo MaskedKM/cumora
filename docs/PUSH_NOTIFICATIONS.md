@@ -95,9 +95,10 @@ Two Secrets:
    ```
 
 If you change the Key ID later, put the new `.p8` at the same
-`APNS_KEY_PATH` and restart again. The key file is read at process
-start; a missing/invalid key soft-disables the APNs path (same as the
-old `optional: true` mount semantics).
+`APNS_KEY_PATH` and restart again. The key file is read lazily on the
+first send and cached for the process lifetime (sync.Once), so a
+restart is required either way; a missing/invalid key soft-disables the
+APNs path (same as the old `optional: true` mount semantics).
 
 ### Dev ↔ prod entitlement matching
 
