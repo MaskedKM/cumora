@@ -456,6 +456,9 @@ spawnChild('go-server', GO_BIN, [], {
     // 迁移目录按 CWD 相对解析——cwd 在仓库根,故给绝对路径(生产单元同款)。
     CUMORA_GO_MIGRATIONS: join(GO_DIR, 'migrations'),
     CUMORA_GO_FAKE_AUTH: '1',
+    // SUT 环境钉死:开发壳里 export 过 NODE_ENV=production 时不能继承进
+    // 来(生产守卫会因 FAKE_AUTH=1 拒启;devtools/dist 行为也不该漂移)。
+    NODE_ENV: 'development',
     ENABLE_SCANNER: 'false',
     ENABLE_IDLE: 'false',
     LLM_ROLLUP_INTERVAL_MS: '0',
