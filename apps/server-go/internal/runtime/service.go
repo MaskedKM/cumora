@@ -46,10 +46,14 @@ func (s *Service) SetRelay(r *docrelay.Relay) { s.Service.SetRelay(r) }
 // redisOrNil:子功能取 Redis 客户端(nil = 降级路径)。
 func (s *Service) redis() redis.UniversalClient { return s.RDB }
 
-// StartScheduler / StartIdleScheduler / WakeMentionedAgents:main.go 与
-// 域挂载的启动/回调入口(调度域实装的壳代理)。
+// StartScheduler / StartIdleScheduler / StartCalendarReminderScheduler /
+// WakeMentionedAgents:main.go 与域挂载的启动/回调入口(调度域实装的壳代理)。
 func (s *Service) StartScheduler()     { s.Sched.StartScheduler() }
 func (s *Service) StartIdleScheduler() { s.Sched.StartIdleScheduler() }
+
+// StartCalendarReminderScheduler:日历提醒调度器(#209)——calendar.reminder
+// 的发布方(toast 恒发 + email 按 Resend 配置),详见 sched 包。
+func (s *Service) StartCalendarReminderScheduler() { s.Sched.StartCalendarReminderScheduler() }
 func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
 	s.Sched.WakeMentionedAgents(companyID, mentions, actorID)
 }

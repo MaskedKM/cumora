@@ -138,6 +138,10 @@ func main() {
 	runtimeSvc.StartScheduler()
 	runtimeSvc.StartScanner()
 	runtimeSvc.StartIdleScheduler()
+	// 日历提醒调度器(#209):calendar.reminder 补发布方——扫 calendar_events
+	// 提醒窗口,落 calendar_reminders(唯一键去重)后 Redis 广播(toast)+
+	// Resend email(未配置静默跳过)。TS startCalendarScheduler 的提醒半边。
+	runtimeSvc.StartCalendarReminderScheduler()
 	costing.StartLlmRollupRefresher(ctxBoot, runtimeSvc.DB)
 
 	// 投票过期清扫器(#121):POLL_SWEEP_INTERVAL_MS(默认 60s;0=禁用,
