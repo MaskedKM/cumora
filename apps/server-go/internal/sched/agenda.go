@@ -30,8 +30,6 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 )
 
-func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
-
 /* ───────── 类型(对齐 agenda-triage-core.ts) ───────── */
 
 type AgendaCard struct {
@@ -393,7 +391,7 @@ func (s *S) loadAssignedCards(ctx context.Context, agentID, companyID string) ([
 		}
 		if !doneColumnRe.MatchString(c.ColumnTitle) {
 			c.Mentions = []string{}
-			_ = jsonUnmarshal(mentions, &c.Mentions)
+			_ = json.Unmarshal(mentions, &c.Mentions)
 			out = append(out, c)
 		}
 	}
@@ -656,7 +654,7 @@ func (s *S) GetCerebellumSettings(ctx context.Context) CerebellumSettings {
 			continue
 		}
 		var str string
-		if jsonUnmarshal(v, &str) == nil {
+		if json.Unmarshal(v, &str) == nil {
 			vals[k] = str
 		}
 	}
@@ -696,7 +694,7 @@ func (s *S) ResolveCerebellumRouteForAgent(ctx context.Context, agentID string) 
 		return "remote"
 	}
 	var engineList []string
-	_ = jsonUnmarshal(engines, &engineList)
+	_ = json.Unmarshal(engines, &engineList)
 	for _, e := range engineList {
 		if e == settings.LocalEngine {
 			return "byoa"
@@ -723,7 +721,7 @@ func (s *S) CerebellumApiKeyPlaintext(ctx context.Context) string {
 		return ""
 	}
 	var enc string
-	if jsonUnmarshal(stored, &enc) != nil || enc == "" {
+	if json.Unmarshal(stored, &enc) != nil || enc == "" {
 		return ""
 	}
 	parts := strings.Split(enc, ".")
@@ -805,7 +803,7 @@ func ParseAgendaVerdict(raw string) *AgendaParsedVerdict {
 		Focus      any `json:"focus"`
 		Reason     any `json:"reason"`
 	}
-	if err := jsonUnmarshal([]byte(candidate), &parsed); err == nil {
+	if err := json.Unmarshal([]byte(candidate), &parsed); err == nil {
 		return coerceAgendaVerdictAny(parsed.Actionable, parsed.Focus, parsed.Reason)
 	}
 	m := agendaActionableSalvage.FindStringSubmatch(candidate)

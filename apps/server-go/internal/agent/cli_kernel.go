@@ -15,6 +15,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 )
 
 // Parsed / Result / StrArr:内核 cliParsed/cliResult/cliStrArr 的导出别名。
@@ -165,9 +166,9 @@ func NewJSONEncoderNoEscape(w *bytes.Buffer) *json.Encoder {
 	return newJSONEncoderNoEscape(w)
 }
 func NodeHM(t time.Time) string                 { return nodeHM(t) }
-func JSONUnmarshal(b []byte, v any) error       { return jsonUnmarshal(b, v) }
+func JSONUnmarshal(b []byte, v any) error       { return json.Unmarshal(b, v) }
 func ContainsString(list StrArr, s string) bool { return containsString(list, s) }
-func MustJSON(v any) []byte                     { return mustJSON(v) }
+func MustJSON(v any) []byte                     { return jsonx.MustJSON(v) }
 func MsSince(t0 time.Time) int64                { return msSince(t0) }
 
 // Present:cliPoll.present 字段的只读访问器(域子包判 poll 有效)。

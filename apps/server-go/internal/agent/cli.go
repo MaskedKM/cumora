@@ -67,19 +67,6 @@ func isoNowMs() string { return httpx.ISOms(time.Now()) }
 // uuidHex:httpx.UUIDHex 的本包别名(#140 拆包后 cli 面调用点零改动)。
 func uuidHex() string { return httpx.UUIDHex() }
 
-// jsonUnmarshal:自 runtime/agenda.go 同名包装平移的副本(#140 拆包;
-// #141 横切统一票再议合并)。
-func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
-
-// mustJSON:自 runtime/presence.go 同名助手平移的副本(#140 拆包)。
-func mustJSON(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return []byte("{}")
-	}
-	return b
-}
-
 /* ============== argv parsing(cli-parse.ts 等价) ============== */
 
 // cliParsed 是 TS ParsedArgs 的等价物:flags 值为 string 或 bool

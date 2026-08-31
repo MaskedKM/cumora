@@ -181,8 +181,6 @@ func Serve(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
-
 func scanConvoRows(rows *sql.Rows) []map[string]any {
 	defer rows.Close()
 	out := []map[string]any{}
@@ -192,7 +190,7 @@ func scanConvoRows(rows *sql.Rows) []map[string]any {
 		var projectName sql.NullString
 		if rows.Scan(&id, &kind, &title, &members, &projectName) == nil {
 			var membersAny any
-			_ = jsonUnmarshal(members, &membersAny)
+			_ = json.Unmarshal(members, &membersAny)
 			out = append(out, map[string]any{
 				"id": id, "kind": kind, "title": title, "members": membersAny,
 				"projectName": nullStr(projectName),

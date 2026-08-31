@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ func (s *Service) cliGetThinkingConversations(agentID string) []string {
 		return nil
 	}
 	var ids []string
-	if jsonUnmarshal([]byte(raw), &ids) != nil {
+	if json.Unmarshal([]byte(raw), &ids) != nil {
 		return nil
 	}
 	return ids

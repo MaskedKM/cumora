@@ -206,6 +206,28 @@ test('[mirror-runtime] /inbox (default) advances the seen boundary — probe nev
   assert.equal(await redis.get(seenKey), '2', 'monotonic — advances to the new max seq')
 })
 
+test('[mirror-runtime] /cli inbox ↔ /runtime/inbox parity — two SELECTs, one delivery rule (#267)', async () => {
+  // cliLoadInbox(mailbox.go,TS cli.ts 平价形态)与 LoadInbox(client.go,
+  // LATERAL + ROW 同瞬决胜修形)是两条刻意保留的 SELECT,"合并单实现"在
+  // 评审中否决(平价纪律 + 游标语义不同);#267 的"对账"以本测试钉住:
+  // 同种子下两入口的可见消息集必须一致,否则投递规则(静音/点名/引用
+  // 放行)在两侧漂移了。
+  const { agentId, companyId, token } = await seedAgent()
+  const humanId = await seedHuman(companyId)
+  const convo = await seedConversation(companyId, [agentId, humanId])
+  await convo.insertMessage(humanId, 'p1')
+  await convo.insertMessage(agentId, 'self — never unread')
+  await convo.insertMessage(humanId, 'p2')
+  const runtimeRows = (await call('/runtime/inbox?probe=1', { method: 'GET', token })).body.rows as any[]
+  const cli = await call('/runtime/cli', { token, body: { argv: ['inbox', '--json'] } })
+  assert.equal(cli.status, 200)
+  assert.equal(cli.body.ok, true)
+  const cliRows = JSON.parse(cli.body.text) as any[]
+  const ids = (rows: any[]) => rows.map((r) => r.id).sort()
+  assert.equal(cliRows.length, 2, 'own message is never unread on the CLI face either')
+  assert.deepEqual(ids(cliRows), ids(runtimeRows), 'CLI and runtime inbox see the same message set')
+})
+
 test('[mirror-runtime] /context marks unread/self and aggregates reactions', async () => {
   const { agentId, companyId, token } = await seedAgent()
   const humanId = await seedHuman(companyId)

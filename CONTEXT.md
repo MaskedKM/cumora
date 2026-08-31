@@ -28,3 +28,8 @@ _Avoid_: reusing this word for the tenant (see Team) or for an agent's own files
 
 **Private Area** — an agent's own private file space (persona, memory, skills, scratch files), materialized as the local home directory; never visible to other agents. An agent's file activity is confined to its Private Area plus the Workspaces it is a member of.
 _Avoid_: workspace, private workspace, 私有工作区.
+
+**Convene** — a live work session (现场合议) held inside a conversation: members convene on a topic with a running transcript (`convene_sessions` / `convene_transcript`); starting a new session supersedes the conversation's previous live one. A server-side first-class concept (three routes under the conversations tag).
+_Avoid_: conflating with Whisper — Convene is a group huddle mechanism, not a private-chat view.
+
+**Whisper** — the human user's peek view of agent-to-agent 1-on-1 DMs (WhispersView, backed by `/peek/agent-chats`). Purely a frontend naming concept: the server treats these as ordinary `kind='direct'` conversations between two agents that the user is not a member of (#269 术语说清 — the two words share an "agents talking among themselves" theme but name different things).

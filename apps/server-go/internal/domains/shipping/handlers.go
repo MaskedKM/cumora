@@ -15,6 +15,7 @@ import (
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/shipping"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 )
 
 // Server:shipping tag(16 路由)的域实现。方法体自原闭包工厂逐字上移;
@@ -191,7 +192,7 @@ func (s *Server) CreateShippingFeature(w http.ResponseWriter, r *http.Request) {
 			nullStrPtr(links.documentID), nullStrPtr(links.boardCardID),
 			title, body.text("problem", 20000), body.text("desiredOutcome", 20000), body.text("contractSummary", 20000),
 			body.enumValue("priority", priorities, "medium"), body.enumValue("riskLevel", riskLevels, "medium"),
-			nullStrPtr(body.optText("releaseTarget", 2000)), mustJSONString(builderIDs), uid); err != nil {
+			nullStrPtr(body.optText("releaseTarget", 2000)), jsonx.MustJSONString(builderIDs), uid); err != nil {
 			return err
 		}
 		// 三张默认必答格(user_path/trace/release_note)——ready 门的地基。
@@ -209,14 +210,14 @@ func (s *Server) CreateShippingFeature(w http.ResponseWriter, r *http.Request) {
 				INSERT INTO shipping_verifications
 				  (id, feature_id, title, description, method, required, builder_ids, position, created_by)
 				VALUES ($1,$2,$3,$4,$5,TRUE,$6::jsonb,$7,$8)`,
-				randID("sv"), id, sq.title, "", sq.method, mustJSONString(builderIDs), sq.position, uid); err != nil {
+				randID("sv"), id, sq.title, "", sq.method, jsonx.MustJSONString(builderIDs), sq.position, uid); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.ExecContext(r.Context(), `
 			INSERT INTO shipping_events (id, company_id, feature_id, actor_id, kind, data)
 			VALUES ($1,$2,$3,$4,'feature.created',$5::jsonb)`,
-			randID("se"), companyID, id, uid, mustJSONString(map[string]any{"title": title})); err != nil {
+			randID("se"), companyID, id, uid, jsonx.MustJSONString(map[string]any{"title": title})); err != nil {
 			return err
 		}
 		return nil
@@ -326,7 +327,7 @@ func (s *Server) UpdateShippingFeature(w http.ResponseWriter, r *http.Request, i
 			writeShipError(w, r, serr)
 			return
 		}
-		add("builder_ids", mustJSONString(ids))
+		add("builder_ids", jsonx.MustJSONString(ids))
 		nextBuilderIDs = ids
 	}
 	if len(sets) == 0 {
@@ -350,7 +351,7 @@ func (s *Server) UpdateShippingFeature(w http.ResponseWriter, r *http.Request, i
 		if nextBuilderIDs != nil {
 			if _, err := tx.ExecContext(r.Context(),
 				`UPDATE shipping_verifications SET builder_ids = $1::jsonb, updated_at = NOW() WHERE feature_id = $2`,
-				mustJSONString(nextBuilderIDs), featureID); err != nil {
+				jsonx.MustJSONString(nextBuilderIDs), featureID); err != nil {
 				return err
 			}
 		}
@@ -579,7 +580,7 @@ func (s *Server) CreateShippingVerification(w http.ResponseWriter, r *http.Reque
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)`,
 		verID, feature.id, nullStrPtr(invariantID), title, body.text("description", 20000),
 		body.enumValue("method", verificationMethods, "user_path"), body.boolean("required", true),
-		nullStrPtr(ownerID), mustJSONString(builderIDs), position, nullTimePtr(dueAt), uid); err != nil {
+		nullStrPtr(ownerID), jsonx.MustJSONString(builderIDs), position, nullTimePtr(dueAt), uid); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -679,7 +680,7 @@ func (s *Server) UpdateShippingVerification(w http.ResponseWriter, r *http.Reque
 		required = body.boolean("required", true)
 	}
 	if hasEvidence {
-		evidenceSQL = mustJSONString(evidence)
+		evidenceSQL = jsonx.MustJSONString(evidence)
 	}
 	if body.has("notes") {
 		notes = body.text("notes", 20000)
@@ -705,7 +706,7 @@ func (s *Server) UpdateShippingVerification(w http.ResponseWriter, r *http.Reque
 		   due_at = COALESCE($10, due_at), verified_by_id = CASE WHEN $11 THEN $12 ELSE verified_by_id END,
 		   completed_at = CASE WHEN $11 THEN NOW() ELSE NULL END, updated_at = NOW()
 		 WHERE id = $13 AND feature_id = $14`,
-		title, description, method, required, nullStrPtr(ownerID), mustJSONString(builderIDs), nextStatus,
+		title, description, method, required, nullStrPtr(ownerID), jsonx.MustJSONString(builderIDs), nextStatus,
 		evidenceSQL, notes, dueAt, completing, verifiedBy, verificationID, feature.id); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -739,7 +740,7 @@ func (s *Server) UpdateShippingVerification(w http.ResponseWriter, r *http.Reque
 			randID("fr"), companyID, feature.id, uid,
 			"verification:"+verificationID, "Verification failed: "+titleForAssets,
 			"A required proof failed and has been promoted into the friction inbox plus a replayable regression asset.",
-			mustJSONString(orEmpty(evidence))); err != nil {
+			jsonx.MustJSONString(orEmpty(evidence))); err != nil {
 			httpx.WriteInternalError(w, r, err)
 			return
 		}
@@ -814,8 +815,8 @@ func (s *Server) CreateShippingRelease(w http.ResponseWriter, r *http.Request, i
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10)`,
 		relID, feature.id, environment, nullStrPtr(body.optText("version", 200)), nullStrPtr(body.optText("commitSha", 200)),
 		body.text("releaseNotes", 20000), body.text("rollbackPlan", 20000),
-		mustJSONString(body.jsonArray("knownGaps", 100)),
-		mustJSONString(body.jsonArray("baseline", 100)), nullTimePtr(readbackDue)); err != nil {
+		jsonx.MustJSONString(body.jsonArray("knownGaps", 100)),
+		jsonx.MustJSONString(body.jsonArray("baseline", 100)), nullTimePtr(readbackDue)); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -913,7 +914,7 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 				if _, err := tx.ExecContext(r.Context(), `
 					UPDATE shipping_releases SET status='succeeded', smoke_evidence=$1::jsonb,
 					       completed_at=NOW(), readback_due_at=COALESCE(readback_due_at,$2), updated_at=NOW() WHERE id=$3`,
-					mustJSONString(evidence), dueAt, releaseID); err != nil {
+					jsonx.MustJSONString(evidence), dueAt, releaseID); err != nil {
 					return err
 				}
 				if environment == "production" {
@@ -934,7 +935,7 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 			if actionErr == nil {
 				if _, err := tx.ExecContext(r.Context(),
 					`UPDATE shipping_releases SET status='failed', smoke_evidence=$1::jsonb, completed_at=NOW(), updated_at=NOW() WHERE id=$2`,
-					mustJSONString(evidence), releaseID); err != nil {
+					jsonx.MustJSONString(evidence), releaseID); err != nil {
 					return err
 				}
 				if _, err := tx.ExecContext(r.Context(),
@@ -957,7 +958,7 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 				}
 				if _, err := tx.ExecContext(r.Context(), `
 					UPDATE shipping_releases SET readback_status=$1, readback_evidence=$2::jsonb, updated_at=NOW() WHERE id=$3`,
-					rbStatus, mustJSONString(evidence), releaseID); err != nil {
+					rbStatus, jsonx.MustJSONString(evidence), releaseID); err != nil {
 					return err
 				}
 				if action == "readback_fail" {
@@ -971,7 +972,7 @@ func (s *Server) ShippingReleaseAction(w http.ResponseWriter, r *http.Request, i
 						randID("fr"), companyID, feature.id, actor, "readback:"+releaseID,
 						"Production readback failed: "+feature.title,
 						"Observed production behavior diverged from the release baseline; investigate and add a replayable regression.",
-						mustJSONString(evidence)); err != nil {
+						jsonx.MustJSONString(evidence)); err != nil {
 						return err
 					}
 					if _, err := tx.ExecContext(r.Context(),
@@ -1144,7 +1145,7 @@ func (s *Server) CreateShippingFriction(w http.ResponseWriter, r *http.Request) 
 		body.enumValue("severity", frictionSeverities, "medium"),
 		body.enumValue("frequency", frictionFrequencies, "once"),
 		body.enumValue("status", frictionStatuses, "open"),
-		mustJSONString(body.jsonArray("evidence", 100))); err != nil {
+		jsonx.MustJSONString(body.jsonArray("evidence", 100))); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -1194,7 +1195,7 @@ func (s *Server) UpdateShippingFriction(w http.ResponseWriter, r *http.Request, 
 		status = body.enumValue("status", frictionStatuses, "open")
 	}
 	if body.has("evidence") {
-		evidenceSQL = mustJSONString(body.jsonArray("evidence", 100))
+		evidenceSQL = jsonx.MustJSONString(body.jsonArray("evidence", 100))
 	}
 	increment := 0
 	if body.has("incrementOccurrence") && body.boolean("incrementOccurrence", false) {
@@ -1318,7 +1319,7 @@ func (s *Server) UpdateShippingRegression(w http.ResponseWriter, r *http.Request
 	}
 	hasEvidence := body.has("lastEvidence")
 	if hasEvidence {
-		lastEvidenceSQL = mustJSONString(body.jsonArray("lastEvidence", 100))
+		lastEvidenceSQL = jsonx.MustJSONString(body.jsonArray("lastEvidence", 100))
 	}
 	res, err := s.DB.ExecContext(r.Context(), `
 		UPDATE shipping_regressions SET

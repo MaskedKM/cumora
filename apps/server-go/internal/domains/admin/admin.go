@@ -24,6 +24,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/admin"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/jsonx"
 )
 
 // Server:admin tag(13 路由)的域实现(#187 机械迁移,方法散在
@@ -312,20 +313,20 @@ func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
 	hasUpdate := false
 	if b, ok := boolOf("waitlist_enabled"); ok {
 		hasUpdate = true
-		upsert("waitlist_enabled", mustJSON(b))
+		upsert("waitlist_enabled", jsonx.MustJSONString(b))
 	}
 	if b, ok := boolOf("signups_paused"); ok {
 		hasUpdate = true
-		upsert("signups_paused", mustJSON(b))
+		upsert("signups_paused", jsonx.MustJSONString(b))
 	}
 	if s, ok := strOf("cerebellum_route"); ok && (s == "remote" || s == "byoa") {
 		hasUpdate = true
-		upsert("cerebellum_route", mustJSON(s))
+		upsert("cerebellum_route", jsonx.MustJSONString(s))
 	}
 	for _, k := range []string{"cerebellum_local_engine", "cerebellum_provider", "cerebellum_base_url", "cerebellum_model"} {
 		if s, ok := strOf(k); ok {
 			hasUpdate = true
-			upsert(k, mustJSON(s))
+			upsert(k, jsonx.MustJSONString(s))
 		}
 	}
 	if skey, ok := strOf("cerebellum_api_key"); ok {
@@ -345,7 +346,7 @@ func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
 				httpx.WriteError(w, http.StatusInternalServerError, "CUMORA_SECRETS_KEY is not configured on the server")
 				return
 			}
-			upsert("cerebellum_api_key", mustJSON(enc))
+			upsert("cerebellum_api_key", jsonx.MustJSONString(enc))
 		}
 	}
 	if failed {
@@ -356,11 +357,6 @@ func (s *Server) AdminPutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	buildSettingsResponse(w, r, s.DB)
-}
-
-func mustJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }
 
 // engines:在线且未吊销 computer 的 available_engines 并集,字典序。

@@ -551,7 +551,7 @@ func (a *cliAttachment) Scan(src any) error {
 	if a.raw == nil || string(a.raw) == "null" {
 		return nil
 	}
-	return jsonUnmarshal(a.raw, &a.m)
+	return json.Unmarshal(a.raw, &a.m)
 }
 
 func (a cliAttachment) MarshalJSON() ([]byte, error) { return a.raw.MarshalJSON() }
@@ -599,7 +599,7 @@ func (p *cliPoll) Scan(src any) error {
 	if p.raw == nil || string(p.raw) == "null" {
 		return nil
 	}
-	if err := jsonUnmarshal(p.raw, &p.parsed); err != nil {
+	if err := json.Unmarshal(p.raw, &p.parsed); err != nil {
 		return err
 	}
 	p.present = true
@@ -658,7 +658,7 @@ func (q *cliQuoted) Scan(src any) error {
 	if q.raw == nil || string(q.raw) == "null" {
 		return nil
 	}
-	return jsonUnmarshal(q.raw, &q.parsed)
+	return json.Unmarshal(q.raw, &q.parsed)
 }
 
 func (q cliQuoted) MarshalJSON() ([]byte, error) { return q.raw.MarshalJSON() }
@@ -946,9 +946,9 @@ func (j jsonArrayScan) Scan(src any) error {
 			*j.dst = nil
 			return nil
 		}
-		return jsonUnmarshal(t, j.dst)
+		return json.Unmarshal(t, j.dst)
 	case string:
-		return jsonUnmarshal([]byte(t), j.dst)
+		return json.Unmarshal([]byte(t), j.dst)
 	default:
 		return fmt.Errorf("jsonArrayScan: unsupported %T", src)
 	}
@@ -1141,9 +1141,9 @@ func (j jsonMapScan) Scan(src any) error {
 			*j.dst = nil
 			return nil
 		}
-		return jsonUnmarshal(t, j.dst)
+		return json.Unmarshal(t, j.dst)
 	case string:
-		return jsonUnmarshal([]byte(t), j.dst)
+		return json.Unmarshal([]byte(t), j.dst)
 	default:
 		return fmt.Errorf("jsonMapScan: unsupported %T", src)
 	}
