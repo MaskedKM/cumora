@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { api, ws, type ApiComputer } from '@/api/client'
+import { api, type ApiComputer } from '@/api/client'
 import type { Computer, ComputerStatus } from '@/types'
 import { commitIfContextCurrent } from '@/stores/auth'
+import { bindWsEvents } from '@/lib/wsBinding'
 
 interface ComputersState {
   byId: Record<string, Computer>
@@ -61,18 +62,17 @@ export const useComputers = create<ComputersState>((set) => ({
   },
 }))
 
-let wsBound = false
+/** WS 绑定 token —— 与旧 `wsBound` 布尔同一守护语义(#220 ②)。 */
+const wsToken = { bound: false }
 export function bootComputers() {
   void useComputers.getState().load()
-  if (wsBound) return
-  wsBound = true
-  ws.connect()
-  ws.on((e) => {
-    if (e.type === 'hello') {
+  bindWsEvents(wsToken, {
+    hello: () => {
       // Reconnect — Redis pubsub doesn't replay, so backfill any status
       // transition we missed while disconnected.
       void useComputers.getState().refresh()
-    } else if (e.type === 'computers.status') {
+    },
+    'computers.status': (e) => {
       const known = useComputers.getState().byId[e.computerId]
       if (e.status === 'online' || !known) {
         // Two cases, both want a full re-fetch rather than a status-only patch:
@@ -89,6 +89,6 @@ export function bootComputers() {
       } else {
         useComputers.getState().applyStatus(e.computerId, e.status)
       }
-    }
+    },
   })
 }

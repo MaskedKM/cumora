@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { api, ws } from '@/api/client'
+import { api } from '@/api/client'
+import { bindWsEvents } from '@/lib/wsBinding'
 import type {
   BoardSummary, BoardSnapshot, BoardCard, BoardCardComment, BoardCardLookup,
 } from '@/types'
@@ -343,8 +344,11 @@ export const useBoards = create<BoardsState>((set, get) => ({
 
 /** Wire WS → store at module load. Mirrors how the messages store hooks
  *  itself to the same event bus — boards changes flowing in from other
- *  clients (or from agents via the CLI) land here and trigger refresh. */
-ws.on((ev) => {
-  if (ev.type !== 'board.changed') return
-  useBoards.getState().applyEvent(ev.kind, ev.boardId, ev.cardId)
-})
+ *  clients (or from agents via the CLI) land here and trigger refresh.
+ *  #220 ② 换用绑定帮手:不发起连接(连接由 boot 系列 store 负责),
+ *  与原裸 `ws.on` 行为一致。 */
+bindWsEvents({ bound: false }, {
+  'board.changed': (ev) => {
+    useBoards.getState().applyEvent(ev.kind, ev.boardId, ev.cardId)
+  },
+}, { connect: false })

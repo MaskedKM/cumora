@@ -1,6 +1,7 @@
 import { create } from 'zustand'
-import { api, ws, type CalendarEventInput } from '@/api/client'
+import { api, type CalendarEventInput } from '@/api/client'
 import type { CalendarEvent, CalendarEventStatus } from '@/types'
+import { bindWsEvents } from '@/lib/wsBinding'
 
 interface CalendarState {
   events: CalendarEvent[]
@@ -122,22 +123,25 @@ export const useCalendar = create<CalendarState>((set, get) => ({
  *  drops it from local state on delete) so the Calendar view updates
  *  without a full page reload. Only refetches when the store has already
  *  been hydrated — agents creating events while the user has never opened
- *  the calendar will be picked up by the normal load() on first view. */
-ws.on((ev) => {
-  if (ev.type !== 'calendar.changed') return
-  const state = useCalendar.getState()
-  if (!state.loaded) return
-  if (ev.kind === 'event.deleted') {
-    useCalendar.setState((s) => ({ events: s.events.filter((e) => e.id !== ev.eventId) }))
-    return
-  }
-  // created / updated / dispatched → fetch the single row and merge.
-  // We swallow any error: a 404 (e.g. raced against an immediate delete)
-  // just means we drop the local copy on the next list reload.
-  void (async () => {
-    try {
-      const { event } = await api.getCalendarEvent(ev.eventId)
-      useCalendar.setState((s) => ({ events: replaceOrInsert(s.events, event) }))
-    } catch { /* swallow — next load() reconciles */ }
-  })()
-})
+ *  the calendar will be picked up by the normal load() on first view.
+ *  模块加载即接入(#220 ② 换用绑定帮手,不发起连接——连接由 boot 系列
+ *  store 负责,与原裸 `ws.on` 行为一致)。 */
+bindWsEvents({ bound: false }, {
+  'calendar.changed': (ev) => {
+    const state = useCalendar.getState()
+    if (!state.loaded) return
+    if (ev.kind === 'event.deleted') {
+      useCalendar.setState((s) => ({ events: s.events.filter((e) => e.id !== ev.eventId) }))
+      return
+    }
+    // created / updated / dispatched → fetch the single row and merge.
+    // We swallow any error: a 404 (e.g. raced against an immediate delete)
+    // just means we drop the local copy on the next list reload.
+    void (async () => {
+      try {
+        const { event } = await api.getCalendarEvent(ev.eventId)
+        useCalendar.setState((s) => ({ events: replaceOrInsert(s.events, event) }))
+      } catch { /* swallow — next load() reconciles */ }
+    })()
+  },
+}, { connect: false })

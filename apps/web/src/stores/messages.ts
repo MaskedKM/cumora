@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import type { Message, ReactionEntry } from '@/types'
-import { api, ApiError, ws, type WsEvent, type ApiMessage } from '@/api/client'
+import { api, ApiError, type WsEvent, type ApiMessage } from '@/api/client'
 import { useApp } from '@/stores/app'
 import { getMeId } from '@/stores/auth'
+import { bindWsEvents } from '@/lib/wsBinding'
 import { StreamingDeltaBatch, applyBufferedDeltas } from './streamingBatch'
 
 const EMPTY_MESSAGES: Message[] = []
@@ -846,7 +847,8 @@ export async function toggleReaction(messageId: string, emoji: string): Promise<
 
 // Bound once; workspace switches reset the per-conversation message
 // caches so old-tenant message arrays don't linger past a remount.
-let wsBound = false
+/** WS 绑定 token —— 与旧 `wsBound` 布尔同一守护语义(#220 ②)。 */
+const wsToken = { bound: false }
 export function bootMessagesStream() {
   // Reset every time bootMessagesStream is called (App.tsx remounts on
   // companyId change) — drops any messages the previous tenant left
@@ -863,11 +865,8 @@ export function bootMessagesStream() {
     loading: new Set(),
     errors: {},
   })
-  if (wsBound) return
-  wsBound = true
-  ws.connect()
-  ws.on((e) => {
-    if (e.type === 'hello') {
+  bindWsEvents(wsToken, {
+    hello: () => {
       // Fresh WS connection — could be the initial connect OR a reconnect
       // after a network blip / server rollout. Redis pubsub doesn't queue
       // events, so any `message.new` / `message.delta` / `message.reactions`
@@ -886,8 +885,10 @@ export function bootMessagesStream() {
         loaded: new Set(active && s.loaded.has(active) ? [active] : []),
       }))
       if (active) void useMessages.getState().reloadConversation(active)
-      return
-    }
-    useMessages.getState().applyEvent(e)
+    },
+  }, {
+    // 其余事件统一转交 applyEvent(其内部再按类型分派)——原先 if 链
+    // 尾部那行 `applyEvent(e)` 的直译。
+    fallback: (e) => useMessages.getState().applyEvent(e),
   })
 }

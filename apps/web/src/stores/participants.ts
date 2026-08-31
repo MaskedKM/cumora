@@ -1,8 +1,9 @@
 import { create } from 'zustand'
-import { api, ws, type ApiParticipant } from '@/api/client'
+import { api, type ApiParticipant } from '@/api/client'
 import type { Participant, Status } from '@/types'
 import { invalidateAvatar, clearAvatarCache } from '@/lib/avatarCache'
 import { commitIfContextCurrent } from '@/stores/auth'
+import { bindWsEvents } from '@/lib/wsBinding'
 import { mergeRoster } from './rosterMerge'
 
 interface ParticipantsState {
@@ -133,14 +134,12 @@ export const useParticipants = create<ParticipantsState>((set) => ({
 // WS bindings + the periodic refresher only need to attach once per
 // page lifetime.
 const REFRESH_INTERVAL_MS = 60_000
-let wsBound = false
+/** WS 绑定 token —— 与旧 `wsBound` 布尔同一守护语义(#220 ②)。 */
+const wsToken = { bound: false }
 export function bootParticipants() {
   void useParticipants.getState().load()
-  if (wsBound) return
-  wsBound = true
-  ws.connect()
-  ws.on((e) => {
-    if (e.type === 'hello') {
+  const firstBind = bindWsEvents(wsToken, {
+    hello: () => {
       // Fresh WS connection — could be the initial connect OR a reconnect
       // after a network blip / server rollout. Redis pubsub doesn't
       // queue messages, so any `participants.avatar` / `.status` event
@@ -149,9 +148,11 @@ export function bootParticipants() {
       // covers the only failure mode where avatar updates silently
       // stick at stale.
       void useParticipants.getState().refresh()
-    } else if (e.type === 'participants.status') {
+    },
+    'participants.status': (e) => {
       useParticipants.getState().applyStatus(e.participantId, e.status, e.statusUpdatedAt)
-    } else if (e.type === 'participants.avatar') {
+    },
+    'participants.avatar': (e) => {
       // Drop the local image cache entry for this participant so the
       // next render fetches the new portrait bytes — beats waiting for
       // the URL-keyed browser cache to expire when the URL hasn't
@@ -164,7 +165,8 @@ export function bootParticipants() {
         if (!cur) return {}
         return { byId: { ...s.byId, [e.participantId]: { ...cur, avatarUrl: e.avatarUrl } } }
       })
-    } else if (e.type === 'participants.added') {
+    },
+    'participants.added': (e) => {
       // A new human (or agent) joined the workspace. Upsert into byId so
       // the system-row referencing them resolves immediately (otherwise
       // SystemRow returns null on unknown participantId and the inviter
@@ -187,8 +189,9 @@ export function bootParticipants() {
           },
         },
       }))
-    }
+    },
   })
+  if (!firstBind) return
   // Quiet background refresh — picks up regenerated avatars and any
   // other roster drift without a workspace switch. 60s cadence is well
   // below the signed-URL TTL we'd ever bake in, so URLs never expire on
