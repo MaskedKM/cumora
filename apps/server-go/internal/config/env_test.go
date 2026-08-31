@@ -148,8 +148,21 @@ func TestBakedAccessors(t *testing.T) {
 	}
 	t.Setenv("INVITE_BASE_URL", "https://invite/")
 	if got := InviteSignInBase(); got != "https://invite/" {
-		t.Errorf("InviteSignInBase primary = %q", got)
+		t.Errorf("InviteSignInBase fallback = %q", got)
 	}
+	// 前缀键优先(TS env.ts/.env.example 的文档化键名,同族审计 P0-2):
+	// CUMORA_INVITE_BASE_URL > INVITE_BASE_URL > CUMORA_AUTH_DONE_URL > AUTH_DONE_URL。
+	t.Setenv("CUMORA_INVITE_BASE_URL", "https://invite-prefixed/")
+	if got := InviteSignInBase(); got != "https://invite-prefixed/" {
+		t.Errorf("InviteSignInBase prefixed primary = %q", got)
+	}
+	t.Setenv("CUMORA_INVITE_BASE_URL", "")
+	t.Setenv("INVITE_BASE_URL", "")
+	t.Setenv("CUMORA_AUTH_DONE_URL", "https://done-prefixed/")
+	if got := InviteSignInBase(); got != "https://done-prefixed/" {
+		t.Errorf("InviteSignInBase prefixed fallback = %q", got)
+	}
+	t.Setenv("CUMORA_AUTH_DONE_URL", "")
 
 	t.Setenv("OPENAI_MODEL_SUPPORT", "")
 	if got := OpenAIModelSupport(); got != "gpt-5.4-mini" {

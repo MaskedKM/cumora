@@ -203,21 +203,35 @@ func SkillHubURL() string { return os.Getenv("SKILLHUB_URL") }
 
 /* ───────────── 邀请 / OAuth / 管理员 ───────────── */
 
-// InviteBaseURL:INVITE_BASE_URL 原始值。
-func InviteBaseURL() string { return os.Getenv("INVITE_BASE_URL") }
-
-// AuthDoneURL:AUTH_DONE_URL 原始值(注意与 CUMORA_AUTH_DONE_URL 是两
-// 个不同的键)。
-func AuthDoneURL() string { return os.Getenv("AUTH_DONE_URL") }
-
-// InviteSignInBase:INVITE_BASE_URL → AUTH_DONE_URL 回退链(原
-// waitlist/invitations 双份同形链的合一;TrimRight 等后处理留调用点)。
-func InviteSignInBase() string {
-	base := os.Getenv("INVITE_BASE_URL")
-	if base == "" {
-		base = os.Getenv("AUTH_DONE_URL")
+// 邀请链键名:TS env.ts 读的是带 CUMORA_ 前缀的 CUMORA_INVITE_BASE_URL
+// / CUMORA_AUTH_DONE_URL(.env.example:127 同样文档化为前缀键);Go 初版
+// 误读无前缀键——operator 按文档配置即"邮件照发、链接全死、完全静默"
+// (2026-08-31 同族审计 P0-2)。现以前缀键为主、无前缀键兼容旧配置。
+func InviteBaseURL() string {
+	if v := os.Getenv("CUMORA_INVITE_BASE_URL"); v != "" {
+		return v
 	}
-	return base
+	return os.Getenv("INVITE_BASE_URL")
+}
+
+// AuthDoneURL:邀请链的回退段,同样前缀键优先(CUMORA_AUTH_DONE_URL 另有
+// oauth 面专用访问器 CumoraAuthDoneURL——同名键,这里只是回退读)。
+func AuthDoneURL() string {
+	if v := os.Getenv("CUMORA_AUTH_DONE_URL"); v != "" {
+		return v
+	}
+	return os.Getenv("AUTH_DONE_URL")
+}
+
+// InviteSignInBase:CUMORA_INVITE_BASE_URL → 无前缀 INVITE_BASE_URL →
+// CUMORA_AUTH_DONE_URL → 无前缀 AUTH_DONE_URL 四段回退链(原 TS:
+// INVITE_BASE_URL || AUTH_DONE_URL 均前缀键;无前缀兼容是 Go 新增的宽
+// 容面,不破坏 TS 平价)。
+func InviteSignInBase() string {
+	if base := InviteBaseURL(); base != "" {
+		return base
+	}
+	return AuthDoneURL()
 }
 
 // OAuthGoogleBase:CUMORA_OAUTH_GOOGLE_BASE 原始值(测试桩覆盖)。
