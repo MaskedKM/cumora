@@ -234,7 +234,9 @@ function createTray() {
     return
   }
   state.tray = new Tray(img)
-  state.tray.setToolTip('Cumora')
+  // 初始 tooltip 尊重降级位:setStackDegraded 早于 createTray 到达时
+  // 不丢 ⚠(评审 P3)。
+  state.tray.setToolTip(stackDegraded ? 'Cumora — ⚠ 本地栈已降级' : 'Cumora')
   // macOS: don't `setContextMenu` — Electron's docs are explicit that
   // doing so swallows the `click` event entirely, making left-click
   // toggle-window impossible. Instead handle `click` ourselves and

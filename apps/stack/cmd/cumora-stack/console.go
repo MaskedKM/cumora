@@ -102,21 +102,65 @@ func listReleases(releasesDir, currentVersion string) ([]ReleaseEntry, error) {
 			// 当前版本无回滚概念,不参与安全门。
 			e.RolloutBlocked = ""
 		} else if currentVersion != "" {
-			curMigrations := countMigrations(filepath.Join(releasesDir, currentVersion, "migrations"))
-			if e.Migrations < curMigrations {
+			curMigrations, merr := countMigrations(filepath.Join(releasesDir, currentVersion, "migrations"))
+			switch {
+			case merr != nil:
+				// 当前侧读不到 = 基线未知:宁可误拒。
+				e.RolloutBlocked = "当前版本迁移数不可读(基线未知)"
+			case e.Migrations < curMigrations:
 				e.RolloutBlocked = fmt.Sprintf("目标迁移数 %d < 当前 %d(pg schema 可能已前移,切回不可逆)", e.Migrations, curMigrations)
 			}
 		}
 		entries = append(entries, e)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Version > entries[j].Version })
+	sort.Slice(entries, func(i, j int) bool {
+		return compareSemverStrings(entries[i].Version, entries[j].Version) > 0
+	})
 	return entries, nil
 }
 
-func countMigrations(dir string) int {
+// compareSemverStrings —— x.y.z 逐段数字比(字典序会把 0.10.0 排到
+// 0.9.0 之后,评审 P3);非数字段按 0,剥 v 前缀(deploy-release 语义)。
+func compareSemverStrings(a, b string) int {
+	segs := func(s string) [3]int {
+		s = strings.TrimPrefix(s, "v")
+		var out [3]int
+		for i, part := range strings.SplitN(s, ".", 3) {
+			if i >= 3 {
+				break
+			}
+			n := 0
+			for _, ch := range part {
+				if ch < '0' || ch > '9' {
+					break
+				}
+				n = n*10 + int(ch-'0')
+			}
+			out[i] = n
+		}
+		return out
+	}
+	sa, sb := segs(a), segs(b)
+	for i := 0; i < 3; i++ {
+		if sa[i] != sb[i] {
+			if sa[i] > sb[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// countMigrations —— 迁移文件数;目录不存在 = 0(裸 release 可接受),
+// 目录在但读失败 = 错误(fail-closed:安全门不得按 0 放行,评审 P2)。
+func countMigrations(dir string) (int, error) {
 	ms, err := os.ReadDir(dir)
 	if err != nil {
-		return 0
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
 	}
 	n := 0
 	for _, m := range ms {
@@ -124,7 +168,7 @@ func countMigrations(dir string) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // cmdRestart —— form-aware 重启(升级/回滚共用;deploy-release.sh 的
@@ -141,15 +185,11 @@ func cmdRestart(args []string) int {
 			return 1
 		}
 	case "legacy":
-		fmt.Println("restart: 三 unit 形态(cumora-go + cumora-sidecar;daemon 亦 restart 以对齐制品)")
-		failed := false
-		for _, u := range []string{"cumora-go", "cumora-sidecar", "cumora-daemon"} {
-			if err := systemd("restart", u); err != nil {
-				fmt.Fprintf(os.Stderr, "restart: %s: %v\n", u, err)
-				failed = true
-			}
-		}
-		if failed {
+		// 单条 systemctl 事务重启三件(与 deploy-release.sh 同形态):
+		// 逐件 restart 会留"server 已新版、sidecar 仍旧版"的混合中间态。
+		fmt.Println("restart: 三 unit 形态(单事务重启 cumora-go + cumora-sidecar + cumora-daemon)")
+		if err := systemd("restart", "cumora-go.service", "cumora-sidecar.service", "cumora-daemon.service"); err != nil {
+			fmt.Fprintf(os.Stderr, "restart: %v\n", err)
 			return 1
 		}
 	default:
@@ -208,15 +248,25 @@ func cmdRollback(args []string) int {
 		fmt.Fprintf(os.Stderr, "rollback: current 已是 %s\n", want)
 		return 1
 	}
+	if curVer == "" {
+		fmt.Fprintf(os.Stderr, "rollback: current 缺失/不可读 —— 无迁移基线,拒绝(fail-closed)\n")
+		return 1
+	}
 	target := filepath.Join(rel, want)
 	if _, err := os.Stat(filepath.Join(target, "cumora-stackd")); err != nil {
 		fmt.Fprintf(os.Stderr, "rollback: %s 不是可用 release(缺 cumora-stackd): %v\n", target, err)
 		return 1
 	}
-	// 安全门:migrations 回退 = pg schema 可能已前移。
-	if curVer != "" {
-		if n, c := countMigrations(filepath.Join(target, "migrations")),
-			countMigrations(filepath.Join(rel, curVer, "migrations")); n < c {
+	// 安全门:migrations 回退 = pg schema 可能已前移。任一侧读不到 =
+	// 基线未知,拒绝(评审 P2:不得按 0 放行)。
+	{
+		n, nerr := countMigrations(filepath.Join(target, "migrations"))
+		c, cerr := countMigrations(filepath.Join(rel, curVer, "migrations"))
+		switch {
+		case nerr != nil || cerr != nil:
+			fmt.Fprintf(os.Stderr, "rollback: 拒绝 —— 迁移数不可读(目标 %v / 当前 %v),基线未知\n", nerr, cerr)
+			return 1
+		case n < c:
 			fmt.Fprintf(os.Stderr,
 				"rollback: 拒绝 —— 目标迁移数 %d < 当前 %d;数据已被新 schema 迁移过(pg 迁移不可逆),旧 server 会撞新 schema。确需回退:恢复数据或手动切链自担风险\n", n, c)
 			return 1
@@ -246,13 +296,21 @@ func cmdRollback(args []string) int {
 
 	if *noRestart {
 		fmt.Println("rollback: --no-restart,链已切未重启")
+		if *jsonOut {
+			printJSON(map[string]any{"rolledBackTo": want, "linkSwitched": true, "restarted": false})
+		}
 		return 0
 	}
 	rc := cmdRestart(nil)
 	if *jsonOut {
-		printJSON(map[string]any{"rolledBackTo": want, "restartCode": rc})
+		printJSON(map[string]any{"rolledBackTo": want, "linkSwitched": true, "restarted": rc == 0, "restartCode": rc})
 	}
-	return rc
+	// 语义分流(评审 P2):链已切但重启失败 ≠ 回滚被拒。3 = 需要人工
+	// 看栈(面板据此给"切链成功、重启失败"的中间态提示而非笼统红)。
+	if rc != 0 {
+		return 3
+	}
+	return 0
 }
 
 // consolePaths —— 三命令共用的路径解析(toml → 内置缺省)。

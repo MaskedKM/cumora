@@ -16,8 +16,10 @@ import { useT } from '@/lib/i18n'
  */
 
 type OpStep = { status: 'pending' | 'running' | 'ok' | 'fail'; tail?: string }
-/** 操作相位:upgrade/rollback = 分段执行中;booting = 等栈回来。 */
-type OpPhase = 'upgrade' | 'rollback' | 'booting' | null
+/** 操作相位:upgrade/rollback = 分段执行中;booting = 等栈回来;
+ * failed = 已失败但诊断(✗ 步骤 + tail)常驻 —— 失败面瞬删是 #286 AC
+ * "失败停在可诊断中间态"的反面(评审 P1)。 */
+type OpPhase = 'upgrade' | 'rollback' | 'booting' | 'failed' | null
 
 function parseJSONStep<T>(res: StackStepResult | null | undefined): T | null {
   if (!res) return null
@@ -30,10 +32,11 @@ function parseJSONStep<T>(res: StackStepResult | null | undefined): T | null {
   }
 }
 
-/** 简版 semver 比较(制品面只有 x.y.z)。 */
+/** 简版 semver 比较(制品面只有 x.y.z;剥 v 前缀 —— deploy-release 写
+ * 的 VERSION 恰是 vX.Y.Z)。 */
 function compareVersion(a: string, b: string): number {
-  const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
-  const pb = b.split('.').map((n) => parseInt(n, 10) || 0)
+  const pa = a.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
   for (let i = 0; i < 3; i++) {
     if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0)
   }
@@ -82,13 +85,20 @@ export function StackTab() {
     }).catch(() => { /* 版本缺省 = 不给升级按钮,无害 */ })
   }, [])
 
-  // degraded → 托盘警示(状态轮询驱动;面板红与托盘警示同源)。
+  // degraded → 托盘警示(面板红与托盘警示同源)。生命周期取舍(评审 P2):
+  // 轮询出错保留最后已知值(连接问题≠栈健康);unmount 清警示(宁可
+  // 少报也不冻结在旧 ⚠;用户回面板即恢复实时)。旧三 unit 形态无
+  // stackd.children,livez 非 ok 同样计入。
   const degraded = useMemo(() => {
-    if (!status?.stackd?.children) return false
-    return status.stackd.children.some((c) => !c.running || c.circuitOpen)
+    if (!status) return false
+    if (status.stackd?.children?.length) {
+      return status.stackd.children.some((c) => !c.running || c.circuitOpen)
+    }
+    return status.livez?.status !== 'ok'
   }, [status])
   useEffect(() => {
     window.cumora?.stack?.reportDegraded?.(degraded)
+    return () => { window.cumora?.stack?.reportDegraded?.(false) }
   }, [degraded])
 
   // 操作进行中:轮询等 livez 回来(与向导 booting 同形态)。
@@ -113,6 +123,13 @@ export function StackTab() {
     setOpSteps({})
   }
 
+  /** 失败收尾:同步状态面(refresh,别让陈旧 stackVersion 误现升级按钮)
+   * + 诊断常驻(failed 相位渲染步骤与 tail,用户看够才清)。 */
+  async function failOp() {
+    await refresh()
+    setOp('failed')
+  }
+
   const runStep = useCallback(async (key: string, fn: () => Promise<StackStepResult>) => {
     setOpSteps((s) => ({ ...s, [key]: { status: 'running' } }))
     const res = await fn()
@@ -126,9 +143,9 @@ export function StackTab() {
     const stack = window.cumora?.stack
     if (!stack) return
     const absorb = await runStep('absorb', () => stack.absorb({}))
-    if (!absorb.ok) { setOp(null); return }
+    if (!absorb.ok) { void failOp(); return }
     const restart = await runStep('restart', () => stack.restart())
-    if (!restart.ok) { setOp(null); return }
+    if (!restart.ok) { void failOp(); return }
     setBootingSeconds(0)
     setOp('booting')
   }
@@ -140,7 +157,7 @@ export function StackTab() {
     const stack = window.cumora?.stack
     if (!stack) return
     const rb = await runStep('rollback', () => stack.rollback(version))
-    if (!rb.ok) { setOp(null); return }
+    if (!rb.ok) { void failOp(); return }
     setBootingSeconds(0)
     setOp('booting')
   }
@@ -207,6 +224,24 @@ export function StackTab() {
           )}
         </div>
       </section>
+
+      {op === 'failed' && (
+        <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 flex flex-col gap-2">
+          <div className="text-[13px] text-red-700">{t('stack.opFailed')}</div>
+          {Object.entries(opSteps).map(([k, st]) => (
+            <div key={k} className="flex flex-col gap-1">
+              <div className="text-[12px] text-red-600">{k}: {st.status === 'fail' ? '✗' : st.status}</div>
+              {st.tail && <pre className="text-[10px] leading-4 text-ink-500 bg-white/60 rounded-lg p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">{st.tail}</pre>}
+            </div>
+          ))}
+          <div className="text-[12px] text-ink-500">{t('stack.opFailedHint')}</div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => { setOp(null); setOpSteps({}) }} className="h-8 px-3 rounded-[8px] border border-ink-200 text-[12px] text-ink-600">
+              {t('stack.opDismiss')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 升级区:制品版本 > 栈版本才出现;手动确认 + 分段进度 */}
       <section className="flex flex-col gap-2">
@@ -297,11 +332,12 @@ export function StackTab() {
               </button>
               <button
                 type="button"
+                disabled={confirming === 'rollback' && !pendingRollback}
                 onClick={() => {
                   if (confirming === 'upgrade') void startUpgrade()
                   else if (pendingRollback) void startRollback(pendingRollback)
                 }}
-                className="h-9 px-4 rounded-[8px] bg-[#1f2328] hover:bg-[#2a3037] text-white text-[13px]"
+                className="h-9 px-4 rounded-[8px] bg-[#1f2328] hover:bg-[#2a3037] text-white text-[13px] disabled:opacity-50"
               >
                 {t('stack.confirmGo')}
               </button>

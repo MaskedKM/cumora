@@ -5,7 +5,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -121,11 +123,67 @@ func TestRollbackUnknownVersion(t *testing.T) {
 }
 
 // 无 systemd 环境(容器):restart 走 none 分支退 1,不误伤。
+// 有 systemctl 且本机装着 cumora unit 的机器(维护者自用机)主动跳过
+// —— 单测绝不真重启用户的栈(评审 P2)。
 func TestRestartNoUnitFormFailsClean(t *testing.T) {
-	if os.Getenv("CUMORA_TEST_HAS_SYSTEMD") != "" {
-		t.Skip("有 systemd 的环境不适用")
+	if path, err := exec.LookPath("systemctl"); err == nil {
+		out, err := exec.Command(path, "--user", "show", "cumora.service",
+			"cumora-go.service", "cumora-sidecar.service", "-p", "LoadState", "--value").Output()
+		if err == nil && strings.Contains(string(out), "loaded") {
+			t.Skip("本机装有 cumora unit — 跳过(单测不真重启栈)")
+		}
 	}
 	if code := cmdRestart(nil); code != 1 {
 		t.Fatalf("无 unit 形态应退 1: %d", code)
+	}
+}
+
+// 安全门 fail-closed(评审 P2):当前侧 migrations 不可读 = 基线未知
+// 必须拦;current 缺失同样拒。
+func TestRollbackFailsClosedOnUnreadableBaseline(t *testing.T) {
+	releasesDir, currentLink := setupConsole(t, "0.4.0")
+	makeRelease(t, releasesDir, "0.3.0", 2)
+	// 当前版本 migrations 位堵成非目录(ENOTDIR:容器内 root 无视权限
+	// 位,chmod 000 拦不住;文件形态对 ReadDir 恒错)。
+	os.RemoveAll(filepath.Join(releasesDir, "0.4.0", "migrations"))
+	if err := os.WriteFile(filepath.Join(releasesDir, "0.4.0", "migrations"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := cmdRollback([]string{
+		"--releases-dir", releasesDir, "--current-dir", currentLink,
+		"--no-restart", "0.3.0",
+	}); code != 1 {
+		t.Fatalf("基线不可读应拒: %d", code)
+	}
+	link, _ := os.Readlink(currentLink)
+	if filepath.Base(link) != "0.4.0" {
+		t.Fatal("拒绝时 current 不得变")
+	}
+}
+
+func TestRollbackRefusesMissingCurrent(t *testing.T) {
+	releasesDir, currentLink := setupConsole(t, "")
+	_ = currentLink
+	os.Remove(currentLink)
+	makeRelease(t, releasesDir, "0.3.0", 2)
+	if code := cmdRollback([]string{
+		"--releases-dir", releasesDir, "--current-dir", currentLink,
+		"--no-restart", "0.3.0",
+	}); code != 1 {
+		t.Fatalf("current 缺失应拒: %d", code)
+	}
+}
+
+// 排序:数字感知(0.10.0 > 0.9.0;v 前缀剥除)。
+func TestReleaseOrderingNumeric(t *testing.T) {
+	releasesDir, _ := setupConsole(t, "")
+	makeRelease(t, releasesDir, "0.9.0", 1)
+	makeRelease(t, releasesDir, "0.10.0", 1)
+	entries, err := listReleases(releasesDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Version != "0.10.0" || entries[1].Version != "0.9.0" {
+		t.Fatalf("数字序: %v %v", entries[0].Version, entries[1].Version)
 	}
 }
