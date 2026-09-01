@@ -1,7 +1,7 @@
 {
   "name": "cumora",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "workspaces": [
     "apps/web",
     "apps/yjs-sidecar",
@@ -144,7 +144,9 @@
       {
         "from": "dist-payload",
         "to": "bin",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "directories": {
