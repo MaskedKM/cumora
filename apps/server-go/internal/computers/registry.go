@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -470,8 +471,20 @@ var (
 	latestClient = &http.Client{Timeout: 5 * time.Second}
 )
 
-// getLatestDaemonVersion:npm registry 'cumora' latest(1h 缓存,失败保旧)。
-// 注:post-fork 后 npm 包属上游 —— #67(Releases+自更新)改指向自家发布。
+// updateAPIBase:与 daemon 自更新(selfupdate.go)同源同键 —— 自家
+// GitHub release;CUMORA_UPDATE_API 可覆盖(测试/镜像)。
+func updateAPIBase() string {
+	if v := strings.TrimSpace(os.Getenv("CUMORA_UPDATE_API")); v != "" {
+		return v
+	}
+	return "https://api.github.com/repos/MaskedKM/cumora"
+}
+
+// getLatestDaemonVersion:自家 GitHub release 的 tag_name(daemon 自更新
+// 下载面同源;1h 缓存,失败保旧)。旧实现查 npm registry 'cumora' ——
+// post-fork 后该 npm 包属上游,v0.11.0 是上游版本,"设备页升级横幅"会把
+// 自托管部署指向上游(2026-09-01 实锾示警);#67 把 daemon 下载面改到
+// 自家 release 时这里漏改,现对齐。
 func getLatestDaemonVersion() *string {
 	latestMu.Lock()
 	defer latestMu.Unlock()
@@ -479,15 +492,15 @@ func getLatestDaemonVersion() *string {
 	if latestVer != "" && now.Sub(latestAt) < latestTTL {
 		return &latestVer
 	}
-	res, err := latestClient.Get("https://registry.npmjs.org/cumora/latest")
+	res, err := latestClient.Get(updateAPIBase() + "/releases/latest")
 	if err == nil && res.StatusCode == http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<16))
 		res.Body.Close()
 		var parsed struct {
-			Version string `json:"version"`
+			TagName string `json:"tag_name"`
 		}
-		if json.Unmarshal(body, &parsed) == nil && parsed.Version != "" {
-			latestVer = parsed.Version
+		if json.Unmarshal(body, &parsed) == nil && parsed.TagName != "" {
+			latestVer = parsed.TagName
 			latestAt = now
 		}
 	}
@@ -495,6 +508,21 @@ func getLatestDaemonVersion() *string {
 		return nil
 	}
 	return &latestVer
+}
+
+// 测试缝:重置/注入 latest 缓存(registry_latest_test 用)。
+func resetLatestForTest() {
+	latestMu.Lock()
+	defer latestMu.Unlock()
+	latestVer = ""
+	latestAt = time.Time{}
+}
+
+func setLatestForTest(v string, at time.Time) {
+	latestMu.Lock()
+	defer latestMu.Unlock()
+	latestVer = v
+	latestAt = at
 }
 
 // versionGt:点分数值比较(预发布后缀忽略,与 TS 同)。
