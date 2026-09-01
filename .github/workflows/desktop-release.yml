@@ -60,13 +60,16 @@ jobs:
       GOFLAGS: -buildvcs=false
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve lock hash + version
+      - name: Resolve version(deps 锁哈希经 needs 直递)
         shell: bash
         run: |
-          echo "LOCKHASH=$(sha256sum ci/stack-deps.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
           # 版本唯一事实源 = package.json(electron-builder 产物名取它,
           # 输入漂移=断言路径失配——评审 P2-1,故不留 version 输入)。
+          # LOCKHASH 不在本 job 重算:stack-deps 的双锚公式经 workflow_call
+          # output 传入(#308 评审 P0 —— 本地副本公式曾分叉致修复静默失效)。
+          echo "LOCKHASH=${{ needs.deps.outputs.lockhash }}" >> "$GITHUB_ENV"
           echo "VERSION=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')" >> "$GITHUB_ENV"
+          test -n "$LOCKHASH" || { echo "::error::deps job 未回传 lockhash"; exit 1; }
           test -d "/deps/$LOCKHASH" || { echo "::error::stack-deps 产物缺失(前置 job 失败?)"; exit 1; }
       - name: npm ci (workspace deps; sidecar 编译的前置)
         shell: bash

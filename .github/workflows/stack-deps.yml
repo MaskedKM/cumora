@@ -11,6 +11,12 @@ name: Stack deps
 on:
   workflow_dispatch:
   workflow_call:
+    # 锁哈希经 output 直递调用方(desktop-release 原自带一份单文件公式,
+    # 与本文件双源分叉让配方修复静默失效 —— #308 评审 P0;单一事实源)。
+    outputs:
+      lockhash:
+        description: 依赖物产物目录名(lock+构建脚本 双锚)
+        value: ${{ jobs.build.outputs.lockhash }}
 
 permissions:
   contents: read
@@ -24,6 +30,8 @@ jobs:
   build:
     name: Build pinned stack deps (pg16+pgvector / redis)
     runs-on: [self-hosted, linux, ser8]
+    outputs:
+      lockhash: ${{ steps.resolve.outputs.lockhash }}
     timeout-minutes: 30
     container:
       image: 127.0.0.1:5500/golang-bookworm-ci:1.24
@@ -40,7 +48,12 @@ jobs:
       - name: Resolve lock hash
         # LOCKHASH 锚 = 锁(源与 sha)+ 构建脚本:配方变更必须重建,
         # 否则修了编译旗标也吃卷上的旧产物(-march=native 实锤坑)。
-        run: echo "LOCKHASH=$(cat ci/stack-deps.lock ci/build-stack-deps.sh | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        # id+outputs:经 workflow_call 直递 desktop-release(单一事实源)。
+        id: resolve
+        run: |
+          H="$(cat ci/stack-deps.lock ci/build-stack-deps.sh | sha256sum | cut -d' ' -f1)"
+          echo "lockhash=$H" >> "$GITHUB_OUTPUT"   # 喂 workflow_call output
+          echo "LOCKHASH=$H" >> "$GITHUB_ENV"      # 喂本 job 其余步骤
       - name: Fast path probe
         id: cache
         run: |
@@ -74,6 +87,12 @@ jobs:
           done
           "$D/pg/bin/postgres" --version
           "$D/redis-server" --version
+          # 回归闸(#308):vector.so 零 AVX-512 指令 —— -march=native 制品
+          # 在无 AVX-512 机器 CREATE EXTENSION 即 SIGILL;%zmm 是 EVEX 专属。
+          if objdump -d "$D/pg/lib/postgresql/vector.so" | grep -q "%zmm"; then
+            echo "::error::vector.so 含 AVX-512 指令(-march 漏钉?制品将在基线机器 SIGILL)"
+            exit 1
+          fi
           for bin in "$D/pg/bin/postgres" "$D/pg/bin/initdb" "$D/redis-server"; do
             bad="$(ldd "$bin" | grep 'not found' || true)"
             [ -z "$bad" ] || { echo "::error::$(basename "$bin") 动态依赖缺口: $bad"; exit 1; }
