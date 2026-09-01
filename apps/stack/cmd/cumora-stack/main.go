@@ -41,6 +41,12 @@ func main() {
 		os.Exit(cmdInstall(os.Args[2:]))
 	case "absorb":
 		os.Exit(cmdAbsorb(os.Args[2:]))
+	case "releases":
+		os.Exit(cmdReleases(os.Args[2:]))
+	case "restart":
+		os.Exit(cmdRestart(os.Args[2:]))
+	case "rollback":
+		os.Exit(cmdRollback(os.Args[2:]))
 	case "uninstall":
 		os.Exit(cmdUninstall(os.Args[2:]))
 	case "import-env":
@@ -73,6 +79,11 @@ func usage() {
                                          (前置:current 制品已含 stackd)
   cumora-stack uninstall                 回滚:停用 cumora.service,恢复旧三 unit
   cumora-stack logs [-f] [--svc NAME]    stackd 及子进程日志(journal,svc 过滤)
+  cumora-stack releases [--json]        releases 清单(#286 管理面):版本/
+                                         迁移数/当前标记/回滚安全门
+  cumora-stack restart                  form-aware 重启(单 unit 或三 unit)
+  cumora-stack rollback <版本>           current 切回旧 release + 重启;
+                                         迁移数回退=拒绝(pg 不可逆明示)
   cumora-stack import-env [flags]       首启向导命令面(#284):.env/daemon.env
                                          一次性导入 —— 机器事实转 stack.toml,
                                          凭据原样搬 stack.env/daemon.env;
