@@ -339,3 +339,35 @@ func TestStartAfterShutdownCancels(t *testing.T) {
 		t.Fatal("不应有监控协程残留")
 	}
 }
+
+func TestStartCancelledDuringCommit(t *testing.T) {
+	// P2-2 hunk 的确定性覆盖(三轮评审裁定):在"child up"日志点取消根
+	// ctx —— 该点在 spawn 提交与其前置检查之后、Start 的入列后复查之前,
+	// 恰是 Shutdown 与 Start 擦肩的窗口本体。旧测试(AfterShutdown)走的是
+	// spawn 前置检查路径,盖不到这里。
+	var m *Manager
+	opts := fastOpts()
+	opts.Log = func(msg string, _ ...any) {
+		if msg == "child up" && m != nil {
+			m.stop()
+		}
+	}
+	m = New(opts)
+	defer m.Shutdown()
+	err := m.Start(shChild("racy", "sleep 30", nil))
+	if err == nil {
+		t.Fatal("提交途中取消应报错")
+	}
+	for _, st := range m.States() {
+		if st.Name == "racy" {
+			t.Fatalf("取消路径不应残留状态条目: %+v", st)
+		}
+	}
+	done := make(chan struct{})
+	go func() { m.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("不应有监控协程残留")
+	}
+}
