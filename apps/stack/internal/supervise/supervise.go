@@ -46,16 +46,42 @@ const (
 	EnvInstance = "CUMORA_STACK_INSTANCE"
 )
 
+// overrideEnv —— 叠加环境并去重:overrides 里的键先从 base 剔除再追加,
+// 保证"后写覆盖"。environ 数组重复键的读取端(getenv 族)取首个匹配,
+// append 出来的重复项里注入值反而是死字。
+func overrideEnv(base []string, overrides ...string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	drop := make(map[string]bool, len(overrides))
+	for _, kv := range overrides {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			drop[k] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, overrides...)
+}
+
 // Gate —— 启动健康门:返回 nil 视为就绪。nil Gate = 进程存活即过。
 // Gate 收到的 ctx 带超时,长阻塞实现必须尊重它。
 type Gate func(ctx context.Context) error
 
 // Child —— 受管子进程声明。
 type Child struct {
-	Name        string
-	Path        string
-	Args        []string
-	Env         []string // 追加在 os.Environ() 之上
+	Name string
+	Path string
+	Args []string
+	// Env 叠加在 os.Environ() 之上,同键以 Env 为准(后写覆盖):environ
+	// 重复键取首个匹配,单纯 append 会让继承值静默吃掉注入值(#284 受管
+	// pg 注入 DATABASE_URL 时实锤的坑;daemon 的 PATH 钉扎同受益)。
+	Env         []string
 	Dir         string
 	Gate        Gate
 	GateEvery   time.Duration // 门轮询间隔;0 = 250ms
@@ -226,7 +252,7 @@ func (m *Manager) spawn(ctx context.Context, run *childRun, st *State) error {
 	c := run.child
 	cmd := exec.Command(c.Path, c.Args...)
 	cmd.Dir = c.Dir
-	cmd.Env = append(os.Environ(), c.Env...)
+	cmd.Env = overrideEnv(os.Environ(), c.Env...)
 	cmd.Env = append(cmd.Env, EnvChild+"=1", EnvInstance+"="+m.opts.InstanceID)
 	cmd.Stdout = &lineWriter{m: m, name: c.Name}
 	cmd.Stderr = &lineWriter{m: m, name: c.Name}

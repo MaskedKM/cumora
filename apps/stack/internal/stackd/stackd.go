@@ -2,9 +2,13 @@
 //
 // 拓扑(单 systemd user unit 只保证本进程存在;五个子面全在本进程内管):
 //
-//	pg(external 探测)→ redis(external 探测)→ sidecar → server → daemon
+//	pg → redis → sidecar → server → daemon
 //
-// 阶段 1 pg/redis 是系统级服务(external);#283 打包链落地后切 managed。
+// pg/redis 双形态(#284 受管化):external = 系统级服务,探测等就绪
+// (存量部署零变);internal = 本进程拉起受管实例 —— pg 走 unix socket
+// (trust-local + reject-host,凭据零落盘),redis 走 unix socket +
+// 端口 0(本机 6379 已被占)。受管形态下 server 的 DATABASE_URL/
+// REDIS_URL 由 stackd 派生注入(后写覆盖,见 supervise.overrideEnv)。
 // 环境传递:unit 的 EnvironmentFile(.env)→ stackd 继承 → 子进程;
 // daemon 子进程额外合并 daemon.env 并钉扎引擎 PATH(nvm/npx 发现)。
 package stackd
@@ -15,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -25,6 +30,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/stack/internal/chain"
 	"github.com/MaskedKM/cumora/apps/stack/internal/engdirs"
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/stackconfig"
 	"github.com/MaskedKM/cumora/apps/stack/internal/supervise"
 )
 
@@ -40,12 +46,23 @@ type Config struct {
 	ServerAddr  string // CUMORA_GO_LISTEN 注入值(127.0.0.1:5181)
 	SidecarPort int    // YJS_SIDECAR_PORT 注入值(5182)
 	// 门预算覆盖(0 = 缺省 sidecar 60s / server 120s;测试压短)。
-	SidecarGateTimeout time.Duration
-	ServerGateTimeout  time.Duration
-	UploadsDir         string // CUMORA_UPLOADS_DIR 注入值
-	DSN                string // external pg 探测用(空 = probe 缺省)
-	RedisURL           string // external redis 探测用
-	SidecarToken       string // sidecar 健康门 Bearer
+	SidecarGateTimeout  time.Duration
+	ServerGateTimeout   time.Duration
+	InternalGateTimeout time.Duration // 受管 pg/redis 门预算(0 = 120s;首启含 initdb 后冷启)
+	UploadsDir          string        // CUMORA_UPLOADS_DIR 注入值
+	DSN                 string        // external pg 探测用(空 = probe 缺省)
+	RedisURL            string        // external redis 探测用
+	SidecarToken        string        // sidecar 健康门 Bearer
+
+	// 受管 pg/redis(#284):Mode = stackconfig.ModeInternal 时本进程拉起,
+	// DSN/RedisURL 忽略、位置由下列字段定;其余值 = external 探测(缺省)。
+	PGMode      string
+	RedisMode   string
+	PGDataDir   string // 缺省 <dataHome>/pgdata
+	RunDir      string // 缺省 <dataHome>/run(socket 目录,0700)
+	RedisSocket string // 缺省 <runDir>/redis.sock
+	PGDatabase  string // 缺省 cumora
+	DataHome    string // 三项位置缺省的锚点(缺省 ~/.local/share/cumora)
 
 	// Probes —— 探针注入;零值 = 生产探针(probe.NewDeps)。
 	Probes probe.Deps
@@ -58,19 +75,77 @@ func (c Config) probes() probe.Deps {
 	return probe.NewDeps()
 }
 
+func (c Config) pgInternal() bool { return c.PGMode == stackconfig.ModeInternal }
+
+func (c Config) redisInternal() bool { return c.RedisMode == stackconfig.ModeInternal }
+
+func (c Config) dataHome() string {
+	if c.DataHome != "" {
+		return c.DataHome
+	}
+	return filepath.Join(homeDir(), ".local/share/cumora")
+}
+
+func (c Config) pgDataDir() string {
+	return orString(c.PGDataDir, filepath.Join(c.dataHome(), "pgdata"))
+}
+
+func (c Config) runDir() string {
+	return orString(c.RunDir, filepath.Join(c.dataHome(), "run"))
+}
+
+func (c Config) redisSocket() string {
+	return orString(c.RedisSocket, filepath.Join(c.runDir(), "redis.sock"))
+}
+
+func (c Config) pgDatabase() string { return orString(c.PGDatabase, "cumora") }
+
+// internalDSN —— 受管 pg 的应用连接串(socket-only;probe.withSSLModeDisabled
+// 的 url 分支管不到 keyword 形态,这里直接带 sslmode=disable)。
+func (c Config) internalDSN() string {
+	return fmt.Sprintf("host=%s user=cumora dbname=%s sslmode=disable", c.runDir(), c.pgDatabase())
+}
+
+// adminDSN —— 维护连接(postgres 库:CREATE DATABASE / 探活门)。
+func (c Config) adminDSN() string {
+	return fmt.Sprintf("host=%s user=cumora dbname=postgres sslmode=disable", c.runDir())
+}
+
+func orString(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
+}
+
 // NodeNames —— 链序(装配结果的对照面,测试与文档共用)。
 var NodeNames = []string{"postgres", "redis", "sidecar", "server", "daemon"}
 
 // BuildNodes —— 按链序装配节点。健康门语义与三 unit 时代一致:
 // sidecar healthz 200|401 都算活(Bearer 面);server livez 200|503 都算
 // 就绪(503 = Redis 红的诚实信号,livez 本身活着 —— cumora-go.service
-// 探针注释的语义原样继承)。
+// 探针注释的语义原样继承)。受管 pg 门额外要求 pgvector 可用(migrations
+// 的 vector 列是硬依赖,缺扩展的"活 pg"过不了门,不在 server 侧扑空)。
 func BuildNodes(cfg Config) ([]chain.Node, error) {
 	d := cfg.probes()
 	bin := func(name string) string { return filepath.Join(cfg.CurrentDir, name) }
 	for _, name := range []string{"cumora-sidecar", "cumora-server", "cumora-daemon", "cumora-stack", "cumora-stackd"} {
 		if _, err := os.Stat(bin(name)); err != nil {
 			return nil, fmt.Errorf("stackd: %s 缺失于 %s(先 deploy-release 新制品): %w", name, cfg.CurrentDir, err)
+		}
+	}
+	// 前置检查按形态各自独立(评审 P1:pg=internal+redis=external 的合法
+	// 混合形态不得因缺 redis-server 拒装配 —— 那形态根本不用它)。
+	if cfg.redisInternal() {
+		if _, err := os.Stat(bin("redis-server")); err != nil {
+			return nil, fmt.Errorf("stackd: 受管 redis 缺 redis-server 于 %s: %w", cfg.CurrentDir, err)
+		}
+	}
+	if cfg.pgInternal() {
+		for _, name := range []string{"pg/bin/postgres", "pg/bin/initdb"} {
+			if _, err := os.Stat(bin(name)); err != nil {
+				return nil, fmt.Errorf("stackd: 受管 pg 缺 %s 于 %s(制品载荷不完整?): %w", name, cfg.CurrentDir, err)
+			}
 		}
 	}
 
@@ -105,14 +180,82 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 		return fmt.Errorf("livez HTTP %d", code)
 	}
 
-	return []chain.Node{
-		{Name: "postgres", Mode: chain.External, Probe: func(ctx context.Context) error {
+	// pg 节点:external = 探测系统实例;internal = 受管 postgres 子进程
+	// (socket-only),门 = admin 库连通 + pgvector 可用 + 目标库就位
+	// (首过门时 CREATE DATABASE,幂等)。
+	var pgNode chain.Node
+	if cfg.pgInternal() {
+		dbEnsured := false
+		pgNode = chain.Node{Name: "postgres", Mode: chain.Managed, Child: &supervise.Child{
+			Name: "postgres", Path: bin("pg/bin/postgres"),
+			Args: []string{"-D", cfg.pgDataDir(), "-k", cfg.runDir(), "-h", ""},
+			Dir:  cfg.CurrentDir,
+			Gate: func(ctx context.Context) error {
+				info, err := d.PG(ctx, cfg.adminDSN())
+				if err != nil {
+					return err
+				}
+				if !info.PgvectorAvailable {
+					return fmt.Errorf("受管 pg 缺 pgvector 扩展(载荷 pg/ 不完整?)")
+				}
+				if !dbEnsured {
+					if err := d.EnsureDatabase(ctx, cfg.adminDSN(), cfg.pgDatabase()); err != nil {
+						return err
+					}
+					dbEnsured = true
+				}
+				return nil
+			},
+			GateEvery:   500 * time.Millisecond,
+			GateTimeout: orDefault(cfg.InternalGateTimeout, 120*time.Second),
+		}}
+	} else {
+		pgNode = chain.Node{Name: "postgres", Mode: chain.External, Probe: func(ctx context.Context) error {
 			_, err := d.PG(ctx, cfg.DSN)
 			return err
-		}},
-		{Name: "redis", Mode: chain.External, Probe: func(ctx context.Context) error {
+		}}
+	}
+
+	// redis 节点:external = 探测系统实例;internal = 受管 redis-server
+	// 子进程(unix socket + 端口 0,持久化关 —— pub/sub 总线非硬状态)。
+	var redisNode chain.Node
+	if cfg.redisInternal() {
+		redisNode = chain.Node{Name: "redis", Mode: chain.Managed, Child: &supervise.Child{
+			Name: "redis", Path: bin("redis-server"),
+			Args: []string{
+				"--unixsocket", cfg.redisSocket(), "--unixsocketperm", "700",
+				"--port", "0", "--save", "", "--appendonly", "no",
+				"--dir", cfg.runDir(),
+			},
+			Dir:         cfg.CurrentDir,
+			Gate:        func(ctx context.Context) error { return d.Redis(ctx, "unix://"+cfg.redisSocket()) },
+			GateEvery:   250 * time.Millisecond,
+			GateTimeout: orDefault(cfg.InternalGateTimeout, 120*time.Second),
+		}}
+	} else {
+		redisNode = chain.Node{Name: "redis", Mode: chain.External, Probe: func(ctx context.Context) error {
 			return d.Redis(ctx, cfg.RedisURL)
-		}},
+		}}
+	}
+
+	// server 注入:受管形态下 DATABASE_URL/REDIS_URL 由 stackd 派生
+	// (overrideEnv 后写覆盖 —— stack.env 里的存量外部 DSN 会被有意压掉,
+	// 这是迁移窗口内"切内置库"的机制)。
+	serverEnv := []string{
+		"CUMORA_GO_LISTEN=" + cfg.ServerAddr,
+		"CUMORA_UPLOADS_DIR=" + uploads,
+		"CUMORA_GO_MIGRATIONS=" + filepath.Join(cfg.CurrentDir, "migrations"),
+	}
+	if cfg.pgInternal() {
+		serverEnv = append(serverEnv, "DATABASE_URL="+cfg.internalDSN())
+	}
+	if cfg.redisInternal() {
+		serverEnv = append(serverEnv, "REDIS_URL="+cfg.internalRedisURLFace())
+	}
+
+	return []chain.Node{
+		pgNode,
+		redisNode,
 		{Name: "sidecar", Mode: chain.Managed, Child: &supervise.Child{
 			Name: "sidecar", Path: bin("cumora-sidecar"),
 			Dir:  cfg.WorkDir,
@@ -122,12 +265,8 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 		}},
 		{Name: "server", Mode: chain.Managed, Child: &supervise.Child{
 			Name: "server", Path: bin("cumora-server"),
-			Dir: cfg.WorkDir,
-			Env: []string{
-				"CUMORA_GO_LISTEN=" + cfg.ServerAddr,
-				"CUMORA_UPLOADS_DIR=" + uploads,
-				"CUMORA_GO_MIGRATIONS=" + filepath.Join(cfg.CurrentDir, "migrations"),
-			},
+			Dir:  cfg.WorkDir,
+			Env:  serverEnv,
 			Gate: gateServer, GateEvery: time.Second,
 			GateTimeout: orDefault(cfg.ServerGateTimeout, 120*time.Second),
 		}},
@@ -143,6 +282,62 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 			Env:  append(daemonEnv, "CUMORA_SUPERVISED=1", "PATH="+pinnedPATH()),
 		}},
 	}, nil
+}
+
+// internalRedisURLFace —— 受管 redis 的 URL 面(与 stackconfig.InternalRedisURL
+// 同形态;独立于 toml 层以便 flag 注入路径复用)。
+func (c Config) internalRedisURLFace() string { return "unix://" + c.redisSocket() }
+
+// EnsureInternalPG —— 受管 pg 首启 bootstrap:pgdata 无 PG_VERSION 即
+// initdb(trust-local + reject-host:隔离靠 socket 目录 0700,凭据零落盘,
+// TCP 面关死)。幂等:既有集群只补建 socket 目录(并收紧其权限 ——
+// MkdirAll 不回收已存在目录的 0700 不变量,评审 P3)。
+//
+// 原子性(评审 P2):initdb 落在同级 staging 目录,成功才 rename 进
+// pgdata —— 中途被杀/失败不残缺集群,残缺目录会把幂等门(PG_VERSION
+// 在=跳过 / 目录非空=initdb 拒跑)永久卡死,净机向导无自愈路径。
+func EnsureInternalPG(binDir, dataDir, runDir string, log *slog.Logger) error {
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return fmt.Errorf("stackd: 建 socket 目录 %s: %w", runDir, err)
+	}
+	if err := os.Chmod(runDir, 0o700); err != nil {
+		return fmt.Errorf("stackd: 收紧 socket 目录权限 %s: %w", runDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stackd: stat %s: %w", dataDir, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dataDir), 0o755); err != nil {
+		return fmt.Errorf("stackd: 建 pgdata 父目录: %w", err)
+	}
+	if log != nil {
+		log.Info("initdb: 初建受管 pg 集群", "dir", dataDir)
+	}
+	staging := fmt.Sprintf("%s.staging-initdb.%d", dataDir, os.Getpid())
+	defer os.RemoveAll(staging)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(binDir, "initdb"),
+		"-D", staging, "-U", "cumora",
+		"--auth-local=trust", "--auth-host=reject",
+		"--encoding=UTF8", "--no-locale")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("stackd: initdb 失败(staging 已清理,可重试): %w\n%s", err, tailLines(out, 25))
+	}
+	if err := os.Rename(staging, dataDir); err != nil {
+		return fmt.Errorf("stackd: pgdata 落位 %s: %w", dataDir, err)
+	}
+	return nil
+}
+
+func tailLines(data []byte, n int) string {
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // pinnedPATH —— daemon 子进程的 PATH:当前 PATH + 引擎发现目录(nvm/
@@ -217,6 +412,19 @@ type Snapshot struct {
 func Run(cfg Config, log *slog.Logger) error {
 	if killed := supervise.KillInstanceOrphans(cfg.InstanceID); killed > 0 {
 		log.Warn("上一世残留子进程已清杀", "count", killed)
+	}
+
+	// 子进程 cwd 必须存在(净机首启时数据根尚未落盘;spawn 对不存在的
+	// Dir 直接失败)。幂等创建。
+	if err := os.MkdirAll(cfg.WorkDir, 0o755); err != nil {
+		return fmt.Errorf("stackd: 建子进程工作目录 %s: %w", cfg.WorkDir, err)
+	}
+
+	// 受管 pg 首启 bootstrap(幂等):既有集群零动作;净机首启 initdb。
+	if cfg.pgInternal() {
+		if err := EnsureInternalPG(filepath.Join(cfg.CurrentDir, "pg/bin"), cfg.pgDataDir(), cfg.runDir(), log); err != nil {
+			return err
+		}
 	}
 
 	m := supervise.New(supervise.Options{

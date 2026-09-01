@@ -40,6 +40,10 @@ type UnitState struct {
 type Deps struct {
 	// PG 连库探活(server_version + pgvector 可用性)。dsn 为空串时由调用方兜底。
 	PG func(ctx context.Context, dsn string) (PGInfo, error)
+	// EnsureDatabase —— 幂等建库(受管 pg 首启钩子,#284):先查
+	// pg_database 再 CREATE,已存在零动作。独立成探针字段是为了
+	// 可注入(stackd 门在测试里不吃真 pgx 连接)。
+	EnsureDatabase func(ctx context.Context, adminDSN, dbname string) error
 	// Redis PING。
 	Redis func(ctx context.Context, url string) error
 	// Systemd 读取一个 user unit 的状态。systemctl 不存在/非 systemd 环境
@@ -87,6 +91,29 @@ func NewDeps() Deps {
 				return PGInfo{}, err
 			}
 			return PGInfo{Version: version, PgvectorAvailable: n > 0}, nil
+		},
+		EnsureDatabase: func(ctx context.Context, adminDSN, dbname string) error {
+			conn, err := pgx.Connect(ctx, adminDSN)
+			if err != nil {
+				return fmt.Errorf("EnsureDatabase 连接: %w", err)
+			}
+			defer conn.Close(context.Background())
+			var n int
+			if err := conn.QueryRow(ctx,
+				"SELECT count(*) FROM pg_database WHERE datname = $1", dbname).Scan(&n); err != nil {
+				return fmt.Errorf("EnsureDatabase 查询: %w", err)
+			}
+			if n > 0 {
+				return nil
+			}
+			// 标识符不能参数化;dbname 来自装配层常量/受校验配置,加引号防御。
+			if _, err := conn.Exec(ctx, fmt.Sprintf(`CREATE DATABASE %q`, dbname)); err != nil {
+				if strings.Contains(err.Error(), "already exists") {
+					return nil // 竞态双建(重启窗口)按已就位处理
+				}
+				return fmt.Errorf("EnsureDatabase 建库: %w", err)
+			}
+			return nil
 		},
 		Redis: func(ctx context.Context, url string) error {
 			if url == "" {

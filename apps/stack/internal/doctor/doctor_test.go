@@ -400,3 +400,60 @@ func TestStackdFormStateUnparseableIsWarn(t *testing.T) {
 		t.Fatal("仅解析失败不应 AnyFail")
 	}
 }
+
+// #284:坏 toml = [config] 红(校验不静默);未创建 = 合法缺省。
+func TestBadConfigTOMLFails(t *testing.T) {
+	c := testCfg()
+	c.ConfigErr = "含未知字段: net.bogus"
+	r := Run((fakeDeps{envData: fullEnv}).deps(), c)
+	chk := find(t, r, "config", "stack.toml")
+	if chk.Status != Fail || !strings.Contains(chk.Detail, "bogus") {
+		t.Fatalf("坏 toml 应红且带原因: %+v", chk)
+	}
+	if !r.AnyFail {
+		t.Fatal("AnyFail 应置位")
+	}
+}
+
+func TestConfigAbsentIsOK(t *testing.T) {
+	r := Run((fakeDeps{envData: fullEnv}).deps(), testCfg())
+	if find(t, r, "config", "stack.toml").Status != OK {
+		t.Fatal("未创建 toml 应 OK(内置缺省合法)")
+	}
+}
+
+// 受管形态:DATABASE_URL 不再是 env 红线键;pg 探针切 toml 派生 DSN。
+func TestInternalModeSocketFace(t *testing.T) {
+	env := strings.Replace(fullEnv, "DATABASE_URL=postgres://x\n", "", 1)
+	d := (fakeDeps{envData: env}).deps()
+	origPG := d.PG
+	var probed string
+	d.PG = func(ctx context.Context, dsn string) (probe.PGInfo, error) {
+		probed = dsn
+		return origPG(ctx, dsn)
+	}
+	c := testCfg()
+	c.PGMode = "internal"
+	c.InternalDSN = "host=/run/x user=cumora dbname=cumora sslmode=disable"
+	r := Run(d, c)
+	if r.AnyFail {
+		t.Fatalf("受管形态缺 DATABASE_URL 不应红: %+v", r.Checks)
+	}
+	if probed != c.InternalDSN {
+		t.Fatalf("受管形态应探派生 DSN,实探 %q", probed)
+	}
+	for _, chk := range r.Checks {
+		if chk.Group == "env" && chk.Name == "DATABASE_URL" {
+			t.Fatal("受管形态不应检查 DATABASE_URL env 键")
+		}
+	}
+}
+
+// external 形态缺 DATABASE_URL 仍红(回归锁:存量部署语义)。
+func TestExternalModeStillRequiresDatabaseURL(t *testing.T) {
+	env := strings.Replace(fullEnv, "DATABASE_URL=postgres://x\n", "", 1)
+	r := Run((fakeDeps{envData: env}).deps(), testCfg())
+	if find(t, r, "env", "DATABASE_URL").Status != Fail {
+		t.Fatal("external 缺 DATABASE_URL 应红")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/stackconfig"
 	"github.com/MaskedKM/cumora/apps/stack/internal/stackd"
 )
 
@@ -58,6 +59,16 @@ type Config struct {
 	// stackd 状态文件:单 unit 形态下校验子进程面(与 status 的 stackd
 	// 段同源同契约)。
 	StateFile string
+	// stack.toml 感知(#284):校验红进 [config] 段;受管形态切 pg/redis
+	// 的 socket 检查面。ConfigFound=false 且 ConfigErr="" = 未创建(合法)。
+	ConfigFile  string
+	ConfigFound bool
+	ConfigErr   string
+	// 受管形态(stackconfig.ModeInternal)时的探针目标;external 留空。
+	PGMode           string
+	InternalDSN      string
+	RedisMode        string
+	InternalRedisURL string
 }
 
 // AddrExpect —— 端口期望:Must(栈服务,关闭=fail)/Desktop(桌面 App
@@ -70,14 +81,18 @@ type AddrExpect struct {
 
 // envRequired —— .env 里缺席即红的键(GitHub OAuth 是登录链硬依赖,
 // #272/#271 的教训:缺键=静默断链,doctor 的职责就是把它变显性)。
+// 受管 pg 形态下 DATABASE_URL 由 stackd 派生注入,不再是 env 红线键。
 var envRequired = []string{
-	"DATABASE_URL",
 	"CUMORA_SECRETS_KEY",
 	"GITHUB_CLIENT_ID",
 	"GITHUB_CLIENT_SECRET",
 	"CUMORA_AUTH_RETURN_ALLOWLIST",
 	"YJS_SIDECAR_TOKEN",
 }
+
+// envRequiredExternal —— external pg 形态追加 DATABASE_URL(外部库必须
+// 指路;受管形态它由 socket 派生,缺席不是病)。
+var envRequiredExternal = append([]string{"DATABASE_URL"}, envRequired...)
 
 // envWarn —— 缺席仅黄的键(功能降级,不阻断部署)。
 var envWarn = map[string]string{
@@ -99,6 +114,16 @@ func Run(d probe.Deps, cfg Config) Report {
 		}
 	}
 
+	// stack.toml(#284):坏文件 = 红(校验不静默);未创建 = 合法缺省。
+	switch {
+	case cfg.ConfigErr != "":
+		add("config", "stack.toml", Fail, "校验失败: %s", cfg.ConfigErr)
+	case cfg.ConfigFound:
+		add("config", "stack.toml", OK, "%s", cfg.ConfigFile)
+	default:
+		add("config", "stack.toml", OK, "未创建(内置缺省运行;import-env 可生成)")
+	}
+
 	// env 文件读取与键面(env 键同时是 pg/redis 探针的 DSN 来源)。
 	env := map[string]string{}
 	if data, err := d.ReadFile(cfg.EnvFile); err == nil {
@@ -107,7 +132,11 @@ func Run(d probe.Deps, cfg Config) Report {
 	} else {
 		add("env", filepath.Base(cfg.EnvFile), Fail, "读不到: %v", err)
 	}
-	for _, k := range envRequired {
+	required := envRequired
+	if cfg.PGMode != stackconfig.ModeInternal {
+		required = envRequiredExternal
+	}
+	for _, k := range required {
 		if v, ok := env[k]; ok && v != "" {
 			add("env", k, OK, "")
 		} else {
@@ -139,12 +168,16 @@ func Run(d probe.Deps, cfg Config) Report {
 		}
 	}
 
-	// 依赖服务:pg(含 pgvector)、redis。DSN 优先 env 文件,退 OS env,
+	// 依赖服务:pg(含 pgvector)、redis。受管形态(#284)探 stack.toml
+	// 派生的 socket 面;external 语义照旧:DSN 优先 env 文件,退 OS env,
 	// 再退 localhost 缺省(与 server-go config 同缺省)。两探针各自起
 	// 独立超时:共享预算时慢失败的 pg 会把 redis 拖成误导性的 deadline 红。
-	dsn := env["DATABASE_URL"]
-	if dsn == "" {
-		dsn = os.Getenv("DATABASE_URL")
+	dsn := cfg.InternalDSN
+	if cfg.PGMode != stackconfig.ModeInternal {
+		dsn = env["DATABASE_URL"]
+		if dsn == "" {
+			dsn = os.Getenv("DATABASE_URL")
+		}
 	}
 	pgCtx, pgCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pgCancel()
@@ -158,9 +191,12 @@ func Run(d probe.Deps, cfg Config) Report {
 			add("postgres", "pgvector", Fail, "pg_available_extensions 无 vector")
 		}
 	}
-	redisURL := env["REDIS_URL"]
-	if redisURL == "" {
-		redisURL = os.Getenv("REDIS_URL")
+	redisURL := cfg.InternalRedisURL
+	if cfg.RedisMode != stackconfig.ModeInternal {
+		redisURL = env["REDIS_URL"]
+		if redisURL == "" {
+			redisURL = os.Getenv("REDIS_URL")
+		}
 	}
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer redisCancel()
