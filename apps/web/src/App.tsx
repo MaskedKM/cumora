@@ -10,6 +10,7 @@ import {
 import { NotificationToasts } from '@/components/NotificationToasts'
 import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
 import { Onboarding } from '@/desktop/Onboarding'
+import { StackWizardGate } from '@/desktop/StackWizard'
 import { isNotificationWindow, isWebAppHost } from '@/lib/runtime'
 import { useIsMobile } from '@/lib/utils'
 import { useApp } from '@/stores/app'
@@ -274,6 +275,9 @@ export function App() {
   }
 
   if (inviteToken) {
+    // 邀请深链不经向导门(有意取舍,#284 评审 P3-11):净机 + 邀请链接
+    // 直接落到 AuthScreen 的排障面(服务器错误可见),向导在下次普通
+    // 启动时接手 —— 为边角路径给整个 invite 流程开向导门不值当。
     const screen = (
       <InviteAcceptScreen
         token={inviteToken}
@@ -299,11 +303,15 @@ export function App() {
     )
   }
 
+  // 净机首启向导(#284):栈 server 不可达时先起栈再谈登录(向导门在
+  // AuthGate 之外 —— OAuth 登录链本身依赖栈)。非 Electron 直接透传。
   return (
-    <AuthGate>
-      <ErrorBoundary>
-        <AuthedApp key={`${userId ?? 'anon'}::${companyId ?? 'none'}`} />
-      </ErrorBoundary>
-    </AuthGate>
+    <StackWizardGate>
+      <AuthGate>
+        <ErrorBoundary>
+          <AuthedApp key={`${userId ?? 'anon'}::${companyId ?? 'none'}`} />
+        </ErrorBoundary>
+      </AuthGate>
+    </StackWizardGate>
   )
 }

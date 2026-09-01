@@ -156,6 +156,11 @@ export const api = {
     const qs = params.toString()
     return `${API}/auth/start/${provider}${qs ? `?${qs}` : ''}`
   },
+  /** OAuth provider 探活(#284):未配 provider 在按钮层显性化 —— 点进
+   *  /auth/start/<p> 吃裸 503 的老坑。栈未起时 fetch 直接网络错,调用方
+   *  按"不可知"处理,不误报未配置。 */
+  authProviders: () =>
+    http<{ github: boolean; google: boolean }>('/auth/providers'),
   authLogout: () =>
     http<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
   /** Permanently delete the signed-in user's account. Soft-deletes
