@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # #69 切换日:安装 systemd 用户单元(拷贝 + daemon-reload)。
+# #282 起:这是三 unit(旧)形态的安装器,同时是 `cumora-stack
+# uninstall` 的回滚目标;单 unit(cumora.service)形态经
+# `cumora-stack install` 安装,不再经过本脚本。
 # #211 部署收口:三件套全 enable —— 机器重启/手动 stop 后自愈(8-31
 # 事故三病之二收口;此前只 enable sidecar,go/daemon 故意不 enable,
 # 重启后全停不自愈)。启动顺序由单元间的 After=/Wants= 表达:

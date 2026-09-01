@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/doctor"
+	"github.com/MaskedKM/cumora/apps/stack/internal/engdirs"
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
 	"github.com/MaskedKM/cumora/apps/stack/internal/status"
 )
@@ -34,6 +35,12 @@ func main() {
 		os.Exit(cmdDoctor(os.Args[2:]))
 	case "status":
 		cmdStatus(os.Args[2:])
+	case "install":
+		os.Exit(cmdInstall(os.Args[2:]))
+	case "uninstall":
+		os.Exit(cmdUninstall(os.Args[2:]))
+	case "logs":
+		os.Exit(cmdLogs(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -44,13 +51,18 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `cumora-stack — Cumora 本地栈管理 CLI(#281 骨架)
+	fmt.Fprint(os.Stderr, `cumora-stack — Cumora 本地栈管理 CLI(#281 骨架,#282 切换面)
 
 用法:
   cumora-stack doctor [--json] [flags]   体检:为什么坏(任何 fail → 退出码 1)
   cumora-stack status [--json] [flags]   状态:现在跑得怎样(恒退出 0:doctor
                                          才是退出码门,status 只报告——脚本
                                          编排请以 doctor 为准)
+  cumora-stack install                   切到单 unit 形态:装 cumora.service,
+                                         停用旧三 unit(文件保留),stackd 接管
+                                         (前置:current 制品已含 stackd)
+  cumora-stack uninstall                 回滚:停用 cumora.service,恢复旧三 unit
+  cumora-stack logs [-f] [--svc NAME]    stackd 及子进程日志(journal,svc 过滤)
 
 通用 flags:
   --env-file PATH        主 .env   (默认 $CUMORA_ENV_FILE,或 ~/Code/cumora/.env)
@@ -196,6 +208,7 @@ func cmdStatus(args []string) {
 		SidToken:    token,
 		VersionFile: versionFile,
 		CurrentDir:  *current,
+		StateFile:   envOr("CUMORA_STATE_FILE", home(".local/share/cumora/stackd-state.json")),
 	})
 
 	if c.json {
@@ -205,25 +218,9 @@ func cmdStatus(args []string) {
 	}
 }
 
-// engineDirs —— 引擎发现的额外目录:nvm 各版本 bin(fresh-boot 用户
-// 管理器不带 nvm PATH 的钉扎坑,cumora-daemon.service 注释同源)+
-// npx 缓存 bin(daemon 钉扎 PATH 的第一段,claude 常驻于此)+ 常见
-// 用户级 bin。
-func engineDirs() []string {
-	var dirs []string
-	for _, pattern := range []string{
-		home(".nvm/versions/node/*/bin"),
-		home(".npm/_npx/*/node_modules/.bin"),
-	} {
-		if matches, err := filepath.Glob(pattern); err == nil {
-			dirs = append(dirs, matches...)
-		}
-	}
-	for _, p := range []string{home(".local/bin"), home(".bun/bin")} {
-		dirs = append(dirs, p)
-	}
-	return dirs
-}
+// engineDirs —— 引擎发现的额外目录(internal/engdirs 单源:doctor 的
+// 显性化面与 #282 stackd 给 daemon 子进程钉扎 PATH 共用一份)。
+func engineDirs() []string { return engdirs.Dirs("") }
 
 func printJSON(v any) {
 	enc := json.NewEncoder(os.Stdout)
@@ -270,6 +267,14 @@ func printStatus(rep status.Report) {
 	fmt.Println("[version]")
 	fmt.Printf("  current  %s\n", orDash(rep.Current))
 	fmt.Printf("  VERSION  %s\n", orDash(rep.Version))
+	if rep.Stackd != nil {
+		fmt.Printf("[stackd] instance=%s updated=%s\n",
+			rep.Stackd.InstanceID, rep.Stackd.UpdatedAt.Format("15:04:05"))
+		for _, ch := range rep.Stackd.Children {
+			fmt.Printf("  %-10s running=%-5v restarts=%d circuit=%v %s\n",
+				ch.Name, ch.Running, ch.Restarts, ch.CircuitOpen, orDash(ch.LastErr))
+		}
+	}
 }
 
 func orDash(s string) string {
