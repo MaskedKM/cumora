@@ -96,18 +96,36 @@ jobs:
         run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
 
   bake:
-    name: Bake local CI images (alpine-ci / bookworm-ci)
-    # #292:pr.yml 两 job 的容器是本地烘焙 tag(golang:1.24-alpine-ci /
-    # golang:1.24-bookworm-ci,官方仓库没有)。nightly 幂等重烘:层缓存
-    # 命中=秒级,基础镜像 best-effort 刷新(出口抖动时用本地缓存底)。
-    # 配方 = ci/images/*.Dockerfile。与 prune job 无冲突:`system prune`
-    # 不带 -a 从不删带 tag 镜像。docker build 内无 job env,代理经
-    # build-arg 指 docker0 网关的 Mihomo(*:7890 allow-lan,build 容器
-    # 的宿主视角即 docker0 地址);解析失败退化为直连烘(配方不变,慢)。
+    name: Bake CI images → local registry (127.0.0.1:5000)
+    # #292:pr.yml 两 job 的容器镜像来自**本机 registry**(127.0.0.1:5000,
+    # 常驻容器 cumora-ci-registry,数据落具名卷)。为什么不是本地 tag:
+    # runner(2.336 实测)对 job 容器无条件 `docker pull`,本地独有 tag
+    # 必然 manifest unknown → job 死;127.0.0.1 registry 可被 pull(docker
+    # 默认把 127.0.0.0/8 视为 insecure,明文 HTTP 直通)。nightly 幂等:
+    # registry 在=跳过,build 层缓存命中=秒级,基础镜像 best-effort 刷新。
+    # 配方 = ci/images/*.Dockerfile。与 prune job 无冲突:registry 容器
+    # 在跑(prune 只清已停容器),具名卷 prune 不带 --volumes 永不碰。
+    # docker build 内无 job env,代理经 build-arg 指 docker0 网关的
+    # Mihomo(*:7890 allow-lan);解析失败退化为直连烘(配方不变,慢)。
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Ensure local registry (cumora-ci-registry @ 127.0.0.1:5000)
+        run: |
+          if ! docker ps --all --filter name=cumora-ci-registry --format '{{.Names}}' | grep -q .; then
+            for i in 1 2 3; do docker pull registry:2 && break; sleep 5; done
+            docker run -d --name cumora-ci-registry --restart=always \
+              -p 127.0.0.1:5000:5000 -v cumora-ci-registry:/var/lib/registry registry:2
+          fi
+          docker start cumora-ci-registry 2>/dev/null || true
+          for i in $(seq 1 20); do
+            timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5000' 2>/dev/null && break
+            sleep 3
+          done
+          timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5000' 2>/dev/null \
+            || { echo "::error::本地 registry 60s 未就绪"; exit 1; }
+          echo "registry ready"
       - name: Resolve docker0 gateway for the build-time proxy
         run: |
           GW="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
@@ -125,9 +143,17 @@ jobs:
           for img in golang:1.24-alpine golang:1.24-bookworm node:24-bookworm; do
             docker pull "$img" || echo "::warning::$img 刷新失败,用本地缓存底继续"
           done
-      - name: Build golang:1.24-alpine-ci
-        run: docker build $PROXY_ARGS -t golang:1.24-alpine-ci - < ci/images/golang-alpine-ci.Dockerfile
-      - name: Build golang:1.24-bookworm-ci
-        run: docker build $PROXY_ARGS -t golang:1.24-bookworm-ci - < ci/images/golang-bookworm-ci.Dockerfile
-      - name: Show baked images
-        run: docker images | grep -E 'golang +1\.24-(alpine|bookworm)-ci' || true
+      - name: Build + push golang-alpine-ci:1.24
+        run: |
+          docker build $PROXY_ARGS -t 127.0.0.1:5000/golang-alpine-ci:1.24 - < ci/images/golang-alpine-ci.Dockerfile
+          docker push 127.0.0.1:5000/golang-alpine-ci:1.24
+      - name: Build + push golang-bookworm-ci:1.24
+        run: |
+          docker build $PROXY_ARGS -t 127.0.0.1:5000/golang-bookworm-ci:1.24 - < ci/images/golang-bookworm-ci.Dockerfile
+          docker push 127.0.0.1:5000/golang-bookworm-ci:1.24
+      # 真实拉回验证——job 容器走的正是这条 pull 路径,绿=CI 必能起容器
+      # (教训:此前 `docker images|grep||true` 把空结果掩蔽成成功)。
+      - name: Verify registry serves both images (real pull)
+        run: |
+          docker pull 127.0.0.1:5000/golang-alpine-ci:1.24
+          docker pull 127.0.0.1:5000/golang-bookworm-ci:1.24

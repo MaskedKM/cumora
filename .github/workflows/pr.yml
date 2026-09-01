@@ -16,16 +16,19 @@
 #   - Persistent host caches bind-mounted from /var/lib/cumora-ci-cache
 #     (Go build/mod + npm) — container layers die with the job, these
 #     survive across runs. Monitored by runner-maintenance.yml.
-#   - Locally baked job images (#292): both jobs run -ci images baked on
-#     the runner's docker by runner-maintenance.yml's bake job (recipes in
-#     ci/images/) — golang:1.24-alpine-ci (gcc/musl-dev for apps/stack's
-#     -race + curl) and golang:1.24-bookworm-ci (node:24 base + Go +
-#     chromium system deps). Killed the three per-run proxy downloads
-#     measured on 2026-09-01: playwright's 96MB apt deps, the go job's
-#     ~60-70MB apk gcc, and the 718MB actions-cache restore that always
-#     timed out (setup-node no longer carries cache: — the /npm/cache
-#     volume is the single source of truth). Missing image = dispatch
-#     "Runner maintenance", then re-run.
+#   - CI images from the runner's local registry (#292): both jobs run
+#     images baked by runner-maintenance.yml's bake job and pushed to the
+#     resident registry at 127.0.0.1:5000 (recipes in ci/images/) —
+#     golang-alpine-ci:1.24 (gcc/musl-dev for apps/stack's -race + curl)
+#     and golang-bookworm-ci:1.24 (node:24 base + Go + chromium system
+#     deps). Killed the three per-run proxy downloads measured on
+#     2026-09-01: playwright's 96MB apt deps, the go job's ~60-70MB apk
+#     gcc, and the 718MB actions-cache restore that always timed out
+#     (setup-node no longer carries cache: — the /npm/cache volume is the
+#     single source of truth). The runner pulls job containers
+#     unconditionally (a local-only tag dies with "manifest unknown",
+#     measured) — hence the registry. Missing image = dispatch "Runner
+#     maintenance", then re-run.
 #   - Integration suite split into 3 shards, each with its own Postgres
 #     database and its own Redis instance (pub/sub is instance-wide;
 #     Redis DB indexes would still cross-talk). Shards stay internally
@@ -85,13 +88,15 @@ jobs:
   go:
     name: Go (gofmt + vet + build + test)
     runs-on: [self-hosted, linux, ser8]
-    # 本地烘焙镜像(#292,runner-maintenance.yml 的 bake job 维护;配方
-    # ci/images/golang-alpine-ci.Dockerfile):alpine 底(纯 Go 模块,体积
-    # 是 bookworm 一半)+ gcc/musl-dev(apps/stack 的 -race 要 cgo)+
-    # curl(tier-2a 引导腿短路)。**缺镜像 = 先 dispatch "Runner
-    # maintenance" 烘焙再重跑**——官方仓库没有这个 tag。
+    # 本机 registry 镜像(#292,runner-maintenance.yml 的 bake job 构建并
+    # 推到 127.0.0.1:5000;配方 ci/images/golang-alpine-ci.Dockerfile):
+    # alpine 底(纯 Go 模块,体积是 bookworm 一半)+ gcc/musl-dev
+    # (apps/stack 的 -race 要 cgo)+ curl(tier-2a 引导腿短路)。
+    # **缺镜像 = 先 dispatch "Runner maintenance" 烘焙再重跑**——
+    # runner 对 job 容器无条件 pull,本机 registry 是唯一活路(本地独有
+    # tag 实测会被 manifest unknown 判死)。
     container:
-      image: golang:1.24-alpine-ci
+      image: 127.0.0.1:5000/golang-alpine-ci:1.24
       # Egress via the host's Mihomo (see header) — git/go module fetches
       # only; the proxy host itself never proxies.
       options: --add-host=host.docker.internal:host-gateway
@@ -242,13 +247,14 @@ jobs:
     # instance-wide, so the three integration shards each get their own
     # instead of sharing DB indexes.
     # #70 TS 退役:integration runner 自建 Go 服当 SUT;#292 起容器换
-    # 本地烘焙镜像 golang:1.24-bookworm-ci(node:24 底 + Go 整目录 +
-    # chromium 系统依赖,配方 ci/images/golang-bookworm-ci.Dockerfile,
-    # bake job 维护)——曾每轮 96MB 的 playwright apt 依赖与 9MB 索引
-    # 走代理,现烘进镜像零下载。持久 Go 缓存照挂(SUT 构建不冷编)。
+    # 本机 registry 镜像 127.0.0.1:5000/golang-bookworm-ci:1.24
+    # (node:24 底 + Go 整目录 + chromium 系统依赖,配方
+    # ci/images/golang-bookworm-ci.Dockerfile,bake job 构建推送)——
+    # 曾每轮 96MB 的 playwright apt 依赖与 9MB 索引走代理,现烘进镜像
+    # 零下载。持久 Go 缓存照挂(SUT 构建不冷编)。
     runs-on: [self-hosted, linux, ser8]
     container:
-      image: golang:1.24-bookworm-ci
+      image: 127.0.0.1:5000/golang-bookworm-ci:1.24
       options: --add-host=host.docker.internal:host-gateway
       volumes:
         - /var/lib/cumora-ci-cache/npmcache:/npm/cache
