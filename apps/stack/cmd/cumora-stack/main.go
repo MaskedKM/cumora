@@ -159,6 +159,8 @@ func cmdDoctor(args []string) int {
 		EnvFile:       c.envFile,
 		DaemonEnvFile: *daemonEnv,
 		Units:         c.units(),
+		StackdUnit:    envOr("CUMORA_STACKD_UNIT", "cumora.service"),
+		StateFile:     envOr("CUMORA_STATE_FILE", home(".local/share/cumora/stackd-state.json")),
 		StackAddrs: []doctor.AddrExpect{
 			{Name: "server :5181", Addr: "127.0.0.1:5181", Kind: "must"},
 			{Name: "sidecar :5182", Addr: "127.0.0.1:5182", Kind: "must"},
@@ -203,6 +205,7 @@ func cmdStatus(args []string) {
 
 	rep := status.Run(probe.NewDeps(), status.Config{
 		Units:       c.units(),
+		StackdUnit:  envOr("CUMORA_STACKD_UNIT", "cumora.service"),
 		LivezURL:    *livez,
 		HealthzURL:  *healthz,
 		SidToken:    token,

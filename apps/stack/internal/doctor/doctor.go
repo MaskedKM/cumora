@@ -7,6 +7,7 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/stackd"
 )
 
 // Status —— 三态 + info。fail 使 doctor 退出码非零;warn 不阻断。
@@ -49,6 +51,13 @@ type Config struct {
 	StackAddrs     []AddrExpect    // 栈应监听的地址
 	Engines        []string        // 引擎名集合(claude/codex/grok/cursor)
 	EngineExtraDir func() []string // 引擎发现的额外目录(nvm glob 等)
+	// 单 unit 形态感知(#298):stackd 的 unit 名。LoadState=loaded
+	// (install 写文件起恒真、uninstall 删文件止)= 单 unit 形态;空串 =
+	// 不感知(纯三 unit 面,留给测试与旧形态)。
+	StackdUnit string
+	// stackd 状态文件:单 unit 形态下校验子进程面(与 status 的 stackd
+	// 段同源同契约)。
+	StateFile string
 }
 
 // AddrExpect —— 端口期望:Must(栈服务,关闭=fail)/Desktop(桌面 App
@@ -161,20 +170,87 @@ func Run(d probe.Deps, cfg Config) Report {
 		add("redis", "可达", OK, "")
 	}
 
-	// unit 注册态与活性:masked/not-found 单列(loads 分离,防假绿)。
-	for _, u := range cfg.Units {
-		st, err := d.Systemd(u)
+	// 形态判定(#298,与 deploy-release 的 LoadState=loaded 同语义):
+	// stackd 的 unit 文件在 = 单 unit 形态。此时旧三 unit 本就该
+	// inactive —— 再拿它们当体检面就是假红(切换演练实测);改查
+	// stackd unit 本体 + 状态文件里的子进程面。三 unit 形态照旧。
+	stackdForm := false
+	var stackdState probe.UnitState
+	var stackdProbeErr error
+	if cfg.StackdUnit != "" {
+		st, err := d.Systemd(cfg.StackdUnit)
 		switch {
 		case err != nil:
-			add("units", u, Fail, "%v", err)
-		case st.Load == "masked":
-			add("units", u, Fail, "LoadState=masked(被屏蔽,enable 也不会跑)")
-		case st.Load == "not-found":
-			add("units", u, Fail, "unit 未安装(install-units.sh 未跑?)")
-		case st.Active == "active":
-			add("units", u, OK, "%s/%s", st.Active, st.Sub)
+			stackdProbeErr = err
+		case st.Load == "loaded":
+			stackdForm, stackdState = true, st
+		}
+	}
+	switch {
+	case stackdForm:
+		add("form", "形态", Info, "stackd 单 unit(%s)", cfg.StackdUnit)
+		if stackdState.Active == "active" {
+			add("units", cfg.StackdUnit, OK, "%s/%s", stackdState.Active, stackdState.Sub)
+		} else {
+			add("units", cfg.StackdUnit, Fail, "ActiveState=%s SubState=%s", stackdState.Active, stackdState.Sub)
+		}
+		// 子进程面:状态文件不可读/解析失败 = warn 而非 fail —— 启动
+		// 首写前的短暂窗口属正常,且端口 must 门(5181/5182)仍在下面
+		// 跑,实际门不空转;子进程 Running=false / 熔断 = fail。
+		if cfg.StateFile == "" {
+			add("stackd", "状态文件", Warn, "未配置 StateFile,子进程面不可查")
+		} else if data, err := d.ReadFile(cfg.StateFile); err != nil {
+			add("stackd", "状态文件", Warn, "读不到: %v", err)
+		} else {
+			var snap stackd.Snapshot
+			if err := json.Unmarshal(data, &snap); err != nil {
+				add("stackd", "状态文件", Warn, "解析失败: %v", err)
+			} else if len(snap.Children) == 0 {
+				add("stackd", "子进程面", Fail, "状态文件无子进程记录")
+			} else {
+				for _, ch := range snap.Children {
+					if ch.Running {
+						add("stackd", ch.Name, OK, "pid=%d restarts=%d", ch.PID, ch.Restarts)
+					} else {
+						detail := fmt.Sprintf("Running=false restarts=%d", ch.Restarts)
+						if ch.LastErr != "" {
+							detail += " lastErr=" + ch.LastErr
+						}
+						if ch.CircuitOpen {
+							detail += " [circuit-open]"
+						}
+						add("stackd", ch.Name, Fail, "%s", detail)
+					}
+				}
+			}
+		}
+	default:
+		// 三 unit 面。形态行按落因分说:探针失败(dbus 断/容器无
+		// session bus)≠ 未装 —— 误称"未装"会误导排障方向(评审 P2);
+		// 探针失败本身不置 fail(units 行会带同一原始错误红,门不空转)。
+		switch {
+		case cfg.StackdUnit == "":
+			// 不感知形态(测试注入/旧调用方):无形态行。
+		case stackdProbeErr != nil:
+			add("form", "形态", Warn, "stackd unit 探测失败,按三 unit 面体检: %v", stackdProbeErr)
 		default:
-			add("units", u, Fail, "ActiveState=%s SubState=%s", st.Active, st.Sub)
+			add("form", "形态", Info, "三 unit 形态(%s 未装)", cfg.StackdUnit)
+		}
+		// unit 注册态与活性:masked/not-found 单列(loads 分离,防假绿)。
+		for _, u := range cfg.Units {
+			st, err := d.Systemd(u)
+			switch {
+			case err != nil:
+				add("units", u, Fail, "%v", err)
+			case st.Load == "masked":
+				add("units", u, Fail, "LoadState=masked(被屏蔽,enable 也不会跑)")
+			case st.Load == "not-found":
+				add("units", u, Fail, "unit 未安装(install-units.sh 未跑?)")
+			case st.Active == "active":
+				add("units", u, OK, "%s/%s", st.Active, st.Sub)
+			default:
+				add("units", u, Fail, "ActiveState=%s SubState=%s", st.Active, st.Sub)
+			}
 		}
 	}
 

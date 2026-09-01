@@ -160,6 +160,33 @@ func TestUnitErrorPopulated(t *testing.T) {
 	}
 }
 
+func TestUnitsSectionByForm(t *testing.T) {
+	// #298:单 unit 形态(LoadState=loaded)→ [units] 只报 stackd unit;
+	// 三 unit 形态 → 旧 unit 集照旧。
+	base := fakeDeps{httpCodes: map[string]int{livezURL: 200, healthzURL: 200}}
+	c := cfg()
+	c.StackdUnit = "cumora.service"
+
+	r := Run(base.deps(), c) // fake 缺省:cumora.service loaded/active
+	if len(r.Units) != 1 || r.Units[0].Unit != "cumora.service" {
+		t.Fatalf("单 unit 形态应只报 cumora.service: %+v", r.Units)
+	}
+
+	r2 := Run((fakeDeps{
+		httpCodes: base.httpCodes,
+		units:     map[string]probe.UnitState{"cumora.service": {Load: "not-found", Active: "inactive", Sub: "dead"}},
+	}).deps(), c)
+	if len(r2.Units) != 1 || r2.Units[0].Unit != "cumora-go" {
+		t.Fatalf("三 unit 形态应报旧 unit 集: %+v", r2.Units)
+	}
+
+	// 未配置 StackdUnit(空串)= 不感知,行为与旧版一致。
+	r3 := Run(base.deps(), cfg())
+	if len(r3.Units) != 1 || r3.Units[0].Unit != "cumora-go" {
+		t.Fatalf("未配置形态感知时行为不变: %+v", r3.Units)
+	}
+}
+
 func TestStackdSectionFromStateFile(t *testing.T) {
 	// 单 unit 形态:状态文件可读 → Stackd 段带出(阶段 3 JSON 契约)。
 	state := `{"instanceId":"stackd-ab12cd34-1000","updatedAt":"2026-09-01T12:00:00Z",

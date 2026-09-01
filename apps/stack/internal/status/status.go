@@ -55,6 +55,10 @@ type Config struct {
 	VersionFile string // releases/<ver>/VERSION 经 current symlink
 	CurrentDir  string // current symlink 本体(报告指向)
 	StateFile   string // stackd-state.json(可选;单 unit 形态带 stackd 段)
+	// StackdUnit(#298):LoadState=loaded = 单 unit 形态 → [units] 段
+	// 改报该 unit(旧三 unit 已退役,inactive/dead 是设计态而非异常);
+	// 未装/空串 = 三 unit 形态照旧。
+	StackdUnit string
 }
 
 // systemd 时间戳形态:"Mon 2026-09-01 09:35:12 CST"(C locale)。
@@ -64,7 +68,15 @@ const systemdTimeLayout = "Mon 2006-01-02 15:04:05 MST"
 func Run(d probe.Deps, cfg Config) Report {
 	var r Report
 
-	for _, u := range cfg.Units {
+	// 形态感知(#298):单 unit 形态下 [units] 只报 stackd unit ——
+	// 旧三 unit 已退役(inactive 是设计态),列出来只会误导读者。
+	units := cfg.Units
+	if cfg.StackdUnit != "" {
+		if st, err := d.Systemd(cfg.StackdUnit); err == nil && st.Load == "loaded" {
+			units = []string{cfg.StackdUnit}
+		}
+	}
+	for _, u := range units {
 		st, err := d.Systemd(u)
 		ur := UnitReport{Unit: u, Load: st.Load, Active: st.Active, Sub: st.Sub, Started: st.Timestamp}
 		if err != nil {
