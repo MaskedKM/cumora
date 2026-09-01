@@ -87,10 +87,16 @@ jobs:
           done
           "$D/pg/bin/postgres" --version
           "$D/redis-server" --version
-          # 回归闸(#308):vector.so 零 AVX-512 指令 —— -march=native 制品
-          # 在无 AVX-512 机器 CREATE EXTENSION 即 SIGILL;%zmm 是 EVEX 专属。
-          if objdump -d "$D/pg/lib/postgresql/vector.so" | grep -q "%zmm"; then
-            echo "::error::vector.so 含 AVX-512 指令(-march 漏钉?制品将在基线机器 SIGILL)"
+          # 回归闸(#308,判据修正):分发 clone(*Avx512Popcount 族,经
+          # SupportsAvx512Popcount CPUID 门 + IFUNC resolver)里的 zmm 是
+          # pgvector 的合法快路径 —— 二进制扫 zmm 会假阳性(基线构建实测
+          # 20 处全在分发函数内;中毒构建 222 处全局扩散)。真正的毒化判据:
+          # 按本配方的编译旗标做预处理宏探测,__AVX512F__ 不得被全局定义
+          # (native 毒化的直接签名)。
+          if printf '' | gcc $("$D/pg/bin/pg_config" --cflags) -march=x86-64 \
+               -ftree-vectorize -fassociative-math -fno-signed-zeros -fno-trapping-math \
+               -dM -E - 2>/dev/null | grep -q "__AVX512F__"; then
+            echo "::error::基线编译旗标被毒化(__AVX512F__ 全局定义)—— 制品将在无 AVX-512 机器 SIGILL"
             exit 1
           fi
           for bin in "$D/pg/bin/postgres" "$D/pg/bin/initdb" "$D/redis-server"; do
