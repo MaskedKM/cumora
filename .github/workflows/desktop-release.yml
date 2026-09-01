@@ -18,11 +18,8 @@ name: Desktop Release
 #     本工作流的 absorb 冒烟是文件面校验,"干净环境起栈"全链验收在 #284。
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'AppImage 版本(如 0.4.0;空 = 读 package.json)'
-        required: false
-        type: string
+    # 无 version 输入:版本唯一事实源 = package.json(漂移=断言/产物名失配,
+    # 评审 P2-1;发版先改 package.json+lock)。
 
 permissions:
   contents: write
@@ -40,7 +37,7 @@ jobs:
     needs: deps
     name: Build single-artifact AppImage (client + stack payload)
     runs-on: [self-hosted, linux, ser8]
-    timeout-minutes: 40
+    timeout-minutes: 50  # 全冷缓存(npm+electron+工具链+上传)首跑余量(评审 P3)
     container:
       image: 127.0.0.1:5500/golang-bookworm-ci:1.24
       options: --add-host=host.docker.internal:host-gateway
@@ -67,12 +64,24 @@ jobs:
         shell: bash
         run: |
           echo "LOCKHASH=$(sha256sum ci/stack-deps.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          V="${{ inputs.version }}"
-          if [ -z "$V" ]; then
-            V="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')"
-          fi
-          echo "VERSION=$V" >> "$GITHUB_ENV"
+          # 版本唯一事实源 = package.json(electron-builder 产物名取它,
+          # 输入漂移=断言路径失配——评审 P2-1,故不留 version 输入)。
+          echo "VERSION=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')" >> "$GITHUB_ENV"
           test -d "/deps/$LOCKHASH" || { echo "::error::stack-deps 产物缺失(前置 job 失败?)"; exit 1; }
+      - name: npm ci (workspace deps; sidecar 编译的前置)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # bun build 解析 sidecar 的 hoisted 依赖(dotenv/yjs 等)需要
+          # node_modules 在位——此步必须先于 sidecar 编译(评审 P1-1,
+          # go-release sidecar job 同序)。electron 二进制不在此拉。
+          export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+          ok=0
+          for i in 1 2 3; do
+            if npm ci --ignore-scripts >/tmp/npmci.log 2>&1; then ok=1; break; fi
+            echo "[npm] ci 第 $i 次失败,重试"; tail -5 /tmp/npmci.log
+          done
+          [ "$ok" = 1 ] || { echo "::error::npm ci 三次失败"; cat /tmp/npmci.log; exit 1; }
       - name: Build stack binaries (4 × Go, linux/amd64)
         shell: bash
         run: |
@@ -81,7 +90,8 @@ jobs:
           ( cd apps/server-go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
               go build -trimpath -ldflags "-s -w" -o ../../dist-stack/cumora-server ./cmd/server )
           ( cd apps/byoa-daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-              go build -trimpath -ldflags "-s -w" -o ../../dist-stack/cumora-daemon ./cmd/cumora )
+              go build -trimpath -ldflags "-s -w -X github.com/MaskedKM/cumora/apps/byoa-daemon/internal/daemon.Version=${VERSION}" \
+                -o ../../dist-stack/cumora-daemon ./cmd/cumora )
           ( cd apps/stack && for b in cumora-stack:./cmd/cumora-stack cumora-stackd:./cmd/cumora-stackd; do
               CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
                 -o "../../dist-stack/${b%%:*}" "${b#*:}"
@@ -109,26 +119,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dist-stack/cumora-stack absorb --releases-dir /tmp/rel --current-dir /tmp/cur dist-payload
-          test "$(readlink /tmp/cur)" = "releases/$VERSION"
-          test -x /tmp/cur/cumora-server && test -x /tmp/cur/redis-server
-          test -f /tmp/cur/pg/lib/postgresql/vector.so
-          grep -q '"version"' /tmp/cur/MANIFEST
+          # 兄弟布局(releases/ 与 current 同父)——与默认部署形态一致,
+          # 相对指向即 releases/<ver>(评审 P1-2:平铺 /tmp 布局下 Rel
+          # 会算出 rel/<ver>,断言随之失配)。
+          mkdir -p /tmp/smoke
+          dist-stack/cumora-stack absorb \
+            --releases-dir /tmp/smoke/releases --current-dir /tmp/smoke/current dist-payload
+          test "$(readlink /tmp/smoke/current)" = "releases/$VERSION"
+          test -x /tmp/smoke/current/cumora-server && test -x /tmp/smoke/current/redis-server
+          test -f /tmp/smoke/current/pg/lib/postgresql/vector.so
+          grep -q '"version"' /tmp/smoke/current/MANIFEST
           echo "[smoke] absorb 往返通过:releases/$VERSION 就位"
-      - name: npm ci + web build
+      - name: Web build (vite)
         shell: bash
-        run: |
-          set -euo pipefail
-          # electron 二进制不在 install 期拉(弱出口;install.js 重试环单独管)
-          export ELECTRON_SKIP_BINARY_DOWNLOAD=1
-          ok=0
-          for i in 1 2 3; do
-            if npm ci --ignore-scripts >/tmp/npmci.log 2>&1; then ok=1; break; fi
-            echo "[npm] ci 第 $i 次失败,重试"; tail -5 /tmp/npmci.log
-          done
-          [ "$ok" = 1 ] || { echo "::error::npm ci 三次失败"; cat /tmp/npmci.log; exit 1; }
-          unset ELECTRON_SKIP_BINARY_DOWNLOAD
-          npm run build
+        run: npm run build
       - name: Fetch electron dist (retry ring, weak egress)
         shell: bash
         run: |
@@ -168,21 +172,49 @@ jobs:
           test -f squashfs-root/resources/bin/pg/lib/postgresql/vector.so
           echo "[smoke] AppImage 解包:resources/bin 载荷齐全"
           rm -rf squashfs-root
-      - name: Publish release (desktop-v<version>)
+      - name: Publish release (desktop-v<version>, REST)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # 镜像无 gh(bookworm main 仓无 github-cli,#303 评审 P1-3 实证),
+          # 也不为它引烘焙时弱出口下载——curl+REST 直发。JSON 解析用
+          # node stdin(镜像自带;readFileSync 纪律同源)。
           TAG="desktop-v$VERSION"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" release/*.AppImage --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" release/*.AppImage --repo "$GITHUB_REPOSITORY" \
-              --title "Cumora $VERSION(单制品 AppImage)" --prerelease \
-              --notes "桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启:AppImage 内 resources/bin 经 cumora-stack absorb 落盘(#284 向导接线前手动)。"
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          UP="https://uploads.github.com/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACC="Accept: application/vnd.github+json"
+          jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s)[process.argv[1]]??"")}catch{console.log("")}})' "$1"; }
+
+          rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+          if [ -z "$rel_id" ]; then
+            rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" -X POST "$API/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Cumora $VERSION(单制品 AppImage)\",\"prerelease\":true,\"body\":\"桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启:AppImage 内 resources/bin 经 cumora-stack absorb 落盘(#284 向导接线前手动)。\"}" | jget id)"
+            [ -n "$rel_id" ] || { echo "::error::release 创建失败($TAG)"; exit 1; }
           fi
-          echo "release: $TAG"
+          # 重发场景:删旧资产再传(--clobber 等价)。
+          for f in release/*.AppImage; do
+            name="$(basename "$f")"
+            curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/$rel_id/assets" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const a of JSON.parse(s))console.log(a.id+" "+a.name)})' \
+              | while read -r aid aname; do
+                  [ "$aname" = "$name" ] && curl -fsS --http1.1 --retry 3 -H "$AUTH" -X DELETE "$API/assets/$aid" || true
+                done
+            ok=0
+            for i in 1 2 3; do
+              if curl -fsS --http1.1 --retry 3 -H "$AUTH" \
+                   -H "Content-Type: application/octet-stream" \
+                   --data-binary @"$f" \
+                   "$UP/releases/$rel_id/assets?name=$name" | jget browser_download_url; then
+                ok=1; break
+              fi
+              echo "[publish] $name 第 $i 次上传失败,重试"; sleep 5
+            done
+            [ "$ok" = 1 ] || { echo "::error::$name 三次上传失败"; exit 1; }
+          done
+          echo "release: $TAG(rel=$rel_id)"
       # 本仓容器 job 不变式(root 属主残留会打穿下一 job 的 checkout)。
       - name: Restore workspace ownership for the host runner
         if: always()

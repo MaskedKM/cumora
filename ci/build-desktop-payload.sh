@@ -31,7 +31,10 @@ cp "$BINDIR"/cumora-server "$BINDIR"/cumora-daemon "$BINDIR"/cumora-sidecar \
 chmod 0755 "$PAYLOAD"/cumora-*
 cp "$DEPSDIR"/redis-server "$DEPSDIR"/redis-cli "$PAYLOAD/"
 chmod 0755 "$PAYLOAD"/redis-server "$PAYLOAD"/redis-cli
-cp -r "$DEPSDIR/pg" "$PAYLOAD/pg"
+# -L 摊平 pg/lib 下的 8 个符号链接(libpq.so 等):find -type f 不列链接,
+# 留链接=MANIFEST 覆盖面有缝;摊平后清单与 absorb 落盘端到端一致
+#(#303 评审 P2)。
+cp -rL "$DEPSDIR/pg" "$PAYLOAD/pg"
 cp -r "$REPO/apps/server-go/migrations" "$PAYLOAD/migrations"
 
 # files 清单:载荷内全部文件(排除 MANIFEST 自身),正斜杠相对路径。
