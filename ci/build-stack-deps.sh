@@ -84,6 +84,9 @@ if grep -q -- "-march=native" "$BUILD"/pgvector-*/build.log "$BUILD"/pgvector-*/
   echo "::error::pgvector 构建出现 -march=native(OPTFLAGS 覆盖未生效)"
   exit 1
 fi
+# 正断言(#309 评审):配方完整性 —— 基线旗标必须在场,不只"没毒"。
+grep -q -- "-march=x86-64" "$BUILD"/pgvector-*/build.log || {
+  echo "::error::pgvector 构建缺 -march=x86-64(配方漂移?)"; exit 1; }
 
 echo "[deps] 构建 redis $RD_VER(server+cli)…"
 tar xf "$SRC/redis.tar.gz" -C "$BUILD"
