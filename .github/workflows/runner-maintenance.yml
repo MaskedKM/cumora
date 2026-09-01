@@ -96,36 +96,53 @@ jobs:
         run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
 
   bake:
-    name: Bake CI images → local registry (127.0.0.1:5000)
-    # #292:pr.yml 两 job 的容器镜像来自**本机 registry**(127.0.0.1:5000,
+    name: Bake CI images → local registry (127.0.0.1:5500)
+    # #292:pr.yml 两 job 的容器镜像来自**本机 registry**(127.0.0.1:5500,
     # 常驻容器 cumora-ci-registry,数据落具名卷)。为什么不是本地 tag:
     # runner(2.336 实测)对 job 容器无条件 `docker pull`,本地独有 tag
     # 必然 manifest unknown → job 死;127.0.0.1 registry 可被 pull(docker
-    # 默认把 127.0.0.0/8 视为 insecure,明文 HTTP 直通)。nightly 幂等:
-    # registry 在=跳过,build 层缓存命中=秒级,基础镜像 best-effort 刷新。
-    # 配方 = ci/images/*.Dockerfile。与 prune job 无冲突:registry 容器
-    # 在跑(prune 只清已停容器),具名卷 prune 不带 --volumes 永不碰。
-    # docker build 内无 job env,代理经 build-arg 指 docker0 网关的
-    # Mihomo(*:7890 allow-lan);解析失败退化为直连烘(配方不变,慢)。
+    # 默认把 127.0.0.0/8 视为 insecure,明文 HTTP 直通)。端口 5500:
+    # 5000 在这台宿主机已被其它项目占用(2026-09-01 实测 bind failed)。
+    # nightly 幂等:registry 在=跳过,build 层缓存命中=秒级,基础镜像
+    # best-effort 刷新。配方 = ci/images/*.Dockerfile。与 prune job 无
+    # 冲突:registry 容器在跑(prune 只清已停容器),具名卷 prune 不带
+    # --volumes 永不碰。docker build 内无 job env,代理经 build-arg 指
+    # docker0 网关的 Mihomo(*:7890 allow-lan);解析失败退化为直连烘。
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure local registry (cumora-ci-registry @ 127.0.0.1:5000)
+      - name: Ensure local registry (cumora-ci-registry @ 127.0.0.1:5500)
         run: |
+          PORT=5500
+          # 端口有应答且不是本 registry 在跑 = 被别的东西占,硬错误带诊断
+          # (远程可判;唯一修法=换端口,本步与 pr.yml 镜像引用两处同改)。
+          if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null \
+             && ! docker ps --filter name=cumora-ci-registry --format '{{.Names}}' | grep -q .; then
+            echo "::error::127.0.0.1:$PORT 已被占用且不是本 registry —— 换端口(改本步 PORT 与 pr.yml 两处镜像引用)"
+            (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E "[:.]$PORT[[:space:]]" || true
+            exit 1
+          fi
           if ! docker ps --all --filter name=cumora-ci-registry --format '{{.Names}}' | grep -q .; then
             for i in 1 2 3; do docker pull registry:2 && break; sleep 5; done
             docker run -d --name cumora-ci-registry --restart=always \
-              -p 127.0.0.1:5000:5000 -v cumora-ci-registry:/var/lib/registry registry:2
+              -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
+          else
+            # 残留坏容器(如端口 bind 失败留下的 Created/Exited)自动重建
+            docker start cumora-ci-registry 2>/dev/null || {
+              echo "start 失败,清残留重建"
+              docker rm -f cumora-ci-registry
+              docker run -d --name cumora-ci-registry --restart=always \
+                -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
+            }
           fi
-          docker start cumora-ci-registry 2>/dev/null || true
           for i in $(seq 1 20); do
-            timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5000' 2>/dev/null && break
+            timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null && break
             sleep 3
           done
-          timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/5000' 2>/dev/null \
+          timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null \
             || { echo "::error::本地 registry 60s 未就绪"; exit 1; }
-          echo "registry ready"
+          echo "registry ready @ 127.0.0.1:$PORT"
       - name: Resolve docker0 gateway for the build-time proxy
         run: |
           GW="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
@@ -145,15 +162,15 @@ jobs:
           done
       - name: Build + push golang-alpine-ci:1.24
         run: |
-          docker build $PROXY_ARGS -t 127.0.0.1:5000/golang-alpine-ci:1.24 - < ci/images/golang-alpine-ci.Dockerfile
-          docker push 127.0.0.1:5000/golang-alpine-ci:1.24
+          docker build $PROXY_ARGS -t 127.0.0.1:5500/golang-alpine-ci:1.24 - < ci/images/golang-alpine-ci.Dockerfile
+          docker push 127.0.0.1:5500/golang-alpine-ci:1.24
       - name: Build + push golang-bookworm-ci:1.24
         run: |
-          docker build $PROXY_ARGS -t 127.0.0.1:5000/golang-bookworm-ci:1.24 - < ci/images/golang-bookworm-ci.Dockerfile
-          docker push 127.0.0.1:5000/golang-bookworm-ci:1.24
+          docker build $PROXY_ARGS -t 127.0.0.1:5500/golang-bookworm-ci:1.24 - < ci/images/golang-bookworm-ci.Dockerfile
+          docker push 127.0.0.1:5500/golang-bookworm-ci:1.24
       # 真实拉回验证——job 容器走的正是这条 pull 路径,绿=CI 必能起容器
       # (教训:此前 `docker images|grep||true` 把空结果掩蔽成成功)。
       - name: Verify registry serves both images (real pull)
         run: |
-          docker pull 127.0.0.1:5000/golang-alpine-ci:1.24
-          docker pull 127.0.0.1:5000/golang-bookworm-ci:1.24
+          docker pull 127.0.0.1:5500/golang-alpine-ci:1.24
+          docker pull 127.0.0.1:5500/golang-bookworm-ci:1.24
