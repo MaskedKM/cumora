@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '@/api/client'
+import { api, getServerOrigin } from '@/api/client'
 import { TitleBar } from '@/desktop/TitleBar'
-import { isElectron } from '@/lib/runtime'
+import { isElectron, type StackStepResult } from '@/lib/runtime'
 import { useT } from '@/lib/i18n'
 
 /**
@@ -30,10 +30,27 @@ interface DoctorReport {
   checks: Array<{ group: string; name: string; status: string; detail?: string }>
 }
 
+const WIZARD_SKIP_KEY = 'cumora.wizard.skipForNow'
+
+/** origin 指向非本机 = 用户显式配了远程/LAN 服务器(api/core 的
+ *  localStorage 覆盖)—— 这台机器没本地栈是正常态,向导不得拦
+ *  (评审 P2;硬拦 = 远程用户每次启动死在全屏向导上)。 */
+function originIsRemote(): boolean {
+  const origin = getServerOrigin()
+  if (!origin) return false
+  try {
+    const host = new URL(origin).hostname
+    return !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(host)
+  } catch {
+    return false
+  }
+}
+
 export function StackWizardGate({ children }: { children: React.ReactNode }) {
   const [gate, setGate] = useState<'probing' | 'wizard' | 'pass'>('probing')
   useEffect(() => {
-    if (!isElectron || !window.cumora?.stack) {
+    if (!isElectron || !window.cumora?.stack || originIsRemote() ||
+        sessionStorage.getItem(WIZARD_SKIP_KEY) === '1') {
       setGate('pass')
       return
     }
@@ -43,7 +60,9 @@ export function StackWizardGate({ children }: { children: React.ReactNode }) {
     }).catch(() => { if (alive) setGate('pass') })
     return () => { alive = false }
   }, [])
-  if (gate === 'probing') return <div className="h-screen w-screen" />
+  if (gate === 'probing') {
+    return <div className="h-screen w-screen" style={{ background: 'var(--paper)' }} />
+  }
   if (gate === 'pass') return <>{children}</>
   return <StackWizard />
 }
@@ -53,8 +72,10 @@ function StackWizard() {
   const [step, setStep] = useState<Step>('source')
   // 导入源:false = 净机新录 GitHub 凭据;true = 指到既有 env 文件。
   const [useExisting, setUseExisting] = useState(true)
-  const [envFile, setEnvFile] = useState('')
-  const [daemonEnvFile, setDaemonEnvFile] = useState('')
+  // 既有部署缺省路径:存量布局(向导出现 = 栈没起,但 env 文件可能还在)。
+  // 初始值而非 effect 回填 —— 回填会让用户无法清空重输(评审 P3)。
+  const [envFile, setEnvFile] = useState('~/Code/cumora/.env')
+  const [daemonEnvFile, setDaemonEnvFile] = useState('~/.cumora/daemon.env')
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -64,11 +85,6 @@ function StackWizard() {
   const [elapsed, setElapsed] = useState(0)
   const outputRef = useRef<HTMLPreElement>(null)
 
-  // 既有部署缺省路径:存量布局(向导出现 = 栈没起,但 env 文件可能还在)。
-  useEffect(() => {
-    if (!envFile) setEnvFile('~/Code/cumora/.env')
-    if (!daemonEnvFile) setDaemonEnvFile('~/.cumora/daemon.env')
-  }, [envFile, daemonEnvFile])
 
   useEffect(() => {
     if (step !== 'booting') return
@@ -83,17 +99,19 @@ function StackWizard() {
           window.clearInterval(timer)
           void finish()
         }
-      })
+      }).catch(() => { /* IPC 瞬断:下一轮再试 */ })
     }, 3000)
     return () => { window.clearInterval(poll); window.clearInterval(timer) }
   }, [step])
 
   async function finish() {
-    const res = await window.cumora?.stack?.doctor()
-    if (res?.ok) {
+    const res = await window.cumora?.stack?.doctor().catch(() => null)
+    // 退出码 1(anyFail)时 JSON 仍在 stdout —— 必须照解析,否则红项
+    // 被丢弃、完成屏恒显"全绿"(评审 P1 的逻辑倒置)。
+    if (res) {
       try {
-        const start = res.output.indexOf('{')
-        setDoctor(JSON.parse(res.output.slice(start)))
+        const start = res.stdout.indexOf('{')
+        if (start >= 0) setDoctor(JSON.parse(res.stdout.slice(start)))
       } catch { /* 报告面解析失败不挡完成 */ }
     }
     // 登录链探活:GitHub provider 配置态(未配 = 显性提示而非裸 503)。
@@ -104,7 +122,7 @@ function StackWizard() {
     setStep('done')
   }
 
-  const runStep = useCallback(async (key: string, fn: () => Promise<{ ok: boolean; code: number; output: string; error?: string | null }>) => {
+  const runStep = useCallback(async (key: string, fn: () => Promise<StackStepResult>) => {
     setSteps((s) => ({ ...s, [key]: { status: 'running' } }))
     const res = await fn()
     setSteps((s) => ({ ...s, [key]: { status: res.ok ? 'ok' : 'fail', tail: res.output?.split('\n').slice(-8).join('\n') } }))
@@ -120,6 +138,12 @@ function StackWizard() {
     const imp = await runStep('import', () => stack.importEnv(
       useExisting ? { envFile, daemonEnvFile } : { creds: { GITHUB_CLIENT_ID: ghId, GITHUB_CLIENT_SECRET: ghSecret } },
     ))
+    // spawn 失败(error=ENOENT 等,code 127)= 环境问题,不是红线。
+    if (imp.error) {
+      setErr(`${imp.error}${imp.stderr ? `\n${imp.stderr}` : ''}`)
+      setStep('source')
+      return
+    }
     // 红线(缺 GitHub OAuth 键)= 回表单补,不是安装失败。
     if (imp.code === 1) {
       setErr(t('wizard.redlineMissing'))
@@ -199,6 +223,13 @@ function StackWizard() {
               className="h-11 rounded-[10px] bg-[#1f2328] hover:bg-[#2a3037] text-white transition-colors text-[14px]"
             >
               {t('wizard.installButton')}
+            </button>
+            <button
+              type="button"
+              onClick={() => { sessionStorage.setItem(WIZARD_SKIP_KEY, '1'); location.reload() }}
+              className="text-[11px] text-ink-300 underline mx-auto"
+            >
+              {t('wizard.skipForNow')}
             </button>
           </div>
         )}
