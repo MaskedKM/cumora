@@ -435,7 +435,12 @@ jobs:
           YJS_SIDECAR_PORT: '5282'
         run: |
           set -e -o pipefail
-          npm install -g bun@1.3.10 >/dev/null
+          ok=0
+          for i in 1 2 3; do
+            npm install -g bun@1.3.10 >/dev/null 2>&1 && { ok=1; break; }
+            echo "[bun] npm 安装第 $i 次失败(平台包过代理偶发掐流;首跑后吃 npm 缓存卷),重试"
+          done
+          [ "$ok" = 1 ] || { echo "::error::bun 安装三次失败"; exit 1; }
           bun --version
           bun build --compile --target=bun-linux-x64 \
             apps/yjs-sidecar/src/main.ts --outfile .sidecar-smoke-bin
