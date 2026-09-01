@@ -118,24 +118,19 @@ jobs:
           # 端口有应答且不是本 registry 在跑 = 被别的东西占,硬错误带诊断
           # (远程可判;唯一修法=换端口,本步与 pr.yml 镜像引用两处同改)。
           if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null \
-             && ! docker ps --filter name=cumora-ci-registry --format '{{.Names}}' | grep -q .; then
+             && [ "$(docker ps --filter name=cumora-ci-registry --format '{{.Names}}')" != "cumora-ci-registry" ]; then
             echo "::error::127.0.0.1:$PORT 已被占用且不是本 registry —— 换端口(改本步 PORT 与 pr.yml 两处镜像引用)"
             (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E "[:.]$PORT[[:space:]]" || true
             exit 1
           fi
-          if ! docker ps --all --filter name=cumora-ci-registry --format '{{.Names}}' | grep -q .; then
-            for i in 1 2 3; do docker pull registry:2 && break; sleep 5; done
-            docker run -d --name cumora-ci-registry --restart=always \
-              -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
-          else
-            # 残留坏容器(如端口 bind 失败留下的 Created/Exited)自动重建
-            docker start cumora-ci-registry 2>/dev/null || {
-              echo "start 失败,清残留重建"
-              docker rm -f cumora-ci-registry
-              docker run -d --name cumora-ci-registry --restart=always \
-                -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
-            }
-          fi
+          # 无条件重建(数据在具名卷,重建零损失):杜绝"start 成功但端口
+          # 配置是旧值"的错位(2026-09-01 实测:绑 5000 的死容器后来 start
+          # 成功,就绪门探 5500 永远等不到)。夜间窗口重建,与在跑 CI 撞
+          # 车的概率可忽略。
+          docker rm -f cumora-ci-registry 2>/dev/null || true
+          for i in 1 2 3; do docker pull registry:2 && break; sleep 5; done
+          docker run -d --name cumora-ci-registry --restart=always \
+            -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
           for i in $(seq 1 20); do
             timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null && break
             sleep 3
