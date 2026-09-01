@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/doctor"
@@ -37,6 +38,8 @@ func main() {
 		cmdStatus(os.Args[2:])
 	case "install":
 		os.Exit(cmdInstall(os.Args[2:]))
+	case "absorb":
+		os.Exit(cmdAbsorb(os.Args[2:]))
 	case "uninstall":
 		os.Exit(cmdUninstall(os.Args[2:]))
 	case "logs":
@@ -58,6 +61,9 @@ func usage() {
   cumora-stack status [--json] [flags]   状态:现在跑得怎样(恒退出 0:doctor
                                          才是退出码门,status 只报告——脚本
                                          编排请以 doctor 为准)
+  cumora-stack absorb <载荷目录> [flags] bootstrap(#283):制品面 → releases/
+                                         <ver>/ + 原子切 current;MANIFEST
+                                         逐文件 sha 校验,同版本重铺拒绝
   cumora-stack install                   切到单 unit 形态:装 cumora.service,
                                          停用旧三 unit(文件保留),stackd 接管
                                          (前置:current 制品已含 stackd)
@@ -80,6 +86,10 @@ status 专用:
   --healthz-url URL      (默认 http://127.0.0.1:5182/internal/healthz)
   --sid-token TOKEN      healthz Bearer(默认读 $YJS_SIDECAR_TOKEN 或 env-file)
   --current-dir PATH     (默认 $CUMORA_CURRENT_DIR,或 ~/.local/share/cumora/current)
+
+absorb 专用:
+  --releases-dir PATH    (默认 $CUMORA_RELEASES_DIR,或 ~/.local/share/cumora/releases)
+  --current-dir PATH     (同 status)
 `)
 }
 
@@ -204,14 +214,15 @@ func cmdStatus(args []string) {
 	versionFile := filepath.Join(*current, "VERSION")
 
 	rep := status.Run(probe.NewDeps(), status.Config{
-		Units:       c.units(),
-		StackdUnit:  envOr("CUMORA_STACKD_UNIT", "cumora.service"),
-		LivezURL:    *livez,
-		HealthzURL:  *healthz,
-		SidToken:    token,
-		VersionFile: versionFile,
-		CurrentDir:  *current,
-		StateFile:   envOr("CUMORA_STATE_FILE", home(".local/share/cumora/stackd-state.json")),
+		Units:        c.units(),
+		StackdUnit:   envOr("CUMORA_STACKD_UNIT", "cumora.service"),
+		LivezURL:     *livez,
+		HealthzURL:   *healthz,
+		SidToken:     token,
+		VersionFile:  versionFile,
+		CurrentDir:   *current,
+		StateFile:    envOr("CUMORA_STATE_FILE", home(".local/share/cumora/stackd-state.json")),
+		ManifestFile: filepath.Join(*current, "MANIFEST"),
 	})
 
 	if c.json {
@@ -270,6 +281,13 @@ func printStatus(rep status.Report) {
 	fmt.Println("[version]")
 	fmt.Printf("  current  %s\n", orDash(rep.Current))
 	fmt.Printf("  VERSION  %s\n", orDash(rep.Version))
+	if rep.Manifest != nil {
+		fmt.Println("[manifest]")
+		fmt.Printf("  version  %s\n", rep.Manifest.Version)
+		for _, k := range sortedDepKeys(rep.Manifest.Deps) {
+			fmt.Printf("  %-12s %s\n", k, rep.Manifest.Deps[k])
+		}
+	}
 	if rep.Stackd != nil {
 		fmt.Printf("[stackd] instance=%s updated=%s\n",
 			rep.Stackd.InstanceID, rep.Stackd.UpdatedAt.Format("15:04:05"))
@@ -285,4 +303,13 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func sortedDepKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

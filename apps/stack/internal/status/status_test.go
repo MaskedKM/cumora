@@ -17,6 +17,7 @@ type fakeDeps struct {
 	version   string           // VERSION 文件内容;空 = 读不到
 	current   string           // EvalSymlinks 结果;空 = 错误
 	stateJSON string           // stackd-state.json 内容;空 = 读不到
+	manifest  string           // MANIFEST 内容;空 = 读不到
 }
 
 // withStateFile —— 状态文件内容注入(返回配好的 deps)。
@@ -53,6 +54,12 @@ func (f fakeDeps) deps() probe.Deps {
 				}
 				return []byte(f.stateJSON), nil
 			}
+			if strings.HasSuffix(path, "MANIFEST") {
+				if f.manifest == "" {
+					return nil, errors.New("no such file")
+				}
+				return []byte(f.manifest), nil
+			}
 			if f.version == "" {
 				return nil, errors.New("no such file")
 			}
@@ -74,12 +81,13 @@ const (
 
 func cfg() Config {
 	return Config{
-		Units:       []string{"cumora-go"},
-		LivezURL:    livezURL,
-		HealthzURL:  healthzURL,
-		VersionFile: "/fake/current/VERSION",
-		CurrentDir:  "/fake/current",
-		StateFile:   "/fake/current/stackd-state.json",
+		Units:        []string{"cumora-go"},
+		LivezURL:     livezURL,
+		HealthzURL:   healthzURL,
+		VersionFile:  "/fake/current/VERSION",
+		CurrentDir:   "/fake/current",
+		StateFile:    "/fake/current/stackd-state.json",
+		ManifestFile: "/fake/current/MANIFEST",
 	}
 }
 
@@ -184,6 +192,32 @@ func TestUnitsSectionByForm(t *testing.T) {
 	r3 := Run(base.deps(), cfg())
 	if len(r3.Units) != 1 || r3.Units[0].Unit != "cumora-go" {
 		t.Fatalf("未配置形态感知时行为不变: %+v", r3.Units)
+	}
+}
+
+func TestManifestSection(t *testing.T) {
+	// #283 PR-B:current/MANIFEST 可读 → Manifest 段带出;读不到(旧
+	// release 无清单)= 省略(omitempty,JSON 契约向后兼容)。
+	state := `{"instanceId":"x","updatedAt":"2026-09-01T12:00:00Z","children":[]}`
+	mf := `{"version":"0.4.0","files":{"cumora-server":"ab"},"deps":{"postgresql":{"version":"16.15","sourceSha256":"c1"},"redis":{"version":"7.2.16","sourceSha256":"96"}}}`
+	r := Run((fakeDeps{
+		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
+		version:   "0.4.0\n", current: "/x/releases/v0.4.0",
+		stateJSON: state, manifest: mf,
+	}).deps(), cfg())
+	if r.Manifest == nil {
+		t.Fatal("MANIFEST 可读应带出 Manifest 段")
+	}
+	if r.Manifest.Version != "0.4.0" || r.Manifest.Deps["postgresql"] != "16.15" || r.Manifest.Deps["redis"] != "7.2.16" {
+		t.Fatalf("Manifest 段内容: %+v", r.Manifest)
+	}
+
+	r2 := Run((fakeDeps{
+		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
+		version:   "v0.3.0-go.8\n", current: "/x/releases/v0.3.0-go.8",
+	}).deps(), cfg())
+	if r2.Manifest != nil {
+		t.Fatalf("无 MANIFEST 时段应省略: %+v", r2.Manifest)
 	}
 }
 
