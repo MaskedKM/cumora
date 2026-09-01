@@ -46,8 +46,9 @@ jobs:
   # 非 glibc 宿主会把 musl 烙进 linux 产物(评审 P0 实锤);交叉编译的
   # 非 host 目标还需从 npm 拉 staged runtime(评审 P1 实锤,~90MB/目标)
   # ——故本 job:bookworm 容器 + 走 Mihomo 代理(pr.yml 同款)+ bun
-  # 缓存卷(命中即零下载)+ 全步骤重试环。产物经 upload-artifact 交给
-  # release job,不直接对外。
+  # 缓存卷(命中即零下载)+ 全步骤重试环。产物经宿主共享卷 relay 交给
+  # release job(#296:账户 artifact 配额墙 + 每发版省 ~760MB 代理往返),
+  # 不直接对外。
   sidecar:
     runs-on: [self-hosted, linux, ser8]
     container:
@@ -56,7 +57,8 @@ jobs:
       volumes:
         - /var/lib/cumora-ci-cache/npmcache:/npm/cache
         - /var/lib/cumora-ci-cache/buncache:/root/.bun/install/cache
-    timeout-minutes: 20  # 冷跑(镜像拉取+3×~90MB staged runtime+~380MB artifact 上传)可触及,对齐 release job
+        - /var/lib/cumora-ci-cache/relay:/relay
+    timeout-minutes: 20  # 冷跑(镜像拉取+3×~90MB staged runtime)可触及,对齐 release job
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     env:
       # 与 pr.yml checks job 同款出口代理配方(小写——libcurl/npm/bun
@@ -121,13 +123,21 @@ jobs:
             ls -la "dist-sidecar/sidecar-$t"
           done
 
-      - name: Upload sidecar binaries (workflow artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: sidecar-binaries
-          path: dist-sidecar/
-          retention-days: 5
-          if-no-files-found: error
+      # #296:宿主共享卷 relay 交接(替代 upload-artifact——账户级 artifact
+      # 存储配额爆过一次,且经 GitHub 中转每发版多 ~760MB 代理往返;本舰队
+      # 单 runner 同宿主,sidecar→release 顺序执行,本地卷直递即可)。
+      # run 粒度目录防串台(rerun 同 run id 原地重写);sha256 清单供 release
+      # 侧强校验;留最近 2 个 run 目录防膨胀(与 tarballs 缓存同款纪律)。
+      - name: Relay sidecar binaries (host shared volume)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="/relay/run-${GITHUB_RUN_ID}"
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp dist-sidecar/* "$DEST/"
+          (cd "$DEST" && sha256sum sidecar-* > SHA256SUMS.sidecar)
+          ls -la "$DEST"
+          ls -dt /relay/run-* 2>/dev/null | tail -n +3 | xargs -r rm -rf
 
       # Same ownership give-back as pr.yml's container jobs.
       - name: Restore workspace ownership for the host runner
@@ -141,6 +151,9 @@ jobs:
     runs-on: [self-hosted, linux, ser8]
     container:
       image: golang:1.24-alpine
+      # #296:sidecar 产物经宿主共享卷 relay 直递(见 sidecar job)。
+      volumes:
+        - /var/lib/cumora-ci-cache/relay:/relay
     timeout-minutes: 20
     # tag 推送才真正发布;分支/手动触发的 paths 变更只做构建冒烟(不发布)。
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -165,12 +178,21 @@ jobs:
       - uses: actions/checkout@v4
 
       # sidecar job(bookworm/glibc)的编译产物交接(评审 P0:alpine 上
-      # 编 linux 产物会带 musl loader,生产 glibc 起不来)。
-      - name: Download sidecar binaries (built on glibc)
-        uses: actions/download-artifact@v4
-        with:
-          name: sidecar-binaries
-          path: dist-sidecar
+      # 编 linux 产物会带 musl loader,生产 glibc 起不来)。#296:宿主
+      # 共享卷 relay 直递 + sha256 强校验(目录缺失/校验不过=硬失败,
+      # 等价于 download-artifact 的完整性保证)。
+      - name: Collect sidecar binaries (from host relay)
+        run: |
+          set -euo pipefail
+          RELAY="/relay/run-${GITHUB_RUN_ID}"
+          if [ ! -d "$RELAY" ]; then
+            echo "::error::relay 目录缺失:$RELAY —— sidecar job 未落盘?"
+            exit 1
+          fi
+          (cd "$RELAY" && sha256sum -c SHA256SUMS.sidecar)
+          mkdir -p dist-sidecar
+          cp "$RELAY"/sidecar-* dist-sidecar/
+          chmod 0755 dist-sidecar/sidecar-*
 
       - name: Resolve release version
         id: ver
