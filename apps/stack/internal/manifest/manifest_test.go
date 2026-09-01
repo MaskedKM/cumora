@@ -21,7 +21,7 @@ func sha(t *testing.T, path string) string {
 }
 
 func TestParseValidAndInvalid(t *testing.T) {
-	m, err := Parse([]byte(`{"version":"0.4.0","files":{"cumora-server":"ab"},"deps":{"redis":{"version":"7.2.16","sourceSha256":"00"}}}`))
+	m, err := Parse([]byte(`{"version":"0.4.0","files":{"cumora-server":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"deps":{"redis":{"version":"7.2.16","sourceSha256":"00"}}}`))
 	if err != nil || m.Version != "0.4.0" || len(m.Files) != 1 || m.Deps["redis"].Version != "7.2.16" {
 		t.Fatalf("合法清单应解析: %+v %v", m, err)
 	}
@@ -85,5 +85,35 @@ func TestVerifyNamesTheCulprit(t *testing.T) {
 	m3 := Manifest{Version: "1", Files: map[string]string{"../escape": strings.Repeat("0", 64)}}
 	if err3 := Verify(dir, m3); err3 == nil || !strings.Contains(err3.Error(), "越界") {
 		t.Fatalf("越界路径应拒绝: %v", err3)
+	}
+}
+
+func TestParseRejectsShortSha(t *testing.T) {
+	// 坏清单在解析口拒(#302 评审 P1-2:短 sha 交给 Verify 的切片会
+	// panic——崩溃不是响亮报错)。
+	body := `{"version":"1","files":{"cumora-server":"ab"}}`
+	if _, err := Parse([]byte(body)); err == nil || !strings.Contains(err.Error(), "64 位") {
+		t.Fatalf("短 sha 应在解析口拒: %v", err)
+	}
+	if _, err := Parse([]byte(`{"version":"1","files":{"a":"` + strings.Repeat("G", 64) + `"}}`)); err == nil {
+		t.Fatal("非 hex sha 应拒")
+	}
+}
+
+func TestVerifyMiddleDotDotEscape(t *testing.T) {
+	// 只查前缀会放过中间 `..` 段(#302 评审 P1-1 容器实证逃逸:
+	// a/../../x 会读到载荷目录之外做比对)。Clean 归一后拒。
+	dir := writeTree(t, map[string]string{"a/f": "x"})
+	m := Manifest{Version: "1", Files: map[string]string{"a/../../escaped": strings.Repeat("0", 64)}}
+	err := Verify(dir, m)
+	if err == nil || !strings.Contains(err.Error(), "越界") {
+		t.Fatalf("中间 .. 段应拒: %v", err)
+	}
+	// Clean 后仍在载荷内的相对段(a/../b → b)无害。
+	dir2 := writeTree(t, map[string]string{"b": "content"})
+	sum := sha(t, filepath.Join(dir2, "b"))
+	m2 := Manifest{Version: "1", Files: map[string]string{"a/../b": sum}}
+	if err := Verify(dir2, m2); err != nil {
+		t.Fatalf("归一后未越界应放行: %v", err)
 	}
 }

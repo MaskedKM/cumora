@@ -199,7 +199,7 @@ func TestManifestSection(t *testing.T) {
 	// #283 PR-B:current/MANIFEST 可读 → Manifest 段带出;读不到(旧
 	// release 无清单)= 省略(omitempty,JSON 契约向后兼容)。
 	state := `{"instanceId":"x","updatedAt":"2026-09-01T12:00:00Z","children":[]}`
-	mf := `{"version":"0.4.0","files":{"cumora-server":"ab"},"deps":{"postgresql":{"version":"16.15","sourceSha256":"c1"},"redis":{"version":"7.2.16","sourceSha256":"96"}}}`
+	mf := `{"version":"0.4.0","files":{"cumora-server":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"deps":{"postgresql":{"version":"16.15","sourceSha256":"c1"},"redis":{"version":"7.2.16","sourceSha256":"96"}}}`
 	r := Run((fakeDeps{
 		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
 		version:   "0.4.0\n", current: "/x/releases/v0.4.0",

@@ -39,7 +39,9 @@ type Summary struct {
 	Deps    map[string]string `json:"deps,omitempty"` // 名 → 版本
 }
 
-// Parse —— 解析 + 基本校验(版本与 files 非空)。
+// Parse —— 解析 + 基本校验(版本与 files 非空;files 值必须 64 位
+// 小写 hex sha256——坏清单在解析口响亮拒,不留给 Verify 的切片去
+// panic,#302 评审 P1-2 实证形态)。
 func Parse(data []byte) (Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -51,7 +53,24 @@ func Parse(data []byte) (Manifest, error) {
 	if len(m.Files) == 0 {
 		return Manifest{}, errors.New("MANIFEST.files 为空")
 	}
+	for rel, sum := range m.Files {
+		if !isSha256Hex(sum) {
+			return Manifest{}, fmt.Errorf("MANIFEST.files[%s] 的 sha256 非 64 位小写 hex:%q", rel, sum)
+		}
+	}
 	return m, nil
+}
+
+func isSha256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // SummaryOf —— 报告面瘦身。
@@ -77,18 +96,22 @@ func hashFile(path string) (string, error) {
 }
 
 // Verify —— 逐条核销 files:缺件/坏件/越界路径都点名(静默失败=排障
-// 盲飞——stack-deps 首跑的教训)。
+// 盲飞——stack-deps 首跑的教训)。越界判定先 Clean 再查——只查前缀
+// 会放过中间 `..` 段(`a/../../x`,#302 评审 P1-1 容器实证逃逸)。
 func Verify(dir string, m Manifest) error {
 	for rel, want := range m.Files {
-		if filepath.IsAbs(rel) || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if filepath.IsAbs(clean) || clean == ".." ||
+			strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("MANIFEST.files 含越界路径: %q", rel)
 		}
-		got, err := hashFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		got, err := hashFile(filepath.Join(dir, clean))
 		if err != nil {
 			return fmt.Errorf("MANIFEST 校验缺件: %s(%v)", rel, err)
 		}
 		if got != want {
-			return fmt.Errorf("MANIFEST 校验不符: %s(期望 %s… 实得 %s…)", rel, want[:12], got[:12])
+			return fmt.Errorf("MANIFEST 校验不符: %s(期望 %s… 实得 %s…)",
+				rel, want[:min(12, len(want))], got[:min(12, len(got))])
 		}
 	}
 	return nil

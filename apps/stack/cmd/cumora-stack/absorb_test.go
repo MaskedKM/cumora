@@ -17,7 +17,10 @@ func makePayload(t *testing.T, version string) string {
 	dir := t.TempDir()
 	files := map[string]string{
 		"cumora-server":      "server-bin",
+		"cumora-daemon":      "daemon-bin",
+		"cumora-sidecar":     "sidecar-bin",
 		"cumora-stack":       "stack-bin",
+		"cumora-stackd":      "stackd-bin",
 		"redis-server":       "redis-bin",
 		"pg/bin/postgres":    "pg-bin",
 		"migrations/001.sql": "CREATE TABLE t();",
@@ -144,5 +147,37 @@ func TestAbsorbTamperedSourceRefused(t *testing.T) {
 	// 拒绝时不得创建 current
 	if _, lerr := os.Lstat(filepath.Join(share, "current")); !os.IsNotExist(lerr) {
 		t.Fatal("失败路径不得切 current")
+	}
+}
+
+func TestAbsorbMissingRequiredPieceRefused(t *testing.T) {
+	// 制品契约门(#302 评审 P2-4):缺任一必需可执行件 = 响亮拒绝,
+	// 不留给 install 后的半栈。
+	src := makePayload(t, "v1.0.0")
+	if err := os.Remove(filepath.Join(src, "cumora-daemon")); err != nil {
+		t.Fatal(err)
+	}
+	share := t.TempDir()
+	_, err := Absorb(src, filepath.Join(share, "releases"), filepath.Join(share, "current"))
+	if err == nil || !strings.Contains(err.Error(), "cumora-daemon") {
+		t.Fatalf("缺契约件应点名拒绝: %v", err)
+	}
+}
+
+func TestAbsorbCurrentIsDirectoryRefused(t *testing.T) {
+	// current 已存在且非 symlink:点名拒绝,不覆盖、不留半成品
+	//(#302 评审 P2-2)。
+	src := makePayload(t, "v2.0.0")
+	share := t.TempDir()
+	current := filepath.Join(share, "current")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Absorb(src, filepath.Join(share, "releases"), current)
+	if err == nil || !strings.Contains(err.Error(), "不是 symlink") {
+		t.Fatalf("current 为目录应点名拒绝: %v", err)
+	}
+	if _, serr := os.Lstat(filepath.Join(share, "current.new")); !os.IsNotExist(serr) {
+		t.Fatal("失败路径不得留 current.new 残留")
 	}
 }
