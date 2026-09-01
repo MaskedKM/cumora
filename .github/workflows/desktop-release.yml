@@ -201,18 +201,23 @@ jobs:
           # (422,重发窗口的常态)则回读。三段都失败才算发布失败。
           rel_id=""
           for i in 1 2 3; do
-            rel_id="$(curl -fsS --http1.1 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" 2>/dev/null | jget id || true)"
+            rel_id="$(curl -fsS --http1.1 --retry 2 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
             [ -n "$rel_id" ] && break
-            echo "[publish] tag 查询第 $i 次未命中(404/链路),5s 后重试"
+            echo "[publish] tag 查询第 $i 次未命中(上方 curl 错误原文),5s 后重试"
             sleep 5
           done
           if [ -z "$rel_id" ]; then
             rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" -X POST "$API/releases" \
               -d "{\"tag_name\":\"$TAG\",\"name\":\"Cumora $VERSION(单制品 AppImage)\",\"prerelease\":true,\"body\":\"桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启向导自动接线(#284)。\"}" 2>/dev/null | jget id || true)"
             if [ -z "$rel_id" ]; then
-              # already_exists 竞态:回读一次。
-              sleep 5
-              rel_id="$(curl -fsS --http1.1 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" 2>/dev/null | jget id || true)"
+              # already_exists 竞态:回读复用同款 3×5s 循环(该 GET 暴露的
+              # 正是本 PR 修的瞬时 404 模式,单发回读会复现同类失败)。
+              for j in 1 2 3; do
+                sleep 5
+                rel_id="$(curl -fsS --http1.1 --retry 2 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+                [ -n "$rel_id" ] && break
+                echo "[publish] already_exists 回读第 $j 次未命中"
+              done
             fi
             [ -n "$rel_id" ] || { echo "::error::release 创建/解析失败($TAG)"; exit 1; }
           fi
