@@ -70,10 +70,13 @@ tar xf "$SRC/pg.tar.bz2" -C "$BUILD"
   || { tail -20 "$BUILD"/postgresql-*/{configure,build,install}.log 2>/dev/null; echo "::error::postgresql 构建失败"; exit 1; }
 
 echo "[deps] 构建 pgvector $PV_VER …"
+# 上游 Makefile 默认 OPTFLAGS=-march=native —— 在带 AVX-512 的构建机上
+# 会产出仅该机可跑的指令(实测:CREATE EXTENSION 即 SIGILL on 无 AVX-512
+# 机器)。制品是发行物,钉回 x86-64 基线(SSE2,全 x64 可跑)。
 tar xf "$SRC/pgvector.tar.gz" -C "$BUILD"
 ( cd "$BUILD/pgvector-$PV_VER" \
-  && make PG_CONFIG="$OUT/pg/bin/pg_config" >build.log 2>&1 \
-  && make install PG_CONFIG="$OUT/pg/bin/pg_config" >install.log 2>&1 ) \
+  && make OPTFLAGS="-march=x86-64" PG_CONFIG="$OUT/pg/bin/pg_config" >build.log 2>&1 \
+  && make install OPTFLAGS="-march=x86-64" PG_CONFIG="$OUT/pg/bin/pg_config" >install.log 2>&1 ) \
   || { tail -25 "$BUILD"/pgvector-*/{build,install}.log 2>/dev/null; echo "::error::pgvector 构建失败"; exit 1; }
 
 echo "[deps] 构建 redis $RD_VER(server+cli)…"

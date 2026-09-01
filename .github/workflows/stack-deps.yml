@@ -38,7 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Resolve lock hash
-        run: echo "LOCKHASH=$(sha256sum ci/stack-deps.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        # LOCKHASH 锚 = 锁(源与 sha)+ 构建脚本:配方变更必须重建,
+        # 否则修了编译旗标也吃卷上的旧产物(-march=native 实锤坑)。
+        run: echo "LOCKHASH=$(printf '%s\n' ci/stack-deps.lock ci/build-stack-deps.sh | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - name: Fast path probe
         id: cache
         run: |
