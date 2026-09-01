@@ -1,7 +1,7 @@
 {
   "name": "cumora",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.4.0",
   "workspaces": [
     "apps/web",
     "apps/yjs-sidecar",
@@ -139,6 +139,13 @@
       "build/icon.png",
       "build/tray-template*.png",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-payload",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
     ],
     "directories": {
       "output": "release",
