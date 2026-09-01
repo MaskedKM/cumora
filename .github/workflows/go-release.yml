@@ -73,7 +73,10 @@ jobs:
       # npm ci 拉 hoisted workspace 依赖(sidecar 无 dependencies 字段);
       # --ignore-scripts 跳过 electron 等下载,sidecar 纯 JS 依赖零依赖
       # 安装脚本(评审实证)。出口偶发掐流 → 重试环。
+      # shell: bash —— 容器 job 默认 sh=bookworm 的 dash,不认 pipefail
+      # (v0.3.0-go.7 首跑即死在第一行,#294;pr.yml checks job 同坑 #115)。
       - name: npm ci (sidecar bundling deps)
+        shell: bash
         run: |
           set -euo pipefail
           ok=0
@@ -87,6 +90,7 @@ jobs:
       # 由 bun 自家 postinstall 探 /etc/alpine-release 选 musl 变体——
       # 本 job 是 bookworm,选 glibc)。99MB 包过代理偶发掐流 → 重试环。
       - name: Install bun (pinned, via npm registry)
+        shell: bash
         run: |
           set -euo pipefail
           ok=0
@@ -101,6 +105,7 @@ jobs:
       # npm 拉 staged runtime(尊重代理;buncache 卷命中后 20ms 级)。
       # 重试环裹整个循环单目标粒度。
       - name: Compile sidecar (4 targets)
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist-sidecar
