@@ -67,10 +67,15 @@ jobs:
           # 输入漂移=断言路径失配——评审 P2-1,故不留 version 输入)。
           # LOCKHASH 不在本 job 重算:stack-deps 的双锚公式经 workflow_call
           # output 传入(#308 评审 P0 —— 本地副本公式曾分叉致修复静默失效)。
-          echo "LOCKHASH=${{ needs.deps.outputs.lockhash }}" >> "$GITHUB_ENV"
+          # GITHUB_ENV 对当前步不可见(runner 步后才读)—— 断言必须吃
+          # shell 变量,否则恒空假失败(#308 复核 P0;旧代码的 test -d
+          # "/deps/$LOCKHASH" 同病,空值时 test -d /deps 恒真,从未起过
+          # 作用,一并根除)。
+          LH="${{ needs.deps.outputs.lockhash }}"
+          test -n "$LH" || { echo "::error::deps job 未回传 lockhash"; exit 1; }
+          test -d "/deps/$LH" || { echo "::error::stack-deps 产物缺失(前置 job 失败?)"; exit 1; }
+          echo "LOCKHASH=$LH" >> "$GITHUB_ENV"
           echo "VERSION=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')" >> "$GITHUB_ENV"
-          test -n "$LOCKHASH" || { echo "::error::deps job 未回传 lockhash"; exit 1; }
-          test -d "/deps/$LOCKHASH" || { echo "::error::stack-deps 产物缺失(前置 job 失败?)"; exit 1; }
       - name: npm ci (workspace deps; sidecar 编译的前置)
         shell: bash
         run: |
