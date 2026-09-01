@@ -371,3 +371,38 @@ func TestStartCancelledDuringCommit(t *testing.T) {
 		t.Fatal("不应有监控协程残留")
 	}
 }
+
+// #284:注入 env 必须赢过继承 env —— environ 重复键 getenv 取首个匹配,
+// 旧实现(纯 append)会让注入的 DATABASE_URL/PATH 变成死字。真子进程
+// 打印实际取到的值,断言覆盖生效。
+func TestChildEnvOverridesInherited(t *testing.T) {
+	t.Setenv("STACK_TEST_VAR", "inherited")
+	lines := make(chan string, 4)
+	opts := fastOpts()
+	opts.Log = func(msg string, kv ...any) {
+		if msg != "child log" {
+			return
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			if kv[i] == "line" {
+				lines <- kv[i+1].(string)
+			}
+		}
+	}
+	m := New(opts)
+	defer m.Shutdown()
+	c := shChild("envprobe", "echo value=$STACK_TEST_VAR; sleep 30", func(c *Child) {
+		c.Env = []string{"STACK_TEST_VAR=injected"}
+	})
+	if err := m.Start(c); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case line := <-lines:
+		if strings.TrimSpace(line) != "value=injected" {
+			t.Fatalf("注入值应覆盖继承值,实得 %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("2s 内未收到子进程输出")
+	}
+}

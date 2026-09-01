@@ -53,11 +53,18 @@ func systemd(args ...string) error {
 }
 
 func cmdInstall(args []string) int {
+	// stack.toml(#284):坏文件拒装 —— 装出来的 unit 会起一个拒启的
+	// stackd,当场红比带病上岗好。
+	cfg, _, _, cfgErr := loadCfg()
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "install: stack.toml 非法: %v\n", cfgErr)
+		return 1
+	}
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	current := fs.String("current-dir",
-		envOr("CUMORA_CURRENT_DIR", home(".local/share/cumora/current")), "release 制品目录")
+		envOr("CUMORA_CURRENT_DIR", cfg.CurrentDir()), "release 制品目录")
 	envFile := fs.String("env-file",
-		envOr("CUMORA_ENV_FILE", home("Code/cumora/.env")), "主 .env(unit EnvironmentFile)")
+		envOr("CUMORA_ENV_FILE", defaultEnvFile()), "主 .env(unit EnvironmentFile;规范位 stack.env,存量回退旧布局)")
 	work := fs.String("work-dir", envOr("CUMORA_WORK_DIR", home("Code/cumora")), "子进程工作目录")
 	_ = fs.Parse(args)
 

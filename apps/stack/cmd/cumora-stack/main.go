@@ -17,6 +17,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/stack/internal/doctor"
 	"github.com/MaskedKM/cumora/apps/stack/internal/engdirs"
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/stackconfig"
 	"github.com/MaskedKM/cumora/apps/stack/internal/status"
 )
 
@@ -42,6 +43,8 @@ func main() {
 		os.Exit(cmdAbsorb(os.Args[2:]))
 	case "uninstall":
 		os.Exit(cmdUninstall(os.Args[2:]))
+	case "import-env":
+		os.Exit(cmdImportEnv(os.Args[2:]))
 	case "logs":
 		os.Exit(cmdLogs(os.Args[2:]))
 	case "-h", "--help", "help":
@@ -70,8 +73,13 @@ func usage() {
                                          (前置:current 制品已含 stackd)
   cumora-stack uninstall                 回滚:停用 cumora.service,恢复旧三 unit
   cumora-stack logs [-f] [--svc NAME]    stackd 及子进程日志(journal,svc 过滤)
+  cumora-stack import-env [flags]       首启向导命令面(#284):.env/daemon.env
+                                         一次性导入 —— 机器事实转 stack.toml,
+                                         凭据原样搬 stack.env/daemon.env;
+                                         GITHUB OAuth 缺失=红线退 1
 
-通用 flags:
+通用 flags(路径缺省优先级:flag > env > stack.toml > 内置布局;
+stack.toml 位 = $CUMORA_CONFIG_FILE,缺省 ~/.config/cumora/stack.toml):
   --env-file PATH        主 .env   (默认 $CUMORA_ENV_FILE,或 ~/Code/cumora/.env)
   --units a,b,c          覆盖 unit 集合(默认 cumora-sidecar,cumora-go,cumora-daemon)
   --json                 机器可读输出
@@ -92,6 +100,34 @@ absorb 专用:
   --releases-dir PATH    (默认 $CUMORA_RELEASES_DIR,或 ~/.local/share/cumora/releases)
   --current-dir PATH     (同 status)
 `)
+}
+
+// loadCfg —— stack.toml 层(#284):坏文件返回错误+缺省值,由调用方
+// 决定呈现(doctor 判红 / status 警示后继续)。
+func loadCfg() (stackconfig.Config, string, bool, error) {
+	path := envOr("CUMORA_CONFIG_FILE", stackconfig.DefaultPath())
+	c, found, err := stackconfig.LoadOrDefaults(path)
+	return c, path, found, err
+}
+
+// defaultEnvFile —— 主 env 缺省:规范位(import-env 产物)在则用之,
+// 否则存量布局(行为零变)。
+func defaultEnvFile() string {
+	if p := stackconfig.StackEnvPath(); fileExistsQuiet(p) {
+		return p
+	}
+	return home("Code/cumora/.env")
+}
+
+// serverHostPort —— doctor 端口检查的 Name 标签(展示 cfg 实际地址,
+// 沙箱/改端口部署下标签不撒谎)。
+func serverHostPort(cfg stackconfig.Config) string {
+	return fmt.Sprintf("server %s", cfg.Net.ServerAddr)
+}
+
+func fileExistsQuiet(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func envOr(env, fallback string) string {
@@ -118,7 +154,7 @@ type commonFlags struct {
 
 func parseCommon(fs *flag.FlagSet, c *commonFlags) {
 	fs.BoolVar(&c.json, "json", false, "JSON 输出")
-	fs.StringVar(&c.envFile, "env-file", envOr("CUMORA_ENV_FILE", home("Code/cumora/.env")), "主 .env 路径")
+	fs.StringVar(&c.envFile, "env-file", envOr("CUMORA_ENV_FILE", defaultEnvFile()), "主 .env 路径")
 	fs.StringVar(&c.unitsCSV, "units", "", "覆盖 unit 集合(逗号分隔)")
 }
 
@@ -166,21 +202,42 @@ func cmdDoctor(args []string) int {
 	if *enginesCSV != "" {
 		engines = splitCSV(*enginesCSV)
 	}
+	// stack.toml(#284):坏文件 → [config] 红面;值面退内置缺省继续体检。
+	cfg, cfgPath, cfgFound, cfgErr := loadCfg()
+	cfgErrStr := ""
+	if cfgErr != nil {
+		cfgErrStr = cfgErr.Error()
+		cfg = stackconfig.Defaults()
+	}
+	// 受管形态下 postgres/redis 不再探 TCP 5432/6379(socket 面已由
+	// [postgres]/[redis] 组覆盖);external 形态照旧 info 记录。
+	addrs := []doctor.AddrExpect{
+		{Name: "server :5181", Addr: serverHostPort(cfg), Kind: "must"},
+		{Name: fmt.Sprintf("sidecar :%d", cfg.Net.SidecarPort), Addr: fmt.Sprintf("127.0.0.1:%d", cfg.Net.SidecarPort), Kind: "must"},
+		{Name: "auth-loopback :47823", Addr: "127.0.0.1:47823", Kind: "desktop"},
+	}
+	if cfg.PG.Mode != stackconfig.ModeInternal {
+		addrs = append(addrs, doctor.AddrExpect{Name: "postgres :5432", Addr: "127.0.0.1:5432", Kind: "info"})
+	}
+	if cfg.Redis.Mode != stackconfig.ModeInternal {
+		addrs = append(addrs, doctor.AddrExpect{Name: "redis :6379", Addr: "127.0.0.1:6379", Kind: "info"})
+	}
 	rep := doctor.Run(probe.NewDeps(), doctor.Config{
-		EnvFile:       c.envFile,
-		DaemonEnvFile: *daemonEnv,
-		Units:         c.units(),
-		StackdUnit:    envOr("CUMORA_STACKD_UNIT", "cumora.service"),
-		StateFile:     envOr("CUMORA_STATE_FILE", home(".local/share/cumora/stackd-state.json")),
-		StackAddrs: []doctor.AddrExpect{
-			{Name: "server :5181", Addr: "127.0.0.1:5181", Kind: "must"},
-			{Name: "sidecar :5182", Addr: "127.0.0.1:5182", Kind: "must"},
-			{Name: "auth-loopback :47823", Addr: "127.0.0.1:47823", Kind: "desktop"},
-			{Name: "postgres :5432", Addr: "127.0.0.1:5432", Kind: "info"},
-			{Name: "redis :6379", Addr: "127.0.0.1:6379", Kind: "info"},
-		},
-		Engines:        engines,
-		EngineExtraDir: engineDirs,
+		EnvFile:          c.envFile,
+		DaemonEnvFile:    *daemonEnv,
+		Units:            c.units(),
+		StackdUnit:       envOr("CUMORA_STACKD_UNIT", "cumora.service"),
+		StateFile:        envOr("CUMORA_STATE_FILE", cfg.StateFile()),
+		StackAddrs:       addrs,
+		ConfigFile:       cfgPath,
+		ConfigFound:      cfgFound,
+		ConfigErr:        cfgErrStr,
+		PGMode:           cfg.PG.Mode,
+		InternalDSN:      cfg.InternalDSN(),
+		RedisMode:        cfg.Redis.Mode,
+		InternalRedisURL: cfg.InternalRedisURL(),
+		Engines:          engines,
+		EngineExtraDir:   engineDirs,
 	})
 
 	if c.json {
@@ -195,14 +252,22 @@ func cmdDoctor(args []string) int {
 }
 
 func cmdStatus(args []string) {
+	// stack.toml(#284):URL/路径缺省从 toml 派生;坏文件退内置缺省并警示
+	//(status 只报告,不当退出码门)。
+	cfg, _, _, cfgErr := loadCfg()
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "status: stack.toml 非法,按内置缺省报告: %v\n", cfgErr)
+		cfg = stackconfig.Defaults()
+	}
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	var c commonFlags
 	parseCommon(fs, &c)
-	livez := fs.String("livez-url", "http://127.0.0.1:5181/api/livez", "livez URL")
-	healthz := fs.String("healthz-url", "http://127.0.0.1:5182/internal/healthz", "healthz URL")
+	livez := fs.String("livez-url", "http://"+cfg.Net.ServerAddr+"/api/livez", "livez URL")
+	healthz := fs.String("healthz-url",
+		fmt.Sprintf("http://127.0.0.1:%d/internal/healthz", cfg.Net.SidecarPort), "healthz URL")
 	sid := fs.String("sid-token", os.Getenv("YJS_SIDECAR_TOKEN"), "sidecar Bearer token")
 	current := fs.String("current-dir",
-		envOr("CUMORA_CURRENT_DIR", home(".local/share/cumora/current")), "current symlink 目录")
+		envOr("CUMORA_CURRENT_DIR", cfg.CurrentDir()), "current symlink 目录")
 	_ = fs.Parse(args)
 
 	// token 缺省时从 env 文件补读(doctor 已验过键在不在,这里只管取值)。

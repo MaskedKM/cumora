@@ -146,11 +146,17 @@ func Absorb(srcDir, releasesDir, currentLink string) (string, error) {
 }
 
 func cmdAbsorb(args []string) int {
+	// stack.toml(#284):落盘位置缺省同源;坏文件拒收(与 install 同理)。
+	cfg, _, _, cfgErr := loadCfg()
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "absorb: stack.toml 非法: %v\n", cfgErr)
+		return 1
+	}
 	fs := flag.NewFlagSet("absorb", flag.ExitOnError)
 	releases := fs.String("releases-dir",
-		envOr("CUMORA_RELEASES_DIR", home(".local/share/cumora/releases")), "releases 目录")
+		envOr("CUMORA_RELEASES_DIR", cfg.ReleasesDir()), "releases 目录")
 	current := fs.String("current-dir",
-		envOr("CUMORA_CURRENT_DIR", home(".local/share/cumora/current")), "current symlink 本体")
+		envOr("CUMORA_CURRENT_DIR", cfg.CurrentDir()), "current symlink 本体")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "用法:cumora-stack absorb [flags] <制品载荷目录>(含 MANIFEST;flags 须在目录参数前)")
