@@ -3,11 +3,13 @@
 package status
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/stackd"
 )
 
 // UnitReport —— 单个 unit 的状态。Started/Uptime 由
@@ -33,12 +35,15 @@ type ProbeResult struct {
 }
 
 // Report —— status 全量输出。AnyFail 仅由"连接建立不起来"类失败置位。
+// Stackd 段(#282):单 unit 形态下 stackd 的进程内状态快照(状态文件
+// 可读即带出;三 unit 形态下为空 —— 两种形态同一 JSON 契约)。
 type Report struct {
-	Units   []UnitReport `json:"units"`
-	Livez   ProbeResult  `json:"livez"`
-	Healthz ProbeResult  `json:"healthz"`
-	Version string       `json:"version"`
-	Current string       `json:"current"`
+	Units   []UnitReport     `json:"units"`
+	Livez   ProbeResult      `json:"livez"`
+	Healthz ProbeResult      `json:"healthz"`
+	Version string           `json:"version"`
+	Current string           `json:"current"`
+	Stackd  *stackd.Snapshot `json:"stackd,omitempty"`
 }
 
 // Config —— status 输入(全部可注入,理由同 doctor.Config)。
@@ -49,6 +54,7 @@ type Config struct {
 	SidToken    string // healthz Bearer;缺失时探测仍发(预期 401=活着)
 	VersionFile string // releases/<ver>/VERSION 经 current symlink
 	CurrentDir  string // current symlink 本体(报告指向)
+	StateFile   string // stackd-state.json(可选;单 unit 形态带 stackd 段)
 }
 
 // systemd 时间戳形态:"Mon 2026-09-01 09:35:12 CST"(C locale)。
@@ -106,6 +112,15 @@ func Run(d probe.Deps, cfg Config) Report {
 	}
 	if target, err := d.Readlink(cfg.CurrentDir); err == nil {
 		r.Current = target
+	}
+	// stackd 段:状态文件读不到(三 unit 形态/stackd 未起)= 留空。
+	if cfg.StateFile != "" {
+		if data, err := d.ReadFile(cfg.StateFile); err == nil {
+			var snap stackd.Snapshot
+			if json.Unmarshal(data, &snap) == nil {
+				r.Stackd = &snap
+			}
+		}
 	}
 	return r
 }

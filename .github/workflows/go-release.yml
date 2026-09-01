@@ -221,6 +221,14 @@ jobs:
               CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w" \
               -o "../../$dir/cumora-server" ./cmd/server)
+            # #282:stack 管理面双二进制(纯 Go,同规则交叉编译)。
+            (cd apps/stack && \
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "../../$dir/cumora-stack" ./cmd/cumora-stack && \
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "../../$dir/cumora-stackd" ./cmd/cumora-stackd)
             # #280:sidecar 由 glibc sidecar job 编好(见上),此处仅落位;
             # bun 的 arch 名 x64/arm64(Go 的 amd64 → x64)。
             barch="x64"; [ "$arch" = arm64 ] && barch="arm64"
@@ -238,7 +246,7 @@ jobs:
           cat > /tmp/notes.md <<'NOTES'
           自托管二进制发布(linux/darwin × amd64/arm64)。
 
-          - `cumora-<os>-<arch>.tar.gz` 内含 `cumora-server`、`cumora-daemon`、`cumora-sidecar`(#280 起,bun 编译自包含单二进制)与 `migrations/`
+          - `cumora-<os>-<arch>.tar.gz` 内含 `cumora-server`、`cumora-daemon`、`cumora-sidecar`(#280 起,bun 编译自包含单二进制)、`cumora-stack`/`cumora-stackd`(#282 起管理面)与 `migrations/`
           - `SHA256SUMS` 全量校验(daemon 自更新与 server 部署脚本均强制核对)
           - server 部署:`bash scripts/deploy/deploy-release.sh <tag>`(下载→校验→`~/.local/share/cumora/releases/<ver>`→切 current symlink→重启三件套)
           - daemon 安装:`cumora-daemon agent computer --pair <code> --server <url> && cumora-daemon agent computer --install-service`

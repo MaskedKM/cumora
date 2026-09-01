@@ -88,23 +88,39 @@ inner="$staging/cumora-${os}-${arch}"
 [ -x "$inner/cumora-server" ] || die "制品缺可执行的 cumora-server —— $tag 不是本发布流的形态"
 [ -x "$inner/cumora-daemon" ] || die "制品缺可执行的 cumora-daemon"
 [ -x "$inner/cumora-sidecar" ] || die "制品缺可执行的 cumora-sidecar —— $tag 早于 #280(sidecar 未随制品)。请部署 #280 合入后新打的 tag"
+[ -x "$inner/cumora-stack" ] || die "制品缺可执行的 cumora-stack —— $tag 早于 #282(管理 CLI 未随制品)。请部署 #282 合入后新打的 tag"
+[ -x "$inner/cumora-stackd" ] || die "制品缺可执行的 cumora-stackd —— $tag 早于 #282(守护进程未随制品)。请部署 #282 合入后新打的 tag"
 if [ ! -d "$inner/migrations" ]; then
   die "制品缺 migrations/ —— $tag 早于 #211(制品未自包含 schema)。请部署 #211 合入后新打的 tag"
 fi
 echo "$tag" > "$inner/VERSION"
 
 target="$RELEASES_DIR/$tag"
+# 形态探测(#282):cumora.service unit 文件在 = stackd 单 unit 形态。
+# LoadState=loaded 自 install 写文件起恒真、直至 uninstall 删文件——
+# 判的是"形态"不是"瞬时状态"。不用 is-active 判:服务振荡/维护手停/
+# start-limit 挫败时它退出非零,stackd 形态会被误判回三 unit 分支,
+# restart 已退役(禁用未删)的旧链 = 与 stackd 链抢 5181/5182,静默杂交。
+if [ "$(systemctl --user show cumora.service -p LoadState --value 2>/dev/null)" = "loaded" ]; then
+  STACKD_FORM=1
+  STATUS_UNIT=cumora
+  LOG_UNITS="-u cumora"
+else
+  STACKD_FORM=0
+  STATUS_UNIT=cumora-go
+  LOG_UNITS="-u cumora-go -u cumora-sidecar"
+fi
 # current 已指向同 tag 时拒绝裸重部署:rm→mv 窗口会把在跑版本的目录
 # 打穿(ENOENT + Restart=always 循环)。livez 503 后原 tag 复验是现实
 # 路径——此场景重启即可,无需重铺目录;确要重铺先切走再指回。
 if [ -L "$CURRENT_LINK" ] && [ "$(readlink "$CURRENT_LINK" 2>/dev/null)" = "releases/$tag" ]; then
-  die "current 已指向 releases/$tag —— 同 tag 重部署会打穿在跑版本目录。复验用 systemctl --user restart 三件套即可;确要重铺:先部署/切走别的 tag。"
+  die "current 已指向 releases/$tag —— 同 tag 重部署会打穿在跑版本目录。复验用 systemctl --user restart $STATUS_UNIT 即可;确要重铺:先部署/切走别的 tag。"
 fi
 mv "$inner" "$target"
 rm -rf "$staging"
 trap 'rm -rf "$work"' EXIT
-chmod 0755 "$target/cumora-server" "$target/cumora-daemon" "$target/cumora-sidecar"
-say "落盘 $target(server + daemon + sidecar + migrations + VERSION)"
+chmod 0755 "$target/cumora-server" "$target/cumora-daemon" "$target/cumora-sidecar" "$target/cumora-stack" "$target/cumora-stackd"
+say "落盘 $target(server + daemon + sidecar + stack + stackd + migrations + VERSION)"
 
 # ── 原子切 current symlink ───────────────────────────────────────────
 rm -f "${CURRENT_LINK}.new"   # 清上次中断的残留(否则 ln 会建进目录内部)
@@ -112,9 +128,16 @@ ln -s "releases/$tag" "${CURRENT_LINK}.new"
 mv -T "${CURRENT_LINK}.new" "$CURRENT_LINK"
 say "current -> $(readlink "$CURRENT_LINK")(原子切换完成)"
 
-# ── 重启三件套(After= 链:sidecar → go → daemon)───────────────────
-if ! systemctl --user restart cumora-sidecar.service cumora-go.service cumora-daemon.service; then
-  die "三件套 restart 失败 —— 单元未装则先:bash scripts/deploy/install-units.sh;再查 systemctl --user status cumora-go"
+# ── 按形态重启(判定见上 STACKD_FORM):stackd 形态 restart
+# cumora.service 即从新 current 重拉整链;三 unit 形态照旧。
+if [ "$STACKD_FORM" = 1 ]; then
+  if ! systemctl --user restart cumora.service; then
+    die "cumora.service(stackd)restart 失败 —— 查 systemctl --user status cumora"
+  fi
+else
+  if ! systemctl --user restart cumora-sidecar.service cumora-go.service cumora-daemon.service; then
+    die "三件套 restart 失败 —— 单元未装则先:bash scripts/deploy/install-units.sh;单 unit 形态装法:cumora-stack install;再查 systemctl --user status cumora-go"
+  fi
 fi
 
 # ── 部署后核验:livez(进程活 + Redis 硬依赖)────────────────────────
@@ -127,9 +150,9 @@ for _ in $(seq 1 30); do
 done
 case "$code" in
   200) say "livez 200(进程 + Redis 事件面均活)" ;;
-  503) die "livez 503 —— 进程已活但 Redis 不可达/事件面降级 Noop(#211 起显性变红,不再假绿)。查:systemctl status redis(redis 为系统级服务,非 --user 域)或 journalctl --user -u cumora-go | grep redis" ;;
-  *)   die "livez 探测失败(HTTP $code / 无响应)—— journalctl --user -u cumora-go -u cumora-sidecar 取证" ;;
+  503) die "livez 503 —— 进程已活但 Redis 不可达/事件面降级 Noop(#211 起显性变红,不再假绿)。查:systemctl status redis(redis 为系统级服务,非 --user 域)或 journalctl --user $LOG_UNITS | grep redis" ;;
+  *)   die "livez 探测失败(HTTP $code / 无响应)—— journalctl --user $LOG_UNITS 取证" ;;
 esac
 
 say "部署完成:版本 $(cat "$CURRENT_LINK/VERSION")"
-say "核验:systemctl --user status cumora-go(ExecStart 应经 $CURRENT_LINK 寻址);readlink $CURRENT_LINK;cat $CURRENT_LINK/VERSION"
+say "核验:systemctl --user status $STATUS_UNIT(ExecStart 应经 $CURRENT_LINK 寻址);readlink $CURRENT_LINK;cat $CURRENT_LINK/VERSION"
