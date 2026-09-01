@@ -78,6 +78,15 @@ tar xf "$SRC/pgvector.tar.gz" -C "$BUILD"
   && make OPTFLAGS="-march=x86-64" PG_CONFIG="$OUT/pg/bin/pg_config" >build.log 2>&1 \
   && make install OPTFLAGS="-march=x86-64" PG_CONFIG="$OUT/pg/bin/pg_config" >install.log 2>&1 ) \
   || { tail -25 "$BUILD"/pgvector-*/{build,install}.log 2>/dev/null; echo "::error::pgvector 构建失败"; exit 1; }
+# 旗标belt(#308):命令行 OPTFLAGS 覆盖生效与否,看真实 gcc 行 ——
+# 任何 -march=native 残留都当场红(闸比下游宏探测更贴源头)。
+if grep -q -- "-march=native" "$BUILD"/pgvector-*/build.log "$BUILD"/pgvector-*/install.log; then
+  echo "::error::pgvector 构建出现 -march=native(OPTFLAGS 覆盖未生效)"
+  exit 1
+fi
+# 正断言(#309 评审):配方完整性 —— 基线旗标必须在场,不只"没毒"。
+grep -q -- "-march=x86-64" "$BUILD"/pgvector-*/build.log || {
+  echo "::error::pgvector 构建缺 -march=x86-64(配方漂移?)"; exit 1; }
 
 echo "[deps] 构建 redis $RD_VER(server+cli)…"
 tar xf "$SRC/redis.tar.gz" -C "$BUILD"
