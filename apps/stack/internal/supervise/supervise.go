@@ -172,7 +172,9 @@ func (m *Manager) log(msg, name string, kv ...any) {
 
 // Start —— 同步拉起:spawn → 门轮询到过(或超时);成功转后台监控。
 // 门超时/spawn 失败返回 error(候选世代已清理;状态条目随之移除,
-// 同名可重试)。同名子进程已在管理中返回错误。
+// 同名可重试)。注:Start 失败不计熔断滑窗(候选世代从未真正跑过;
+// monitor 运行期的重启失败才计)—— 否则五次失败重试会把一次全新
+// Start 直接送进熔断。同名子进程已在管理中返回错误。
 func (m *Manager) Start(child Child) error {
 	m.mu.Lock()
 	if _, exists := m.states[child.Name]; exists {
@@ -197,7 +199,21 @@ func (m *Manager) Start(child Child) error {
 
 	m.mu.Lock()
 	m.runs = append(m.runs, run)
+	cancelled := m.ctx.Err() != nil
+	if cancelled {
+		// Shutdown 与 Start 擦肩(评审 P2-2):run 已入列但监控未起 ——
+		// 就地出列收口,否则成为 Shutdown 清单外的漏网活世代。此处
+		// Start 是该 cmd 唯一属主,terminateSolo 即唯一 Wait。
+		m.runs = m.runs[:len(m.runs)-1]
+		delete(m.states, child.Name)
+	}
 	m.mu.Unlock()
+	if cancelled {
+		runCancel()
+		terminateSolo(run.cmd, child.stopGrace())
+		close(run.lifeDone)
+		return fmt.Errorf("supervise: %s 启动途中被停机", child.Name)
+	}
 
 	m.wg.Add(1)
 	go m.monitor(runCtx, run, st)
@@ -309,8 +325,17 @@ func (m *Manager) monitor(ctx context.Context, run *childRun, st *State) {
 				st.Restarts++
 				m.mu.Unlock()
 				if ctx.Err() != nil {
-					// 停机与重启提交擦肩:新世代已提交但必须立即收口。
-					m.killRun(run, run.child.stopGrace())
+					// 停机与重启提交擦肩:新世代已提交但本协程即将 return,
+					// 不会回外环 Wait 它 —— 收尸纪律就地满足:terminateSolo
+					// 的 goroutine 成为该 cmd 唯一 Wait 者(monitor 不等它);
+					// close(lifeDone) 让并发在飞的 killRun 立即返回而非
+					// 白烧 grace+5s(评审 P1-1:僵尸 + 假 unanswered 告警)。
+					m.mu.Lock()
+					cmd := run.cmd
+					lifeDone := run.lifeDone
+					m.mu.Unlock()
+					terminateSolo(cmd, run.child.stopGrace())
+					close(lifeDone)
 					return
 				}
 				break // 新世代已提交,回外环等它
@@ -375,8 +400,10 @@ func (m *Manager) Stop(name string) error {
 	run.cancel() // 先断监控循环(含中断在飞的门),再收口进程
 	m.killRun(run, run.child.stopGrace())
 	m.mu.Lock()
-	st.Running = false
-	st.PID = 0
+	if st != nil {
+		st.Running = false
+		st.PID = 0
+	}
 	m.mu.Unlock()
 	m.log("child stopped", name)
 	return nil

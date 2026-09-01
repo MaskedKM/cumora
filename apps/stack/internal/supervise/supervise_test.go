@@ -314,3 +314,28 @@ func TestNextBackoffPure(t *testing.T) {
 		}
 	}
 }
+
+func TestStartAfterShutdownCancels(t *testing.T) {
+	// P2-2 路径:根 ctx 已取消后的 Start —— run 已提交也必须就地收口
+	// (出列、清状态、terminateSolo 唯一收尸、close lifeDone),返回错误
+	// 而不是留下 Shutdown 清单外的漏网活世代。
+	m := New(fastOpts())
+	m.Shutdown() // 根 ctx 取消
+	err := m.Start(shChild("late", "sleep 30", nil))
+	if err == nil {
+		t.Fatal("Shutdown 后 Start 应报错")
+	}
+	for _, st := range m.States() {
+		if st.Name == "late" {
+			t.Fatalf("取消路径不应残留状态条目: %+v", st)
+		}
+	}
+	// 无泄漏的监控协程:Wait 立即返回(wg 计数为零,monitor 从未起)。
+	done := make(chan struct{})
+	go func() { m.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("不应有监控协程残留")
+	}
+}

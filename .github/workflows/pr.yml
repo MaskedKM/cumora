@@ -210,7 +210,10 @@ jobs:
       # cgo,临时装 gcc(走代理 apk,同 tier-2a 的 curl 配方)。
       - name: vet + test -race (stack)
         run: |
-          if apk add --no-cache gcc musl-dev >/dev/null 2>&1; then
+          # timeout 90 + 重试:apk 半流卡死(出口老病)不该吃掉整个 job
+          # 预算 —— 与 tier-2a 的 curl 配方同源(评审 P2)。
+          if timeout 90 apk add --no-cache gcc musl-dev >/dev/null 2>&1 \
+             || timeout 90 apk add --no-cache gcc musl-dev >/dev/null 2>&1; then
             cd apps/stack && go vet ./... && CGO_ENABLED=1 go test -race ./... -count=1
           else
             echo "::warning::gcc 安装失败(apk 出口),降级为无 race 测试"
