@@ -176,8 +176,13 @@ func Run(d probe.Deps, cfg Config) Report {
 	// stackd unit 本体 + 状态文件里的子进程面。三 unit 形态照旧。
 	stackdForm := false
 	var stackdState probe.UnitState
+	var stackdProbeErr error
 	if cfg.StackdUnit != "" {
-		if st, err := d.Systemd(cfg.StackdUnit); err == nil && st.Load == "loaded" {
+		st, err := d.Systemd(cfg.StackdUnit)
+		switch {
+		case err != nil:
+			stackdProbeErr = err
+		case st.Load == "loaded":
 			stackdForm, stackdState = true, st
 		}
 	}
@@ -220,7 +225,15 @@ func Run(d probe.Deps, cfg Config) Report {
 			}
 		}
 	default:
-		if cfg.StackdUnit != "" {
+		// 三 unit 面。形态行按落因分说:探针失败(dbus 断/容器无
+		// session bus)≠ 未装 —— 误称"未装"会误导排障方向(评审 P2);
+		// 探针失败本身不置 fail(units 行会带同一原始错误红,门不空转)。
+		switch {
+		case cfg.StackdUnit == "":
+			// 不感知形态(测试注入/旧调用方):无形态行。
+		case stackdProbeErr != nil:
+			add("form", "形态", Warn, "stackd unit 探测失败,按三 unit 面体检: %v", stackdProbeErr)
+		default:
 			add("form", "形态", Info, "三 unit 形态(%s 未装)", cfg.StackdUnit)
 		}
 		// unit 注册态与活性:masked/not-found 单列(loads 分离,防假绿)。

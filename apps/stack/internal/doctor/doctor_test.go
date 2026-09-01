@@ -360,3 +360,43 @@ func TestOldFormStillChecksThreeUnits(t *testing.T) {
 		t.Fatal("形态行应 info 报三 unit 形态")
 	}
 }
+
+func TestStackdProbeErrDegradesToOldFace(t *testing.T) {
+	// systemctl 探测失败(dbus 断/容器无 session bus)→ 降级走三 unit 面;
+	// 形态行如实报探针失败(不是"未装")。系统性故障下三 unit 探测同样
+	// 全错 → units 行带原始错误红 —— 门故障关闭(fail-closed),不假绿
+	//(评审 P2;四 unit 全注错才还原真实系统性故障面)。
+	allErr := map[string]error{"cumora.service": errors.New("exec: systemctl: not found")}
+	for _, u := range []string{"cumora-sidecar", "cumora-go", "cumora-daemon"} {
+		allErr[u] = allErr["cumora.service"]
+	}
+	r := Run((fakeDeps{envData: fullEnv, unitErr: allErr}).deps(), stackdCfg())
+	c := find(t, r, "form", "形态")
+	if c.Status != Warn || !strings.Contains(c.Detail, "systemctl") {
+		t.Fatalf("探针失败应黄且带原因: %+v", c)
+	}
+	if !r.AnyFail {
+		t.Fatal("系统性探针失败应 AnyFail(门故障关闭)")
+	}
+}
+
+func TestStackdFormChildrenEmptyFails(t *testing.T) {
+	empty := `{"instanceId":"x","updatedAt":"2026-09-01T17:30:00Z","children":[]}`
+	r := Run(stackdDeps(fakeDeps{envData: fullEnv, stateData: empty}), stackdCfg())
+	if c := find(t, r, "stackd", "子进程面"); c.Status != Fail {
+		t.Fatalf("零子进程记录应红: %+v", c)
+	}
+	if !r.AnyFail {
+		t.Fatal("零子进程应 AnyFail")
+	}
+}
+
+func TestStackdFormStateUnparseableIsWarn(t *testing.T) {
+	r := Run(stackdDeps(fakeDeps{envData: fullEnv, stateData: "not json"}), stackdCfg())
+	if c := find(t, r, "stackd", "状态文件"); c.Status != Warn || !strings.Contains(c.Detail, "解析失败") {
+		t.Fatalf("坏 JSON 应黄且带原因: %+v", c)
+	}
+	if r.AnyFail {
+		t.Fatal("仅解析失败不应 AnyFail")
+	}
+}
