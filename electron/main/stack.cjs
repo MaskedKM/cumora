@@ -110,13 +110,13 @@ function registerIpc() {
           if (/[\n=]/.test(String(v))) return { ok: false, code: 2, error: `credential value rejected (newline/=): ${k}` }
           lines.push(`${k}=${v}`)
         }
-        if (lines.length === 0) return { ok: false, code: 2, error: 'envFile or creds required' }
+        if (lines.length === 0) return { ok: false, code: 2, stdout: '', stderr: '', output: '', error: 'envFile or creds required' }
         const dir = await mkdtemp(path.join(os.tmpdir(), 'cumora-wizard-'))
         staging = path.join(dir, 'creds.env')
         await writeFile(staging, lines.join('\n') + '\n', { mode: 0o600 })
         envFile = staging
       }
-      if (!envFile) return { ok: false, code: 2, error: 'envFile or creds required' }
+      if (!envFile) return { ok: false, code: 2, stdout: '', stderr: '', output: '', error: 'envFile or creds required' }
       const args = ['import-env', '--env-file', expandHome(envFile), '--json']
       if (input.daemonEnvFile) args.push('--daemon-env-file', expandHome(input.daemonEnvFile))
       const res = await runStack(args)
@@ -128,11 +128,11 @@ function registerIpc() {
 
   ipcMain.handle('stack:absorb', async (_evt, input = {}) => {
     const dir = input.payloadDir || payloadDir()
-    if (!dir) return { ok: false, code: 2, error: 'dev build has no bundled payload; build the AppImage or pass payloadDir' }
+    if (!dir) return { ok: false, code: 2, stdout: '', stderr: '', output: '', error: 'dev build has no bundled payload; build the AppImage or pass payloadDir' }
     try {
       await access(path.join(dir, 'MANIFEST'), constants.R_OK)
     } catch {
-      return { ok: false, code: 2, error: `payload dir has no MANIFEST: ${dir}` }
+      return { ok: false, code: 2, stdout: '', stderr: '', output: '', error: `payload dir has no MANIFEST: ${dir}` }
     }
     return runStack(['absorb', dir], { timeout: 15 * 60_000 })
   })
