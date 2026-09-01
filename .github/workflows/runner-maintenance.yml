@@ -39,8 +39,13 @@ on:
     # 03:30 Beijing time (19:30 UTC) — quiet hours, before the workday.
     - cron: '30 19 * * *'
   workflow_dispatch:
+    # #292 bootstrap 注意:首次烘焙/配方更新后想立即生效,可以
+    # `gh workflow run runner-maintenance.yml --ref <分支>` 从分支
+    # dispatch(schedule 只认默认分支,dispatch 可指分支)。
 
-permissions: {}
+permissions:
+  # bake job 需要 checkout 读 ci/images/ 配方;仍是只读。
+  contents: read
 
 jobs:
   prune:
@@ -80,3 +85,40 @@ jobs:
           fi
       - name: Disk state after
         run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
+
+  bake:
+    name: Bake local CI images (alpine-ci / bookworm-ci)
+    # #292:pr.yml 两 job 的容器是本地烘焙 tag(golang:1.24-alpine-ci /
+    # golang:1.24-bookworm-ci,官方仓库没有)。nightly 幂等重烘:层缓存
+    # 命中=秒级,基础镜像 best-effort 刷新(出口抖动时用本地缓存底)。
+    # 配方 = ci/images/*.Dockerfile。与 prune job 无冲突:`system prune`
+    # 不带 -a 从不删带 tag 镜像。docker build 内无 job env,代理经
+    # build-arg 指 docker0 网关的 Mihomo(*:7890 allow-lan,build 容器
+    # 的宿主视角即 docker0 地址);解析失败退化为直连烘(配方不变,慢)。
+    runs-on: [self-hosted, linux, ser8]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve docker0 gateway for the build-time proxy
+        run: |
+          GW="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
+          if [ -n "$GW" ]; then
+            echo "PROXY_ARGS=--build-arg http_proxy=http://$GW:7890 --build-arg https_proxy=http://$GW:7890" >> "$GITHUB_ENV"
+            echo "build proxy: http://$GW:7890"
+          else
+            echo "PROXY_ARGS=" >> "$GITHUB_ENV"
+            echo "::warning::docker0 网关解析失败,build 直连(出口抖时可能失败,nightly 会再试)"
+          fi
+      # 基础镜像刷新是 best-effort:失败只降级为用本地缓存底烘(tag 滚动
+      # 更新本来就有平率,夜间自愈)。
+      - name: Refresh base images (best-effort)
+        run: |
+          for img in golang:1.24-alpine golang:1.24-bookworm node:24-bookworm; do
+            docker pull "$img" || echo "::warning::$img 刷新失败,用本地缓存底继续"
+          done
+      - name: Build golang:1.24-alpine-ci
+        run: docker build $PROXY_ARGS -t golang:1.24-alpine-ci - < ci/images/golang-alpine-ci.Dockerfile
+      - name: Build golang:1.24-bookworm-ci
+        run: docker build $PROXY_ARGS -t golang:1.24-bookworm-ci - < ci/images/golang-bookworm-ci.Dockerfile
+      - name: Show baked images
+        run: docker images | grep -E 'golang +1\.24-(alpine|bookworm)-ci' || true

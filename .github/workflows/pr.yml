@@ -16,6 +16,16 @@
 #   - Persistent host caches bind-mounted from /var/lib/cumora-ci-cache
 #     (Go build/mod + npm) — container layers die with the job, these
 #     survive across runs. Monitored by runner-maintenance.yml.
+#   - Locally baked job images (#292): both jobs run -ci images baked on
+#     the runner's docker by runner-maintenance.yml's bake job (recipes in
+#     ci/images/) — golang:1.24-alpine-ci (gcc/musl-dev for apps/stack's
+#     -race + curl) and golang:1.24-bookworm-ci (node:24 base + Go +
+#     chromium system deps). Killed the three per-run proxy downloads
+#     measured on 2026-09-01: playwright's 96MB apt deps, the go job's
+#     ~60-70MB apk gcc, and the 718MB actions-cache restore that always
+#     timed out (setup-node no longer carries cache: — the /npm/cache
+#     volume is the single source of truth). Missing image = dispatch
+#     "Runner maintenance", then re-run.
 #   - Integration suite split into 3 shards, each with its own Postgres
 #     database and its own Redis instance (pub/sub is instance-wide;
 #     Redis DB indexes would still cross-talk). Shards stay internally
@@ -75,10 +85,13 @@ jobs:
   go:
     name: Go (gofmt + vet + build + test)
     runs-on: [self-hosted, linux, ser8]
-    # Pure-Go module (pgx only, no cgo) — alpine is half the on-disk size of
-    # bookworm on the runner, and vet/build don't need a C toolchain.
+    # 本地烘焙镜像(#292,runner-maintenance.yml 的 bake job 维护;配方
+    # ci/images/golang-alpine-ci.Dockerfile):alpine 底(纯 Go 模块,体积
+    # 是 bookworm 一半)+ gcc/musl-dev(apps/stack 的 -race 要 cgo)+
+    # curl(tier-2a 引导腿短路)。**缺镜像 = 先 dispatch "Runner
+    # maintenance" 烘焙再重跑**——官方仓库没有这个 tag。
     container:
-      image: golang:1.24-alpine
+      image: golang:1.24-alpine-ci
       # Egress via the host's Mihomo (see header) — git/go module fetches
       # only; the proxy host itself never proxies.
       options: --add-host=host.docker.internal:host-gateway
@@ -206,19 +219,11 @@ jobs:
       # #282 PR-A:stack 模块(doctor/status/supervise/chain)。单测全
       # fake/真子进程注入,零外部服务;supervise 测试会真 spawn sh 子进程
       # —— 容器内可行(root,有 /proc)。带 -race:State 并发面是本模块
-      # 的命门(评审 P0 实锤过 10 处数据竞态),检测器必须常驻;race 需
-      # cgo,临时装 gcc(走代理 apk,同 tier-2a 的 curl 配方)。
+      # 的命门(评审 P0 实锤过 10 处数据竞态),检测器必须常驻。race 需
+      # cgo——gcc 烘在 alpine-ci 镜像(#292 起不再每轮 apk 走代理,
+      # 亦无降级分支:race 是门禁不是尽力而为)。
       - name: vet + test -race (stack)
-        run: |
-          # timeout 90 + 重试:apk 半流卡死(出口老病)不该吃掉整个 job
-          # 预算 —— 与 tier-2a 的 curl 配方同源(评审 P2)。
-          if timeout 90 apk add --no-cache gcc musl-dev >/dev/null 2>&1 \
-             || timeout 90 apk add --no-cache gcc musl-dev >/dev/null 2>&1; then
-            cd apps/stack && go vet ./... && CGO_ENABLED=1 go test -race ./... -count=1
-          else
-            echo "::warning::gcc 安装失败(apk 出口),降级为无 race 测试"
-            cd apps/stack && go vet ./... && go test ./... -count=1
-          fi
+        run: cd apps/stack && go vet ./... && CGO_ENABLED=1 go test -race ./... -count=1
       # Same ownership give-back as the other job — this job's checkout also
       # writes container-root-owned files into the shared workspace.
       - name: Restore workspace ownership for the host runner
@@ -236,12 +241,14 @@ jobs:
     # never collide on 5432/6379. Three Redis instances: pub/sub is
     # instance-wide, so the three integration shards each get their own
     # instead of sharing DB indexes.
-    # #70 TS 退役:integration runner 自建 Go 服当 SUT——容器从
-    # node:24 换 golang:1.24-bookworm(node 由 setup-node 叠 24),并挂
-    # 与 go job 同源的持久 Go 缓存(SUT 构建不再每 run 冷编)。
+    # #70 TS 退役:integration runner 自建 Go 服当 SUT;#292 起容器换
+    # 本地烘焙镜像 golang:1.24-bookworm-ci(node:24 底 + Go 整目录 +
+    # chromium 系统依赖,配方 ci/images/golang-bookworm-ci.Dockerfile,
+    # bake job 维护)——曾每轮 96MB 的 playwright apt 依赖与 9MB 索引
+    # 走代理,现烘进镜像零下载。持久 Go 缓存照挂(SUT 构建不冷编)。
     runs-on: [self-hosted, linux, ser8]
     container:
-      image: golang:1.24-bookworm
+      image: golang:1.24-bookworm-ci
       options: --add-host=host.docker.internal:host-gateway
       volumes:
         - /var/lib/cumora-ci-cache/npmcache:/npm/cache
@@ -393,11 +400,13 @@ jobs:
           git add -A
           git -c user.email=cumora-ci@example.com -c user.name=cumora-ci \
             commit -qm "tarball baseline"
+      # 不带 cache:——npm 缓存的唯一事实源是 /npm/cache 持久卷(#292
+      # 审计:actions-cache 每轮经代理下载 718MB 归档、~3min 后必超时
+      # 全废;恢复失败当轮 npm ci 仍 6s/1038 包 = 卷已完整覆盖,纯双重
+      # 缓存)。node 工具链仍由 setup-node 从 runner 工具缓存叠放。
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: package-lock.json
       # #132: big-brain / llm-tracked 守卫退役——扫描面(TS LLM 调用)已随
       # #70 删净,LLM 调用全在 Go 侧(byoa-daemon 本地小脑门控 + 代码评审),
       # 两个脚本对残余 TS 面(sidecar/workers/harness)零命中空转。
@@ -593,8 +602,10 @@ jobs:
       # 之后串行复用 redis(分片在跑时 pub/sub 会串音)。checks 容器无
       # docker,auto 栈不触发(显式 env)。浏览器二进制经
       # PLAYWRIGHT_BROWSERS_PATH 落持久卷(容器层随 job 消亡,默认
-      # ~/.cache 每次重下 115MB 且受出口长流抖动);apt 系统库随容器
-      # 生灭,每 run 由 --with-deps 重装(~40s)。
+      # ~/.cache 每次重下 115MB 且受出口长流抖动)。chromium 系统依赖
+      # #292 起烘在 bookworm-ci 镜像(曾每轮 apt 96.1MB+索引 9.4MB 走
+      # 代理);**e2e 报缺 .so = playwright 升版新增依赖的信号 →
+      # dispatch "Runner maintenance" 重烘镜像**。
       - name: Playwright e2e smoke (#147)
         shell: bash
         env:
@@ -602,16 +613,7 @@ jobs:
         run: |
           set -e -o pipefail
           npx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node e2e/smoke.spec.ts
-          # apt 过 Mihomo 的抖动配方:禁 HTTP pipelining(代理弄坏串流请求
-          # 的已知病因)+ 重试(5xx 逐包重试)+ 失败整轮重来×3(单流大包
-          # 25MB 级恰在出口病理区,每轮翻车的包不同,已缓存的 deb 不重拉)。
-          # 浏览器二进制在持久卷,install 不带 --with-deps 走代理下载一次即缓存。
-          echo 'Acquire::Retries "5"; Acquire::http::Pipeline-Depth "0"; Acquire::https::Pipeline-Depth "0";' > /etc/apt/apt.conf.d/80flaky-proxy
-          for i in 1 2 3; do
-            npx playwright install-deps chromium && break
-            [ "$i" = 3 ] && { echo "apt deps failed after 3 rounds"; exit 1; }
-            sleep 5
-          done
+          # 系统依赖在镜像;这里只管浏览器二进制(持久卷,首跑下载后零流量)。
           npx playwright install chromium
           node -e 'const {Client}=require("pg");(async()=>{
             const admin=new Client({connectionString:"postgres://cumora:cumora@postgres:5432/postgres"});
