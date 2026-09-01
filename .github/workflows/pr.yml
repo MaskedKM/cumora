@@ -194,7 +194,7 @@ jobs:
             && mv "$PART" "/cache/tarballs/${GITHUB_SHA}.tar.gz" \
             || echo "[src] 缓存回填失败(不影响本次构建)"
       - name: gofmt check
-        run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon)" || (gofmt -l apps/server-go apps/byoa-daemon; exit 1)
+        run: test -z "$(gofmt -l apps/server-go apps/byoa-daemon apps/stack)" || (gofmt -l apps/server-go apps/byoa-daemon apps/stack; exit 1)
       # #133: server-go 已有 httpx/contacts/runtime 单测,与 build 同容器
       # 零增量成本;不加 -run 过滤,后续新增 *_test.go 自动纳入。
       - name: vet + build + test (server)
@@ -203,6 +203,11 @@ jobs:
       # vet + build + 协议级 stub-server 测试(stub 全进程内,无外部服务)。
       - name: vet + test (byoa-daemon)
         run: cd apps/byoa-daemon && go vet ./... && go test ./... -count=1
+      # #282 PR-A:stack 模块(doctor/status/supervise/chain)。单测全
+      # fake/真子进程注入,零外部服务;supervise 测试会真 spawn sh 子进程
+      # —— 容器内可行(root,有 /proc)。
+      - name: vet + test (stack)
+        run: cd apps/stack && go vet ./... && go test ./... -count=1
       # Same ownership give-back as the other job — this job's checkout also
       # writes container-root-owned files into the shared workspace.
       - name: Restore workspace ownership for the host runner
