@@ -87,6 +87,7 @@ tar xzf "$work/$asset" -C "$staging"
 inner="$staging/cumora-${os}-${arch}"
 [ -x "$inner/cumora-server" ] || die "制品缺可执行的 cumora-server —— $tag 不是本发布流的形态"
 [ -x "$inner/cumora-daemon" ] || die "制品缺可执行的 cumora-daemon"
+[ -x "$inner/cumora-sidecar" ] || die "制品缺可执行的 cumora-sidecar —— $tag 早于 #280(sidecar 未随制品)。请部署 #280 合入后新打的 tag"
 if [ ! -d "$inner/migrations" ]; then
   die "制品缺 migrations/ —— $tag 早于 #211(制品未自包含 schema)。请部署 #211 合入后新打的 tag"
 fi
@@ -102,8 +103,8 @@ fi
 mv "$inner" "$target"
 rm -rf "$staging"
 trap 'rm -rf "$work"' EXIT
-chmod 0755 "$target/cumora-server" "$target/cumora-daemon"
-say "落盘 $target(server + daemon + migrations + VERSION)"
+chmod 0755 "$target/cumora-server" "$target/cumora-daemon" "$target/cumora-sidecar"
+say "落盘 $target(server + daemon + sidecar + migrations + VERSION)"
 
 # ── 原子切 current symlink ───────────────────────────────────────────
 rm -f "${CURRENT_LINK}.new"   # 清上次中断的残留(否则 ln 会建进目录内部)
