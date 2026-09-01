@@ -12,8 +12,9 @@ type fakeDeps struct {
 	httpCodes map[string]int // url → code;缺省 = 网络错误
 	httpErr   map[string]error
 	units     map[string]probe.UnitState
-	version   string // VERSION 文件内容;空 = 读不到
-	current   string // EvalSymlinks 结果;空 = 错误
+	unitErr   map[string]error // systemctl 失败注入(非 systemd 环境)
+	version   string           // VERSION 文件内容;空 = 读不到
+	current   string           // EvalSymlinks 结果;空 = 错误
 }
 
 func (f fakeDeps) deps() probe.Deps {
@@ -28,6 +29,9 @@ func (f fakeDeps) deps() probe.Deps {
 			return 0, errors.New("connection refused")
 		},
 		Systemd: func(unit string) (probe.UnitState, error) {
+			if err, ok := f.unitErr[unit]; ok {
+				return probe.UnitState{}, err
+			}
 			if st, ok := f.units[unit]; ok {
 				return st, nil
 			}
@@ -126,10 +130,17 @@ func TestUptimeFromTimestamp(t *testing.T) {
 	}
 }
 
-func TestUnitErrorReported(t *testing.T) {
-	// systemctl 缺失(非 systemd 环境):错误进 Error 字段,其余照采。
-	r := Run((fakeDeps{httpCodes: map[string]int{livezURL: 200, healthzURL: 200}}).deps(), cfg())
-	if r.Units[0].Error != "" {
-		t.Fatalf("fake 正常 unit 不应有 Error: %+v", r.Units[0])
+func TestUnitErrorPopulated(t *testing.T) {
+	// systemctl 失败(非 systemd 环境 / dbus 断):错误进 Error 字段,
+	// 其余采集(livez/healthz/版本)照常 —— 单路失败不中断。
+	r := Run((fakeDeps{
+		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
+		unitErr:   map[string]error{"cumora-go": errors.New("exec: systemctl: not found")},
+	}).deps(), cfg())
+	if r.Units[0].Error == "" {
+		t.Fatalf("systemctl 失败应进 Error 字段: %+v", r.Units[0])
+	}
+	if r.Livez.Status != "ok" || r.Healthz.Status != "ok" {
+		t.Fatal("unit 探测失败不应拖垮 HTTP 探测")
 	}
 }

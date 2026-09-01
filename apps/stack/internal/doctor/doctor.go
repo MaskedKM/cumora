@@ -131,14 +131,15 @@ func Run(d probe.Deps, cfg Config) Report {
 	}
 
 	// 依赖服务:pg(含 pgvector)、redis。DSN 优先 env 文件,退 OS env,
-	// 再退 localhost 缺省(与 server-go config 同缺省)。
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// 再退 localhost 缺省(与 server-go config 同缺省)。两探针各自起
+	// 独立超时:共享预算时慢失败的 pg 会把 redis 拖成误导性的 deadline 红。
 	dsn := env["DATABASE_URL"]
 	if dsn == "" {
 		dsn = os.Getenv("DATABASE_URL")
 	}
-	if info, err := d.PG(ctx, dsn); err != nil {
+	pgCtx, pgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pgCancel()
+	if info, err := d.PG(pgCtx, dsn); err != nil {
 		add("postgres", "可达", Fail, "%v", err)
 	} else {
 		add("postgres", "可达", OK, "%s", info.Version)
@@ -152,7 +153,9 @@ func Run(d probe.Deps, cfg Config) Report {
 	if redisURL == "" {
 		redisURL = os.Getenv("REDIS_URL")
 	}
-	if err := d.Redis(ctx, redisURL); err != nil {
+	redisCtx, redisCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer redisCancel()
+	if err := d.Redis(redisCtx, redisURL); err != nil {
 		add("redis", "可达", Fail, "%v", err)
 	} else {
 		add("redis", "可达", OK, "")

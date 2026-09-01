@@ -65,6 +65,10 @@ func NewDeps() Deps {
 			if dsn == "" {
 				dsn = "postgres://localhost:5432/cumora"
 			}
+			// 与 server-go config.withSSLModeDisabled 平价:本机 pg 无 TLS,
+			// pgx 默认 prefer 会握手失败。doctor 的 DSN 语义必须与被诊断的
+			// 服务一致,否则会出现 doctor 绿/服务红(或反之)的假信号。
+			dsn = withSSLModeDisabled(dsn)
 			conn, err := pgx.Connect(ctx, dsn)
 			if err != nil {
 				return PGInfo{}, err
@@ -92,7 +96,11 @@ func NewDeps() Deps {
 			if err != nil {
 				return err
 			}
-			return redis.NewClient(opts).Ping(ctx).Err()
+			// 一次性 CLI 里也要 Close:连接池与 reaper goroutine 不随
+			// Ping 返回回收,#282 stackd 长驻复用本探针层时是真泄漏。
+			c := redis.NewClient(opts)
+			defer c.Close()
+			return c.Ping(ctx).Err()
 		},
 		Systemd: func(unit string) (UnitState, error) {
 			out, err := exec.Command("systemctl", "--user", "show", unit,
@@ -186,4 +194,18 @@ func ParseEnvFile(data []byte) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// withSSLModeDisabled —— server-go config 同名逻辑的平价拷贝:URL 未显式
+// 指定 sslmode 时追加 disable。锁在两个模块间同步的锚点是本函数注释;
+// server-go 侧改语义时此处必须跟(反向亦然)。
+func withSSLModeDisabled(url string) string {
+	if strings.Contains(url, "sslmode=") {
+		return url
+	}
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	return url + sep + "sslmode=disable"
 }

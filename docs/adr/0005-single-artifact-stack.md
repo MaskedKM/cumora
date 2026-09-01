@@ -26,8 +26,9 @@ systemd user unit(`cumora-go` / `cumora-daemon` / `cumora-sidecar`)+ 手动
 采纳服务优先形态,发行与运行分离:
 
 1. **单一 AppImage 制品**内含:Electron 客户端 + 管理面 + bootstrap,以及整个
-   Stack 的运行件(Go 三服务、pg16+pgvector 预编译二进制、redis-server)。
-   一个制品 = 一套互相验证过的版本(契约天然对齐)。
+   Stack 的运行件(server/daemon 为 Go 二进制,sidecar 为 bun 编译的自包含
+   二进制——见 Consequences 的路线修订;另含 pg16+pgvector 预编译二进制、
+   redis-server)。一个制品 = 一套互相验证过的版本(契约天然对齐)。
 2. **拓扑**:一个 ~10 行的 systemd user unit 只保证 `cumora-stackd` 存在
    (Restart=always + 开机入口);stackd 进程内拉起并守护
    pg→redis→sidecar→server→daemon,健康门、依赖链、重启退避全部是可单测的

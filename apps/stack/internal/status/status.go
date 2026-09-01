@@ -24,7 +24,7 @@ type UnitReport struct {
 }
 
 // ProbeResult —— livez/healthz 类 HTTP 探测。Status 取
-// ok/warn/fail/unknown:livez 503 = warn(Redis 红的诚实信号,livez 本身
+// ok/warn/fail:livez 503 = warn(Redis 红的诚实信号,livez 本身
 // 活着,重启修不了 —— cumora-go.service 探针注释的语义)。
 type ProbeResult struct {
 	Name   string `json:"name"`

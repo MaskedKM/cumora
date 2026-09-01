@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/doctor"
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
@@ -47,7 +48,9 @@ func usage() {
 
 用法:
   cumora-stack doctor [--json] [flags]   体检:为什么坏(任何 fail → 退出码 1)
-  cumora-stack status [--json] [flags]   状态:现在跑得怎样
+  cumora-stack status [--json] [flags]   状态:现在跑得怎样(恒退出 0:doctor
+                                         才是退出码门,status 只报告——脚本
+                                         编排请以 doctor 为准)
 
 通用 flags:
   --env-file PATH        主 .env   (默认 $CUMORA_ENV_FILE,或 ~/Code/cumora/.env)
@@ -56,6 +59,9 @@ func usage() {
 
 doctor 专用:
   --daemon-env-file PATH daemon.env(默认 $CUMORA_DAEMON_ENV_FILE,或 ~/.cumora/daemon.env)
+  --engines a,b,c        覆盖引擎集合(默认 claude,codex,grok,cursor)
+                         端口档暂为固定集(5181/5182 must、47823 desktop、
+                         5432/6379 info)——#282 stackd 落地时随拓扑重开
 
 status 专用:
   --livez-url URL        (默认 http://127.0.0.1:5181/api/livez)
@@ -97,10 +103,16 @@ func (c *commonFlags) units() []string {
 	if c.unitsCSV == "" {
 		return defaultUnits
 	}
+	return splitCSV(c.unitsCSV)
+}
+
+// splitCSV —— 逗号分隔清洗:trim 元素、丢空串("--units ' cumora-go'" 不
+// 应探出幽灵 unit;同 server-go CORSOrigins 的 trim+filter 惯例)。
+func splitCSV(s string) []string {
 	var out []string
-	for _, s := range splitComma(c.unitsCSV) {
-		if s != "" {
-			out = append(out, s)
+	for _, part := range splitComma(s) {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
 		}
 	}
 	return out
@@ -124,8 +136,13 @@ func cmdDoctor(args []string) int {
 	parseCommon(fs, &c)
 	daemonEnv := fs.String("daemon-env-file",
 		envOr("CUMORA_DAEMON_ENV_FILE", home(".cumora/daemon.env")), "daemon.env 路径")
+	enginesCSV := fs.String("engines", "", "覆盖引擎集合(逗号分隔;默认 claude,codex,grok,cursor)")
 	_ = fs.Parse(args)
 
+	engines := defaultEngines
+	if *enginesCSV != "" {
+		engines = splitCSV(*enginesCSV)
+	}
 	rep := doctor.Run(probe.NewDeps(), doctor.Config{
 		EnvFile:       c.envFile,
 		DaemonEnvFile: *daemonEnv,
@@ -137,7 +154,7 @@ func cmdDoctor(args []string) int {
 			{Name: "postgres :5432", Addr: "127.0.0.1:5432", Kind: "info"},
 			{Name: "redis :6379", Addr: "127.0.0.1:6379", Kind: "info"},
 		},
-		Engines:        defaultEngines,
+		Engines:        engines,
 		EngineExtraDir: engineDirs,
 	})
 
@@ -189,12 +206,18 @@ func cmdStatus(args []string) {
 }
 
 // engineDirs —— 引擎发现的额外目录:nvm 各版本 bin(fresh-boot 用户
-// 管理器不带 nvm PATH 的钉扎坑,cumora-daemon.service 注释同源)+ 常见
+// 管理器不带 nvm PATH 的钉扎坑,cumora-daemon.service 注释同源)+
+// npx 缓存 bin(daemon 钉扎 PATH 的第一段,claude 常驻于此)+ 常见
 // 用户级 bin。
 func engineDirs() []string {
 	var dirs []string
-	if matches, err := filepath.Glob(home(".nvm/versions/node/*/bin")); err == nil {
-		dirs = append(dirs, matches...)
+	for _, pattern := range []string{
+		home(".nvm/versions/node/*/bin"),
+		home(".npm/_npx/*/node_modules/.bin"),
+	} {
+		if matches, err := filepath.Glob(pattern); err == nil {
+			dirs = append(dirs, matches...)
+		}
 	}
 	for _, p := range []string{home(".local/bin"), home(".bun/bin")} {
 		dirs = append(dirs, p)
