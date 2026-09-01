@@ -72,9 +72,12 @@ jobs:
             bad="$(ldd "$bin" | grep 'not found' || true)"
             [ -z "$bad" ] || { echo "::error::$(basename "$bin") 动态依赖缺口: $bad"; exit 1; }
           done
+          # readFileSync+JSON.parse,不是 require —— require 不认 .deps/
+          # .lock 后缀会把 JSON 当 JS 解析(#300 评审 P0,与脚本同坑)。
           node -e '
-            const m = require(process.argv[1] + "/MANIFEST.deps");
-            const l = require("./ci/stack-deps.lock");
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync(process.argv[1] + "/MANIFEST.deps", "utf8"));
+            const l = JSON.parse(fs.readFileSync("./ci/stack-deps.lock", "utf8"));
             for (const k of ["postgresql", "pgvector", "redis"]) {
               if (m.components[k].version !== l[k].version)
                 throw new Error("MANIFEST 与 lock 版本漂移: " + k);
@@ -86,3 +89,11 @@ jobs:
         run: |
           (ls -dt /deps/*/ 2>/dev/null || true) | grep -v '/src/$' | tail -n +3 | xargs -r rm -rf
           du -sh /deps/* || true
+      # 本仓容器 job 不变式:root 属主残留会打穿下一个 job 的 checkout
+      # (runner-maintenance.yml 头注记录的事故类别;pr.yml/go-release.yml
+      # 同款步)。
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"

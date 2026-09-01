@@ -46,7 +46,12 @@ fetch() { # <url> <dest> <sha256> — 命中缓存跳过;下载后强校验
   echo "$sha  $dest" | sha256sum -c - || { echo "::error::$(basename "$dest") sha256 不符(lock 钉扎失败)"; exit 1; }
 }
 
-command -v make gcc node >/dev/null
+command -v make gcc node >/dev/null 2>&1 || {
+  for tool in make gcc node; do
+    command -v "$tool" >/dev/null 2>&1 || echo "::error::缺构建工具:$tool(bookworm-ci 镜像坏?)"
+  done
+  exit 1
+}
 mkdir -p "$SRC" "$OUT"
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
@@ -67,9 +72,9 @@ tar xf "$SRC/pg.tar.bz2" -C "$BUILD"
 echo "[deps] 构建 pgvector $PV_VER …"
 tar xf "$SRC/pgvector.tar.gz" -C "$BUILD"
 ( cd "$BUILD/pgvector-$PV_VER" \
-  && make PG_CONFIG="$OUT/pg/bin/pg_config" >/dev/null 2>&1 \
-  && make install PG_CONFIG="$OUT/pg/bin/pg_config" >/dev/null 2>&1 ) \
-  || { echo "::error::pgvector 构建失败"; exit 1; }
+  && make PG_CONFIG="$OUT/pg/bin/pg_config" >build.log 2>&1 \
+  && make install PG_CONFIG="$OUT/pg/bin/pg_config" >install.log 2>&1 ) \
+  || { tail -25 "$BUILD"/pgvector-*/{build,install}.log 2>/dev/null; echo "::error::pgvector 构建失败"; exit 1; }
 
 echo "[deps] 构建 redis $RD_VER(server+cli)…"
 tar xf "$SRC/redis.tar.gz" -C "$BUILD"
