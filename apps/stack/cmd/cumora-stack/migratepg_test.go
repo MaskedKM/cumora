@@ -1,5 +1,6 @@
-// migrate-pg 单测(#285):窗口编排序、幂等 no-op、行数不一致阻断切链、
-// dry-run 零写、DSN 脱敏。全 fake 依赖 —— 不碰真 pg/systemd/pg 工具。
+// migrate-pg 单测(#285):窗口编排序、重跑矩阵(internal 恒拒/幂等
+// no-op/损坏拒)、行数与表数比对阻断、dry-run 零写、收养路径、DSN
+// 脱敏(含密码带 @)。全 fake 依赖 —— 不碰真 pg/systemd/pg 工具。
 package main
 
 import (
@@ -17,18 +18,45 @@ type fakeMigrate struct {
 	srcCounts   map[string]int
 	tgtCounts   map[string]int // nil = 同 srcCounts(全一致)
 	srcDSN      string
-	cmds        []string // 每次 RunCmd 的 "name args…"
+	srcVersion  string // "" = "16.15"
+	srcTableN   int
+	tgtTableN   int // 0 = 同 srcTableN
+	cmds        []string
 	execSQLLog  []string
-	pgAlive     bool // true = 内部 pg 已在跑(不 pg_ctl start)
+	pgAlive     bool // true = 内部 pg 已在跑(收养路径)
+	started     bool // pg_ctl start 后为真(交还判活的状态机)
 	stopCalls   int
 	startCalls  int
 	failRestore bool
 }
 
 func (f *fakeMigrate) deps() MigrateDeps {
+	ver := f.srcVersion
+	if ver == "" {
+		ver = "16.15"
+	}
+	srcTableN := f.srcTableN
+	if srcTableN == 0 {
+		srcTableN = 67
+	}
+	tgtTableN := f.tgtTableN
+	if tgtTableN == 0 {
+		tgtTableN = srcTableN
+	}
 	d := MigrateDeps{
 		RunCmd: func(_ context.Context, path string, args ...string) (string, error) {
 			f.cmds = append(f.cmds, filepath.Base(path)+" "+strings.Join(args, " "))
+			if filepath.Base(path) == "pg_ctl" && len(args) > 0 && args[len(args)-1] == "start" {
+				f.started = true
+			}
+			// pg_dump 桩:把 --file 落盘(后续 rename 语义依赖它存在)。
+			if filepath.Base(path) == "pg_dump" {
+				for i, a := range args {
+					if a == "--file" && i+1 < len(args) {
+						_ = os.WriteFile(args[i+1], []byte("PGDMP-fake"), 0o600)
+					}
+				}
+			}
 			if f.failRestore && filepath.Base(path) == "pg_restore" {
 				return "restore boom", fmt.Errorf("exit 1")
 			}
@@ -43,12 +71,20 @@ func (f *fakeMigrate) deps() MigrateDeps {
 			}
 			return f.tgtCounts[table], nil
 		},
+		TableCount: func(_ context.Context, dsn string) (int, error) {
+			if dsn == f.srcDSN {
+				return srcTableN, nil
+			}
+			return tgtTableN, nil
+		},
+		ServerVersion: func(context.Context, string) (string, error) { return ver, nil },
 		ExecSQL: func(_ context.Context, adminDSN, statement string) error {
 			f.execSQLLog = append(f.execSQLLog, statement)
 			return nil
 		},
 		PGAlive: func(context.Context, string) error {
-			if f.pgAlive {
+			// pg_ctl start 之后即活(fake 世界的状态机;收养 = 初始即活)。
+			if f.pgAlive || f.started {
 				return nil
 			}
 			return fmt.Errorf("down")
@@ -59,9 +95,17 @@ func (f *fakeMigrate) deps() MigrateDeps {
 	return d
 }
 
+func fullCounts(n int) map[string]int {
+	m := map[string]int{}
+	for _, t := range smokeTables {
+		m[t] = n
+	}
+	return m
+}
+
 // setupMigrate —— 造一个可跑的迁移现场:toml(external)+ env 文件(DSN)+
-// 制品桩(pg/bin 五件)+ 已 bootstrap 的 pgdata(PG_VERSION 在,跳 initdb)。
-func setupMigrate(t *testing.T, counts map[string]int) (cfgDir, envFile string, cfg stackconfig.Config) {
+// 制品桩 + 已 bootstrap 的 pgdata(PG_VERSION 在,跳 initdb)。
+func setupMigrate(t *testing.T, mode string) (cfgDir, envFile string, cfg stackconfig.Config) {
 	t.Helper()
 	dir := t.TempDir()
 	cfgDir = filepath.Join(dir, "config")
@@ -70,8 +114,7 @@ func setupMigrate(t *testing.T, counts map[string]int) (cfgDir, envFile string, 
 
 	cfg = stackconfig.Defaults()
 	cfg.Data.Home = dataHome
-	// 手写 toml(不走 Save,模拟 import-env 产物亦可;走 Save 更真)。
-	cfg.PG.Mode = stackconfig.ModeExternal
+	cfg.PG.Mode = mode
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +136,6 @@ func setupMigrate(t *testing.T, counts map[string]int) (cfgDir, envFile string, 
 			t.Fatal(err)
 		}
 	}
-	// 已 bootstrap:PG_VERSION 在 → EnsureInternalPG 零动作(桩 initdb 不被执行)。
 	if err := os.MkdirAll(filepath.Join(dataHome, "pgdata"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -114,23 +156,21 @@ func migrateArgs(cfgDir, envFile string, extra ...string) []string {
 	}, extra...)
 }
 
-func TestMigrateHappyPath(t *testing.T) {
-	cfgDir, envFile, cfg := setupMigrate(t, map[string]int{
-		"messages": 100, "convene_transcript": 5, "board_cards": 8,
-		"document_snapshots": 3, "conversations": 20, "participants": 7,
-	})
-	f := &fakeMigrate{srcCounts: map[string]int{
-		"messages": 100, "convene_transcript": 5, "board_cards": 8,
-		"document_snapshots": 3, "conversations": 20, "participants": 7,
-	}, srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
+func withFake(t *testing.T, f *fakeMigrate) {
+	t.Helper()
 	orig := newMigrateDeps
 	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
 	t.Cleanup(func() { newMigrateDeps = orig })
+}
+
+func TestMigrateHappyPath(t *testing.T) {
+	cfgDir, envFile, cfg := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(7), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 0 {
 		t.Fatalf("迁移应退 0: %d", code)
 	}
-	// 编排序:先停链,后 dump/restore,再起链(defer)。
 	if f.stopCalls != 1 || f.startCalls != 1 {
 		t.Fatalf("停/起链各一次: stop=%d start=%d", f.stopCalls, f.startCalls)
 	}
@@ -138,21 +178,20 @@ func TestMigrateHappyPath(t *testing.T) {
 	if !strings.Contains(joined, "pg_ctl -D ") || !strings.Contains(joined, " start") {
 		t.Fatalf("应 pg_ctl start 内部 pg: %s", joined)
 	}
-	if !strings.Contains(joined, "pg_dump --format=custom") || !strings.Contains(joined, srcDSNFor(f.srcDSN)) {
+	if !strings.Contains(joined, "pg_dump --format=custom") || !strings.Contains(joined, "127.0.0.1:5432") {
 		t.Fatalf("应 pg_dump 源库: %s", joined)
 	}
 	if !strings.Contains(joined, "pg_restore --exit-on-error") {
 		t.Fatalf("应 pg_restore: %s", joined)
 	}
+	// 交还:独立 pg 必停(stop 在 defer,起链前)。
 	if !strings.Contains(joined, " stop") {
 		t.Fatalf("独立 pg 应交还(ctl stop): %s", joined)
 	}
-	// 目标库清位 DDL。
 	if len(f.execSQLLog) != 2 || !strings.Contains(f.execSQLLog[0], "DROP DATABASE IF EXISTS cumora") ||
 		f.execSQLLog[1] != "CREATE DATABASE cumora" {
 		t.Fatalf("清位 DDL: %v", f.execSQLLog)
 	}
-	// 切链:toml → internal;旧 toml 留底;状态文件落盘。
 	after, err := stackconfig.Load(filepath.Join(cfgDir, "stack.toml"))
 	if err != nil || after.PG.Mode != stackconfig.ModeInternal {
 		t.Fatalf("toml 应切 internal: %+v %v", after.PG, err)
@@ -165,27 +204,54 @@ func TestMigrateHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("状态文件: %v", err)
 	}
-	if st.SourceCounts["messages"] != 100 || st.TargetCounts["messages"] != 100 {
-		t.Fatalf("行数入档: %+v", st)
-	}
 	if strings.Contains(st.SourceDSN, "secret") || !strings.Contains(st.SourceDSN, "***") {
 		t.Fatalf("状态文件 DSN 应脱敏: %s", st.SourceDSN)
 	}
+	// 锁文件释放。
+	if _, err := os.Stat(filepath.Join(cfg.Data.Home, "migrate-pg.lock")); !os.IsNotExist(err) {
+		t.Fatal("锁文件应已释放")
+	}
 }
 
-// 行数不一致 = 阻断切链(数据完整性优先);defer 仍起链恢复服务。
-func TestMigrateCountMismatchBlocksCutover(t *testing.T) {
-	cfgDir, envFile, cfg := setupMigrate(t, nil)
-	f := &fakeMigrate{
-		srcCounts: map[string]int{"messages": 100, "convene_transcript": 5, "board_cards": 8,
-			"document_snapshots": 3, "conversations": 20, "participants": 7},
-		tgtCounts: map[string]int{"messages": 99, "convene_transcript": 5, "board_cards": 8,
-			"document_snapshots": 3, "conversations": 20, "participants": 7},
-		srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora",
+// 重跑矩阵根门:internal 形态恒拒(迁移后新写入绝不被静默销毁)。
+func TestMigrateRefusesInternalMode(t *testing.T) {
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeInternal)
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:s@h/db"}
+	withFake(t, f)
+
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile, "--force")); code != 2 {
+		t.Fatalf("internal 形态应恒拒: %d", code)
 	}
-	orig := newMigrateDeps
-	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
-	t.Cleanup(func() { newMigrateDeps = orig })
+	if f.stopCalls != 0 || len(f.cmds) != 0 {
+		t.Fatalf("恒拒零动作: stop=%d cmds=%v", f.stopCalls, f.cmds)
+	}
+}
+
+// 收养路径:内部 pg 已在跑 → 不再 start,但结束仍交还(stop)。
+func TestMigrateAdoptsAndHandsBack(t *testing.T) {
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora", pgAlive: true}
+	withFake(t, f)
+
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 0 {
+		t.Fatalf("收养迁移应退 0: %d", code)
+	}
+	joined := strings.Join(f.cmds, "\n")
+	if strings.Contains(joined, " start") {
+		t.Fatalf("收养不应再 start: %s", joined)
+	}
+	if !strings.Contains(joined, "pg_ctl -D ") || !strings.Contains(joined, " stop") {
+		t.Fatalf("收养也应交还(ctl stop): %s", joined)
+	}
+}
+
+// 行数不一致 = 阻断切链;defer 仍起链恢复服务。
+func TestMigrateCountMismatchBlocksCutover(t *testing.T) {
+	cfgDir, envFile, cfg := setupMigrate(t, stackconfig.ModeExternal)
+	tgt := fullCounts(7)
+	tgt["messages"] = 6
+	f := &fakeMigrate{srcCounts: fullCounts(7), tgtCounts: tgt, srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 2 {
 		t.Fatalf("行数不一致应退 2: %d", code)
@@ -202,42 +268,64 @@ func TestMigrateCountMismatchBlocksCutover(t *testing.T) {
 	}
 }
 
-// 幂等:已迁移 → no-op(不停链不 dump)。
-func TestMigrateIdempotentNoop(t *testing.T) {
-	cfgDir, envFile, cfg := setupMigrate(t, map[string]int{
-		"messages": 1, "convene_transcript": 1, "board_cards": 1,
-		"document_snapshots": 1, "conversations": 1, "participants": 1,
-	})
+// 表数不一致同样阻断(全库面比六表严)。
+func TestMigrateTableCountMismatchBlocks(t *testing.T) {
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(3), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora", srcTableN: 67, tgtTableN: 66}
+	withFake(t, f)
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 2 {
+		t.Fatalf("表数不一致应退 2: %d", code)
+	}
+}
+
+// 幂等:external + 标记在 → no-op;--force 才重做。
+func TestMigrateIdempotentNoopAndForce(t *testing.T) {
+	cfgDir, envFile, cfg := setupMigrate(t, stackconfig.ModeExternal)
 	state := `{"completedAt":"2026-09-01T00:00:00Z","sourceDsn":"x","sourceCounts":{},"targetCounts":{},"backupFile":"/b"}`
 	if err := os.WriteFile(filepath.Join(cfg.Data.Home, "migrate-pg.state.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeMigrate{srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
-	orig := newMigrateDeps
-	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
-	t.Cleanup(func() { newMigrateDeps = orig })
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 0 {
-		t.Fatalf("重跑应 no-op 退 0: %d", code)
+		t.Fatalf("标记在应 no-op 退 0: %d", code)
 	}
 	if f.stopCalls != 0 || len(f.cmds) != 0 {
 		t.Fatalf("no-op 不应动栈/跑工具: stop=%d cmds=%v", f.stopCalls, f.cmds)
 	}
+
+	// --force 重做(external 形态:源库仍是权威,安全)。
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile, "--force")); code != 0 {
+		t.Fatalf("force 重做应退 0: %d", code)
+	}
+	if f.stopCalls != 1 || f.startCalls != 1 {
+		t.Fatalf("force 应完整走窗: stop=%d start=%d", f.stopCalls, f.startCalls)
+	}
 }
 
-// dry-run:源探测+计划,零写零停。
+// 标记损坏 = 状态未知 → 拒跑(不 fail-open)。
+func TestMigrateCorruptStateRefused(t *testing.T) {
+	cfgDir, envFile, cfg := setupMigrate(t, stackconfig.ModeExternal)
+	if err := os.WriteFile(filepath.Join(cfg.Data.Home, "migrate-pg.state.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:s@h/db"}
+	withFake(t, f)
+
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile, "--force")); code != 2 {
+		t.Fatalf("损坏标记应拒: %d", code)
+	}
+	if f.stopCalls != 0 {
+		t.Fatal("拒跑不应停链")
+	}
+}
+
+// dry-run:绕过幂等门,计划总是可看;零写零停。
 func TestMigrateDryRun(t *testing.T) {
-	cfgDir, envFile, _ := setupMigrate(t, map[string]int{
-		"messages": 1, "convene_transcript": 1, "board_cards": 1,
-		"document_snapshots": 1, "conversations": 1, "participants": 1,
-	})
-	f := &fakeMigrate{srcCounts: map[string]int{
-		"messages": 1, "convene_transcript": 1, "board_cards": 1,
-		"document_snapshots": 1, "conversations": 1, "participants": 1,
-	}, srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
-	orig := newMigrateDeps
-	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
-	t.Cleanup(func() { newMigrateDeps = orig })
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora"}
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, envFile, "--dry-run")); code != 0 {
 		t.Fatalf("dry-run 应退 0: %d", code)
@@ -251,17 +339,16 @@ func TestMigrateDryRun(t *testing.T) {
 	}
 }
 
-// 源 DSN 缺失:窗口开之前就退。
+// 源 DSN 缺失:窗口开之前就退(t.Setenv 钉死宿主 DATABASE_URL 干扰)。
 func TestMigrateMissingSourceFailsFast(t *testing.T) {
-	cfgDir, envFile, _ := setupMigrate(t, nil)
-	emptyEnv := filepath.Join(filepath.Dir(envFile), "empty.env")
+	t.Setenv("DATABASE_URL", "")
+	cfgDir, _, _ := setupMigrate(t, stackconfig.ModeExternal)
+	emptyEnv := filepath.Join(filepath.Dir(cfgDir), "empty.env")
 	if err := os.WriteFile(emptyEnv, []byte("GITHUB_CLIENT_ID=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeMigrate{}
-	orig := newMigrateDeps
-	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
-	t.Cleanup(func() { newMigrateDeps = orig })
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, emptyEnv)); code != 2 {
 		t.Fatalf("无源应退 2: %d", code)
@@ -271,18 +358,24 @@ func TestMigrateMissingSourceFailsFast(t *testing.T) {
 	}
 }
 
+// 源大版本 ≠16:停链前拒绝。
+func TestMigrateSourceMajorMismatchRefused(t *testing.T) {
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:s@h/db", srcVersion: "17.2"}
+	withFake(t, f)
+	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 2 {
+		t.Fatalf("大版本不匹配应退 2: %d", code)
+	}
+	if f.stopCalls != 0 {
+		t.Fatal("版本预检失败不应停链")
+	}
+}
+
 // restore 失败:不切链、旧 toml 完好、仍起链。
 func TestMigrateRestoreFailureKeepsOldChain(t *testing.T) {
-	cfgDir, envFile, _ := setupMigrate(t, nil)
-	f := &fakeMigrate{
-		srcCounts: map[string]int{"messages": 1, "convene_transcript": 1, "board_cards": 1,
-			"document_snapshots": 1, "conversations": 1, "participants": 1},
-		srcDSN:      "postgres://u:secret@127.0.0.1:5432/cumora",
-		failRestore: true,
-	}
-	orig := newMigrateDeps
-	newMigrateDeps = func(string) MigrateDeps { return f.deps() }
-	t.Cleanup(func() { newMigrateDeps = orig })
+	cfgDir, envFile, _ := setupMigrate(t, stackconfig.ModeExternal)
+	f := &fakeMigrate{srcCounts: fullCounts(1), srcDSN: "postgres://u:secret@127.0.0.1:5432/cumora", failRestore: true}
+	withFake(t, f)
 
 	if code := cmdMigratePG(migrateArgs(cfgDir, envFile)); code != 2 {
 		t.Fatalf("restore 失败应退 2: %d", code)
@@ -297,14 +390,23 @@ func TestMigrateRestoreFailureKeepsOldChain(t *testing.T) {
 }
 
 func TestRedactDSN(t *testing.T) {
-	if got := redactDSN("postgres://u:secret@127.0.0.1:5432/cumora"); strings.Contains(got, "secret") || !strings.Contains(got, "***") {
-		t.Fatalf("URL 形态脱敏: %s", got)
+	cases := []struct{ in, mustNot, must string }{
+		{"postgres://u:secret@127.0.0.1:5432/cumora", "secret", "***"},
+		// 密码带 @(评审 P2:旧实现整串泄漏/尾段泄漏)。
+		{"postgres://u:se@cret@127.0.0.1:5432/db", "cret", "***"},
+		{"postgres://u:p@127.0.0.1:5432/db?x=1", "=p@", "***"},
+		{"host=/run user=cumora password=abc dbname=x", "abc", "password=***"},
+		{"postgres://u@127.0.0.1:5432/db", "", ""},
+		{"host=/run user=cumora dbname=x", "", ""},
 	}
-	if got := redactDSN("host=/run user=cumora password=abc dbname=cumora"); strings.Contains(got, "abc") || !strings.Contains(got, "password=***") {
-		t.Fatalf("keyword 形态脱敏: %s", got)
-	}
-	if got := redactDSN("host=/run user=cumora dbname=x"); !strings.Contains(got, "dbname=x") {
-		t.Fatalf("无密码原样: %s", got)
+	for _, c := range cases {
+		got := redactDSN(c.in)
+		if c.mustNot != "" && strings.Contains(got, c.mustNot) {
+			t.Errorf("%s 泄漏 %q: %s", c.in, c.mustNot, got)
+		}
+		if c.must != "" && !strings.Contains(got, c.must) {
+			t.Errorf("%s 缺 %q: %s", c.in, c.must, got)
+		}
 	}
 }
 
@@ -322,6 +424,3 @@ func TestSSlDisabledForms(t *testing.T) {
 		t.Fatalf("显式 sslmode 不覆盖: %s", got)
 	}
 }
-
-// srcDSNFor —— pg_dump 命令行里 DSN 经 sslDisabled 追参,断言用前缀即可。
-func srcDSNFor(dsn string) string { return strings.Split(dsn, "?")[0] }
