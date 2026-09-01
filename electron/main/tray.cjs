@@ -179,8 +179,32 @@ function toggleMainWindowVisibility() {
   state.mainWindow.focus()
 }
 
+let stackDegraded = false
+
+/** 栈降级警示(#286):tooltip 打标 + 菜单首行红字项(点击 = 开窗,
+ * 渲染端的 Me>Stack 面板在窗里)。非关键路径,任何 tray 缺席都吞掉。 */
+function setStackDegraded(visible) {
+  stackDegraded = !!visible
+  if (!state.tray || state.tray.isDestroyed?.()) return
+  try {
+    state.tray.setToolTip(stackDegraded ? 'Cumora — ⚠ 本地栈已降级' : 'Cumora')
+    if (process.platform !== 'darwin') state.tray.setContextMenu(buildTrayMenu())
+  } catch { /* swallow */ }
+}
+
 function buildTrayMenu() {
+  const items = []
+  if (stackDegraded) {
+    items.push({ label: '⚠ 本地栈已降级 — 打开管理面', click: () => {
+      if (!state.mainWindow || state.mainWindow.isDestroyed()) { createWindow(); return }
+      if (state.mainWindow.isMinimized()) state.mainWindow.restore()
+      state.mainWindow.show()
+      state.mainWindow.focus()
+    } })
+    items.push({ type: 'separator' })
+  }
   return Menu.buildFromTemplate([
+    ...items,
     { label: `Cumora v${app.getVersion()}`, enabled: false },
     { type: 'separator' },
     { label: 'Open Cumora', click: () => {
@@ -229,4 +253,4 @@ function createTray() {
   setTrayUnreadDot(state.dockUnreadDotVisible)
 }
 
-module.exports = { setTrayUnreadDot, createTray }
+module.exports = { setTrayUnreadDot, setStackDegraded, createTray }

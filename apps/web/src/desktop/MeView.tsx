@@ -6,6 +6,7 @@
 // store 消费面未动(zustand v5 无新对象 selector,无需 useShallow)。
 import { useEffect, useState } from 'react'
 import { type MessageKey, useT } from '@/lib/i18n'
+import { isElectron } from '@/lib/runtime'
 import { cn } from '@/lib/utils'
 import { useComputers } from '@/stores/computers'
 import { ComputersTab, DaemonUpgradeBanner } from './me/computers'
@@ -14,11 +15,12 @@ import { ProfileTab } from './me/profile'
 import { ProjectsTab } from './me/projects'
 import { TrustTab } from './me/trust'
 import { UsageTab } from './me/usage'
+import { StackTab } from './me/StackTab'
 
 // The tab's identity is its `key`; the label is a message key resolved at
 // render. Before this they were the same string, which would have made
 // the active tab depend on the UI language.
-const tabs = [
+const baseTabs = [
   { key: 'profile', label: 'me.tab.profile' },
   { key: 'usage', label: 'me.tab.usage' },
   { key: 'computers', label: 'me.tab.computers' },
@@ -26,6 +28,11 @@ const tabs = [
   { key: 'trust', label: 'me.tab.trust' },
   { key: 'preferences', label: 'me.tab.preferences' },
 ] as const satisfies ReadonlyArray<{ key: string; label: MessageKey }>
+// 本地栈控制台(#286):Electron 专属 —— 面板驱动的是本机 cumora-stack
+// 二进制,浏览器形态没有这个面。
+const tabs = isElectron
+  ? [...baseTabs, { key: 'stack', label: 'me.tab.stack' } as { key: string; label: MessageKey }]
+  : baseTabs
 type Tab = (typeof tabs)[number]['key']
 
 export function MeView() {
@@ -73,6 +80,7 @@ export function MeView() {
         {tab === 'projects' && <ProjectsTab />}
         {tab === 'trust' && <TrustTab />}
         {tab === 'preferences' && <PreferencesTab />}
+        {tab === 'stack' && <StackTab />}
       </div>
     </main>
   )
