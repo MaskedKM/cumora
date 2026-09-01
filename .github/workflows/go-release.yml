@@ -14,8 +14,9 @@ name: Go Release
 #   - sidecar 双 job 形态(#280 评审 P0):bun compile 的产物 libc 风格
 #     继承构建宿主 —— alpine(musl)上编 linux-x64 出 musl 链接二进制,
 #     生产 Ubuntu(glibc)上 ENOENT 崩溃循环,且 CI 冒烟(bookworm)结构
-#     性看不见。故 sidecar 在 glibc(bookworm)的独立 job 编译,经
-#     workflow artifact 交给 alpine 的 release job 打 tar;release job
+#     性看不见。故 sidecar 在 glibc(bookworm)的独立 job 编译,经宿主
+#     共享卷 relay(#296:账户 artifact 配额墙,且省每发版 ~760MB 代理
+#     往返)交给 alpine 的 release job 打 tar;release job
 #     保持 alpine(apk 装 gh 便利)。
 #   - 跑在 ser8 自托管 runner(golang:1.24-alpine 容器,同 pr.yml go job
 #     范式):GitHub-hosted 分钟数被账号 billing 锁拦,而自托管 job 派发
@@ -35,6 +36,14 @@ on:
 
 permissions:
   contents: write
+
+# 发版互斥(#296 评审 P2-1):两 runner slot 并存,≥3 个发版 run 同期叠放
+# 会把 relay 的 keep-2 修剪挤掉在读目录。tag 驱动的人为节拍下正常不叠,
+# 但 2026-09-01 双 tag 30s 内连推真叠过一次 —— 排队不取消(发布中途
+# 不该被砍,串行只是慢一点)。
+concurrency:
+  group: go-release
+  cancel-in-progress: false
 
 env:
   # bun 钉版单源(sidecar job 安装与文档引用同此;pr.yml 冒烟腿各自钉,
@@ -137,7 +146,9 @@ jobs:
           cp dist-sidecar/* "$DEST/"
           (cd "$DEST" && sha256sum sidecar-* > SHA256SUMS.sidecar)
           ls -la "$DEST"
-          ls -dt /relay/run-* 2>/dev/null | tail -n +3 | xargs -r rm -rf
+          # 零匹配兜底(pipefail 下裸 ls 会带崩整步;现序 mkdir 保证非空,
+          # 防日后重构踩雷——评审 P2-3)
+          (ls -dt /relay/run-* 2>/dev/null || true) | tail -n +3 | xargs -r rm -rf
 
       # Same ownership give-back as pr.yml's container jobs.
       - name: Restore workspace ownership for the host runner
