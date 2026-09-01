@@ -1,0 +1,224 @@
+name: Desktop Release
+
+# #283 PR-C:单制品 AppImage 出货 —— 桌面客户端 + 整个 Stack 的发行载体
+# (ADR 0005 §1:一个制品 = 一套互相验证过的版本)。
+#   - 触发:手动 dispatch(version 缺省读 package.json)。桌面是新的
+#     出货形态,不占 v* tag 命名空间(go-release 的服务端谱系);release
+#     落 desktop-v<version> tag,首次出货为 prerelease。
+#   - 链:stack-deps(workflow_call,产物在共享卷)→ 四 Go 二进制+
+#     sidecar(bun,glibc 配方同 go-release)→ 载荷 staging+MANIFEST →
+#     absorb 往返校验(PR-B 面)→ electron-builder AppImage(载荷经
+#     build.extraResources 落 resources/bin)→ 解包冒烟 → 发 release。
+#   - electron/electron-builder 的发行包经 github.com 下载 = 本仓已知
+#     弱出口路径:ELECTRON_SKIP_BINARY_DOWNLOAD 下 npm ci,electron
+#     二进制由 install.js 重试环单独拉(ELECTRON_CACHE 持久卷);builder
+#     的 AppImage 工具链走 ELECTRON_BUILDER_CACHE 同卷;builder 本体
+#     重试环兜底。
+#   - #284 起,首启向导负责从 resources/bin 调 absorb + install 起栈;
+#     本工作流的 absorb 冒烟是文件面校验,"干净环境起栈"全链验收在 #284。
+on:
+  workflow_dispatch:
+    # 无 version 输入:版本唯一事实源 = package.json(漂移=断言/产物名失配,
+    # 评审 P2-1;发版先改 package.json+lock)。
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  deps:
+    # 依赖物(pg16+pgvector/redis)—— lock 命中持久卷时秒级。
+    uses: ./.github/workflows/stack-deps.yml
+
+  appimage:
+    needs: deps
+    name: Build single-artifact AppImage (client + stack payload)
+    runs-on: [self-hosted, linux, ser8]
+    timeout-minutes: 50  # 全冷缓存(npm+electron+工具链+上传)首跑余量(评审 P3)
+    container:
+      image: 127.0.0.1:5500/golang-bookworm-ci:1.24
+      options: --add-host=host.docker.internal:host-gateway
+      volumes:
+        - /var/lib/cumora-ci-cache/stackdeps:/deps
+        - /var/lib/cumora-ci-cache/npmcache:/npm/cache
+        - /var/lib/cumora-ci-cache/buncache:/root/.bun/install/cache
+        - /var/lib/cumora-ci-cache/electroncache:/electron-cache
+    env:
+      # 出口代理配方同 pr.yml(小写;electron/下载器同吃)。
+      https_proxy: http://host.docker.internal:7890
+      http_proxy: http://host.docker.internal:7890
+      no_proxy: localhost,127.0.0.1,host.docker.internal
+      npm_config_cache: /npm/cache
+      ELECTRON_CACHE: /electron-cache/electron
+      ELECTRON_BUILDER_CACHE: /electron-cache/builder
+      BUN_VERSION: 1.3.10
+      # 容器 root 的 git 拒绝 runner 属主的 checkout(dubious ownership,
+      # pr.yml go job 同因);发布二进制 -trimpath,无需 VCS 戳。
+      GOFLAGS: -buildvcs=false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve lock hash + version
+        shell: bash
+        run: |
+          echo "LOCKHASH=$(sha256sum ci/stack-deps.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # 版本唯一事实源 = package.json(electron-builder 产物名取它,
+          # 输入漂移=断言路径失配——评审 P2-1,故不留 version 输入)。
+          echo "VERSION=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')" >> "$GITHUB_ENV"
+          test -d "/deps/$LOCKHASH" || { echo "::error::stack-deps 产物缺失(前置 job 失败?)"; exit 1; }
+      - name: npm ci (workspace deps; sidecar 编译的前置)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # bun build 解析 sidecar 的 hoisted 依赖(dotenv/yjs 等)需要
+          # node_modules 在位——此步必须先于 sidecar 编译(评审 P1-1,
+          # go-release sidecar job 同序)。electron 二进制不在此拉。
+          export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+          ok=0
+          for i in 1 2 3; do
+            if npm ci --ignore-scripts >/tmp/npmci.log 2>&1; then ok=1; break; fi
+            echo "[npm] ci 第 $i 次失败,重试"; tail -5 /tmp/npmci.log
+          done
+          [ "$ok" = 1 ] || { echo "::error::npm ci 三次失败"; cat /tmp/npmci.log; exit 1; }
+      - name: Build stack binaries (4 × Go, linux/amd64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-stack
+          ( cd apps/server-go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go build -trimpath -ldflags "-s -w" -o ../../dist-stack/cumora-server ./cmd/server )
+          ( cd apps/byoa-daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go build -trimpath -ldflags "-s -w -X github.com/MaskedKM/cumora/apps/byoa-daemon/internal/daemon.Version=${VERSION}" \
+                -o ../../dist-stack/cumora-daemon ./cmd/cumora )
+          ( cd apps/stack && for b in cumora-stack:./cmd/cumora-stack cumora-stackd:./cmd/cumora-stackd; do
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
+                -o "../../dist-stack/${b%%:*}" "${b#*:}"
+            done )
+          chmod 0755 dist-stack/*
+          ls -la dist-stack/
+      - name: Build sidecar (bun compile, glibc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3; do
+            if npm install -g "bun@${BUN_VERSION}" >/tmp/bun-install.log 2>&1; then ok=1; break; fi
+            echo "[bun] 安装第 $i 次失败(平台包过代理偶发掐流),重试"; tail -3 /tmp/bun-install.log
+          done
+          [ "$ok" = 1 ] || { echo "::error::bun 安装三次失败"; cat /tmp/bun-install.log; exit 1; }
+          # host 目标(bun-linux-x64)= glibc 零下载;单制品仅 linux x64。
+          bun build --compile --target=bun-linux-x64 \
+            apps/yjs-sidecar/src/main.ts --outfile dist-stack/cumora-sidecar
+          chmod 0755 dist-stack/cumora-sidecar
+      - name: Stage payload + MANIFEST
+        shell: bash
+        run: bash ci/build-desktop-payload.sh dist-payload dist-stack "/deps/$LOCKHASH" "$PWD" "$VERSION"
+      - name: Absorb round-trip smoke (PR-B face)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 兄弟布局(releases/ 与 current 同父)——与默认部署形态一致,
+          # 相对指向即 releases/<ver>(评审 P1-2:平铺 /tmp 布局下 Rel
+          # 会算出 rel/<ver>,断言随之失配)。
+          mkdir -p /tmp/smoke
+          dist-stack/cumora-stack absorb \
+            --releases-dir /tmp/smoke/releases --current-dir /tmp/smoke/current dist-payload
+          test "$(readlink /tmp/smoke/current)" = "releases/$VERSION"
+          test -x /tmp/smoke/current/cumora-server && test -x /tmp/smoke/current/redis-server
+          test -f /tmp/smoke/current/pg/lib/postgresql/vector.so
+          grep -q '"version"' /tmp/smoke/current/MANIFEST
+          echo "[smoke] absorb 往返通过:releases/$VERSION 就位"
+      - name: Web build (vite)
+        shell: bash
+        run: npm run build
+      - name: Fetch electron dist (retry ring, weak egress)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3 4 5; do
+            if node node_modules/electron/install.js >/tmp/electron-dl.log 2>&1; then ok=1; break; fi
+            echo "[electron] 发行包第 $i 次下载失败(github 弱出口),重试"; tail -3 /tmp/electron-dl.log
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "::error::electron 发行包五次下载失败(ELECTRON_CACHE 未热)"; exit 1; }
+          node -e 'console.log("electron", require("electron/package.json").version, "dist 就绪")'
+      - name: electron-builder → AppImage (retry ring)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3; do
+            if npx electron-builder --linux AppImage --x64 >/tmp/builder.log 2>&1; then ok=1; break; fi
+            echo "[builder] 第 $i 次失败(AppImage 工具链首拉过弱出口?),重试"; tail -5 /tmp/builder.log
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "::error::electron-builder 三次失败"; cat /tmp/builder.log; exit 1; }
+          tail -5 /tmp/builder.log
+      - name: Artifact report + unpack smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la release/*.AppImage
+          du -h release/*.AppImage   # #283 AC:体积记录
+          # 解包冒烟:载荷确实进了制品(resources/bin 五件+MANIFEST+pg)。
+          ./release/Cumora-"$VERSION".AppImage --appimage-extract >/dev/null
+          test -x squashfs-root/resources/bin/cumora-server
+          test -x squashfs-root/resources/bin/cumora-stack
+          test -x squashfs-root/resources/bin/redis-server
+          test -f squashfs-root/resources/bin/MANIFEST
+          test -f squashfs-root/resources/bin/pg/lib/postgresql/vector.so
+          echo "[smoke] AppImage 解包:resources/bin 载荷齐全"
+          rm -rf squashfs-root
+      - name: Publish release (desktop-v<version>, REST)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 镜像无 gh(bookworm main 仓无 github-cli,#303 评审 P1-3 实证),
+          # 也不为它引烘焙时弱出口下载——curl+REST 直发。JSON 解析用
+          # node stdin(镜像自带;readFileSync 纪律同源)。
+          TAG="desktop-v$VERSION"
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          UP="https://uploads.github.com/repos/$GITHUB_REPOSITORY"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACC="Accept: application/vnd.github+json"
+          jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s)[process.argv[1]]??"")}catch{console.log("")}})' "$1"; }
+
+          rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+          if [ -z "$rel_id" ]; then
+            rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" -X POST "$API/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Cumora $VERSION(单制品 AppImage)\",\"prerelease\":true,\"body\":\"桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启:AppImage 内 resources/bin 经 cumora-stack absorb 落盘(#284 向导接线前手动)。\"}" | jget id)"
+            [ -n "$rel_id" ] || { echo "::error::release 创建失败($TAG)"; exit 1; }
+          fi
+          # 重发场景:删旧资产再传(--clobber 等价)。
+          for f in release/*.AppImage; do
+            name="$(basename "$f")"
+            curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/$rel_id/assets" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const a of JSON.parse(s))console.log(a.id+" "+a.name)})' \
+              | while read -r aid aname; do
+                  [ "$aname" = "$name" ] && curl -fsS --http1.1 --retry 3 -H "$AUTH" -X DELETE "$API/assets/$aid" || true
+                done
+            ok=0
+            for i in 1 2 3; do
+              if curl -fsS --http1.1 --retry 3 -H "$AUTH" \
+                   -H "Content-Type: application/octet-stream" \
+                   --data-binary @"$f" \
+                   "$UP/releases/$rel_id/assets?name=$name" | jget browser_download_url; then
+                ok=1; break
+              fi
+              echo "[publish] $name 第 $i 次上传失败,重试"; sleep 5
+            done
+            [ "$ok" = 1 ] || { echo "::error::$name 三次上传失败"; exit 1; }
+          done
+          echo "release: $TAG(rel=$rel_id)"
+      # 本仓容器 job 不变式(root 属主残留会打穿下一 job 的 checkout)。
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        shell: bash
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
