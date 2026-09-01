@@ -201,6 +201,7 @@
       "category": "Network",
       "icon": "build/icon.png",
       "maintainer": "yetone <yetoneful@gmail.com>"
-    }
+    },
+    "publish": null
   }
 }
