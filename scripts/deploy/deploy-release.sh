@@ -114,9 +114,17 @@ ln -s "releases/$tag" "${CURRENT_LINK}.new"
 mv -T "${CURRENT_LINK}.new" "$CURRENT_LINK"
 say "current -> $(readlink "$CURRENT_LINK")(原子切换完成)"
 
-# ── 重启三件套(After= 链:sidecar → go → daemon)───────────────────
-if ! systemctl --user restart cumora-sidecar.service cumora-go.service cumora-daemon.service; then
-  die "三件套 restart 失败 —— 单元未装则先:bash scripts/deploy/install-units.sh;再查 systemctl --user status cumora-go"
+# ── 按形态重启(#282 单 unit 分流):cumora.service 活 = stackd 形态,
+# restart stackd 即从新 current 重拉整链;否则三 unit 形态照旧。不分流
+# 的后果:restart 已退役(禁用未删)的三 unit = 与 stackd 链抢 5181/5182。
+if systemctl --user is-active --quiet cumora.service 2>/dev/null; then
+  if ! systemctl --user restart cumora.service; then
+    die "cumora.service(stackd)restart 失败 —— 查 systemctl --user status cumora"
+  fi
+else
+  if ! systemctl --user restart cumora-sidecar.service cumora-go.service cumora-daemon.service; then
+    die "三件套 restart 失败 —— 单元未装则先:bash scripts/deploy/install-units.sh;单 unit 形态装法:cumora-stack install;再查 systemctl --user status cumora-go"
+  fi
 fi
 
 # ── 部署后核验:livez(进程活 + Redis 硬依赖)────────────────────────

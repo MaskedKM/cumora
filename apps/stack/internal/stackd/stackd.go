@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -133,17 +134,23 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 		{Name: "daemon", Mode: chain.Managed, Child: &supervise.Child{
 			// daemon 是 server 的轮询客户端(SSE wake+心跳),无 HTTP 面
 			// —— 不设门,进程存活即就位(cumora-daemon.service 同语义)。
+			// CUMORA_SUPERVISED=1:自更新语义依赖(selfupdate.go supervised
+			// 探测;心跳/pair 报文也上报该位)——旧 unit 的 Environment 行
+			// 必须原样继承,丢了 = 自更新静默失效(评审 P0-1)。
 			Name: "daemon", Path: bin("cumora-daemon"),
 			Args: []string{"agent", "computer", "--server", "http://" + cfg.ServerAddr},
 			Dir:  cfg.WorkDir,
-			Env:  append(daemonEnv, "PATH="+pinnedPATH()),
+			Env:  append(daemonEnv, "CUMORA_SUPERVISED=1", "PATH="+pinnedPATH()),
 		}},
 	}, nil
 }
 
 // pinnedPATH —— daemon 子进程的 PATH:当前 PATH + 引擎发现目录(nvm/
 // npx glob)。PATH 钉扎坑(fresh-boot 用户管理器不带 nvm)的机制化
-// 收口,替代旧 unit 的手钉行。
+// 收口,替代旧 unit 的手钉行。已知取舍(评审 P2-6):比旧 unit 的手钉
+// 面窄(不含仓库各级 node_modules/.bin、node-gyp-bin、/snap/bin 等)
+// —— 引擎主驻留位(nvm/npx)已覆盖,doctor 的发现视图与本函数同源,
+// 两面一致;后续确需扩面改 internal/engdirs 单点。
 func pinnedPATH() string {
 	return os.Getenv("PATH") + ":" + joinDirs(engdirs.Dirs(""))
 }
@@ -226,9 +233,24 @@ func Run(cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if err := chain.BringUp(ctx, nodes, m); err != nil {
+	// BringUp 与停机信号赛跑(评审 P2-5):TERM 落在红门等待期时,靠
+	// m.Shutdown 取消 Manager 根 ctx 中止门,而不是干等门预算耗尽
+	// (systemd TimeoutStopSec=90s 会先 SIGKILL 留下孤儿)。
+	bringUp := make(chan error, 1)
+	go func() { bringUp <- chain.BringUp(ctx, nodes, m) }()
+	select {
+	case err := <-bringUp:
+		if err != nil {
+			m.Shutdown()
+			writeState(cfg, m, log) // 失败也落状态:别让上一世的 running=true 装活(评审 P3-12)
+			return fmt.Errorf("stackd: 链式拉起失败: %w", err)
+		}
+	case <-ctx.Done():
 		m.Shutdown()
-		return fmt.Errorf("stackd: 链式拉起失败: %w", err)
+		<-bringUp // Shutdown 中止门后 BringUp 必然立刻返回
+		writeState(cfg, m, log)
+		log.Info("启动途中停机,链已收口")
+		return nil
 	}
 	log.Info("stack up", "nodes", NodeNames)
 	writeState(cfg, m, log)
@@ -279,6 +301,21 @@ func orDefault(v, def time.Duration) time.Duration {
 		return v
 	}
 	return def
+}
+
+// StableInstanceID —— 跨 stackd 世代稳定的实例标记:boot_id+uid 派生。
+// pid 派生(每世新 ID)会让 KillInstanceOrphans 永远找不到上一世孤儿
+// (评审 P0-2);同 boot 同 uid 的崩溃重启共享 ID = 孤儿可认领,跨 boot/
+// 跨用户天然隔离(重启后无残留进程,他人栈不相干)。
+func StableInstanceID() string {
+	boot := "unknown-boot"
+	if data, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		boot = strings.TrimSpace(string(data))
+		if len(boot) >= 8 {
+			boot = boot[:8]
+		}
+	}
+	return fmt.Sprintf("stackd-%s-%d", boot, os.Getuid())
 }
 
 func homeDir() string {

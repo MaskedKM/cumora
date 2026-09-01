@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
+	"github.com/MaskedKM/cumora/apps/stack/internal/supervise"
 )
 
 // fakeCurrent —— 造一个含全部五件二进制的临时制品目录(假二进制 =
@@ -114,6 +116,70 @@ func TestBuildNodesOrderAndEnv(t *testing.T) {
 	// daemon args:轮询客户端形态。
 	if strings.Join(nodes[4].Child.Args, " ") != "agent computer --server http://127.0.0.1:15181" {
 		t.Fatalf("daemon args: %v", nodes[4].Child.Args)
+	}
+	// 自更新语义位:旧 unit 的 Environment=CUMORA_SUPERVISED=1 必须继承
+	//(丢了 = selfupdate 静默失效,评审 P0-1 的回归锁)。
+	if !strings.Contains(dEnv, "CUMORA_SUPERVISED=1") {
+		t.Fatalf("daemon env 缺 CUMORA_SUPERVISED=1: %s", dEnv)
+	}
+}
+
+// TestGateAcceptanceCodes —— 门接受面钉死:sidecar healthz 200|401 都绿
+// (Bearer 面在岗),server livez 200|503 都绿(依赖红的诚实信号);其余码红。
+func TestGateAcceptanceCodes(t *testing.T) {
+	cfg := testConfig(t)
+	code := 200
+	cfg.Probes.HTTP = func(string, string) (int, error) { return code, nil }
+	nodes, err := BuildNodes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecarGate := nodes[2].Child.Gate
+	serverGate := nodes[3].Child.Gate
+	for _, c := range []int{200, 401} {
+		code = c
+		if err := sidecarGate(context.Background()); err != nil {
+			t.Fatalf("sidecar 门应接受 healthz %d: %v", c, err)
+		}
+	}
+	for _, c := range []int{200, 503} {
+		code = c
+		if err := serverGate(context.Background()); err != nil {
+			t.Fatalf("server 门应接受 livez %d: %v", c, err)
+		}
+	}
+	for _, c := range []int{500, 404, 502} {
+		code = c
+		if err := sidecarGate(context.Background()); err == nil {
+			t.Fatalf("sidecar 门应拒绝 %d", c)
+		}
+		if c != 503 && serverGate(context.Background()) == nil {
+			t.Fatalf("server 门应拒绝 %d", c)
+		}
+	}
+}
+
+// TestStableInstanceID —— boot+uid 派生:同进程稳定;跨 stackd 世代
+// (同 boot 同 uid)共享 = 孤儿认领有效(评审 P0-2 的机制锁)。
+func TestStableInstanceID(t *testing.T) {
+	a, b := StableInstanceID(), StableInstanceID()
+	if a == "" || a != b {
+		t.Fatalf("实例 ID 应非空且稳定: %q vs %q", a, b)
+	}
+	if !strings.HasPrefix(a, "stackd-") {
+		t.Fatalf("实例 ID 前缀: %q", a)
+	}
+	// 用稳定 ID 标记的"上一世残留"必须被认领清杀。
+	stray := exec.Command("/bin/sh", "-c", "sleep 60")
+	stray.Env = append(os.Environ(),
+		"CUMORA_STACK_CHILD=1", "CUMORA_STACK_INSTANCE="+a)
+	if err := stray.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stray.Process.Kill() }()
+	time.Sleep(50 * time.Millisecond) // 等 /proc/<pid>/environ 可读
+	if n := supervise.KillInstanceOrphans(a); n < 1 {
+		t.Fatalf("稳定 ID 应认领上一世残留,击杀 %d", n)
 	}
 }
 

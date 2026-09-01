@@ -3,6 +3,7 @@ package status
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
@@ -15,6 +16,13 @@ type fakeDeps struct {
 	unitErr   map[string]error // systemctl 失败注入(非 systemd 环境)
 	version   string           // VERSION 文件内容;空 = 读不到
 	current   string           // EvalSymlinks 结果;空 = 错误
+	stateJSON string           // stackd-state.json 内容;空 = 读不到
+}
+
+// withStateFile —— 状态文件内容注入(返回配好的 deps)。
+func (f fakeDeps) withStateFile(s string) probe.Deps {
+	f.stateJSON = s
+	return f.deps()
 }
 
 func (f fakeDeps) deps() probe.Deps {
@@ -38,7 +46,13 @@ func (f fakeDeps) deps() probe.Deps {
 			return probe.UnitState{Load: "loaded", Active: "active", Sub: "running",
 				Timestamp: "Mon 2026-09-01 09:35:12 UTC"}, nil
 		},
-		ReadFile: func(string) ([]byte, error) {
+		ReadFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, "stackd-state.json") {
+				if f.stateJSON == "" {
+					return nil, errors.New("no such file")
+				}
+				return []byte(f.stateJSON), nil
+			}
 			if f.version == "" {
 				return nil, errors.New("no such file")
 			}
@@ -65,6 +79,7 @@ func cfg() Config {
 		HealthzURL:  healthzURL,
 		VersionFile: "/fake/current/VERSION",
 		CurrentDir:  "/fake/current",
+		StateFile:   "/fake/current/stackd-state.json",
 	}
 }
 
@@ -142,5 +157,31 @@ func TestUnitErrorPopulated(t *testing.T) {
 	}
 	if r.Livez.Status != "ok" || r.Healthz.Status != "ok" {
 		t.Fatal("unit 探测失败不应拖垮 HTTP 探测")
+	}
+}
+
+func TestStackdSectionFromStateFile(t *testing.T) {
+	// 单 unit 形态:状态文件可读 → Stackd 段带出(阶段 3 JSON 契约)。
+	state := `{"instanceId":"stackd-ab12cd34-1000","updatedAt":"2026-09-01T12:00:00Z",
+	  "children":[{"name":"server","running":true,"pid":123,"restarts":0}]}`
+	r := Run((fakeDeps{
+		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
+		version:   "v0.4.0\n", current: "/x/releases/v0.4.0",
+	}).withStateFile(state), cfg())
+	if r.Stackd == nil {
+		t.Fatal("状态文件可读应带出 Stackd 段")
+	}
+	if r.Stackd.InstanceID != "stackd-ab12cd34-1000" || len(r.Stackd.Children) != 1 {
+		t.Fatalf("Stackd 段内容: %+v", r.Stackd)
+	}
+	if !r.Stackd.Children[0].Running {
+		t.Fatal("children[0] 应 running")
+	}
+	// 三 unit 形态:无状态文件 → 段省略(omitempty 契约)。
+	r2 := Run((fakeDeps{
+		httpCodes: map[string]int{livezURL: 200, healthzURL: 200},
+	}).deps(), cfg())
+	if r2.Stackd != nil {
+		t.Fatalf("无状态文件时 Stackd 段应省略: %+v", r2.Stackd)
 	}
 }

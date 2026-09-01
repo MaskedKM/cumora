@@ -36,8 +36,9 @@ ExecStart=%s
 Restart=always
 RestartSec=3
 # 健康门由 stackd 链式拉起承担(sidecar healthz → server livez),不再
-# 需要启动后置探针;启动预算盖住整链(最坏 livez 门 120s)。
-TimeoutStartSec=300
+# 需要启动后置探针;启动预算盖住整链最坏和:external 60+60 + sidecar 门
+# 60 + server 门 120 = 300s,再留 spawn/慢起余量(评审 P2-4)。
+TimeoutStartSec=420
 
 [Install]
 WantedBy=default.target
@@ -92,6 +93,7 @@ func cmdInstall(args []string) int {
 
 	if err := systemd("enable", "--now", unitName); err != nil {
 		fmt.Fprintf(os.Stderr, "install: enable %s 失败: %v\n", unitName, err)
+		fmt.Fprintf(os.Stderr, "  此时旧三 unit 已停 —— 手动恢复:systemctl --user enable --now cumora-sidecar cumora-go cumora-daemon\n  (或排查后重试 cumora-stack install)\n")
 		return 1
 	}
 	fmt.Printf("install: %s 已启用。状态:cumora-stack status;日志:cumora-stack logs -f\n", unitName)

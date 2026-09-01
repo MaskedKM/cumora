@@ -6,10 +6,10 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/MaskedKM/cumora/apps/stack/internal/stackd"
 )
@@ -28,7 +28,8 @@ func main() {
 		"状态文件(原子写,status 消费)")
 	serverAddr := fs.String("server-addr", envOr("CUMORA_GO_LISTEN", "127.0.0.1:5181"),
 		"server 监听地址(CUMORA_GO_LISTEN 注入值)")
-	sidecarPort := fs.Int("sidecar-port", 5182, "sidecar 端口(YJS_SIDECAR_PORT 注入值)")
+	sidecarPort := fs.Int("sidecar-port",
+		envOrInt("YJS_SIDECAR_PORT", 5182), "sidecar 端口(YJS_SIDECAR_PORT 注入值)")
 	uploads := fs.String("uploads-dir",
 		envOr("CUMORA_UPLOADS_DIR", home(".local/share/cumora/uploads")), "上传目录")
 	_ = fs.Parse(os.Args[1:])
@@ -39,13 +40,15 @@ func main() {
 		WorkDir:       *work,
 		DaemonEnvFile: *daemonEnv,
 		StateFile:     *state,
-		InstanceID:    "stackd-" + fmt.Sprint(os.Getpid()),
-		ServerAddr:    *serverAddr,
-		SidecarPort:   *sidecarPort,
-		UploadsDir:    *uploads,
-		DSN:           os.Getenv("DATABASE_URL"),
-		RedisURL:      os.Getenv("REDIS_URL"),
-		SidecarToken:  os.Getenv("YJS_SIDECAR_TOKEN"),
+		// 稳定实例 ID(boot+uid):崩溃重启后孤儿认领仍能找到上一世
+		// 子进程(评审 P0-2;pid 派生 = 每世新 ID,认领恒空转)。
+		InstanceID:   stackd.StableInstanceID(),
+		ServerAddr:   *serverAddr,
+		SidecarPort:  *sidecarPort,
+		UploadsDir:   *uploads,
+		DSN:          os.Getenv("DATABASE_URL"),
+		RedisURL:     os.Getenv("REDIS_URL"),
+		SidecarToken: os.Getenv("YJS_SIDECAR_TOKEN"),
 	}
 	if err := stackd.Run(cfg, log); err != nil {
 		log.Error("stackd 退出", "err", err)
@@ -56,6 +59,15 @@ func main() {
 func envOr(env, fallback string) string {
 	if v := os.Getenv(env); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrInt(env string, fallback int) int {
+	if v := os.Getenv(env); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }
