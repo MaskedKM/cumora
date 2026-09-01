@@ -18,6 +18,8 @@ type fakeDeps struct {
 	envErr        error
 	daemonEnvData string
 	daemonEnvErr  error
+	stateData     string // stackd 状态文件内容(路径含 stackd-state 分流)
+	stateErr      error
 	pgErr         error
 	pgNoVector    bool
 	redisErr      error
@@ -30,6 +32,12 @@ type fakeDeps struct {
 func (f fakeDeps) deps() probe.Deps {
 	return probe.Deps{
 		ReadFile: func(path string) ([]byte, error) {
+			if strings.Contains(path, "stackd-state") {
+				if f.stateErr != nil {
+					return nil, f.stateErr
+				}
+				return []byte(f.stateData), nil
+			}
 			if strings.Contains(path, "daemon") {
 				if f.daemonEnvErr != nil {
 					return nil, f.daemonEnvErr
@@ -254,5 +262,101 @@ func TestParseEnvFileVariants(t *testing.T) {
 	}
 	if _, ok := m["bogus-line"]; ok {
 		t.Fatal("非键值行不应入表")
+	}
+}
+
+// ── #298 形态感知 ─────────────────────────────────────────────────────
+
+const stackdStateGreen = `{"instanceId":"stackd-0a1b2c3d-1000","updatedAt":"2026-09-01T17:30:00Z",
+"children":[
+{"name":"sidecar","running":true,"pid":11,"restarts":0},
+{"name":"server","running":true,"pid":12,"restarts":0},
+{"name":"daemon","running":true,"pid":13,"restarts":0}
+]}`
+
+func stackdCfg() Config {
+	cfg := testCfg()
+	cfg.StackdUnit = "cumora.service"
+	cfg.StateFile = "/fake/stackd-state.json"
+	return cfg
+}
+
+func stackdDeps(fd fakeDeps) probe.Deps {
+	fd.unitStates = map[string]probe.UnitState{
+		"cumora.service": {Load: "loaded", Active: "active", Sub: "running"},
+	}
+	return fd.deps()
+}
+
+func TestStackdFormAllGreen(t *testing.T) {
+	r := Run(stackdDeps(fakeDeps{envData: fullEnv, stateData: stackdStateGreen}), stackdCfg())
+	if r.AnyFail {
+		t.Fatalf("单 unit 形态健康栈不应有 fail: %+v", r.Checks)
+	}
+	if find(t, r, "units", "cumora.service").Status != OK {
+		t.Fatal("stackd unit 应绿")
+	}
+	if find(t, r, "stackd", "sidecar").Status != OK {
+		t.Fatal("子进程 sidecar 应绿")
+	}
+	// 旧三 unit 已退役,inactive 是设计态 —— 不得再进体检面。
+	for _, c := range r.Checks {
+		if c.Name == "cumora-go" || c.Name == "cumora-sidecar" || c.Name == "cumora-daemon" {
+			t.Fatalf("单 unit 形态不应再检旧 unit: %+v", c)
+		}
+	}
+}
+
+func TestStackdFormChildDownFails(t *testing.T) {
+	down := strings.Replace(stackdStateGreen,
+		`"name":"server","running":true,"pid":12,"restarts":0`,
+		`"name":"server","running":false,"pid":0,"restarts":4,"lastErr":"exit status 1"`, 1)
+	r := Run(stackdDeps(fakeDeps{envData: fullEnv, stateData: down}), stackdCfg())
+	c := find(t, r, "stackd", "server")
+	if c.Status != Fail || !strings.Contains(c.Detail, "lastErr") {
+		t.Fatalf("子进程停应红且带原因: %+v", c)
+	}
+	if !r.AnyFail {
+		t.Fatal("子进程停应置 AnyFail(退出码门)")
+	}
+}
+
+func TestStackdFormServiceDownFails(t *testing.T) {
+	fd := fakeDeps{envData: fullEnv, stateData: stackdStateGreen,
+		unitStates: map[string]probe.UnitState{
+			"cumora.service": {Load: "loaded", Active: "failed", Sub: "failed"},
+		}}
+	r := Run(fd.deps(), stackdCfg())
+	if find(t, r, "units", "cumora.service").Status != Fail {
+		t.Fatal("stackd unit 非活应红")
+	}
+}
+
+func TestStackdFormStateUnreadableIsWarn(t *testing.T) {
+	// 状态文件不可读 = 启动首写前的短暂窗口 → warn 不 fail
+	//(端口 must 门在跑,退出码门不空转)。
+	r := Run(stackdDeps(fakeDeps{envData: fullEnv, stateErr: errors.New("no such file")}), stackdCfg())
+	if find(t, r, "stackd", "状态文件").Status != Warn {
+		t.Fatal("状态文件不可读应黄")
+	}
+	if r.AnyFail {
+		t.Fatal("仅状态文件不可读不应 AnyFail")
+	}
+}
+
+func TestOldFormStillChecksThreeUnits(t *testing.T) {
+	// cumora.service 未装 = 三 unit 形态:#281 老语义全保留。
+	r := Run((fakeDeps{envData: fullEnv, unitStates: map[string]probe.UnitState{
+		"cumora.service": {Load: "not-found", Active: "inactive", Sub: "dead"},
+		"cumora-go":      {Load: "loaded", Active: "inactive", Sub: "dead"},
+	}}).deps(), stackdCfg())
+	if find(t, r, "units", "cumora-go").Status != Fail {
+		t.Fatal("三 unit 形态:旧 unit 语义不变")
+	}
+	if !r.AnyFail {
+		t.Fatal("三 unit 形态:旧 unit 停应 AnyFail")
+	}
+	if find(t, r, "form", "形态").Status != Info {
+		t.Fatal("形态行应 info 报三 unit 形态")
 	}
 }
