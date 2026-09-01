@@ -33,8 +33,10 @@ enable 一个、无健康联动。#211 起部署物与启动语义如下。
 └── uploads/                      # #208/#248 生产上传数据,与部署物解耦
 ```
 
-工作树剩余职责:sidecar(node/TS 源码)、webapp dist/、`.env`、
-`daemon.env` —— 这些不在 Go 制品内。
+工作树剩余职责(#280 后收窄):webapp dist/、`.env`、`daemon.env` ——
+这些不在制品内。sidecar 已随 #280 改为 bun 编译单二进制随制品分发
+(`cumora-sidecar`,源码仍为 TS);`.env` 仍经 unit WorkingDirectory 从
+工作树读取(#284 首启向导再迁窝)。
 
 ### 发版步骤(下载制品 → 校验 → 落版本目录 → 切 symlink → restart)
 
@@ -99,7 +101,7 @@ ExecStartPost 探针 + livez 扩 Redis ping(Go 侧单测钉两态)。详见 #211
 ```
 systemd --user
 ├─ cumora-go.service      Go HTTP @ 127.0.0.1:5181(cumora-server)
-├─ cumora-sidecar.service yjs-sidecar @ 5182(node/TS,共用)
+├─ cumora-sidecar.service yjs-sidecar @ 5182(#280 起 bun 编译制品二进制)
 ├─ cumora-daemon.service  byoa-daemon(Go,agent computer --server :5181)
 └─ cumora-ts.service      [stopped,已随 #70 删除] ← 回切兜底(原 TS 入口 index.ts)
 ```

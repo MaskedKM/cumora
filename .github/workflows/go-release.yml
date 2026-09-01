@@ -11,6 +11,12 @@ name: Go Release
 #     #211 起随包,部署目录自包含)+ SHA256SUMS;daemon 的
 #     自更新只认自家 releases 的这套资产(下载、校验、原子自替换),
 #     server 侧部署走 scripts/deploy/deploy-release.sh 同一套。
+#   - sidecar 双 job 形态(#280 评审 P0):bun compile 的产物 libc 风格
+#     继承构建宿主 —— alpine(musl)上编 linux-x64 出 musl 链接二进制,
+#     生产 Ubuntu(glibc)上 ENOENT 崩溃循环,且 CI 冒烟(bookworm)结构
+#     性看不见。故 sidecar 在 glibc(bookworm)的独立 job 编译,经
+#     workflow artifact 交给 alpine 的 release job 打 tar;release job
+#     保持 alpine(apk 装 gh 便利)。
 #   - 跑在 ser8 自托管 runner(golang:1.24-alpine 容器,同 pr.yml go job
 #     范式):GitHub-hosted 分钟数被账号 billing 锁拦,而自托管 job 派发
 #     不受影响(锁生效期间 ser8 的 Runner maintenance 照常跑绿)。发布
@@ -30,8 +36,103 @@ on:
 permissions:
   contents: write
 
+env:
+  # bun 钉版单源(sidecar job 安装与文档引用同此;pr.yml 冒烟腿各自钉,
+  # 两文件间以版本号字符串对齐)。
+  BUN_VERSION: 1.3.10
+
 jobs:
+  # ── #280:sidecar 编译(glibc 宿主)──────────────────────────────────
+  # 非 glibc 宿主会把 musl 烙进 linux 产物(评审 P0 实锤);交叉编译的
+  # 非 host 目标还需从 npm 拉 staged runtime(评审 P1 实锤,~90MB/目标)
+  # ——故本 job:bookworm 容器 + 走 Mihomo 代理(pr.yml 同款)+ bun
+  # 缓存卷(命中即零下载)+ 全步骤重试环。产物经 upload-artifact 交给
+  # release job,不直接对外。
+  sidecar:
+    runs-on: [self-hosted, linux, ser8]
+    container:
+      image: node:24-bookworm
+      options: --add-host=host.docker.internal:host-gateway
+      volumes:
+        - /var/lib/cumora-ci-cache/npmcache:/npm/cache
+        - /var/lib/cumora-ci-cache/buncache:/root/.bun/install/cache
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    env:
+      # 与 pr.yml checks job 同款出口代理配方(小写——libcurl/npm/bun
+      # 的小写约定);no_proxy 兜本地。
+      https_proxy: http://host.docker.internal:7890
+      http_proxy: http://host.docker.internal:7890
+      no_proxy: localhost,127.0.0.1
+      npm_config_cache: /npm/cache
+    steps:
+      # node:24-bookworm 自带 node/npm/git(checkout 可用);runner 的
+      # node-actions 运行时与容器无 musl 冲突(bookworm)。
+      - uses: actions/checkout@v4
+
+      # npm ci 拉 hoisted workspace 依赖(sidecar 无 dependencies 字段);
+      # --ignore-scripts 跳过 electron 等下载,sidecar 纯 JS 依赖零依赖
+      # 安装脚本(评审实证)。出口偶发掐流 → 重试环。
+      - name: npm ci (sidecar bundling deps)
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3; do
+            npm ci --ignore-scripts && { ok=1; break; }
+            echo "[sidecar] npm ci 第 $i 次失败,重试"
+          done
+          [ "$ok" = 1 ] || { echo "::error::npm ci 三次失败"; exit 1; }
+
+      # bun 经 npm registry 安装(平台包 tarball 自带二进制;alpine 上
+      # 由 bun 自家 postinstall 探 /etc/alpine-release 选 musl 变体——
+      # 本 job 是 bookworm,选 glibc)。99MB 包过代理偶发掐流 → 重试环。
+      - name: Install bun (pinned, via npm registry)
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3; do
+            npm install -g "bun@${BUN_VERSION}" && { ok=1; break; }
+            echo "[sidecar] bun 安装第 $i 次失败,重试"
+          done
+          [ "$ok" = 1 ] || { echo "::error::bun 安装三次失败"; exit 1; }
+          bun --version
+
+      # 四目标编译:host 目标(bun-linux-x64)零下载;其余目标首次从
+      # npm 拉 staged runtime(尊重代理;buncache 卷命中后 20ms 级)。
+      # 重试环裹整个循环单目标粒度。
+      - name: Compile sidecar (4 targets)
+        run: |
+          set -euo pipefail
+          mkdir -p dist-sidecar
+          for t in bun-linux-x64 bun-linux-arm64 bun-darwin-x64 bun-darwin-arm64; do
+            ok=0
+            for i in 1 2 3; do
+              bun build --compile --target="$t" \
+                apps/yjs-sidecar/src/main.ts \
+                --outfile "dist-sidecar/sidecar-$t" && { ok=1; break; }
+              echo "[sidecar] $t 第 $i 次编译失败(staged runtime 下载被掐?),重试"
+            done
+            [ "$ok" = 1 ] || { echo "::error::$t 三次编译失败"; exit 1; }
+            ls -la "dist-sidecar/sidecar-$t"
+          done
+
+      - name: Upload sidecar binaries (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-binaries
+          path: dist-sidecar/
+          retention-days: 5
+          if-no-files-found: error
+
+      # Same ownership give-back as pr.yml's container jobs.
+      - name: Restore workspace ownership for the host runner
+        if: always()
+        run: |
+          WS_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          chown -R "$(stat -c %u:%g "$WS_DIR")" "$WS_DIR"
+
   release:
+    needs: sidecar
     runs-on: [self-hosted, linux, ser8]
     container:
       image: golang:1.24-alpine
@@ -51,14 +152,20 @@ jobs:
       #          go job 的日志实证过这条回退路径);
       #   bash — runner 无 bash 时步骤回退 busybox sh,而下面各步用了
       #          `[[ ]]`/pipefail 这些 bash 语义,装上后自动改用 bash;
-      #   gh   — 发布上传工具;
-      #   nodejs/npm — #280:sidecar 的 bun 编译腿(npm ci 装 hoisted
-      #          workspace 依赖 + 经 npm registry 安装 bun 本体)。
+      #   gh   — 发布上传工具。
       - name: Install tooling (git for checkout+lineage gate, bash for the shell steps, gh for upload)
         shell: sh
-        run: apk add --no-cache bash git github-cli nodejs npm
+        run: apk add --no-cache bash git github-cli
 
       - uses: actions/checkout@v4
+
+      # sidecar job(bookworm/glibc)的编译产物交接(评审 P0:alpine 上
+      # 编 linux 产物会带 musl loader,生产 glibc 起不来)。
+      - name: Download sidecar binaries (built on glibc)
+        uses: actions/download-artifact@v4
+        with:
+          name: sidecar-binaries
+          path: dist-sidecar
 
       - name: Resolve release version
         id: ver
@@ -88,31 +195,7 @@ jobs:
             exit 1
           fi
 
-      # ── #280:sidecar 编译前置(bun 单二进制,路线 A)──────────────────
-      # npm ci 拉齐根 workspace 依赖(sidecar 自身无 dependencies 字段,
-      # 运行时 import 全靠 hoist;package-lock 精确锁版,不走 bun install
-      # 的自由解析)。发布 job 无持久卷,每次 tag 都全量装 —— 发布低频,
-      # 成本可接受(pr.yml 的日常冒烟在 checks job 有 npm 缓存卷)。
-      - name: npm ci (sidecar bundling deps)
-        run: npm ci --ignore-scripts
-
-      # bun 经 npm registry 安装(平台包 @oven/bun-linux-x64 的 tarball
-      # 自带二进制 —— ser8 对 npm 出口稳定且有既有缓存路径;绕开
-      # GitHub releases 长流弱出口)。99MB 平台包过代理偶发掐流,实测
-      # 需要重试环。只做 compile(bundling + 产物内嵌 bun runtime),
-      # 依赖解析仍归 npm/lock —— 供应链面不因 bun 扩大。
-      - name: Install bun (pinned, via npm registry)
-        run: |
-          set -euo pipefail
-          ok=0
-          for i in 1 2 3; do
-            npm install -g bun@1.3.10 && { ok=1; break; }
-            echo "[bun] npm 安装第 $i 次失败(平台包过代理偶发掐流),重试"
-          done
-          [ "$ok" = 1 ] || { echo "::error::bun 安装三次失败"; exit 1; }
-          bun --version
-
-      - name: Build matrix (server + daemon + sidecar, 4 targets / 12 binaries)
+      - name: Build matrix (server + daemon, 4 targets / 8 binaries + sidecar)
         run: |
           set -euo pipefail
           VER="${{ steps.ver.outputs.version }}"
@@ -126,7 +209,8 @@ jobs:
             # 自包含,二进制与 schema 同版本落盘,systemd 不再指仓库工作树。
             # daemon 自更新只按 basename 抽 cumora-daemon
             # (selfupdate.go extractDaemonFromTarGz),多出的 migrations/
-            # 与 sidecar 对其零影响。
+            # 与 sidecar 对其零影响(尺寸面:daemon 自更新会整包下载,
+            # sidecar ~40-50MB gz 随之膨胀 —— #283 打包链再评估拆资产)。
             cp -r apps/server-go/migrations "$dir/migrations"
             # 两个嵌套 Go 模块:须在各自模块目录内构建(无根 go.mod/go.work)
             (cd apps/byoa-daemon && \
@@ -137,12 +221,11 @@ jobs:
               CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w" \
               -o "../../$dir/cumora-server" ./cmd/server)
-            # #280:sidecar = bun 交叉编译(产物内嵌 bun runtime,~105MB;
-            # bundling 解析根 node_modules 的 hoisted 依赖,bun 不做安装)。
-            # bun 的 arch 名:x64/arm64(Go 的 amd64 → x64)。
+            # #280:sidecar 由 glibc sidecar job 编好(见上),此处仅落位;
+            # bun 的 arch 名 x64/arm64(Go 的 amd64 → x64)。
             barch="x64"; [ "$arch" = arm64 ] && barch="arm64"
-            bun build --compile --target="bun-${os}-${barch}" \
-              apps/yjs-sidecar/src/main.ts --outfile "$dir/cumora-sidecar"
+            cp "dist-sidecar/sidecar-bun-${os}-${barch}" "$dir/cumora-sidecar"
+            chmod 0755 "$dir/cumora-sidecar"
             (cd dist && tar czf "cumora-${os}-${arch}.tar.gz" "cumora-${os}-${arch}")
             rm -rf "$dir"
           done
