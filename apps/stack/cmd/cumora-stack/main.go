@@ -80,12 +80,14 @@ func usage() {
 
 通用 flags(路径缺省优先级:flag > env > stack.toml > 内置布局;
 stack.toml 位 = $CUMORA_CONFIG_FILE,缺省 ~/.config/cumora/stack.toml):
-  --env-file PATH        主 .env   (默认 $CUMORA_ENV_FILE,或 ~/Code/cumora/.env)
+  --env-file PATH        主 .env   (默认 $CUMORA_ENV_FILE;缺省先取规范位
+                         ~/.config/cumora/stack.env,不存在回退 ~/Code/cumora/.env)
   --units a,b,c          覆盖 unit 集合(默认 cumora-sidecar,cumora-go,cumora-daemon)
   --json                 机器可读输出
 
 doctor 专用:
-  --daemon-env-file PATH daemon.env(默认 $CUMORA_DAEMON_ENV_FILE,或 ~/.cumora/daemon.env)
+  --daemon-env-file PATH daemon.env(默认 $CUMORA_DAEMON_ENV_FILE;缺省先取
+                         规范位 ~/.config/cumora/daemon.env,回退 ~/.cumora/daemon.env)
   --engines a,b,c        覆盖引擎集合(默认 claude,codex,grok,cursor)
                          端口档暂为固定集(5181/5182 must、47823 desktop、
                          5432/6379 info)——#282 stackd 落地时随拓扑重开
@@ -119,10 +121,36 @@ func defaultEnvFile() string {
 	return home("Code/cumora/.env")
 }
 
+// defaultDaemonEnvFile —— daemon.env 缺省与 stackd 同规则(评审 P2:
+// 两面漂移会让 doctor 检查守护进程根本不读的文件)。
+func defaultDaemonEnvFile() string {
+	if p := stackconfig.DaemonEnvPath(); fileExistsQuiet(p) {
+		return p
+	}
+	return stackconfig.LegacyDaemonEnvPath()
+}
+
 // serverHostPort —— doctor 端口检查的 Name 标签(展示 cfg 实际地址,
-// 沙箱/改端口部署下标签不撒谎)。
+// 沙箱/改端口部署下标签不撒谎;Addr 侧必须是可拨号的裸地址)。
 func serverHostPort(cfg stackconfig.Config) string {
 	return fmt.Sprintf("server %s", cfg.Net.ServerAddr)
+}
+
+// buildDoctorAddrs —— cmdDoctor 的端口检查装配(评审 P0 的回归锁:
+// Name 是标签、Addr 必须裸地址可拨号)。
+func buildDoctorAddrs(cfg stackconfig.Config) []doctor.AddrExpect {
+	addrs := []doctor.AddrExpect{
+		{Name: serverHostPort(cfg), Addr: cfg.Net.ServerAddr, Kind: "must"},
+		{Name: fmt.Sprintf("sidecar :%d", cfg.Net.SidecarPort), Addr: fmt.Sprintf("127.0.0.1:%d", cfg.Net.SidecarPort), Kind: "must"},
+		{Name: "auth-loopback :47823", Addr: "127.0.0.1:47823", Kind: "desktop"},
+	}
+	if cfg.PG.Mode != stackconfig.ModeInternal {
+		addrs = append(addrs, doctor.AddrExpect{Name: "postgres :5432", Addr: "127.0.0.1:5432", Kind: "info"})
+	}
+	if cfg.Redis.Mode != stackconfig.ModeInternal {
+		addrs = append(addrs, doctor.AddrExpect{Name: "redis :6379", Addr: "127.0.0.1:6379", Kind: "info"})
+	}
+	return addrs
 }
 
 func fileExistsQuiet(path string) bool {
@@ -194,7 +222,7 @@ func cmdDoctor(args []string) int {
 	var c commonFlags
 	parseCommon(fs, &c)
 	daemonEnv := fs.String("daemon-env-file",
-		envOr("CUMORA_DAEMON_ENV_FILE", home(".cumora/daemon.env")), "daemon.env 路径")
+		envOr("CUMORA_DAEMON_ENV_FILE", defaultDaemonEnvFile()), "daemon.env 路径")
 	enginesCSV := fs.String("engines", "", "覆盖引擎集合(逗号分隔;默认 claude,codex,grok,cursor)")
 	_ = fs.Parse(args)
 
@@ -211,17 +239,7 @@ func cmdDoctor(args []string) int {
 	}
 	// 受管形态下 postgres/redis 不再探 TCP 5432/6379(socket 面已由
 	// [postgres]/[redis] 组覆盖);external 形态照旧 info 记录。
-	addrs := []doctor.AddrExpect{
-		{Name: "server :5181", Addr: serverHostPort(cfg), Kind: "must"},
-		{Name: fmt.Sprintf("sidecar :%d", cfg.Net.SidecarPort), Addr: fmt.Sprintf("127.0.0.1:%d", cfg.Net.SidecarPort), Kind: "must"},
-		{Name: "auth-loopback :47823", Addr: "127.0.0.1:47823", Kind: "desktop"},
-	}
-	if cfg.PG.Mode != stackconfig.ModeInternal {
-		addrs = append(addrs, doctor.AddrExpect{Name: "postgres :5432", Addr: "127.0.0.1:5432", Kind: "info"})
-	}
-	if cfg.Redis.Mode != stackconfig.ModeInternal {
-		addrs = append(addrs, doctor.AddrExpect{Name: "redis :6379", Addr: "127.0.0.1:6379", Kind: "info"})
-	}
+	addrs := buildDoctorAddrs(cfg)
 	rep := doctor.Run(probe.NewDeps(), doctor.Config{
 		EnvFile:          c.envFile,
 		DaemonEnvFile:    *daemonEnv,

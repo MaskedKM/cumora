@@ -46,13 +46,13 @@ type Config struct {
 	ServerAddr  string // CUMORA_GO_LISTEN 注入值(127.0.0.1:5181)
 	SidecarPort int    // YJS_SIDECAR_PORT 注入值(5182)
 	// 门预算覆盖(0 = 缺省 sidecar 60s / server 120s;测试压短)。
-	SidecarGateTimeout time.Duration
-	ServerGateTimeout  time.Duration
-	PGGateTimeout      time.Duration // 受管 pg 门预算(0 = 120s;首启含 initdb 后冷启)
-	UploadsDir         string        // CUMORA_UPLOADS_DIR 注入值
-	DSN                string        // external pg 探测用(空 = probe 缺省)
-	RedisURL           string        // external redis 探测用
-	SidecarToken       string        // sidecar 健康门 Bearer
+	SidecarGateTimeout  time.Duration
+	ServerGateTimeout   time.Duration
+	InternalGateTimeout time.Duration // 受管 pg/redis 门预算(0 = 120s;首启含 initdb 后冷启)
+	UploadsDir          string        // CUMORA_UPLOADS_DIR 注入值
+	DSN                 string        // external pg 探测用(空 = probe 缺省)
+	RedisURL            string        // external redis 探测用
+	SidecarToken        string        // sidecar 健康门 Bearer
 
 	// 受管 pg/redis(#284):Mode = stackconfig.ModeInternal 时本进程拉起,
 	// DSN/RedisURL 忽略、位置由下列字段定;其余值 = external 探测(缺省)。
@@ -134,11 +134,11 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 			return nil, fmt.Errorf("stackd: %s 缺失于 %s(先 deploy-release 新制品): %w", name, cfg.CurrentDir, err)
 		}
 	}
-	if cfg.pgInternal() || cfg.redisInternal() {
-		for _, name := range []string{"redis-server"} {
-			if _, err := os.Stat(bin(name)); err != nil {
-				return nil, fmt.Errorf("stackd: 受管形态缺 %s 于 %s: %w", name, cfg.CurrentDir, err)
-			}
+	// 前置检查按形态各自独立(评审 P1:pg=internal+redis=external 的合法
+	// 混合形态不得因缺 redis-server 拒装配 —— 那形态根本不用它)。
+	if cfg.redisInternal() {
+		if _, err := os.Stat(bin("redis-server")); err != nil {
+			return nil, fmt.Errorf("stackd: 受管 redis 缺 redis-server 于 %s: %w", cfg.CurrentDir, err)
 		}
 	}
 	if cfg.pgInternal() {
@@ -207,7 +207,7 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 				return nil
 			},
 			GateEvery:   500 * time.Millisecond,
-			GateTimeout: orDefault(cfg.PGGateTimeout, 120*time.Second),
+			GateTimeout: orDefault(cfg.InternalGateTimeout, 120*time.Second),
 		}}
 	} else {
 		pgNode = chain.Node{Name: "postgres", Mode: chain.External, Probe: func(ctx context.Context) error {
@@ -230,7 +230,7 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 			Dir:         cfg.CurrentDir,
 			Gate:        func(ctx context.Context) error { return d.Redis(ctx, "unix://"+cfg.redisSocket()) },
 			GateEvery:   250 * time.Millisecond,
-			GateTimeout: orDefault(cfg.PGGateTimeout, 120*time.Second),
+			GateTimeout: orDefault(cfg.InternalGateTimeout, 120*time.Second),
 		}}
 	} else {
 		redisNode = chain.Node{Name: "redis", Mode: chain.External, Probe: func(ctx context.Context) error {
@@ -290,10 +290,18 @@ func (c Config) internalRedisURLFace() string { return "unix://" + c.redisSocket
 
 // EnsureInternalPG —— 受管 pg 首启 bootstrap:pgdata 无 PG_VERSION 即
 // initdb(trust-local + reject-host:隔离靠 socket 目录 0700,凭据零落盘,
-// TCP 面关死)。幂等:既有集群只补建 socket 目录。
+// TCP 面关死)。幂等:既有集群只补建 socket 目录(并收紧其权限 ——
+// MkdirAll 不回收已存在目录的 0700 不变量,评审 P3)。
+//
+// 原子性(评审 P2):initdb 落在同级 staging 目录,成功才 rename 进
+// pgdata —— 中途被杀/失败不残缺集群,残缺目录会把幂等门(PG_VERSION
+// 在=跳过 / 目录非空=initdb 拒跑)永久卡死,净机向导无自愈路径。
 func EnsureInternalPG(binDir, dataDir, runDir string, log *slog.Logger) error {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return fmt.Errorf("stackd: 建 socket 目录 %s: %w", runDir, err)
+	}
+	if err := os.Chmod(runDir, 0o700); err != nil {
+		return fmt.Errorf("stackd: 收紧 socket 目录权限 %s: %w", runDir, err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err == nil {
 		return nil
@@ -306,13 +314,20 @@ func EnsureInternalPG(binDir, dataDir, runDir string, log *slog.Logger) error {
 	if log != nil {
 		log.Info("initdb: 初建受管 pg 集群", "dir", dataDir)
 	}
-	cmd := exec.Command(filepath.Join(binDir, "initdb"),
-		"-D", dataDir, "-U", "cumora",
+	staging := fmt.Sprintf("%s.staging-initdb.%d", dataDir, os.Getpid())
+	defer os.RemoveAll(staging)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(binDir, "initdb"),
+		"-D", staging, "-U", "cumora",
 		"--auth-local=trust", "--auth-host=reject",
 		"--encoding=UTF8", "--no-locale")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("stackd: initdb 失败: %w\n%s", err, tailLines(out, 25))
+		return fmt.Errorf("stackd: initdb 失败(staging 已清理,可重试): %w\n%s", err, tailLines(out, 25))
+	}
+	if err := os.Rename(staging, dataDir); err != nil {
+		return fmt.Errorf("stackd: pgdata 落位 %s: %w", dataDir, err)
 	}
 	return nil
 }

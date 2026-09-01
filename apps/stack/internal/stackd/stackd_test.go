@@ -407,12 +407,17 @@ func TestInternalGateRequiresPgvector(t *testing.T) {
 	}
 }
 
-// initdb bootstrap:首启落 PG_VERSION + 运行标记;二次调用零动作(幂等)。
+// initdb bootstrap:首启落 PG_VERSION(staging 原子落位);二次调用零动作
+// (幂等);socket 目录无条件收紧 0700。
 func TestEnsureInternalPGIdempotent(t *testing.T) {
 	dir := fakeCurrentInternal(t)
 	dataHome := t.TempDir()
 	dataDir := filepath.Join(dataHome, "pgdata")
 	runDir := filepath.Join(dataHome, "run")
+	// 预置 0755 run 目录:EnsureInternalPG 必须收紧(评审 P3-12)。
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := EnsureInternalPG(filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
 		t.Fatalf("首启: %v", err)
 	}
@@ -421,22 +426,83 @@ func TestEnsureInternalPGIdempotent(t *testing.T) {
 	}
 	st, err := os.Stat(runDir)
 	if err != nil || st.Mode().Perm() != 0o700 {
-		t.Fatalf("runDir 应 0700: %v %v", err, st)
+		t.Fatalf("runDir 应无条件 0700: %v %v", err, st)
 	}
-	first, _ := os.ReadFile(filepath.Join(dir, "pg", "initdb-ran.log"))
+	first, _ := os.ReadFile(filepath.Join(dataHome, "initdb-ran.log"))
 	if err := EnsureInternalPG(filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
 		t.Fatalf("二次: %v", err)
 	}
-	second, _ := os.ReadFile(filepath.Join(dir, "pg", "initdb-ran.log"))
+	second, _ := os.ReadFile(filepath.Join(dataHome, "initdb-ran.log"))
 	if string(first) != string(second) {
 		t.Fatalf("二次调用不应重跑 initdb: %q → %q", first, second)
+	}
+}
+
+// initdb 失败:pgdata 不落位、staging 清理(评审 P2 —— 残缺集群会把
+// 幂等门永久卡死,净机无自愈路径)。
+func TestEnsureInternalPGFailureCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "pg", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "initdb"),
+		[]byte("#!/bin/sh\necho boom >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataHome := t.TempDir()
+	dataDir := filepath.Join(dataHome, "pgdata")
+	if err := EnsureInternalPG(binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger()); err == nil {
+		t.Fatal("initdb 失败应返回错误")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("失败后 pgdata 不应存在: %v", err)
+	}
+	entries, _ := os.ReadDir(dataHome)
+	leftover := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "pgdata.staging") {
+			leftover++
+		}
+	}
+	if leftover != 0 {
+		t.Fatalf("staging 残留 %d 份", leftover)
+	}
+}
+
+// 混合形态(评审 P1):pg=internal + redis=external 是合法组合,
+// 不得因缺 redis-server 拒装配。
+func TestBuildNodesMixedModesNoRedisBinaryNeeded(t *testing.T) {
+	cfg := testConfig(t) // fakeCurrent:无 redis-server / 无 pg/
+	cfg.DataHome = t.TempDir()
+	// 造一个只有 pg 件的制品目录。
+	dir := fakeCurrent(t)
+	pgBin := filepath.Join(dir, "pg", "bin")
+	if err := os.MkdirAll(pgBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"postgres", "initdb"} {
+		if err := os.WriteFile(filepath.Join(pgBin, rel),
+			[]byte("#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.CurrentDir = dir
+	cfg.PGMode = stackconfig.ModeInternal
+	cfg.RedisMode = stackconfig.ModeExternal
+	nodes, err := BuildNodes(cfg)
+	if err != nil {
+		t.Fatalf("混合形态应可装配: %v", err)
+	}
+	if nodes[0].Mode != chain.Managed || nodes[1].Mode != chain.External {
+		t.Fatalf("混合形态装配: pg=%s redis=%s", nodes[0].Mode, nodes[1].Mode)
 	}
 }
 
 // 受管全链 Run:postgres/redis 以子进程起,状态面五件全 running。
 func TestRunFakeStackInternal(t *testing.T) {
 	cfg := internalConfig(t)
-	cfg.PGGateTimeout = 2 * time.Second
+	cfg.InternalGateTimeout = 2 * time.Second
 	done := make(chan error, 1)
 	go func() { done <- Run(cfg, discardLogger()) }()
 

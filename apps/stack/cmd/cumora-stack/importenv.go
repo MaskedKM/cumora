@@ -196,7 +196,12 @@ func cmdImportEnv(args []string) int {
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(daemonEnvPath, data, 0o600)
+			// tmp+rename:中断不留半截凭据文件(与其余两件同纪律)。
+			tmp := daemonEnvPath + ".tmp"
+			if err := os.WriteFile(tmp, data, 0o600); err != nil {
+				return err
+			}
+			return os.Rename(tmp, daemonEnvPath)
 		}, "no-source"},
 	}
 	for _, p := range plan {
@@ -244,7 +249,7 @@ func printImportReport(rep ImportReport) {
 	fmt.Println("[import-env]")
 	fmt.Printf("  配置目录   %s\n", rep.ConfigDir)
 	fmt.Printf("  pg 形态    %s\n", rep.PGMode)
-	fmt.Printf("  redis 形态 %s\n", rep.RedisMode)
+	fmt.Printf("  redis 形态 %s(redis 由 6379 探活推断,可手改 toml)\n", rep.RedisMode)
 	fmt.Printf("  机器事实转 toml: %s\n", keysOrNone(rep.MovedToToml))
 	fmt.Printf("  原样搬 stack.env: %d 键\n", len(rep.KeptInEnv))
 	if len(rep.LegacyNoReader) > 0 {
@@ -283,8 +288,10 @@ func writeEnvFile(path string, envMap map[string]string, skip map[string]bool) e
 	b.WriteString("# 机器事实在 stack.toml;本文件进 unit EnvironmentFile,权限 0600。\n")
 	for _, k := range keys {
 		v := envMap[k]
-		if strings.ContainsAny(v, " \t#\"'") {
-			v = `"` + strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `"`, `\"`) + `"`
+		// 只加引号不转义:probe.ParseEnvFile 只剥外层引号,转义会破坏
+		// 往返等价(值含内嵌双引号属荒诞凭据,不为它引入转义协议)。
+		if strings.ContainsAny(v, " \t#'") {
+			v = `"` + v + `"`
 		}
 		b.WriteString(k + "=" + v + "\n")
 	}
