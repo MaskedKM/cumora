@@ -3,9 +3,11 @@
 #
 # Runs on the ser8 self-hosted fleet (labels: self-hosted,linux,ser8).
 # The two runner slots share one 4-core/4GB cgroup, so this workflow is
-# TWO jobs — go (gofmt + vet + build + test, golang:1.24-alpine container) and
-# checks (guards + lint + typecheck + unit + integration, node:24
-# container + service containers) — matching the fleet's parallelism.
+# TWO jobs — go (gofmt + vet + build + test, 127.0.0.1:5500/golang-alpine-ci
+# container) and checks (guards + lint + typecheck + unit + integration,
+# 127.0.0.1:5500/golang-bookworm-ci container + service containers) —
+# matching the fleet's parallelism. The -ci images come from the runner's
+# local registry (#292 — see the bake bullet below).
 # (checks used to be two jobs, quick + tests; they merged in #115's CI
 # speedup: one less checkout + npm ci, and 2 jobs fill 2 slots exactly.)
 #
@@ -152,9 +154,8 @@ jobs:
       # breaks sustained streams). Anonymous: codeload rejects
       # Authorization-carrying requests. continue-on-error: tier 2b takes
       # over. Unique per-PID .part + atomic mv (parallel slots); gzip -t
-      # hit-validation evicts poison. (alpine ships no curl — apk retried
-      # under timeout 90; apk death skips ②, not fails, when the walk can
-      # proceed via wget+go.)
+      # hit-validation evicts poison. (curl 已烘进 alpine-ci 镜像(#292),
+      # 下面的 apk 引导腿成惰性保险网;两 job 保持 byte-identical。)
       - name: Source tier 2a — cache / tarball single-stream
         id: src_tarball
         if: steps.git_checkout.outcome == 'failure'

@@ -14,6 +14,10 @@ FROM node:24-bookworm
 COPY --from=golang:1.24-bookworm /usr/local/go /usr/local/go
 ENV GOPATH=/go
 ENV PATH=/usr/local/go/bin:$PATH
+# 官方 golang 镜像带 GOTOOLCHAIN=local,整目录拷贝带不走 ENV——补上:
+# 若未来 go.mod 出现 toolchain 指令,缺这行会静默联网下工具链(出口抖
+# =慢死),补上则快速失败(评审 P2)。
+ENV GOTOOLCHAIN=local
 RUN mkdir -p /go \
  && printf 'Acquire::Retries "5"; Acquire::http::Pipeline-Depth "0"; Acquire::https::Pipeline-Depth "0";\n' \
       > /etc/apt/apt.conf.d/80flaky-proxy \

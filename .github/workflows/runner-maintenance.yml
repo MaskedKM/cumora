@@ -26,7 +26,12 @@
 # here; there is no pull_request trigger, so PR code is never executed
 # outside a container. Steps only touch docker garbage and file ownership
 # inside the runner's own _work — `system prune` without --volumes/--all
-# never removes tagged images in use or any volume data.
+# never removes tagged images in use or any volume data. The bake job
+# (#292) additionally builds the two -ci images and maintains the resident
+# cumora-ci-registry container; dispatch-from-branch executes
+# branch-controlled Dockerfiles — a trust boundary equivalent to PR job
+# containers (both need write access to trigger), noted here so the
+# "no PR code outside a container" line above stays honest.
 #
 # NOTE: both runner slots live on the same host and share one docker
 # daemon, so one prune covers the fleet; the _work chown is best-effort
