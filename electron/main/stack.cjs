@@ -40,13 +40,19 @@ function runStack(args, opts = {}) {
   return new Promise((resolve) => {
     const bin = resolveStackBin()
     execFile(bin, args, { maxBuffer: 16 * 1024 * 1024, timeout: opts.timeout ?? 10 * 60_000 }, (err, stdout, stderr) => {
-      // 保留尾部:失败诊断通常在末尾;上限防无界进渲染端内存。
+      // stdout 与 stderr 分离保留(评审 P1):--json 报告解析必须只吃
+      // stdout,stderr 噪音拼在后面会让 JSON.parse 碎掉。output 仍是
+      // 合并面(尾部截断,上限防无界进渲染端)。
       const MAX = 200_000
-      const combined = `${stdout || ''}${stderr || ''}`
+      const clamp = (x) => (x.length > MAX ? `…(前段截断)…\n${x.slice(-MAX)}` : x)
       resolve({
-        code: err && typeof err.code === 'number' ? err.code : err ? 1 : 0,
+        // execFile 的 err.code:非零退出 = number;spawn 失败(ENOENT)=
+        // string —— 后者归一为 127(评审 P2:不得与红线退出码 1 混淆)。
+        code: err ? (typeof err.code === 'number' ? err.code : 127) : 0,
         ok: !err,
-        output: combined.length > MAX ? `…(前段截断)…\n${combined.slice(-MAX)}` : combined,
+        stdout: clamp(String(stdout || '')),
+        stderr: clamp(String(stderr || '')),
+        output: clamp(`${stdout || ''}${stderr || ''}`),
         error: err && typeof err.code !== 'number' ? String(err.message || err) : null,
       })
     })
@@ -71,7 +77,9 @@ function registerIpc() {
       const { net } = require('electron')
       const reached = await new Promise((resolve) => {
         const req = net.request('http://127.0.0.1:5181/api/livez')
-        req.on('response', () => { req.destroy(); resolve(true) })
+        // 200|503 才算 cumora 栈在(503=Redis 红的诚实活信号);其他
+        // 状态码 = 别的进程占了 5181,不当栈在。
+        req.on('response', (res) => { const up = res.statusCode === 200 || res.statusCode === 503; req.destroy(); resolve(up) })
         req.on('error', () => resolve(false))
         setTimeout(() => { req.destroy(); resolve(false) }, 1500)
         req.end()
@@ -92,20 +100,27 @@ function registerIpc() {
     let staging = null
     try {
       if (input.creds && (input.creds.GITHUB_CLIENT_ID || input.creds.GITHUB_CLIENT_SECRET)) {
-        const dir = await mkdtemp(path.join(os.tmpdir(), 'cumora-wizard-'))
-        staging = path.join(dir, 'creds.env')
+        // 键白名单 + 值拒换行/等号(评审 P3:粘贴值里的 \n 可向
+        // staging env 注入额外键行)。坏值按不存在处理并点名。
+        const allowed = new Set(['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'])
         const lines = []
         for (const [k, v] of Object.entries(input.creds)) {
-          if (v) lines.push(`${k}=${v}`)
+          if (!allowed.has(k)) return { ok: false, code: 2, error: `credential key not allowed: ${k}` }
+          if (v === undefined || v === null || v === '') continue
+          if (/[\n=]/.test(String(v))) return { ok: false, code: 2, error: `credential value rejected (newline/=): ${k}` }
+          lines.push(`${k}=${v}`)
         }
+        if (lines.length === 0) return { ok: false, code: 2, error: 'envFile or creds required' }
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'cumora-wizard-'))
+        staging = path.join(dir, 'creds.env')
         await writeFile(staging, lines.join('\n') + '\n', { mode: 0o600 })
         envFile = staging
       }
-      if (!envFile) return { ok: false, code: 2, error: '需要 envFile 或 creds' }
+      if (!envFile) return { ok: false, code: 2, error: 'envFile or creds required' }
       const args = ['import-env', '--env-file', expandHome(envFile), '--json']
       if (input.daemonEnvFile) args.push('--daemon-env-file', expandHome(input.daemonEnvFile))
       const res = await runStack(args)
-      return { ...res, report: parseReport(res.output) }
+      return { ...res, report: parseReport(res.stdout) }
     } finally {
       if (staging) await rm(path.dirname(staging), { recursive: true, force: true })
     }
@@ -113,11 +128,11 @@ function registerIpc() {
 
   ipcMain.handle('stack:absorb', async (_evt, input = {}) => {
     const dir = input.payloadDir || payloadDir()
-    if (!dir) return { ok: false, code: 2, error: 'dev 构建无内置载荷;请构建 AppImage 或传 payloadDir' }
+    if (!dir) return { ok: false, code: 2, error: 'dev build has no bundled payload; build the AppImage or pass payloadDir' }
     try {
       await access(path.join(dir, 'MANIFEST'), constants.R_OK)
     } catch {
-      return { ok: false, code: 2, error: `载荷目录缺 MANIFEST: ${dir}` }
+      return { ok: false, code: 2, error: `payload dir has no MANIFEST: ${dir}` }
     }
     return runStack(['absorb', dir], { timeout: 15 * 60_000 })
   })
@@ -127,13 +142,13 @@ function registerIpc() {
   ipcMain.handle('stack:doctor', () => runStack(['doctor', '--json']))
 }
 
-function parseReport(output) {
-  // import-env --json:报告是 stdout 的最后一个 JSON 对象(前面无杂音,
-  // 但稳妥起见从首个 '{' 起解析)。
+function parseReport(stdout) {
+  // import-env --json:报告打在 stdout(评审 P1:stderr 一概不进解析面,
+  // 防拼接噪音击碎 JSON.parse)。从首个 '{' 起解析以容忍前导杂音。
   try {
-    const start = output.indexOf('{')
+    const start = stdout.indexOf('{')
     if (start < 0) return null
-    return JSON.parse(output.slice(start))
+    return JSON.parse(stdout.slice(start))
   } catch {
     return null
   }

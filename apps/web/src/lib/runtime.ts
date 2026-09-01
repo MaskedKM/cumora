@@ -33,6 +33,9 @@ export interface NotificationPushPayload {
 export interface StackStepResult {
   ok: boolean
   code: number
+  /** 合并输出(尾部截断);stdout 是 --json 报告的唯一解析面。 */
+  stdout: string
+  stderr: string
   output: string
   error?: string | null
   report?: unknown
