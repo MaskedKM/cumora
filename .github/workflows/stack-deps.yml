@@ -60,12 +60,16 @@ jobs:
       - name: Verify
         run: |
           D="/deps/$LOCKHASH"
-          test -x "$D/pg/bin/postgres"
-          test -x "$D/pg/bin/initdb"
-          test -x "$D/pg/bin/pg_ctl"
-          test -x "$D/redis-server"
-          test -f "$D/pg/lib/vector.so"
-          test -s "$D/MANIFEST.deps"
+          # 断言必须响亮(缺件报哪个件)——静默 test 在 sh -e 下无声退,
+          # 首跑即实证此排障盲区。vector.so 路径 = pg_config 的 pkglibdir
+          # (=pg/lib/postgresql/,非 pg/lib/——首跑翻车点)。
+          for f in pg/bin/postgres pg/bin/initdb pg/bin/pg_ctl redis-server redis-cli \
+                   pg/lib/postgresql/vector.so MANIFEST.deps; do
+            if [ ! -e "$D/$f" ]; then
+              echo "::error::产物缺件:$D/$f"
+              exit 1
+            fi
+          done
           "$D/pg/bin/postgres" --version
           "$D/redis-server" --version
           for bin in "$D/pg/bin/postgres" "$D/pg/bin/initdb" "$D/redis-server"; do
