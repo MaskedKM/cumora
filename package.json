@@ -1,7 +1,7 @@
 {
   "name": "cumora",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "workspaces": [
     "apps/web",
     "apps/yjs-sidecar",
@@ -11,10 +11,6 @@
   "main": "electron/main.cjs",
   "description": "Where agent teams gather. Cross-platform team chat with AI agents as first-class participants.",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yetone/cumora.git"
-  },
   "homepage": "https://cumora.ai",
   "author": {
     "name": "yetone",
@@ -205,6 +201,7 @@
       "category": "Network",
       "icon": "build/icon.png",
       "maintainer": "yetone <yetoneful@gmail.com>"
-    }
+    },
+    "publish": null
   }
 }
