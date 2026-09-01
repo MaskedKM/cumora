@@ -62,3 +62,13 @@ func TestGetLatestDaemonVersionKeepsOldOnFailure(t *testing.T) {
 		t.Fatalf("failure must keep old value, got %v", got)
 	}
 }
+
+// #278 评审 P2-1:tag_name 带 v 前缀,比较器必须剥——v1.1.0 > 1.0.0。
+func TestVersionGtStripsVPrefix(t *testing.T) {
+	if !versionGt("v1.1.0", "1.0.0") {
+		t.Fatal("v-prefixed latest must compare correctly past 1.0.0")
+	}
+	if versionGt("v0.3.0-go.6", "0.3.0-go.5") {
+		t.Fatal("go.N-only tags must not trigger (both collapse)")
+	}
+}

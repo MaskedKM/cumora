@@ -542,6 +542,10 @@ func versionGt(a, b string) bool {
 
 func parseVer(v string) [3]int {
 	var out [3]int
+	// 探针改吃 GitHub tag_name(带 v 前缀)后必须剥掉——"v1.1.0" 首段
+	// Atoi 失败落 0,1.0.0 起横幅比较会静默漏报(#278 评审 P2-1);
+	// 对齐 daemon versionTriple 的剥前缀语义。
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
 	for i, p := range strings.SplitN(v, ".", 3) {
 		n, _ := strconv.Atoi(strings.TrimSpace(p))
 		out[i] = n
