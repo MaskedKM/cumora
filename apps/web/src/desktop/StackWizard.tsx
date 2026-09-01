@@ -209,8 +209,22 @@ function StackWizard() {
             {stepRow('absorb', t('wizard.stepAbsorb'))}
             {stepRow('install', t('wizard.stepInstall'))}
             {step === 'booting' && (
-              <div className="text-[13px] text-sky-600 animate-pulse">
-                {t('wizard.booting')}({elapsed}s)
+              <div className="flex flex-col gap-2">
+                <div className="text-[13px] text-sky-600 animate-pulse">
+                  {t('wizard.booting')}({elapsed}s)
+                </div>
+                {elapsed > 360 && (
+                  <>
+                    <div className="text-[12px] text-amber-600 text-center">{t('wizard.bootSlow')}</div>
+                    <button
+                      type="button"
+                      onClick={() => { void finish() }}
+                      className="text-[12px] text-ink-500 underline mx-auto"
+                    >
+                      {t('wizard.runDoctor')}
+                    </button>
+                  </>
+                )}
               </div>
             )}
             {Object.entries(steps).map(([k, st]) => st.tail && (

@@ -77,6 +77,8 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'wizard.back': '返回上一步',
   'wizard.doctorGreen': '栈体检全绿',
   'wizard.doctorRed': '栈体检存在红项(见下)',
+  'wizard.bootSlow': '超过 6 分钟仍未就绪 —— 可能启动失败,先跑诊断看红项',
+  'wizard.runDoctor': '运行栈体检(doctor)',
   'wizard.openApp': '进入 Cumora',
   'auth.githubNotConfigured': 'GitHub 登录未配置(服务器缺 GITHUB_CLIENT_ID/SECRET)——配置问题,不是栈故障;补齐凭据重启栈即可',
   'auth.googleNotConfigured': 'Google 登录未配置(服务器缺 GOOGLE_CLIENT_ID/SECRET)——可忽略,或补齐凭据重启栈',

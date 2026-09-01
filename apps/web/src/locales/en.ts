@@ -71,6 +71,8 @@ export const en = {
   'wizard.back': 'Go back',
   'wizard.doctorGreen': 'Stack doctor: all green',
   'wizard.doctorRed': 'Stack doctor has failing checks (below)',
+  'wizard.bootSlow': 'Not ready after 6 min — the boot may have failed; run doctor to see failing checks',
+  'wizard.runDoctor': 'Run stack doctor',
   'wizard.openApp': 'Enter Cumora',
   'auth.githubNotConfigured': 'GitHub sign-in is not configured (server lacks GITHUB_CLIENT_ID/SECRET) — a config gap, not a stack failure; add the credentials and restart the stack',
   'auth.googleNotConfigured': 'Google sign-in is not configured (server lacks GOOGLE_CLIENT_ID/SECRET) — safe to ignore, or add credentials and restart the stack',
