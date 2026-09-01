@@ -1,6 +1,8 @@
-# Cumora yjs-sidecar(文档协同;node/TS 存续,两栈共用)。
-# #211 说明:sidecar 是 node/TS 源码形态,不在 go-release.yml 制品内,
-# 仍从仓库工作树运行;二进制面(server/daemon)已切 release 制品。
+# Cumora yjs-sidecar(文档协同)。
+# #280:sidecar 退出 TS 工作树形态 —— bun build --compile 产出的自包含
+# 单二进制随 go-release.yml 制品分发,与 server/daemon 同一 current
+# symlink 寻址(#211 链);node/nvm/tsx 运行依赖就此退役。CRDT 引擎仍
+# 是 TS 实现(yjs),只是打包形态变了 —— 见 ADR 0005 路线 A 修订。
 [Unit]
 Description=Cumora yjs-sidecar (doc collab)
 # 无 go 依赖:sidecar 是独立 HTTP 服务(:5182),server(docrelay)才是
@@ -10,16 +12,15 @@ Description=Cumora yjs-sidecar (doc collab)
 After=network-online.target
 
 [Service]
-# cwd=仓库根使 --import tsx 能解析根 node_modules 里的 tsx。本地 FS 存储
-# 根不再吃 cwd 默认(#208):与 cumora-go.service 注入同值(%h 由 systemd
-# 展开为用户家目录),文档快照/内联图片附件直落仓外数据目录,Go 静态
-# 面同目录可取。
+# cwd=仓库根:.env 仍经 dotenv 从 cwd 解析(凭据不动窝,#284 首启向导
+# 再迁);本地 FS 存储根与 cumora-go.service 注入同值(%h 由 systemd
+# 展开为用户家目录),文档快照/内联图片附件直落仓外数据目录。
 WorkingDirectory=%h/Code/cumora
 EnvironmentFile=%h/Code/cumora/.env
 Environment=CUMORA_UPLOADS_DIR=%h/.local/share/cumora/uploads
 Environment=YJS_SIDECAR_PORT=5182
 # 切换日前由 runbook 生成并写入 .env(YJS_SIDECAR_TOKEN),两栈同源读取
-ExecStart=%h/.nvm/versions/node/v22.22.0/bin/node --import tsx apps/yjs-sidecar/src/main.ts
+ExecStart=%h/.local/share/cumora/current/cumora-sidecar
 Restart=always
 RestartSec=3
 # ExecStartPost 探针(#211):最坏 30×(2s curl+1s sleep)≈90s 内 /internal/healthz

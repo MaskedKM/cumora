@@ -23,10 +23,18 @@ systemctl --user daemon-reload
 # 大声失败(此前 || true 会把 enable 断裂静默吞掉 —— 又一个不自愈源)。
 systemctl --user enable cumora-sidecar.service cumora-go.service cumora-daemon.service
 
-# 二进制面已指 ~/.local/share/cumora/current(#211):未部署 release 时
-# 提前指出,而非留到 start 时报 ExecStart 找不到文件。
-if [ ! -x "$HOME/.local/share/cumora/current/cumora-server" ]; then
-  echo "warn: ~/.local/share/cumora/current/cumora-server 不存在/不可执行 ——" >&2
-  echo "  先跑 bash scripts/deploy/deploy-release.sh <tag> 部署 release 制品,再 start 三件套" >&2
+# 二进制面已指 ~/.local/share/cumora/current(#211;#280 起三件全制品):
+# 未部署 release 时提前指出,而非留到 start 时报 ExecStart 找不到文件。
+# #280 特别注意:旧 release(< 含 sidecar 的 tag)配新 unit 会把 sidecar
+# ExecStart 打穿 —— warn 同样覆盖,升级顺序=先 deploy-release 再 install-units。
+miss=0
+for bin in cumora-server cumora-daemon cumora-sidecar; do
+  if [ ! -x "$HOME/.local/share/cumora/current/$bin" ]; then
+    echo "warn: ~/.local/share/cumora/current/$bin 不存在/不可执行 ——" >&2
+    miss=1
+  fi
+done
+if [ "$miss" = 1 ]; then
+  echo "  先跑 bash scripts/deploy/deploy-release.sh <tag>(制品需含三 binaries,#280 起)再 start 三件套" >&2
 fi
 echo "done — 三件套已 enable,重启机器按 sidecar → go → daemon 自愈;start/发版见 docs/SWITCHOVER.md"
