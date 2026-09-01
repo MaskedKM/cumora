@@ -116,4 +116,19 @@ contextBridge.exposeInMainWorld('cumora', {
       return () => ipcRenderer.removeListener('auto-update-status', wrapped)
     },
   },
+
+  /**
+   * Local Stack wizard bridge (#284, ADR 0005). probe() decides whether
+   * the first-run wizard should appear (stack server down). The rest run
+   * the bundled cumora-stack binary step by step; orchestration lives in
+   * the CLI so GUI and acceptance paths cannot drift. Credential VALUES
+   * flow one way (into import-env) and never come back — only key names.
+   */
+  stack: {
+    probe: () => ipcRenderer.invoke('stack:probe'),
+    importEnv: (input) => ipcRenderer.invoke('stack:import', input),
+    absorb: (input) => ipcRenderer.invoke('stack:absorb', input),
+    install: () => ipcRenderer.invoke('stack:install'),
+    doctor: () => ipcRenderer.invoke('stack:doctor'),
+  },
 })

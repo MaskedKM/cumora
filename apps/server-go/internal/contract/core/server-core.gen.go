@@ -27,6 +27,9 @@ type ServerInterface interface {
 	// 当前用户 + 公司列表 + 服务能力
 	// (GET /api/auth/me)
 	AuthMe(w http.ResponseWriter, r *http.Request)
+	// OAuth provider 探活(未配的 provider 显性化,不再裸 503)
+	// (GET /api/auth/providers)
+	AuthProviders(w http.ResponseWriter, r *http.Request)
 	// OAuth 跳转(302,浏览器导航)
 	// (GET /api/auth/start/{provider})
 	AuthStart(w http.ResponseWriter, r *http.Request, provider string, params AuthStartParams)
@@ -165,6 +168,20 @@ func (siw *ServerInterfaceWrapper) AuthMe(w http.ResponseWriter, r *http.Request
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AuthMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AuthProviders operation middleware
+func (siw *ServerInterfaceWrapper) AuthProviders(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AuthProviders(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -749,6 +766,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/auth/callback/{provider}", wrapper.AuthCallback)
 	m.HandleFunc("POST "+options.BaseURL+"/api/auth/logout", wrapper.AuthLogout)
 	m.HandleFunc("GET "+options.BaseURL+"/api/auth/me", wrapper.AuthMe)
+	m.HandleFunc("GET "+options.BaseURL+"/api/auth/providers", wrapper.AuthProviders)
 	m.HandleFunc("GET "+options.BaseURL+"/api/auth/start/{provider}", wrapper.AuthStart)
 	m.HandleFunc("POST "+options.BaseURL+"/api/auth/ws-ticket", wrapper.AuthWsTicket)
 	m.HandleFunc("GET "+options.BaseURL+"/api/companies", wrapper.ListCompanies)

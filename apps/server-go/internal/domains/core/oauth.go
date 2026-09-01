@@ -741,6 +741,16 @@ func oauthClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// AuthProviders —— 登录面 provider 探活(#284):未配的 provider 在按钮
+// 层显性化,而不是点进去吃裸 503(桌面首启向导与 AuthScreen 共用)。
+// 只报配置态,不回显任何配置内容。
+func (s *Server) AuthProviders(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteJSON(w, http.StatusOK, map[string]bool{
+		"github": oauthProviderEnabled("github"),
+		"google": oauthProviderEnabled("google"),
+	})
+}
+
 func (s *Server) AuthStart(w http.ResponseWriter, r *http.Request, provider string, params contract.AuthStartParams) {
 	deps := oauthDeps{db: s.DB, rdb: s.RDB}
 	if provider != "google" && provider != "github" {

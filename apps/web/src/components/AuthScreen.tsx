@@ -47,6 +47,18 @@ export function AuthScreen() {
     if (error) setErr(decodeURIComponent(error))
   }, [])
 
+  // OAuth provider 探活(#284):服务器报哪个 provider 未配置就在按钮层
+  // 显性化,替代点进 /auth/start/<p> 吃裸 503 JSON 的老坑。探不到
+  // (栈没起/网络错)= 不可知,按钮照常 —— 不把连接问题误报成配置问题。
+  const [providers, setProviders] = useState<{ github: boolean | null; google: boolean | null }>({ github: null, google: null })
+  useEffect(() => {
+    let alive = true
+    api.authProviders()
+      .then((p) => { if (alive) setProviders({ github: p.github, google: p.google }) })
+      .catch(() => { /* 不可知:保持 null */ })
+    return () => { alive = false }
+  }, [])
+
   // Re-arm the sign-in buttons when the user returns to this window after
   // abandoning the OAuth tab. Without this, the Electron renderer stays
   // mounted with busy=provider after openExternal — both buttons disabled
@@ -209,7 +221,7 @@ export function AuthScreen() {
           <button
             type="button"
             onClick={() => go('google')}
-            disabled={busy !== null}
+            disabled={busy !== null || providers.google === false}
             className="h-11 rounded-[10px] border border-ink-200 bg-white hover:bg-cloud transition-colors flex items-center justify-center gap-3 text-[14px] text-ink-800 disabled:opacity-60"
           >
             <GoogleMark />
@@ -218,13 +230,20 @@ export function AuthScreen() {
           <button
             type="button"
             onClick={() => go('github')}
-            disabled={busy !== null}
+            disabled={busy !== null || providers.github === false}
             className="h-11 rounded-[10px] bg-[#1f2328] hover:bg-[#2a3037] text-white transition-colors flex items-center justify-center gap-3 text-[14px] disabled:opacity-60"
           >
             <GitHubMark />
             {busy === 'github' ? t('auth.redirecting') : t('auth.continueWithGithub')}
           </button>
         </div>
+        {(providers.github === false || providers.google === false) && (
+          <div className="text-[12px] text-amber-600 text-center max-w-full">
+            {providers.github === false && t('auth.githubNotConfigured')}
+            {providers.github === false && providers.google === false && <br />}
+            {providers.google === false && t('auth.googleNotConfigured')}
+          </div>
+        )}
         {err && (
           <div className="text-[12px] text-red-600 text-center max-w-full break-words">
             {err}

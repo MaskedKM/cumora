@@ -10,6 +10,7 @@ import {
 import { NotificationToasts } from '@/components/NotificationToasts'
 import { UpdateBanner, UpdaterDialog } from '@/components/UpdaterDialog'
 import { Onboarding } from '@/desktop/Onboarding'
+import { StackWizardGate } from '@/desktop/StackWizard'
 import { isNotificationWindow, isWebAppHost } from '@/lib/runtime'
 import { useIsMobile } from '@/lib/utils'
 import { useApp } from '@/stores/app'
@@ -299,11 +300,15 @@ export function App() {
     )
   }
 
+  // 净机首启向导(#284):栈 server 不可达时先起栈再谈登录(向导门在
+  // AuthGate 之外 —— OAuth 登录链本身依赖栈)。非 Electron 直接透传。
   return (
-    <AuthGate>
-      <ErrorBoundary>
-        <AuthedApp key={`${userId ?? 'anon'}::${companyId ?? 'none'}`} />
-      </ErrorBoundary>
-    </AuthGate>
+    <StackWizardGate>
+      <AuthGate>
+        <ErrorBoundary>
+          <AuthedApp key={`${userId ?? 'anon'}::${companyId ?? 'none'}`} />
+        </ErrorBoundary>
+      </AuthGate>
+    </StackWizardGate>
   )
 }

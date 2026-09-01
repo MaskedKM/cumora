@@ -28,10 +28,35 @@ export interface NotificationPushPayload {
   unreadCount?: number
 }
 
+/** Local Stack wizard step result (#284):cumora-stack 子命令的执行面
+ *  (code/import-env 红线=1;output 含尾部输出;report 仅键名)。 */
+export interface StackStepResult {
+  ok: boolean
+  code: number
+  output: string
+  error?: string | null
+  report?: unknown
+}
+
+export interface StackProbe {
+  serverUp: boolean
+  serverErr: string
+  wizard: boolean
+  payloadDir: string | null
+}
+
 interface CumoraBridge {
   isElectron: boolean
   platform: string
   versions: { chrome: string; electron: string; node: string }
+  /** 本地栈向导执行面(#284);仅 Electron 打包形态存在。 */
+  stack?: {
+    probe: () => Promise<StackProbe>
+    importEnv: (input: { envFile?: string; daemonEnvFile?: string; creds?: Record<string, string> }) => Promise<StackStepResult>
+    absorb: (input: { payloadDir?: string }) => Promise<StackStepResult>
+    install: () => Promise<StackStepResult>
+    doctor: () => Promise<StackStepResult>
+  }
   /** Main-window focus state, sourced from native OS events. */
   app?: {
     isFocused: () => Promise<boolean>

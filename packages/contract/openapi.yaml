@@ -118,6 +118,23 @@ paths:
       summary: OG 图(二进制,非 JSON)
       responses:
         '200': { description: image/png }
+  /api/auth/providers:
+    get:
+      tags: [core]
+      operationId: authProviders
+      security: []
+      summary: OAuth provider 探活(未配的 provider 显性化,不再裸 503)
+      responses:
+        '200':
+          description: 各 provider 配置态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [github, google]
+                properties:
+                  github: { type: boolean }
+                  google: { type: boolean }
   /api/auth/start/{provider}:
     get:
       tags: [core]
