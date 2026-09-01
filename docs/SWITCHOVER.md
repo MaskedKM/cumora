@@ -28,6 +28,7 @@ enable 一个、无健康联动。#211 起部署物与启动语义如下。
 │   ├── cumora-server             #   与 cumora-daemon 同包(sha256 校验过)
 │   ├── cumora-daemon
 │   ├── migrations/               #   #211 起随制品走,二进制与 schema 同版本
+│   ├── cumora-sidecar            #   #280 起:bun 编译自包含单二进制(glibc)
 │   └── VERSION                   #   内容=tag,版本核验用
 ├── current -> releases/<vX.Y.Z>  # systemd ExecStart 经此寻址(原子切换)
 └── uploads/                      # #208/#248 生产上传数据,与部署物解耦

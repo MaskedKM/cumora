@@ -436,8 +436,10 @@ jobs:
         env:
           YJS_SIDECAR_TOKEN: ci-sidecar-token
           YJS_SIDECAR_PORT: '5282'
-          # 显式压窗:证明 flush 两键编译后仍可被进程 env 覆盖(#280 AC)
-          YJS_FLUSH_WINDOW_MS: '100'
+          # flush 窗压到 5000ms:1s 时点必须"未落库"(默认 150ms 早已落)
+          # —— 值敏感地证明编译产物仍吃进程 env 覆盖(#280 AC);TERM 后
+          # 再断言落库 = 优雅停机冲刷(flushAllPending)同链验证。
+          YJS_FLUSH_WINDOW_MS: '5000'
         run: |
           set -e -o pipefail
           ok=0
@@ -487,19 +489,32 @@ jobs:
           TEXT="$(curl -s "${H[@]}" -X POST "$U/read-text" \
             -d '{"documentId":"ci-smoke-doc-1","companyId":"ci-smoke-co"}')"
           echo "$TEXT" | grep -q 'artifact smoke'
-          sleep 1   # 150ms 合帧窗口
+          # 负向断言(值敏感):窗=5000ms,1s 时点不得落库 —— 默认 150ms
+          # 若未被 env 覆盖,这里必然已有行(编译后 env 失效的回归由此显形)。
+          sleep 1
           node -e 'const {Client}=require("pg");(async()=>{
             const c=new Client({connectionString:process.env.DATABASE_URL});
             await c.connect();
             const r=await c.query("SELECT count(*)::int AS n FROM document_updates WHERE document_id=$1 AND author_id=$2",
               ["ci-smoke-doc-1","ci-smoke-author"]);
             await c.end();
-            if (r.rows[0].n < 1) { console.error("合帧未落库"); process.exit(1); }
-            console.log("[smoke] document_updates 行数:", r.rows[0].n);})()'
+            if (r.rows[0].n !== 0) { console.error("env 覆盖未生效:窗口内提前落库 " + r.rows[0].n + " 行"); process.exit(1); }
+            console.log("[smoke] flush 窗 env 覆盖生效(1s 未落库)");})()'
           curl -s "${H[@]}" -X POST "$U/unsubscribe" \
             -d '{"documentId":"ci-smoke-doc-1","subscriberId":"s1"}' | grep -q '"ok":true'
-          kill $SIDE_PID; trap - EXIT
-          echo "[smoke] 全链绿:compile → boot → auth → CRDT → 落库 → 退订"
+          # SIGTERM 优雅停机 → flushAllPending 冲刷,合帧行必须落库。
+          kill -TERM $SIDE_PID
+          wait $SIDE_PID 2>/dev/null || true
+          trap - EXIT
+          node -e 'const {Client}=require("pg");(async()=>{
+            const c=new Client({connectionString:process.env.DATABASE_URL});
+            await c.connect();
+            const r=await c.query("SELECT count(*)::int AS n FROM document_updates WHERE document_id=$1 AND author_id=$2",
+              ["ci-smoke-doc-1","ci-smoke-author"]);
+            await c.end();
+            if (r.rows[0].n < 1) { console.error("SIGTERM 冲刷后仍未落库"); process.exit(1); }
+            console.log("[smoke] SIGTERM 冲刷落库:", r.rows[0].n, "行");})()'
+          echo "[smoke] 全链绿:compile → boot → auth → CRDT → env 覆盖(负向) → 退订 → 优雅停机冲刷"
       # Integration shards: 3 databases on the shared postgres service
       # (service containers pre-create only POSTGRES_DB) + pgvector +
       # schema each. Unit tests above already used cumora_test, shards
