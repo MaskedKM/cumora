@@ -26,7 +26,12 @@
 # here; there is no pull_request trigger, so PR code is never executed
 # outside a container. Steps only touch docker garbage and file ownership
 # inside the runner's own _work — `system prune` without --volumes/--all
-# never removes tagged images in use or any volume data.
+# never removes tagged images in use or any volume data. The bake job
+# (#292) additionally builds the two -ci images and maintains the resident
+# cumora-ci-registry container; dispatch-from-branch executes
+# branch-controlled Dockerfiles — a trust boundary equivalent to PR job
+# containers (both need write access to trigger), noted here so the
+# "no PR code outside a container" line above stays honest.
 #
 # NOTE: both runner slots live on the same host and share one docker
 # daemon, so one prune covers the fleet; the _work chown is best-effort
@@ -39,12 +44,26 @@ on:
     # 03:30 Beijing time (19:30 UTC) — quiet hours, before the workday.
     - cron: '30 19 * * *'
   workflow_dispatch:
+    inputs:
+      prune:
+        description: 顺带跑 prune job(盘满救援/常规清理;默认只烘镜像)
+        type: boolean
+        default: false
+    # #292 bootstrap 注意:首次烘焙/配方更新后想立即生效,可以
+    # `gh workflow run runner-maintenance.yml --ref <分支>` 从分支
+    # dispatch(schedule 只认默认分支,dispatch 可指分支)。dispatch
+    # 默认只跑 bake——单 runner 队列上别被 prune 的时长挡住烘焙;
+    # 盘满救援路径保留 = dispatch 时勾 prune。
 
-permissions: {}
+permissions:
+  # bake job 需要 checkout 读 ci/images/ 配方;仍是只读。
+  contents: read
 
 jobs:
   prune:
     name: Docker prune + _work ownership rescue
+    # 夜间 schedule 两 job 都跑;dispatch 默认只跑 bake(见上)。
+    if: github.event_name == 'schedule' || inputs.prune == true
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 10
     steps:
@@ -80,3 +99,78 @@ jobs:
           fi
       - name: Disk state after
         run: df -h / && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
+
+  bake:
+    name: Bake CI images → local registry (127.0.0.1:5500)
+    # #292:pr.yml 两 job 的容器镜像来自**本机 registry**(127.0.0.1:5500,
+    # 常驻容器 cumora-ci-registry,数据落具名卷)。为什么不是本地 tag:
+    # runner(2.336 实测)对 job 容器无条件 `docker pull`,本地独有 tag
+    # 必然 manifest unknown → job 死;127.0.0.1 registry 可被 pull(docker
+    # 默认把 127.0.0.0/8 视为 insecure,明文 HTTP 直通)。端口 5500:
+    # 5000 在这台宿主机已被其它项目占用(2026-09-01 实测 bind failed)。
+    # nightly 幂等:registry 在=跳过,build 层缓存命中=秒级,基础镜像
+    # best-effort 刷新。配方 = ci/images/*.Dockerfile。与 prune job 无
+    # 冲突:registry 容器在跑(prune 只清已停容器),具名卷 prune 不带
+    # --volumes 永不碰。docker build 内无 job env,代理经 build-arg 指
+    # docker0 网关的 Mihomo(*:7890 allow-lan);解析失败退化为直连烘。
+    runs-on: [self-hosted, linux, ser8]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure local registry (cumora-ci-registry @ 127.0.0.1:5500)
+        run: |
+          PORT=5500
+          # 端口有应答且不是本 registry 在跑 = 被别的东西占,硬错误带诊断
+          # (远程可判;唯一修法=换端口,本步与 pr.yml 镜像引用两处同改)。
+          if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null \
+             && [ "$(docker ps --filter name=cumora-ci-registry --format '{{.Names}}')" != "cumora-ci-registry" ]; then
+            echo "::error::127.0.0.1:$PORT 已被占用且不是本 registry —— 换端口(改本步 PORT 与 pr.yml 两处镜像引用)"
+            (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E "[:.]$PORT[[:space:]]" || true
+            exit 1
+          fi
+          # 无条件重建(数据在具名卷,重建零损失):杜绝"start 成功但端口
+          # 配置是旧值"的错位(2026-09-01 实测:绑 5000 的死容器后来 start
+          # 成功,就绪门探 5500 永远等不到)。夜间窗口重建,与在跑 CI 撞
+          # 车的概率可忽略。
+          docker rm -f cumora-ci-registry 2>/dev/null || true
+          for i in 1 2 3; do docker pull registry:2 && break; sleep 5; done
+          docker run -d --name cumora-ci-registry --restart=always \
+            -p 127.0.0.1:$PORT:5000 -v cumora-ci-registry:/var/lib/registry registry:2
+          for i in $(seq 1 20); do
+            timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null && break
+            sleep 3
+          done
+          timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null \
+            || { echo "::error::本地 registry 60s 未就绪"; exit 1; }
+          echo "registry ready @ 127.0.0.1:$PORT"
+      - name: Resolve docker0 gateway for the build-time proxy
+        run: |
+          GW="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
+          if [ -n "$GW" ]; then
+            echo "PROXY_ARGS=--build-arg http_proxy=http://$GW:7890 --build-arg https_proxy=http://$GW:7890" >> "$GITHUB_ENV"
+            echo "build proxy: http://$GW:7890"
+          else
+            echo "PROXY_ARGS=" >> "$GITHUB_ENV"
+            echo "::warning::docker0 网关解析失败,build 直连(出口抖时可能失败,nightly 会再试)"
+          fi
+      # 基础镜像刷新是 best-effort:失败只降级为用本地缓存底烘(tag 滚动
+      # 更新本来就有平率,夜间自愈)。
+      - name: Refresh base images (best-effort)
+        run: |
+          for img in golang:1.24-alpine golang:1.24-bookworm node:24-bookworm; do
+            docker pull "$img" || echo "::warning::$img 刷新失败,用本地缓存底继续"
+          done
+      - name: Build + push golang-alpine-ci:1.24
+        run: |
+          docker build $PROXY_ARGS -t 127.0.0.1:5500/golang-alpine-ci:1.24 - < ci/images/golang-alpine-ci.Dockerfile
+          docker push 127.0.0.1:5500/golang-alpine-ci:1.24
+      - name: Build + push golang-bookworm-ci:1.24
+        run: |
+          docker build $PROXY_ARGS -t 127.0.0.1:5500/golang-bookworm-ci:1.24 - < ci/images/golang-bookworm-ci.Dockerfile
+          docker push 127.0.0.1:5500/golang-bookworm-ci:1.24
+      # 真实拉回验证——job 容器走的正是这条 pull 路径,绿=CI 必能起容器
+      # (教训:此前 `docker images|grep||true` 把空结果掩蔽成成功)。
+      - name: Verify registry serves both images (real pull)
+        run: |
+          docker pull 127.0.0.1:5500/golang-alpine-ci:1.24
+          docker pull 127.0.0.1:5500/golang-bookworm-ci:1.24
