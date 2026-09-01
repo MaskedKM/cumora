@@ -39,9 +39,16 @@ on:
     # 03:30 Beijing time (19:30 UTC) — quiet hours, before the workday.
     - cron: '30 19 * * *'
   workflow_dispatch:
+    inputs:
+      prune:
+        description: 顺带跑 prune job(盘满救援/常规清理;默认只烘镜像)
+        type: boolean
+        default: false
     # #292 bootstrap 注意:首次烘焙/配方更新后想立即生效,可以
     # `gh workflow run runner-maintenance.yml --ref <分支>` 从分支
-    # dispatch(schedule 只认默认分支,dispatch 可指分支)。
+    # dispatch(schedule 只认默认分支,dispatch 可指分支)。dispatch
+    # 默认只跑 bake——单 runner 队列上别被 prune 的时长挡住烘焙;
+    # 盘满救援路径保留 = dispatch 时勾 prune。
 
 permissions:
   # bake job 需要 checkout 读 ci/images/ 配方;仍是只读。
@@ -50,6 +57,8 @@ permissions:
 jobs:
   prune:
     name: Docker prune + _work ownership rescue
+    # 夜间 schedule 两 job 都跑;dispatch 默认只跑 bake(见上)。
+    if: github.event_name == 'schedule' || inputs.prune == true
     runs-on: [self-hosted, linux, ser8]
     timeout-minutes: 10
     steps:
