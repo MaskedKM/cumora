@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MaskedKM/cumora/apps/stack/internal/manifest"
 	"github.com/MaskedKM/cumora/apps/stack/internal/probe"
 	"github.com/MaskedKM/cumora/apps/stack/internal/stackd"
 )
@@ -37,13 +38,16 @@ type ProbeResult struct {
 // Report —— status 全量输出。AnyFail 仅由"连接建立不起来"类失败置位。
 // Stackd 段(#282):单 unit 形态下 stackd 的进程内状态快照(状态文件
 // 可读即带出;三 unit 形态下为空 —— 两种形态同一 JSON 契约)。
+// Manifest 段(#283 PR-B):current/MANIFEST 可读即带出(absorb 落盘的
+// 制品清单瘦身面;旧 release 无 MANIFEST = 省略,JSON 契约向后兼容)。
 type Report struct {
-	Units   []UnitReport     `json:"units"`
-	Livez   ProbeResult      `json:"livez"`
-	Healthz ProbeResult      `json:"healthz"`
-	Version string           `json:"version"`
-	Current string           `json:"current"`
-	Stackd  *stackd.Snapshot `json:"stackd,omitempty"`
+	Units    []UnitReport      `json:"units"`
+	Livez    ProbeResult       `json:"livez"`
+	Healthz  ProbeResult       `json:"healthz"`
+	Version  string            `json:"version"`
+	Current  string            `json:"current"`
+	Manifest *manifest.Summary `json:"manifest,omitempty"`
+	Stackd   *stackd.Snapshot  `json:"stackd,omitempty"`
 }
 
 // Config —— status 输入(全部可注入,理由同 doctor.Config)。
@@ -59,6 +63,9 @@ type Config struct {
 	// 改报该 unit(旧三 unit 已退役,inactive/dead 是设计态而非异常);
 	// 未装/空串 = 三 unit 形态照旧。
 	StackdUnit string
+	// ManifestFile(#283 PR-B):current/MANIFEST(可选;absorb 落盘的
+	// 制品清单,读得到即报 Manifest 段)。
+	ManifestFile string
 }
 
 // systemd 时间戳形态:"Mon 2026-09-01 09:35:12 CST"(C locale)。
@@ -131,6 +138,15 @@ func Run(d probe.Deps, cfg Config) Report {
 			var snap stackd.Snapshot
 			if json.Unmarshal(data, &snap) == nil {
 				r.Stackd = &snap
+			}
+		}
+	}
+	// manifest 段:current/MANIFEST 读不到(旧 release 无清单)= 留空。
+	if cfg.ManifestFile != "" {
+		if data, err := d.ReadFile(cfg.ManifestFile); err == nil {
+			if m, perr := manifest.Parse(data); perr == nil {
+				s := m.SummaryOf()
+				r.Manifest = &s
 			}
 		}
 	}
