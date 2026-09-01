@@ -12,6 +12,7 @@
 //   main/notify.cjs      notification panel lifecycle + push queue
 //   main/auth.cjs        OAuth loopback server + handoff nonce + deep-link parse
 //   main/ipc.cjs         every ipcMain.on/handle registration
+//   main/stack.cjs       local-stack wizard executor (probe/import/absorb/install)
 //   main/dev.cjs         dev-only notification shortcuts
 //
 // Boot-order-sensitive registrations (privileged scheme, CDP switch,
@@ -23,6 +24,7 @@ const { app, BrowserWindow, nativeImage, nativeTheme, protocol, net, globalShort
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const autoUpdater = require('./autoUpdater.cjs')
+const stackWizard = require('./main/stack.cjs')
 
 // Side-effect-free domain modules + the `app://` scheme registration
 // (main/appProtocol.cjs calls protocol.registerSchemesAsPrivileged at
@@ -91,6 +93,8 @@ if (process.defaultApp) {
 // point in the boot sequence they occupied in the old monolith (after
 // the boot one-liners above, before the app event handlers below).
 require('./main/ipc.cjs')
+// 本地栈向导执行面(#284):stack:probe/import/absorb/install/doctor。
+stackWizard.registerIpc()
 
 // ============== Deep-link routing (cumora://auth#token=…) ==============
 // Three entry points cover all three OSes:
