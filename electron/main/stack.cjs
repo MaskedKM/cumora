@@ -12,6 +12,7 @@
 // report import-env itself produces; the credential staging file is 0600
 // in the OS temp dir and unlinked right after the import run.
 const { ipcMain, app } = require('electron')
+const tray = require('./tray.cjs')
 const { execFile } = require('node:child_process')
 const { mkdtemp, writeFile, rm, access } = require('node:fs/promises')
 const { constants } = require('node:fs')
@@ -140,6 +141,25 @@ function registerIpc() {
   ipcMain.handle('stack:install', () => runStack(['install'], { timeout: 5 * 60_000 }))
 
   ipcMain.handle('stack:doctor', () => runStack(['doctor', '--json']))
+
+  // ==== 管理面(#286):status/releases/restart/rollback ====
+  // 升级 = absorb(制品内载荷)+ restart,两步由渲染端驱动展示分段
+  // 进度(与向导同形态)——不设聚合 upgrade 命令,语义留 CLI 小而正交。
+  ipcMain.handle('stack:status', () => runStack(['status', '--json']))
+  ipcMain.handle('stack:releases', () => runStack(['releases', '--json']))
+  ipcMain.handle('stack:restart', () => runStack(['restart'], { timeout: 5 * 60_000 }))
+  ipcMain.handle('stack:rollback', (_evt, input = {}) => {
+    // 正向白名单:版本 token 只许字母数字与 . _ -(路径形态全拒)。
+    if (!input.version || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.version)) {
+      return { ok: false, code: 2, stdout: '', stderr: '', output: '', error: 'invalid version' }
+    }
+    return runStack(['rollback', input.version], { timeout: 5 * 60_000 })
+  })
+
+  // degraded 提醒(渲染端状态轮询发现熔断/子进程死 → 托盘警示)。
+  ipcMain.on('stack:degraded', (_evt, degraded) => {
+    try { tray.setStackDegraded(!!degraded) } catch { /* tray 非关键路径 */ }
+  })
 }
 
 function parseReport(stdout) {

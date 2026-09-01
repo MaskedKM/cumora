@@ -130,5 +130,11 @@ contextBridge.exposeInMainWorld('cumora', {
     absorb: (input) => ipcRenderer.invoke('stack:absorb', input),
     install: () => ipcRenderer.invoke('stack:install'),
     doctor: () => ipcRenderer.invoke('stack:doctor'),
+    /** 管理面(#286):status/releases/restart/rollback + degraded 上报。 */
+    status: () => ipcRenderer.invoke('stack:status'),
+    releases: () => ipcRenderer.invoke('stack:releases'),
+    restart: () => ipcRenderer.invoke('stack:restart'),
+    rollback: (version) => ipcRenderer.invoke('stack:rollback', { version }),
+    reportDegraded: (degraded) => ipcRenderer.send('stack:degraded', !!degraded),
   },
 })

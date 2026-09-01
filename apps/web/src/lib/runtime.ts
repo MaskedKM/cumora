@@ -48,6 +48,29 @@ export interface StackProbe {
   payloadDir: string | null
 }
 
+/** cumora-stack status --json 的消费面(#286;字段与 apps/stack
+ *  internal/status.Report 同构,仅取面板所需子集,未列字段忽略)。 */
+export interface StackStatusReport {
+  units?: Array<{ unit: string; active: string; sub: string; uptime?: string; error?: string }>
+  livez: { status: string; detail?: string }
+  healthz: { status: string; detail?: string }
+  version: string
+  current?: string
+  manifest?: { version: string; deps?: Record<string, string> } | null
+  stackd?: {
+    instanceId?: string
+    children?: Array<{ name: string; running: boolean; pid?: number; restarts?: number; circuitOpen?: boolean; lastErr?: string }>
+  } | null
+}
+
+/** cumora-stack releases --json 的消费面(ReleaseEntry 同构)。 */
+export interface StackReleaseEntry {
+  version: string
+  current: boolean
+  migrations: number
+  rolloutBlocked?: string
+}
+
 interface CumoraBridge {
   isElectron: boolean
   platform: string
@@ -59,6 +82,11 @@ interface CumoraBridge {
     absorb: (input: { payloadDir?: string }) => Promise<StackStepResult>
     install: () => Promise<StackStepResult>
     doctor: () => Promise<StackStepResult>
+    status: () => Promise<StackStepResult>
+    releases: () => Promise<StackStepResult>
+    restart: () => Promise<StackStepResult>
+    rollback: (version: string) => Promise<StackStepResult>
+    reportDegraded: (degraded: boolean) => void
   }
   /** Main-window focus state, sourced from native OS events. */
   app?: {
