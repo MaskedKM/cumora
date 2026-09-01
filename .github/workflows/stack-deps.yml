@@ -1,0 +1,88 @@
+name: Stack deps
+
+# #283 PR-A:Stack 依赖物(pg16+pgvector / redis)钉版源码构建,产物落
+# 持久卷供打包链(PR-C 的 AppImage 合流)取用。
+#   - 触发:手动 dispatch(lock 变更/首次引导)+ workflow_call(PR-C 的
+#     打包 job 以 needs 挂本 job,同 run 直递,不经跨 run 卷握手)。
+#   - fast path:lock 的 sha256 命中持久卷缓存(/var/lib/cumora-ci-cache/
+#     stackdeps/<lockhash>/)= 跳过构建,只跑验证步(缓存也年年检)。
+#   - 构建容器钉本机 registry 的 bookworm-ci(#292 链路;gcc/make 即全
+#     部构建依赖,配方见 ci/build-stack-deps.sh)。
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# 同 lock 并发构建有 rm -rf 竞态,排队串行。
+concurrency:
+  group: stack-deps
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build pinned stack deps (pg16+pgvector / redis)
+    runs-on: [self-hosted, linux, ser8]
+    timeout-minutes: 30
+    container:
+      image: 127.0.0.1:5500/golang-bookworm-ci:1.24
+      options: --add-host=host.docker.internal:host-gateway
+      volumes:
+        - /var/lib/cumora-ci-cache/stackdeps:/deps
+    env:
+      # 出口代理配方同 pr.yml checks job(小写;源 tarball 下载走它)。
+      https_proxy: http://host.docker.internal:7890
+      http_proxy: http://host.docker.internal:7890
+      no_proxy: localhost,127.0.0.1,host.docker.internal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve lock hash
+        run: echo "LOCKHASH=$(sha256sum ci/stack-deps.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Fast path probe
+        id: cache
+        run: |
+          if [ -s "/deps/$LOCKHASH/MANIFEST.deps" ]; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "[deps] 卷缓存命中 $LOCKHASH"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+      # rm -rf 先清半成品(MANIFEST.deps 最后落盘,半成品不会误命中);
+      # 源 tarball 缓存在 /deps/src(lock 不变则三次下载全免)。
+      - name: Build (pinned sources → /deps/<lockhash>)
+        if: steps.cache.outputs.hit != 'true'
+        run: |
+          rm -rf "/deps/$LOCKHASH"
+          bash ci/build-stack-deps.sh /deps/src "/deps/$LOCKHASH"
+      # 验证永远跑(缓存命中也年年检):件齐 + 版本冒烟 + pgvector 落位
+      # + MANIFEST↔lock 版本一致 + ldd 纯 glibc 承诺。
+      - name: Verify
+        run: |
+          D="/deps/$LOCKHASH"
+          test -x "$D/pg/bin/postgres"
+          test -x "$D/pg/bin/initdb"
+          test -x "$D/pg/bin/pg_ctl"
+          test -x "$D/redis-server"
+          test -f "$D/pg/lib/vector.so"
+          test -s "$D/MANIFEST.deps"
+          "$D/pg/bin/postgres" --version
+          "$D/redis-server" --version
+          for bin in "$D/pg/bin/postgres" "$D/pg/bin/initdb" "$D/redis-server"; do
+            bad="$(ldd "$bin" | grep 'not found' || true)"
+            [ -z "$bad" ] || { echo "::error::$(basename "$bin") 动态依赖缺口: $bad"; exit 1; }
+          done
+          node -e '
+            const m = require(process.argv[1] + "/MANIFEST.deps");
+            const l = require("./ci/stack-deps.lock");
+            for (const k of ["postgresql", "pgvector", "redis"]) {
+              if (m.components[k].version !== l[k].version)
+                throw new Error("MANIFEST 与 lock 版本漂移: " + k);
+            }
+            console.log("[deps] MANIFEST ↔ lock 一致");' "$D"
+      # 旧 lock 目录 keep-2(与 relay/tarballs 同款纪律);src 缓存不动。
+      - name: Prune stale lock dirs (keep 2)
+        if: steps.cache.outputs.hit != 'true'
+        run: |
+          (ls -dt /deps/*/ 2>/dev/null || true) | grep -v '/src/$' | tail -n +3 | xargs -r rm -rf
+          du -sh /deps/* || true

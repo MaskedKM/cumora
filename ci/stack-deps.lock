@@ -1,0 +1,18 @@
+{
+  "_comment": "#283 PR-A:Stack 依赖物钉版。sha256:postgresql 用官方发布值;pgvector/redis 取首取值固定(git tag / 发布 tarball 不可变,等价钉扎)。升级 = 改本文件 + dispatch stack-deps.yml 重构建。",
+  "postgresql": {
+    "version": "16.15",
+    "url": "https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2",
+    "sha256": "c1575341fa7bd40f5274ea465b34390f4dc64cdd0770af327005caaeb9f6b7ed"
+  },
+  "pgvector": {
+    "version": "0.8.6",
+    "url": "https://codeload.github.com/pgvector/pgvector/tar.gz/refs/tags/v0.8.6",
+    "sha256": "10bf9938906e5d643bbc4a7eea104b6f57ba4898e5b76b20e60484ea1d5a7f8f"
+  },
+  "redis": {
+    "version": "7.2.16",
+    "url": "https://download.redis.io/releases/redis-7.2.16.tar.gz",
+    "sha256": "960a8ec15e34ff40e57ff16837b26b33bd81f2da6d24497bb63de532a323a18e"
+  }
+}
