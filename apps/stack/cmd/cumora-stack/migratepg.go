@@ -164,7 +164,7 @@ func cmdMigratePG(args []string) int {
 			if *jsonOut {
 				printJSON(map[string]any{"already": true, "state": st})
 			} else {
-				fmt.Printf("migrate-pg: 已于 %s 迁移过但尚未切链(备份 %s);重做加 --force\n",
+				fmt.Printf("migrate-pg: 存在 %s 的迁移标记(备份 %s;若为手工回滚后的重迁,加 --force)\n",
 					st.CompletedAt.Format("2006-01-02 15:04"), st.BackupFile)
 			}
 			return 0
@@ -383,9 +383,9 @@ func cmdMigratePG(args []string) int {
 		}
 	}
 	if *jsonOut {
-		printJSON(map[string]any{"migrated": true, "state": st, "tableCount": tgtTableCount})
+		printJSON(map[string]any{"migrated": true, "state": st, "tableCount": tgtTableCount, "sourceTableCount": srcTableCount})
 	} else {
-		printMigrateSummary(st, tgtTableCount)
+		printMigrateSummary(st, srcTableCount, tgtTableCount)
 	}
 	return 0
 }
@@ -469,7 +469,7 @@ func printDryRun(cfg stackconfig.Config, srcDSN string, srcCounts map[string]int
 	fmt.Println("  动作: 停链 → 备份 → 恢复 → 行数+表数比对 → toml 切 internal → 起链")
 }
 
-func printMigrateSummary(st MigrateState, tableCount int) {
+func printMigrateSummary(st MigrateState, srcTableCount, tgtTableCount int) {
 	fmt.Println("[migrate-pg 完成]")
 	fmt.Printf("  备份      %s(可独立恢复:pg_restore --dbname <目标> <file>)\n", st.BackupFile)
 	fmt.Println("  切换      stack.toml pg.mode=internal(旧 toml 在备份目录)")
@@ -477,7 +477,7 @@ func printMigrateSummary(st MigrateState, tableCount int) {
 	for _, tbl := range smokeTables {
 		fmt.Printf("    %-22s %d = %d\n", tbl, st.SourceCounts[tbl], st.TargetCounts[tbl])
 	}
-	fmt.Printf("  表数比对  %d = %d\n", tableCount, tableCount)
+	fmt.Printf("  表数比对  %d = %d\n", srcTableCount, tgtTableCount)
 	fmt.Println("  旧库未动(全程只读);确认新栈稳定后可自行退役,见 docs/DEPLOY-STACK.md")
 }
 
@@ -542,7 +542,11 @@ func execSQLPG(ctx context.Context, adminDSN, statement string) error {
 func redactDSN(dsn string) string {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		u, err := url.Parse(dsn)
-		if err != nil || u.User == nil {
+		if err != nil {
+			// 解析失败的 URL 形态到不了这里(前置探活已拒),占位防御。
+			return "postgres://<unparseable-dsn>"
+		}
+		if u.User == nil {
 			return dsn
 		}
 		if _, has := u.User.Password(); !has {

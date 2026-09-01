@@ -36,6 +36,9 @@ conversations / participants,不一致**阻断切链**)→ `stack.toml`
 `pg.mode` 切 `internal` → 起链。
 
 - **幂等**:重跑 no-op(`migrate-pg.state.json` 标记);`--force` 重做。
+- **重跑矩阵**:`pg.mode=internal` 后**恒拒**(迁移后的新写入在内置库,
+  重做 = 静默销毁,绝不);标记损坏按"状态未知"拒;`--force` 只在
+  external 形态下有意义(源库仍是权威,重做安全)。
 - **源库全程只读**;`--dry-run` 只探测与出计划。
 - 失败语义:任一步失败 → 不切链、旧链路数据零动、自动起链恢复服务;
   修因后 `--force` 重做。
@@ -54,9 +57,14 @@ conversations / participants,不一致**阻断切链**)→ `stack.toml`
    sudo apt remove 'postgresql-16*'             # 真删(可选)
    ```
 
-4. 回退(如需):`stack.toml` 改回 `pg.mode = "external"`(或用备份目录
-   里的 `stack.toml.premigrate` 原样恢复)+ `stack.env` 里的
+4. 回退(如需):`stack.toml` 改回 `pg.mode = "external"`(备份目录里的
+   `stack.toml.premigrate` 是 external 期的**一次性**留底,internal 后的
+   修改不在内——以当前 toml 手工改回为准)+ `stack.env` 里的
    `DATABASE_URL` 指回系统库 → 重启栈。数据以备份或系统库为准。
+5. 已切 internal 后确需重迁(高级,自担风险):`systemctl --user stop
+   cumora` → `pg_ctl`(制品内)起内置 pg → `dropdb/createdb cumora` →
+   `pg_restore` 备份或系统库新 dump → `pg_ctl stop` → 起链。
+   `migrate-pg` 本体在此形态下恒拒,是有意防线。
 
 ## 升级与回滚(#286)
 
