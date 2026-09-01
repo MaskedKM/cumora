@@ -51,6 +51,8 @@ func main() {
 		os.Exit(cmdUninstall(os.Args[2:]))
 	case "import-env":
 		os.Exit(cmdImportEnv(os.Args[2:]))
+	case "migrate-pg":
+		os.Exit(cmdMigratePG(os.Args[2:]))
 	case "logs":
 		os.Exit(cmdLogs(os.Args[2:]))
 	case "-h", "--help", "help":
@@ -88,6 +90,10 @@ func usage() {
                                          一次性导入 —— 机器事实转 stack.toml,
                                          凭据原样搬 stack.env/daemon.env;
                                          GITHUB OAuth 缺失=红线退 1
+  cumora-stack migrate-pg [flags]       存量迁入(#285):停链→备份源库→
+                                         恢复进内置 pg→行数比对→toml 切
+                                         internal→起链;幂等(重跑 no-op,
+                                         --force 重做);源库全程只读
 
 通用 flags(路径缺省优先级:flag > env > stack.toml > 内置布局;
 stack.toml 位 = $CUMORA_CONFIG_FILE,缺省 ~/.config/cumora/stack.toml):
