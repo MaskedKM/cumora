@@ -196,11 +196,30 @@ jobs:
           ACC="Accept: application/vnd.github+json"
           jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s)[process.argv[1]]??"")}catch{console.log("")}})' "$1"; }
 
-          rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+          # release 解析三段式(#310):①按 tag 查(4xx 不吃 curl --retry,
+          # 瞬时 404 曾真实发生);②查不到才创建;③创建撞 already_exists
+          # (422,重发窗口的常态)则回读。三段都失败才算发布失败。
+          rel_id=""
+          for i in 1 2 3; do
+            rel_id="$(curl -fsS --http1.1 --retry 2 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+            [ -n "$rel_id" ] && break
+            echo "[publish] tag 查询第 $i 次未命中(上方 curl 错误原文),5s 后重试"
+            sleep 5
+          done
           if [ -z "$rel_id" ]; then
             rel_id="$(curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" -X POST "$API/releases" \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"Cumora $VERSION(单制品 AppImage)\",\"prerelease\":true,\"body\":\"桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启:AppImage 内 resources/bin 经 cumora-stack absorb 落盘(#284 向导接线前手动)。\"}" | jget id)"
-            [ -n "$rel_id" ] || { echo "::error::release 创建失败($TAG)"; exit 1; }
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Cumora $VERSION(单制品 AppImage)\",\"prerelease\":true,\"body\":\"桌面客户端 + 整个 Stack(server/daemon/sidecar/stack/stackd + pg16+pgvector + redis)单制品。首启向导自动接线(#284)。\"}" 2>/dev/null | jget id || true)"
+            if [ -z "$rel_id" ]; then
+              # already_exists 竞态:回读复用同款 3×5s 循环(该 GET 暴露的
+              # 正是本 PR 修的瞬时 404 模式,单发回读会复现同类失败)。
+              for j in 1 2 3; do
+                sleep 5
+                rel_id="$(curl -fsS --http1.1 --retry 2 -H "$AUTH" -H "$ACC" "$API/releases/tags/$TAG" | jget id || true)"
+                [ -n "$rel_id" ] && break
+                echo "[publish] already_exists 回读第 $j 次未命中"
+              done
+            fi
+            [ -n "$rel_id" ] || { echo "::error::release 创建/解析失败($TAG)"; exit 1; }
           fi
           # 重发场景:删旧资产再传(--clobber 等价)。
           for f in release/*.AppImage; do
