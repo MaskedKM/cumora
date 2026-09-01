@@ -227,7 +227,14 @@ jobs:
             curl -fsS --http1.1 --retry 3 -H "$AUTH" -H "$ACC" "$API/releases/$rel_id/assets" \
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const a of JSON.parse(s))console.log(a.id+" "+a.name)})' \
               | while read -r aid aname; do
-                  [ "$aname" = "$name" ] && curl -fsS --http1.1 --retry 3 -H "$AUTH" -X DELETE "$API/assets/$aid" || true
+                  # 端点必须含 releases 段(/repos/../releases/assets/<id>);
+                  # #303 起写的是 $API/assets/<id>(404 端点)被 || true 吞成
+                  # 静默不删,首发无旧资产从未暴露,重发首夜实咬(上传恒
+                  # 422)。失败不再哑:打警告留取证面。
+                  if [ "$aname" = "$name" ]; then
+                    curl -fsS --http1.1 --retry 3 -H "$AUTH" -X DELETE "$API/releases/assets/$aid" \
+                      || echo "[publish] 警告:旧资产 $aid 删除失败(同名上传可能 422)"
+                  fi
                 done
             ok=0
             for i in 1 2 3; do
