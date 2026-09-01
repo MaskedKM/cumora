@@ -106,15 +106,21 @@ func TestGateTimeout_KillsAndRecords(t *testing.T) {
 		c.GateTimeout = 150 * time.Millisecond
 	})
 	err := m.Start(c)
-	if err == nil {
-		t.Fatal("门永不过应返回错误")
+	if err == nil || !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("门永不过应返回含 gate 的错误,实得: %v", err)
 	}
-	st := stateByName(t, m, "gated")
-	if st.Running || st.PID != 0 {
-		t.Fatalf("门超时后子进程应被清理: %+v", st)
+	// 语义(评审 P2-1):Start 失败 = 状态条目移除、同名可重试。
+	// 候选世代的清理由 terminateSolo 完成,不存在遗留 Running 状态。
+	for _, st := range m.States() {
+		if st.Name == "gated" {
+			t.Fatalf("Start 失败后不应残留状态条目: %+v", st)
+		}
 	}
-	if !strings.Contains(st.LastErr, "gate") {
-		t.Fatalf("LastErr 应记门超时: %q", st.LastErr)
+	// 同名重试入口仍在(新的 Start 不再报"已在管理中")。
+	if err := m.Start(shChild("gated", "sleep 30", func(c *Child) {
+		c.Gate = nil // 本次无门,应成功——证明名字未被毒化
+	})); err != nil {
+		t.Fatalf("失败后同名应可重试: %v", err)
 	}
 }
 
@@ -160,8 +166,9 @@ func TestGracefulStop_TermTrap(t *testing.T) {
 	flag := filepath.Join(dir, "flag")
 	ready := filepath.Join(dir, "ready")
 	m := New(fastOpts())
-	// ready 标记先于 trap:消除"TERM 早于脚本跑到 trap 行"的启动竞态。
-	script := "touch " + ready + "\ntrap 'touch " + flag + "; exit 0' TERM\nwhile :; do sleep 1; done"
+	// ready 标记在 trap 之后:标记出现 = 陷阱已装好(放在 trap 前会留
+	// "TERM 落在两行之间走默认处置"的窗口)。
+	script := "trap 'touch " + flag + "; exit 0' TERM\ntouch " + ready + "\nwhile :; do sleep 1; done"
 	if err := m.Start(shChild("trapper", script, nil)); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -189,9 +196,9 @@ func TestKillAfterGrace_IgnoredTerm(t *testing.T) {
 	ready := filepath.Join(dir, "ready")
 	opts := fastOpts()
 	m := New(opts)
-	// ready 标记先于 trap '':消除"TERM 早于忽略陷阱装好"的启动竞态
-	//(否则默认处置秒退,耗时断言误报)。
-	script := "touch " + ready + "\ntrap '' TERM\nwhile :; do sleep 1; done"
+	// ready 标记在 trap '' 之后:标记出现 = 忽略陷阱已装好(放前面留
+	// 默认处置秒退的窗口,耗时断言会误报)。
+	script := "trap '' TERM\ntouch " + ready + "\nwhile :; do sleep 1; done"
 	if err := m.Start(shChild("ignorer", script, func(c *Child) {
 		c.StopGrace = 120 * time.Millisecond
 	})); err != nil {
@@ -219,10 +226,10 @@ func TestShutdownReverseOrder(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
 	mk := func(name string) Child {
-		// 先写 started 标记再装陷阱:TERM 早于脚本跑到 trap 行会走默认
-		// 处置直接退出(测试等标记出现才 Shutdown,消掉这个竞态)。
-		script := "echo " + name + "-started >> " + order + "\n" +
-			"trap 'echo " + name + " >> " + order + "; exit 0' TERM\n" +
+		// started 标记在 trap 之后:标记出现 = 陷阱已装好(放在 trap 前
+		// 会留"TERM 落在两行之间走默认处置"的窗口)。
+		script := "trap 'echo " + name + " >> " + order + "; exit 0' TERM\n" +
+			"echo " + name + "-started >> " + order + "\n" +
 			"while :; do sleep 1; done"
 		return shChild(name, script, nil)
 	}

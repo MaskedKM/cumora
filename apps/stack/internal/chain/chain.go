@@ -24,6 +24,10 @@ const (
 
 // Node —— 链上一个节点。External 必填 Probe;Managed 必填 Child
 // (Probe 非空时作为 Child.Gate 的缺省门)。
+//
+// Probe 的 ctx 义务:调用方带超时(External=ProbeTimeout,Managed=
+// Child.GateTimeout),实现必须尊重 —— 一个阻塞不返回的 Probe 会把
+// 整条 BringUp 挂死。
 type Node struct {
 	Name         string
 	Mode         Mode
@@ -53,31 +57,9 @@ func BringUp(ctx context.Context, nodes []Node, m *supervise.Manager) error {
 	for _, n := range nodes {
 		switch n.Mode {
 		case External:
-			if n.Probe == nil {
-				return fmt.Errorf("chain: external 节点 %s 缺 Probe", n.Name)
+			if err := waitExternal(ctx, n); err != nil {
+				return err
 			}
-			pctx, cancel := context.WithTimeout(ctx, n.probeTimeout())
-			tick := time.NewTicker(n.probeEvery())
-			defer tick.Stop()
-			for {
-				err := n.Probe(pctx)
-				if err == nil {
-					break
-				}
-				if pctx.Err() != nil {
-					cancel()
-					return fmt.Errorf("chain: external %s 未在 %s 内就绪: %w",
-						n.Name, n.probeTimeout(), err)
-				}
-				select {
-				case <-pctx.Done():
-				case <-tick.C:
-				case <-ctx.Done():
-					cancel()
-					return ctx.Err()
-				}
-			}
-			cancel()
 		case Managed:
 			if n.Child == nil {
 				return fmt.Errorf("chain: managed 节点 %s 缺 Child", n.Name)
@@ -94,4 +76,36 @@ func BringUp(ctx context.Context, nodes []Node, m *supervise.Manager) error {
 		}
 	}
 	return nil
+}
+
+// waitExternal —— 轮询单个 External 节点到就绪。ticker 在本函数内
+// 创建与销毁(不随节点数累积),错误统一带 chain: 前缀与节点名。
+func waitExternal(ctx context.Context, n Node) error {
+	if n.Probe == nil {
+		return fmt.Errorf("chain: external 节点 %s 缺 Probe", n.Name)
+	}
+	pctx, cancel := context.WithTimeout(ctx, n.probeTimeout())
+	defer cancel()
+	tick := time.NewTicker(n.probeEvery())
+	defer tick.Stop()
+	var lastErr error
+	for {
+		lastErr = n.Probe(pctx)
+		if lastErr == nil {
+			return nil
+		}
+		if pctx.Err() == nil {
+			select {
+			case <-pctx.Done():
+			case <-tick.C:
+				continue
+			}
+		}
+		// 到期或外层取消:区分归因。
+		if ctx.Err() != nil {
+			return fmt.Errorf("chain: external %s 等待被取消: %w", n.Name, ctx.Err())
+		}
+		return fmt.Errorf("chain: external %s 未在 %s 内就绪: %w",
+			n.Name, n.probeTimeout(), lastErr)
+	}
 }

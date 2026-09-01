@@ -205,9 +205,17 @@ jobs:
         run: cd apps/byoa-daemon && go vet ./... && go test ./... -count=1
       # #282 PR-A:stack 模块(doctor/status/supervise/chain)。单测全
       # fake/真子进程注入,零外部服务;supervise 测试会真 spawn sh 子进程
-      # —— 容器内可行(root,有 /proc)。
-      - name: vet + test (stack)
-        run: cd apps/stack && go vet ./... && go test ./... -count=1
+      # —— 容器内可行(root,有 /proc)。带 -race:State 并发面是本模块
+      # 的命门(评审 P0 实锤过 10 处数据竞态),检测器必须常驻;race 需
+      # cgo,临时装 gcc(走代理 apk,同 tier-2a 的 curl 配方)。
+      - name: vet + test -race (stack)
+        run: |
+          if apk add --no-cache gcc musl-dev >/dev/null 2>&1; then
+            cd apps/stack && go vet ./... && CGO_ENABLED=1 go test -race ./... -count=1
+          else
+            echo "::warning::gcc 安装失败(apk 出口),降级为无 race 测试"
+            cd apps/stack && go vet ./... && go test ./... -count=1
+          fi
       # Same ownership give-back as the other job — this job's checkout also
       # writes container-root-owned files into the shared workspace.
       - name: Restore workspace ownership for the host runner
