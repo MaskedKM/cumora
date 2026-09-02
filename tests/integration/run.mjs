@@ -88,7 +88,13 @@ if (process.env.INTEGRATION_FILES) {
  * 随机端口起 pgvector + redis 各一容器,套件退出(含 bail/信号)即拆。
  * 此前本机测试直连 cumora-pg 里的 cumora_test:TRUNCATE churn 与生产共
  * 缓冲池/CPU/IO,是 #119 时序 flake 的环境根源(2026-08-28 实测
- * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。 */
+ * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。
+ *
+ * 拆栈必须 rm -f -v(#322):pgvector/pgvector 与 redis:7 的镜像都声明
+ * 了 VOLUME(pg=/var/lib/postgresql/data,redis=/data),不带 -v 的 rm
+ * 只删容器、匿名卷留存 —— 8-30 起每轮集成漏 2 卷,9-02 堆到 1093 个
+ * = 5400 万 inode,ser8 /home 分区 inode 100% 满(job ENOSPC 而 df -h
+ * 看着 38G 空闲)。 */
 let autoStack = null // { pg, redis, dbUrl, redisUrl }
 
 /** runCmd 在飞 promise 登记:teardownAutoStack 拆栈前必须等在飞的
@@ -161,7 +167,7 @@ async function provisionOneOffStack() {
   ], 300_000)
   if (rdRun.code !== 0) {
     console.error(`[integration] docker run redis failed: ${(rdRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
-    await runCmd('docker', ['rm', '-f', pg])
+    await runCmd('docker', ['rm', '-f', '-v', pg])
     autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -171,7 +177,7 @@ async function provisionOneOffStack() {
     && (await waitContainerReady(rd, ['redis-cli', 'ping'], 20_000))
   if (!ready) {
     console.error('[integration] one-off stack never became ready — tearing down')
-    await runCmd('docker', ['rm', '-f', pg, rd])
+    await runCmd('docker', ['rm', '-f', '-v', pg, rd])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -179,7 +185,7 @@ async function provisionOneOffStack() {
   const rdPort = (await runCmd('docker', ['port', rd, '6379'])).out.trim().split('\n')[0]?.split(':').pop()
   if (!pgPort || !rdPort) {
     console.error('[integration] could not discover one-off stack ports')
-    await runCmd('docker', ['rm', '-f', pg, rd])
+    await runCmd('docker', ['rm', '-f', '-v', pg, rd])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -202,7 +208,7 @@ async function teardownAutoStack() {
   ])
   if (names.length === 0) return
   await Promise.race([
-    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', n]))),
+    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', '-v', n]))),
     new Promise((r) => setTimeout(r, 10_000)),
   ])
 }
