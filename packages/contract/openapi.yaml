@@ -3236,6 +3236,7 @@ components:
         fastModel: { type: string, nullable: true }
         computerId: { type: string, nullable: true }
         engine: { type: string, nullable: true }
+        chatRegister: { type: boolean }
         email: { type: string, nullable: true }
         departedAt: { type: string, nullable: true, format: date-time }
     Conversation:
@@ -3475,6 +3476,7 @@ components:
         avatarUrl: { type: string, nullable: true }
         model: { type: string, nullable: true }
         fastModel: { type: string, nullable: true }
+        chatRegister: { type: boolean }
         tools: { type: array, items: { type: string } }
     Whisper:
       type: object

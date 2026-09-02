@@ -32,6 +32,9 @@ export function AgentEditor({ agent, onClose }: Props) {
   const [avatarBg, setAvatarBg] = useState(agent?.avatarBg ?? PALETTE[0])
   const [model, setModel] = useState(agent?.model ?? '')
   const [fastModel, setFastModel] = useState(agent?.fastModel ?? '')
+  // #24 聊天体语域开关(human-audience 说人话):默认开;undefined(旧
+  // 服务端/新建)按开显示。
+  const [chatRegister, setChatRegister] = useState(agent?.chatRegister ?? true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(agent?.avatarUrl ?? null)
@@ -109,6 +112,8 @@ export function AgentEditor({ agent, onClose }: Props) {
     setBusy(true)
     try {
       const payload: AgentInput = { name, role, systemPrompt, bio, avatarBg, model: model.trim() || null, fastModel: fastModel.trim() || null }
+      // #24:开关只在编辑路径发送(创建路径服务端默认 true,发了也会被忽略)。
+      if (editing) payload.chatRegister = chatRegister
       let agentId = agent?.id
       if (editing) {
         // Only send avatarUrl on change so we don't clobber it on no-op edits.
@@ -267,6 +272,20 @@ export function AgentEditor({ agent, onClose }: Props) {
               className="font-mono"
               spellCheck={false}
             />
+          </Field>
+
+          <Field
+            label={t('agent.chatRegisterLabel')}
+            hint={t('agent.chatRegisterHint')}
+          >
+            <label className="flex items-center gap-2 py-1 text-[12px] text-ink-700">
+              <input
+                type="checkbox"
+                checked={chatRegister}
+                onChange={(e) => setChatRegister(e.target.checked)}
+              />
+              {t('agent.chatRegisterOn')}
+            </label>
           </Field>
 
           <Field

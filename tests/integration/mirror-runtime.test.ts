@@ -182,6 +182,32 @@ test('[mirror-runtime] /inbox surfaces unread rows with the InboxRow shape', asy
   assert.equal(again.body.rows.length, 1)
 })
 
+test('[mirror-runtime] /inbox rows carry human_audience (#24 register)', async () => {
+  // 受众判定三形态:1:1 人机私聊 true;单员工+多人类频道 true(票面
+  // story 14);混合受众 false(行为零改动)。判定内聚在 LoadInbox 的
+  // annotateHumanAudience,daemon 只消费布尔。
+  const { agentId, companyId, token } = await seedAgent()
+  const humanId = await seedHuman(companyId)
+  const human2 = await seedHuman(companyId)
+  const otherAgent = `a-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status)
+     VALUES ($1, $2, 'agent', $3, 'peer', 'P', '#abcdef', 'avail')`,
+    [otherAgent, companyId, otherAgent],
+  )
+  const dm = await seedConversation(companyId, [agentId, humanId], 'direct')
+  const humanChannel = await seedConversation(companyId, [agentId, humanId, human2])
+  const mixed = await seedConversation(companyId, [agentId, humanId, otherAgent])
+  await dm.insertMessage(humanId, 'dm')
+  await humanChannel.insertMessage(human2, 'channel')
+  await mixed.insertMessage(humanId, 'mixed')
+  const rows = (await call('/runtime/inbox?probe=1', { method: 'GET', token })).body.rows as any[]
+  const audienceOf = (cv: string) => rows.find((r) => r.conversation_id === cv)?.human_audience
+  assert.equal(audienceOf(dm.convId), true, '1:1 human DM is human-audience')
+  assert.equal(audienceOf(humanChannel.convId), true, 'agent + humans-only channel is human-audience (story 14)')
+  assert.equal(audienceOf(mixed.convId), false, 'mixed audience stays false (zero change)')
+})
+
 test('[mirror-runtime] /inbox (default) advances the seen boundary — probe never does', async () => {
   // 真机 turn 的默认排水路径(#61 drill 轮 1 所依赖):daemon 的
   // snapshotUnread 走无参 GET,服务端推进 freshness-preflight"已见"

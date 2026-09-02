@@ -641,6 +641,7 @@ type AgentInput struct {
 	AvatarBg     *string   `json:"avatarBg,omitempty"`
 	AvatarUrl    *string   `json:"avatarUrl"`
 	Bio          *string   `json:"bio,omitempty"`
+	ChatRegister *bool     `json:"chatRegister,omitempty"`
 	FastModel    *string   `json:"fastModel"`
 	Id           *string   `json:"id,omitempty"`
 	Initial      *string   `json:"initial,omitempty"`
@@ -1179,6 +1180,7 @@ type Participant struct {
 	AvatarBg        string          `json:"avatarBg"`
 	AvatarUrl       *string         `json:"avatarUrl"`
 	Bio             *string         `json:"bio"`
+	ChatRegister    *bool           `json:"chatRegister,omitempty"`
 	ComputerId      *string         `json:"computerId"`
 	DepartedAt      *time.Time      `json:"departedAt"`
 	Email           *string         `json:"email"`

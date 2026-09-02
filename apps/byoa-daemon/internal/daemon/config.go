@@ -130,6 +130,14 @@ type AgentInfo struct {
 	Engine       *string `json:"engine"`
 	Model        *string `json:"model"`
 	FastModel    *string `json:"fastModel"`
+	// ChatRegister:#24 聊天体语域开关(human-audience 会话说人话)。
+	// 服务端列 NOT NULL DEFAULT true;nil(旧版服务端/迁移空档)按开。
+	ChatRegister *bool `json:"chatRegister"`
+}
+
+// chatRegisterOn:开关语义收口——nil/true = 开(#24 默认)。
+func (a AgentInfo) chatRegisterOn() bool {
+	return a.ChatRegister == nil || *a.ChatRegister
 }
 
 // detectHostName:配对上报的主机名(对齐 detectHostName 的有效语义:

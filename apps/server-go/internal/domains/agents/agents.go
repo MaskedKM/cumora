@@ -89,6 +89,7 @@ type agentBody struct {
 	initial, avatarBg                  *string
 	avatarURL, model, fastModel        *string // nil 键=不动;存在但 null=显式清(用 hasNull 标)
 	avatarURLNull, modelNull, fastNull bool
+	chatRegister                       *bool // #24 聊天体语域开关(human-audience 说人话)
 	tools                              []string
 	hasTools                           bool
 }
@@ -154,6 +155,14 @@ func decodeAgentBody(r *http.Request) agentBody {
 				b.fastNull = true
 			} else if s, isStr := v.(string); isStr {
 				b.fastModel = &s
+			}
+		}
+	}
+	if rawKey, ok := raw["chatRegister"]; ok {
+		var v any
+		if json.Unmarshal(rawKey, &v) == nil {
+			if bv, isBool := v.(bool); isBool {
+				b.chatRegister = &bv
 			}
 		}
 	}
@@ -462,6 +471,9 @@ func (s *Server) UpdateAgent(w http.ResponseWriter, r *http.Request, id string) 
 		toolsJSON, _ := json.Marshal(body.tools)
 		params = append(params, string(toolsJSON))
 		sets = append(sets, fmt.Sprintf("tools = $%d::jsonb", len(params)))
+	}
+	if body.chatRegister != nil {
+		push("chat_register", *body.chatRegister)
 	}
 	if len(sets) == 0 {
 		httpx.WriteError(w, http.StatusBadRequest, "nothing to update")

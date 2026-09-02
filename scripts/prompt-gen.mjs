@@ -34,6 +34,7 @@ const DAEMON = [
   ["glance-yield-rules.txt", "glanceYieldRulesRaw"],
   ["skype-emoticons-guide.txt", "skypeEmoticonsGuideRaw"],
   ["two-domain-privacy-rule.txt", "twoDomainPrivacyRuleRaw"],
+  ["human-register.txt", "humanRegisterRaw"], // #24 human-audience 聊天体语域块
 ];
 
 const header = (pkg) => `// ${pkg} 包 prompt 文案生成物 —— 由 scripts/prompt-gen.mjs 从
@@ -71,4 +72,4 @@ writeFileSync(
   dir("apps/byoa-daemon/internal/daemon/persona_prompts.gen.go"),
   header("daemon") + emit(DAEMON) + "\n",
 );
-console.log("[prompt-gen] 2 个生成物已写(server 4 常量 / daemon 3 常量)");
+console.log(`[prompt-gen] 2 个生成物已写(server ${SERVER.length} 常量 / daemon ${DAEMON.length} 常量)`);

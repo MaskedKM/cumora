@@ -352,7 +352,9 @@ func BuildTriageRequest(agentID string, persona *agent.Persona, inbox, context [
 			return TriageRequest{Verdict: map[string]any{
 				"actionable": true,
 				"reason":     "human DM — always engage, no triage gate",
-				"promptNote": "A human messaged you directly — reply to them.",
+				// #24:human-dm 即 human-audience 的典型场景——note 直接携带
+				// 聊天体语域指令(轻量一句,完整块由 daemon turnDelta 注入)。
+				"promptNote": "A human messaged you directly — reply to them like you're texting a coworker: a few plain sentences, conclusion first, no headings or lists.",
 				"source":     "human-dm",
 			}}
 		}
