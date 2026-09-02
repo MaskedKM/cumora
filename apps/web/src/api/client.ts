@@ -26,6 +26,7 @@ export type ApiTriageUnitPrice = Schemas['TriageUnitPrice']
 export type ApiTriagePriceRow = Schemas['TriagePriceRow']
 export type ApiTriageEconomics = Schemas['TriageEconomics']
 export type ApiAgentEvent = Schemas['AgentEvent']
+export type ApiTranscriptEntry = { seq: number; type: string; tool?: string | null; content?: string | null; input?: unknown; createdAt?: string }
 export type ApiConveneSession = Schemas['ConveneSession']
 export type ApiConveneTranscript = Schemas['ConveneTranscript']
 export type ApiDevtoolsCapabilities = Schemas['DevtoolsCapabilities']
@@ -644,6 +645,10 @@ export const api = {
   },
   getAgentRunEvents: (runId: string) =>
     http<ApiAgentEvent[]>(`/agents/observability/runs/${encodeURIComponent(runId)}/events`),
+  // #260 工具级转录回放(sinceSeq 分页;UI 一次拉全量即停)。
+  getAgentRunTranscript: (runId: string, sinceSeq = 0) =>
+    http<ApiTranscriptEntry[]>(`/agents/observability/runs/${encodeURIComponent(runId)}/transcript?sinceSeq=${sinceSeq}&limit=1000`),
+
   getTriageEconomics: (filters?: { agentId?: string | null; sinceHours?: number }) => {
     const q = new URLSearchParams()
     if (filters?.agentId) q.set('agentId', filters.agentId)

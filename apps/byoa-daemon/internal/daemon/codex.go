@@ -138,6 +138,7 @@ func newCodexSession(bin string, spawnArgs []string, args SessionArgs) *codexSes
 		onLog:            args.OnLog,
 		onHop:            args.OnHopUsage,
 		onText:           args.OnAssistantText,
+		onTranscript:     args.OnTranscript,
 		threadID:         args.ResumeSessionID,
 		model:            args.Model,
 		carriesStanding:  args.StandingPrompt != "",
@@ -563,17 +564,21 @@ func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
 				s.wd.Activity(false, true)
 			}
 			// #260:item 级转录(命令/工具启停 + agentMessage 完成文本)。
+			// 经 effects 锁外发射(handleLocked 纪律:持 s.mu 不碰 runner 的
+			// r.mu——评审 #326 P2-7)。
 			if onT := s.onTranscript; onT != nil {
 				if msg.Method == "item/started" && (ty == "commandExecution" || ty == "mcpToolCall" || ty == "applyPatch") {
 					inp := map[string]any{}
 					if cmd, ok := item["command"].(string); ok {
 						inp["command"] = cmd
 					}
-					onT(TranscriptEntry{Type: "tool_use", Tool: ty, Input: inp})
+					entry := TranscriptEntry{Type: "tool_use", Tool: ty, Input: inp}
+					effects = append(effects, func() { onT(entry) })
 				} else if msg.Method == "item/completed" {
 					if ty == "agentMessage" {
 						if text, ok := item["text"].(string); ok && text != "" {
-							onT(TranscriptEntry{Type: "text", Content: text})
+							entry := TranscriptEntry{Type: "text", Content: text}
+							effects = append(effects, func() { onT(entry) })
 						}
 					} else {
 						outc := ""
@@ -583,7 +588,8 @@ func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
 								break
 							}
 						}
-						onT(TranscriptEntry{Type: "tool_result", Tool: ty, Content: outc})
+						entry := TranscriptEntry{Type: "tool_result", Tool: ty, Content: outc}
+						effects = append(effects, func() { onT(entry) })
 					}
 				}
 			}

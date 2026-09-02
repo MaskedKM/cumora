@@ -5,9 +5,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // TranscriptEntry:一条转录(引擎事件的最小投影)。Seq 由 runner 侧统一
@@ -53,16 +55,18 @@ func newTranscriptBatcher(runID string, flush func(string, []map[string]any)) *t
 
 // tick:冲刷一轮;返回 true = 已 finish(循环退场)。
 func (b *transcriptBatcher) tick() bool {
+	// flush 锁内快照(评审 #326 P1-3:锁外重读与 finish 置 nil 撞窗会
+	// nil 调用 panic 掉 ticker goroutine = daemon 整进程崩)。
 	b.mu.Lock()
-	if b.flush == nil {
-		b.mu.Unlock()
-		return true
-	}
+	flushFn := b.flush
 	pending := b.entries
 	b.entries = nil
 	b.mu.Unlock()
+	if flushFn == nil {
+		return true
+	}
 	if len(pending) > 0 {
-		b.flush(b.runID, pending)
+		flushFn(b.runID, pending)
 	}
 	return false
 }
@@ -84,12 +88,14 @@ func (b *transcriptBatcher) emit(e TranscriptEntry) {
 	}
 	b.count++
 	b.seq++
+	// 字节帽 + rune 边界(评审 #326 P2-6:与服务端字节语义对齐,rune 帽
+	// 会让 CJK 预截失效被服务端二次再截)。
 	content := e.Content
 	if len(content) > transcriptContentCapDa {
-		content = truncateRunes(content, transcriptContentCapDa)
+		content = trimRunesSafeDa(content, transcriptContentCapDa)
 	}
 	b.entries = append(b.entries, map[string]any{
-		"seq": b.seq, "type": e.Type, "tool": e.Tool, "content": content, "input": e.Input,
+		"seq": b.seq, "type": e.Type, "tool": e.Tool, "content": content, "input": clampInputDa(e.Input),
 	})
 }
 
@@ -114,9 +120,18 @@ func (r *AgentRunner) postTranscriptBatch(runID string, entries []map[string]any
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = apiCall(ctx, r.cfg.ServerURL, http.MethodPost, "/runtime/transcript-batch", token,
-		map[string]any{"runId": runID, "entries": entries}, nil)
+	// 服务端单批帽 100——不分块会被整批 400(评审 #326 P1-4)。
+	for i := 0; i < len(entries); i += transcriptServerBatchCap {
+		end := i + transcriptServerBatchCap
+		if end > len(entries) {
+			end = len(entries)
+		}
+		_ = apiCall(ctx, r.cfg.ServerURL, http.MethodPost, "/runtime/transcript-batch", token,
+			map[string]any{"runId": runID, "entries": entries[i:end]}, nil)
+	}
 }
+
+const transcriptServerBatchCap = 100
 
 // contentTranscriptEntries:claude stream-json 的 content 块数组 → 转录
 // 条目。assistant 消息产出 text/thinking/tool_use;user 消息(tool_result
@@ -164,4 +179,32 @@ func contentTranscriptEntries(evType string, content any) []TranscriptEntry {
 		}
 	}
 	return out
+}
+
+// trimRunesSafeDa:字节帽内按 rune 边界截断。
+func trimRunesSafeDa(s string, capB int) string {
+	if len(s) <= capB {
+		return s
+	}
+	cut := capB
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// clampInputDa:input 序列化超帽降级为截断提示(评审 #326 P2-5:emit 侧
+// 即钳,防大 input 批量整批 400 / 放大驻留)。
+func clampInputDa(v any) any {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	if len(b) <= transcriptContentCapDa {
+		return v
+	}
+	return map[string]any{"truncated": true, "prefix": trimRunesSafeDa(string(b), transcriptContentCapDa)}
 }

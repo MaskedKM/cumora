@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   type ApiAgentEvent,
+  ApiTranscriptEntry,
   type ApiAgentRun,
   type ApiAgentRunStatus,
   type ApiAgentWorkspaceFile,
@@ -49,6 +50,8 @@ export function ObservabilityView() {
   const [panel, setPanel] = useState<DevPanel>('traces')
   const [runs, setRuns] = useState<ApiAgentRun[]>([])
   const [events, setEvents] = useState<ApiAgentEvent[]>([])
+  const [transcript, setTranscript] = useState<ApiTranscriptEntry[]>([])
+  const [detailTab, setDetailTab] = useState<'events' | 'transcript'>('events')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [agentId, setAgentId] = useState<string>('all')
   const [status, setStatus] = useState<StatusFilter>('all')
@@ -119,6 +122,8 @@ export function ObservabilityView() {
     }
     try {
       setEvents(await api.getAgentRunEvents(runId))
+      // 转录是终态档案(不像 events 随轮刷新)——拉一次全量,失败不阻塞主面。
+      api.getAgentRunTranscript(runId).then(setTranscript).catch(() => setTranscript([]))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -441,8 +446,47 @@ export function ObservabilityView() {
               </div>
             </header>
 
+            <div className="flex items-center gap-2 px-6 pt-4 text-[12px]">
+              {(['events', 'transcript'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setDetailTab(tab)}
+                  className={detailTab === tab ? 'rounded-lg bg-ink-900 px-3 py-1 text-paper' : 'rounded-lg bg-ink-100 px-3 py-1 text-ink-600'}
+                >
+                  {t(tab === 'events' ? 'obs.tabEvents' : 'obs.tabTranscript')}
+                  {tab === 'transcript' ? ` (${transcript.length})` : ''}
+                </button>
+              ))}
+            </div>
             <div className="min-h-0 overflow-auto px-6 py-5">
-              {events.length === 0 ? (
+              {detailTab === 'transcript' ? (
+                transcript.length === 0 ? (
+                  <div className="grid h-full place-items-center text-[13px] text-ink-400">{t('obs.noTranscript')}</div>
+                ) : (
+                  <div className='max-w-[1040px] font-mono text-[12px] leading-relaxed'>
+                    {transcript.map((e) => (
+                      <div key={e.seq} className='mb-1.5 flex gap-2'>
+                        <span className='w-10 shrink-0 text-right text-ink-300'>{e.seq}</span>
+                        <span className={
+                          e.type === 'tool_use' ? 'w-24 shrink-0 text-sky-600' :
+                          e.type === 'tool_result' ? 'w-24 shrink-0 text-emerald-600' :
+                          e.type === 'thinking' ? 'w-24 shrink-0 text-ink-400' : 'w-24 shrink-0 text-ink-600'
+                        }>{e.type}</span>
+                        <div className='min-w-0 flex-1 whitespace-pre-wrap break-words text-ink-700'>
+                          {e.tool ? <span className='text-ink-500'>[{e.tool}] </span> : null}
+                          {(e.content ?? '').slice(0, 2000)}
+                          {e.input != null ? (
+                            <details className='mt-0.5'>
+                              <summary className='cursor-pointer text-ink-400'>input</summary>
+                              <pre className='whitespace-pre-wrap break-all text-ink-500'>{JSON.stringify(e.input, null, 2).slice(0, 4000)}</pre>
+                            </details>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : events.length === 0 ? (
                 <div className="grid h-full place-items-center text-[13px] text-ink-400">{t('obs.noEvents')}</div>
               ) : (
                 <div className="max-w-[1040px]">

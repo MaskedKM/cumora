@@ -59,7 +59,9 @@ func (s *Service) handleTranscriptBatch(w http.ResponseWriter, r *http.Request, 
 		}
 		seqF, _ := bodyFloat(e, "seq")
 		typ := bodyStr(e, "type")
-		if seqF <= 0 || typ == "" {
+		// 整数 + int32 界内(评审 #326 P2-8:1.5 静默截断会撞幂等键,
+		// 超 int32 会让 PG 报 500)。
+		if seqF <= 0 || seqF != float64(int64(seqF)) || seqF > 2147483647 || typ == "" {
 			continue
 		}
 		content := bodyStr(e, "content")
@@ -75,10 +77,10 @@ func (s *Service) handleTranscriptBatch(w http.ResponseWriter, r *http.Request, 
 			tool = t
 		}
 		res, err := s.DB.ExecContext(r.Context(), `
-			INSERT INTO agent_transcript (run_id, agent_id, company_id, seq, type, tool, content, input)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			INSERT INTO agent_transcript (id, run_id, agent_id, company_id, seq, type, tool, content, input)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (run_id, seq) DO NOTHING`,
-			runID, agentID, companyID, int(seqF), typ, tool, content, input)
+			httpx.UUIDHex(), runID, agentID, companyID, int(seqF), typ, tool, content, input)
 		if err != nil {
 			httpx.WriteInternalError(w, r, err)
 			return

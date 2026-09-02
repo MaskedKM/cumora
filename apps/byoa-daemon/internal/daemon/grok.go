@@ -498,7 +498,8 @@ func (s *grokSession) handleLocked(msg *acpMsg) []func() {
 			s.wd.Activity(true, false) // #259 工具在飞(换 toolBudget 窗口)
 			if onT := s.onTranscript; onT != nil {
 				title, _ := update["title"].(string)
-				onT(TranscriptEntry{Type: "tool_use", Tool: title})
+				entry := TranscriptEntry{Type: "tool_use", Tool: title}
+				effects = append(effects, func() { onT(entry) })
 			}
 			if title, ok := update["title"].(string); ok {
 				logf("[grok] tool %s", title)
@@ -507,7 +508,8 @@ func (s *grokSession) handleLocked(msg *acpMsg) []func() {
 			if content, ok := update["content"].(map[string]any); ok {
 				if text, ok := content["text"].(string); ok && strings.TrimSpace(text) != "" {
 					if onT := s.onTranscript; onT != nil {
-						onT(TranscriptEntry{Type: "text", Content: text})
+						entry := TranscriptEntry{Type: "text", Content: text}
+						effects = append(effects, func() { onT(entry) })
 					}
 					logf("[grok] » %s", collapseWS(text, 200))
 				}

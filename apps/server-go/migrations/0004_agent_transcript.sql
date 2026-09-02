@@ -1,9 +1,11 @@
 -- 0004_agent_transcript.sql —— #260 工具级执行转录:text/thinking/
 -- tool_use/tool_result 带 seq 单调存档,回放"agent 当时干了什么"。
 -- 保留走 db-gc(挂 DB_GC_AGENT_TRANSCRIPT_DAYS,默认 30 天,随 agent_runs
--- 同窗);bigserial id 供两段式删除批定址。FK 级联随 agent_runs 删除清账。
+-- 同窗)。id 走 text + UUIDHex(与 agent_log/agent_events 同惯例——gc 两段
+-- 删除的 pk 扫描按 text 定址,bigint 会让 Scan 直接报错键失效)。FK 级联
+-- 随 agent_runs 删除清账。
 CREATE TABLE public.agent_transcript (
-    id bigserial PRIMARY KEY,
+    id text NOT NULL PRIMARY KEY,
     run_id text NOT NULL REFERENCES public.agent_runs(id) ON DELETE CASCADE,
     agent_id text NOT NULL,
     company_id text,
