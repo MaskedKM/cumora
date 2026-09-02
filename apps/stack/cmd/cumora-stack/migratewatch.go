@@ -14,7 +14,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,20 +73,30 @@ func (s *stepTracker) begin(name string) func() {
 // runWatched —— RunCmd 的生产实现(#315):起子进程即打 PID + 脱敏
 // argv 摘要;等待期每 migrateHeartbeat 打一行心跳;退出打 exit code +
 // 耗时。预算到点 CommandContext 杀子,错误注明预算语义。
+//
+// 输出必须走临时文件而非管道(沙箱实测踩实):pg_ctl start 会 fork 出
+// postgres 守护孙进程,合法继承并长期持有管道 fd —— 管道形态下 Wait
+// 要等所有写端关闭,守护孙进程让 happy path 永远挂死(WaitDelay 则把
+// 持有误判成失败)。文件没有 EOF 语义:pg_ctl 退出即 Wait 返回,孙进
+// 程晚写无害。
 func runWatched(ctx context.Context, path string, args ...string) (string, error) {
 	budget := budgetFor(path)
 	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, path, args...)
-	// 孤儿抱管道保险带(stackd #313 同族实测:KILL 杀的是工具本体,
-	// 抱着管道的孙进程会把 Wait 挂死)。
-	cmd.WaitDelay = 10 * time.Second
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Start(); err != nil {
+	outf, err := os.CreateTemp("", "migrate-pg-out-*.log")
+	if err != nil {
 		return "", err
 	}
+	outPath := outf.Name()
+	defer os.Remove(outPath)
+	cmd.Stdout = outf
+	cmd.Stderr = outf
+	if err := cmd.Start(); err != nil {
+		outf.Close()
+		return "", err
+	}
+	defer outf.Close()
 	fmt.Printf("%s migrate-pg: 子进程 %s pid=%d argv=%s 预算=%s\n",
 		migStamp(), filepath.Base(path), cmd.Process.Pid, summarizeArgs(args), budget)
 	started := time.Now()
@@ -107,6 +116,7 @@ func runWatched(ctx context.Context, path string, args ...string) (string, error
 		}
 	}()
 	waitErr := cmd.Wait()
+	out, _ := os.ReadFile(outPath)
 	exitNote := "ok"
 	if waitErr != nil {
 		exitNote = waitErr.Error()
@@ -114,9 +124,9 @@ func runWatched(ctx context.Context, path string, args ...string) (string, error
 	fmt.Printf("%s migrate-pg: 子进程 %s pid=%d 退出(%s;耗时 %s)\n",
 		migStamp(), filepath.Base(path), cmd.Process.Pid, exitNote, time.Since(started).Round(time.Millisecond))
 	if cctx.Err() != nil {
-		return buf.String(), fmt.Errorf("%s 预算耗尽/取消(%v;已杀,窗口 defer 会起链恢复): %w", filepath.Base(path), cctx.Err(), waitErr)
+		return string(out), fmt.Errorf("%s 预算耗尽/取消(%v;已杀,窗口 defer 会起链恢复): %w", filepath.Base(path), cctx.Err(), waitErr)
 	}
-	return buf.String(), waitErr
+	return string(out), waitErr
 }
 
 // withBudget —— 非子进程步骤(停链等纯函数调用)的心跳 + 预算。
