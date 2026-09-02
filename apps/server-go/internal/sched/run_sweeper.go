@@ -72,7 +72,8 @@ func (s *S) RunRunSweeperTick(ctx context.Context) int {
 
 	requeued := 0
 	for _, c := range cands {
-		if !sweeperRetryableClasses[sweeperClassOf(c.summary)] {
+		class := sweeperClassOf(c.summary)
+		if !sweeperRetryableClasses[class] {
 			continue
 		}
 		// 闸②:已有后续成功 run 覆盖。
@@ -82,27 +83,39 @@ func (s *S) RunRunSweeperTick(ctx context.Context) int {
 			c.agent, c.id).Scan(&superseded); err == nil {
 			continue
 		}
-		// 闸③:已重排过。
+		// 闸③:已重排过。幂等键 = 确定性 id("rev-"+run_id,pkey 吸收
+		// 多副本竞态;同族 reminder/dispatch 的 claim-first 形态)。
 		var requeuedAlready int
 		if err := s.DB.QueryRowContext(ctx,
 			`SELECT 1 FROM agent_events WHERE kind = 'run_requeue' AND run_id = $1 LIMIT 1`, c.id).
 			Scan(&requeuedAlready); err == nil {
 			continue
 		}
-		// 闸①:agent 当前忙——留下一 tick。
+		// 闸①:agent 当前忙——留下一 tick。Redis busy 租约(5s TTL)优先
+		// (participants.status 是 best-effort 写,失败轮卡 thinking 会饿死
+		// 重排;两者任一为忙即跳)。
+		if s.busy(c.agent) {
+			continue
+		}
 		var status string
 		if err := s.DB.QueryRowContext(ctx,
 			`SELECT status FROM participants WHERE id = $1 LIMIT 1`, c.agent).Scan(&status); err == nil &&
 			(status == "thinking" || status == "working") {
 			continue
 		}
-		// 留痕先行(幂等键),再唤醒;唤醒失败下一 tick 由闸③识别为已处理
-		// ——唤醒与留痕的间隙由 pollLoop 天然兜底,可接受。
+		// 重排要有内容:失败 turn 的触发消息在轮首已被 inbox 排水消费,
+		// 单发唤醒会命中空 inbox 空转(runTurn 对空箱直接返回)。故先向
+		// 触发会话补一条 system 提示消息使 inbox 非空,再唤醒——重做由
+		// agent 读到该提示后自然发生(评审 #327 P0)。
+		if !s.insertRequeueNotice(ctx, c.id, c.agent, c.company, class) {
+			continue
+		}
 		if _, err := s.DB.ExecContext(ctx, `
 			INSERT INTO agent_events (id, run_id, agent_id, company_id, kind, level, title, data)
 			VALUES ($1, $2, $3, NULLIF($4, ''), 'run_requeue', 'info', 'server-side requeue of failed run',
-			        jsonb_build_object('runId', $2, 'class', $5))`,
-			"rev-"+sweeperID(), c.id, c.agent, c.company, sweeperClassOf(c.summary)); err != nil {
+			        jsonb_build_object('runId', $2, 'class', $5))
+			ON CONFLICT (id) DO NOTHING`,
+			"rev-"+c.id, c.id, c.agent, c.company, class); err != nil {
 			slog.Warn("[sweeper] requeue event insert failed", "run", c.id, "err", err)
 			continue
 		}
@@ -110,6 +123,34 @@ func (s *S) RunRunSweeperTick(ctx context.Context) int {
 		requeued++
 	}
 	return requeued
+}
+
+// insertRequeueNotice:向失败 run 的触发会话补投 system 提示消息。
+// 会话反解自 agent_runs.input_message_ids 最新一条;无消息/无会话 →
+// false(本轮放弃,下一 tick 仍可重试——幂等键未落)。
+func (s *S) insertRequeueNotice(ctx context.Context, runID, agentID, companyID, class string) bool {
+	var convoID string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT m.conversation_id FROM messages m
+		 WHERE m.id = ANY(ARRAY(SELECT jsonb_array_elements_text(r.input_message_ids) FROM agent_runs r WHERE r.id = $1))
+		 ORDER BY m.created_at DESC LIMIT 1`, runID).Scan(&convoID)
+	if err != nil || convoID == "" {
+		return false
+	}
+	var sequence int
+	if err := s.DB.QueryRowContext(ctx, `
+		INSERT INTO conversation_counters (conversation_id, next_sequence) VALUES ($1, 2)
+		ON CONFLICT (conversation_id) DO UPDATE SET next_sequence = conversation_counters.next_sequence + 1
+		RETURNING next_sequence - 1`, convoID).Scan(&sequence); err != nil {
+		return false
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
+		VALUES ($1, $2, 'scheduler', 'system', $3, $4, NULLIF($5, ''))`,
+		"m-"+httpx.UUIDHex(), convoID,
+		"Your previous turn failed ("+class+") and was re-queued by the server — please redo the work.",
+		sequence, companyID)
+	return err == nil
 }
 
 // StartRunSweeperWorker:周期 tick;ENABLE_RUN_SWEEPER='false' 或
@@ -137,6 +178,3 @@ func runSweeperIntervalMS() int64 {
 	}
 	return 60_000
 }
-
-// sweeperID:agent_events.id(rev- + hex,与既有行形状同族)。
-func sweeperID() string { return httpx.UUIDHex() }

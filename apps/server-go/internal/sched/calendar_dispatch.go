@@ -78,7 +78,8 @@ func (s *S) RunCalendarDispatchTick(ctx context.Context) int {
 		       created_at, updated_at
 		  FROM calendar_events
 		 WHERE status = 'active' AND kind = 'agent_task' AND assignee_id IS NOT NULL
-		   AND start_at <= $1`, now)
+		   AND start_at <= $1
+		   AND (recurrence IS NOT NULL OR start_at >= $2)`, now, now.Add(-10*time.Minute))
 	if err != nil {
 		slog.Warn("[calendar] dispatch scan failed", "err", err)
 		return 0
@@ -108,8 +109,9 @@ func (s *S) RunCalendarDispatchTick(ctx context.Context) int {
 				return // duplicate(幂等命中)/skipped/failed:failed 留痕于 dispatch 行,不唤醒
 			}
 			dispatched++
-			// 唤醒受派 agent:例行事务到点,带明确原因(daemon turnDelta 消费
-			// reason;runbook 正文已在投递的系统消息里,inbox 读取链路自带)。
+			// 唤醒受派 agent(例行事务到点)。注:daemon 不渲染 reason——
+			// 它落 agent_runs.trigger 与服务端日志;runbook 正文经投递的
+			// 系统消息进 inbox,重做由 agent 读消息自然发生(#327 评审 P2)。
 			assignee := e.AssigneeID.String
 			title := truncateRunesSched(e.Title, 60)
 			s.WakeOne(assignee, "calendar-due: "+title, nil, nil, nil)

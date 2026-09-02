@@ -67,3 +67,41 @@ func TestSweeperClassOf(t *testing.T) {
 		t.Fatal("白名单镜像失真")
 	}
 }
+
+// 循环终止语义(评审 #327 P1-3:count/until/interval>1 与 ==now 边界)。
+func TestDispatchSlotTermination(t *testing.T) {
+	now := dt("2026-09-02T12:00:00Z")
+	// count=2,每日:start 09/01 08:00 → 槽位 09/01、09/02;now 在 09/02
+	// 11:56 → 命中第 2 槽(在窗)。
+	cnt := 2
+	rule := &recurrenceRule{Freq: "daily", Interval: 1, Count: &cnt}
+	slot, due := dispatchSlot(dt("2026-09-01T11:58:00Z"), rule, dt("2026-09-02T11:59:00Z"))
+	if !due || !slot.Equal(dt("2026-09-02T11:58:00Z")) {
+		t.Fatalf("count=2 第二槽应投: due=%v slot=%v", due, slot)
+	}
+	// count 耗尽:now 在 09/03 → 第三槽不存在 → 不投。
+	if _, due := dispatchSlot(dt("2026-09-01T11:58:00Z"), rule, dt("2026-09-03T11:59:00Z")); due {
+		t.Fatal("count 耗尽后不得再投")
+	}
+	// until 截止:until=09/01,now=09/02 → 无有效槽。
+	u := &recurrenceRule{Freq: "daily", Interval: 1, Until: "2026-09-01T23:59:00Z"}
+	if _, due := dispatchSlot(dt("2026-09-01T11:58:00Z"), u, dt("2026-09-02T11:59:00Z")); due {
+		t.Fatal("until 之后不得再投")
+	}
+	// interval=2(隔日):start 08/31 08:00,now=09/02 11:58 → 槽 09/02 08:00。
+	i2 := &recurrenceRule{Freq: "daily", Interval: 2}
+	slot, due = dispatchSlot(dt("2026-08-31T11:58:00Z"), i2, dt("2026-09-02T11:59:00Z"))
+	if !due || !slot.Equal(dt("2026-09-02T11:58:00Z")) {
+		t.Fatalf("interval=2 槽位: due=%v slot=%v", due, slot)
+	}
+	// slot == now(边界,含端投递)。
+	if _, due := dispatchSlot(dt("2026-09-02T12:00:00Z"), nil, now); !due {
+		t.Fatal("slot==now 应投(含端)")
+	}
+	// monthly 步进。
+	m := &recurrenceRule{Freq: "monthly", Interval: 1}
+	slot, due = dispatchSlot(dt("2026-08-02T11:58:00Z"), m, dt("2026-09-02T11:59:00Z"))
+	if !due || !slot.Equal(dt("2026-09-02T11:58:00Z")) {
+		t.Fatalf("monthly 槽位: due=%v slot=%v", due, slot)
+	}
+}
