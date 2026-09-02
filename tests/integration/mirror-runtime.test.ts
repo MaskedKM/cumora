@@ -198,14 +198,17 @@ test('[mirror-runtime] /inbox rows carry human_audience (#24 register)', async (
   const dm = await seedConversation(companyId, [agentId, humanId], 'direct')
   const humanChannel = await seedConversation(companyId, [agentId, humanId, human2])
   const mixed = await seedConversation(companyId, [agentId, humanId, otherAgent])
+  const agentDm = await seedConversation(companyId, [agentId, otherAgent], 'direct')
   await dm.insertMessage(humanId, 'dm')
   await humanChannel.insertMessage(human2, 'channel')
   await mixed.insertMessage(humanId, 'mixed')
+  await agentDm.insertMessage(otherAgent, 'agent dm')
   const rows = (await call('/runtime/inbox?probe=1', { method: 'GET', token })).body.rows as any[]
   const audienceOf = (cv: string) => rows.find((r) => r.conversation_id === cv)?.human_audience
   assert.equal(audienceOf(dm.convId), true, '1:1 human DM is human-audience')
   assert.equal(audienceOf(humanChannel.convId), true, 'agent + humans-only channel is human-audience (story 14)')
   assert.equal(audienceOf(mixed.convId), false, 'mixed audience stays false (zero change)')
+  assert.equal(audienceOf(agentDm.convId), false, 'agent↔agent direct is not human-audience (story 12)')
 })
 
 test('[mirror-runtime] /inbox (default) advances the seen boundary — probe never does', async () => {
@@ -411,6 +414,8 @@ test('[mirror-runtime] /inbox-triage/payload: human DM bypasses the gate entirel
   assert.equal(r.status, 200)
   assert.equal(r.body.verdict.actionable, true)
   assert.equal(r.body.verdict.source, 'human-dm')
+  // #24:note 携带聊天体语域指令(票面接缝一的措辞断言)。
+  assert.match(r.body.verdict.promptNote, /texting a coworker|chat register/)
 })
 
 test('[mirror-runtime] /inbox-triage/payload: agent-only group chat → model prompt shape', async () => {

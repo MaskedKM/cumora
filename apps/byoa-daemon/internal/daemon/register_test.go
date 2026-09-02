@@ -57,6 +57,67 @@ func TestTurnDeltaRegisterMatrix(t *testing.T) {
 	}
 }
 
+// 混合受众多行唤醒(评审 #325 P2-2):块出现,且只有 human 行打标——
+// 过度泛化由 [humans-only] 行标收窄(块内文案明确指向标记行)。
+func TestTurnDeltaMixedWakeOnlyHumanRowsTagged(t *testing.T) {
+	isolateHome(t)
+	adapter := &sessionAdapter{id: "claude"}
+	r := newAgentRunner(&DaemonConfig{ServerURL: "http://x"}, AgentInfo{ID: "a1", Name: "M", Engine: strp("claude")}, adapter)
+	rows := []map[string]any{
+		{"conversation_id": "cv-dm", "author_name": "Ann", "author_kind": "human", "body": "hi", "human_audience": true},
+		{"conversation_id": "cv-grp", "author_name": "Bot", "author_kind": "agent", "body": "chatter", "human_audience": false},
+	}
+	got := r.turnDelta("sse-wake", rows)
+	if !strings.Contains(got, "CHAT REGISTER") {
+		t.Fatal("混合唤醒含 human 行 → 块必须在")
+	}
+	if !strings.Contains(got, "- [cv-dm] [humans-only]") {
+		t.Fatal("human 行缺 [humans-only] 标")
+	}
+	if strings.Contains(got, "- [cv-grp] [humans-only]") {
+		t.Fatal("非 human 行不得打标")
+	}
+}
+
+// steer 措辞(评审 #325 P2-2,票面接缝二):human-audience 的直 ping
+// steer 携带语域指令;非 human 受众不携带。
+func TestMaybeSteerRegisterClause(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("CUMORA_BYOA_STEER_GROUP_INTERVAL_MS", "60000")
+	stub, cfg := newSessionTestStack(t, nil)
+	sess := &fakeEngineSession{alive: true}
+	adapter := &sessionAdapter{id: "claude", session: sess}
+	r := newAgentRunner(cfg, AgentInfo{ID: "a1", Name: "S", Engine: strp("claude")}, adapter)
+	r.mu.Lock()
+	r.engineSession = sess
+	r.busy = true
+	r.mu.Unlock()
+	t.Cleanup(func() { r.Stop(); r.wg.Wait() })
+
+	steers := func() []string {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return append([]string{}, sess.steers...)
+	}
+	// human-audience 直 ping → steer 文本含语域指令。
+	stub.mu.Lock()
+	stub.inboxRows = []map[string]any{{"id": "m1", "conversation_id": "cv-dm", "conversation_kind": "direct", "author_kind": "human", "author_name": "Ann", "body": "ping", "human_audience": true}}
+	stub.mu.Unlock()
+	r.maybeSteer("cv-dm")
+	if s := steers(); len(s) != 1 || !strings.Contains(s[0], "chat register") {
+		t.Fatalf("human-audience steer 缺语域指令: %v", s)
+	}
+	// 非 human 受众(agent 直 ping)→ 不携带。
+	stub.mu.Lock()
+	stub.inboxRows = []map[string]any{{"id": "m2", "conversation_id": "cv-aa", "conversation_kind": "direct", "author_kind": "agent", "author_name": "Bot", "body": "yo", "human_audience": false}}
+	stub.mu.Unlock()
+	r.maybeSteer("cv-aa")
+	all := steers()
+	if len(all) != 2 || strings.Contains(all[1], "chat register") {
+		t.Fatalf("非 human steer 不应携带语域指令: %v", all)
+	}
+}
+
 // chatRegisterOn 语义:nil/true=开,false=关。
 func TestChatRegisterToggleSemantics(t *testing.T) {
 	boolp := func(v bool) *bool { return &v }

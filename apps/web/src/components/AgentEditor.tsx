@@ -274,19 +274,21 @@ export function AgentEditor({ agent, onClose }: Props) {
             />
           </Field>
 
-          <Field
-            label={t('agent.chatRegisterLabel')}
-            hint={t('agent.chatRegisterHint')}
-          >
-            <label className="flex items-center gap-2 py-1 text-[12px] text-ink-700">
-              <input
-                type="checkbox"
-                checked={chatRegister}
-                onChange={(e) => setChatRegister(e.target.checked)}
-              />
-              {t('agent.chatRegisterOn')}
-            </label>
-          </Field>
+          {editing && (
+            <Field
+              label={t('agent.chatRegisterLabel')}
+              hint={t('agent.chatRegisterHint')}
+            >
+              <label className="flex items-center gap-2 py-1 text-[12px] text-ink-700">
+                <input
+                  type="checkbox"
+                  checked={chatRegister}
+                  onChange={(e) => setChatRegister(e.target.checked)}
+                />
+                {t('agent.chatRegisterOn')}
+              </label>
+            </Field>
+          )}
 
           <Field
             label={t('agent.runsOnLabel')}

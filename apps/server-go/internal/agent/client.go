@@ -176,14 +176,17 @@ func (s *Service) annotateHumanAudience(ctx context.Context, agentID string, row
 		args = append(args, id)
 	}
 	qrows, err := s.DB.QueryContext(ctx, `SELECT c.id,
-	       COALESCE(bool_and(pe.kind = 'human'), false) AS human_audience
-	  FROM conversations c
-	  JOIN LATERAL jsonb_array_elements_text(c.members) m(mid) ON m.mid <> $1
-	  JOIN participants pe ON pe.id = m.mid AND pe.company_id = c.company_id
-	 WHERE c.id IN (`+ph.String()+`)
-	 GROUP BY c.id`, args...)
+       COALESCE(bool_and(pe.kind = 'human'), false) AS human_audience
+  FROM conversations c
+  JOIN LATERAL jsonb_array_elements_text(c.members) m(mid) ON m.mid <> $1
+  JOIN participants pe ON pe.id = m.mid AND pe.company_id = c.company_id
+ WHERE c.id IN (`+ph.String()+`)
+ GROUP BY c.id`, args...)
 	if err != nil {
-		return // 受众面缺省 = 现状行为(false),不阻断 inbox
+		for _, row := range rows {
+			row["human_audience"] = false // 形态归一:失败也补键(缺省=现状行为)
+		}
+		return
 	}
 	defer qrows.Close()
 	for qrows.Next() {
@@ -193,6 +196,7 @@ func (s *Service) annotateHumanAudience(ctx context.Context, agentID string, row
 			audience[id] = human
 		}
 	}
+	_ = qrows.Err()
 	for _, row := range rows {
 		id, _ := row["conversation_id"].(string)
 		row["human_audience"] = audience[id] // 未命中的会话保持 false
