@@ -5,6 +5,7 @@ package stackd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -502,7 +503,9 @@ func TestEnsureInternalPGContextCancelInterrupts(t *testing.T) {
 		if err == nil {
 			t.Fatal("取消后应返回错误")
 		}
-		if !strings.Contains(err.Error(), "被取消") {
+		// 断言吃错误链而非中文文案(评审 P3:换文案即碎)。kill 成功
+		// 路径 Wait 直接返回 ctx.Err()。
+		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "被取消") {
 			t.Fatalf("错误应注明取消语义,实得: %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -516,6 +519,50 @@ func TestEnsureInternalPGContextCancelInterrupts(t *testing.T) {
 		if strings.HasPrefix(e.Name(), "pgdata.staging") {
 			t.Fatalf("取消后 staging 应清理,残留 %s", e.Name())
 		}
+	}
+}
+
+// WaitDelay 保险带的回归防线(评审 P3:误删 cmd.WaitDelay 无测试会红):
+// 桩不带 exec —— shell 被杀后 sleep 孙进程抱住输出管道,CombinedOutput
+// 若无 WaitDelay 会等管道 EOF 挂满 300s;有 WaitDelay 则取消后至多 5s
+// 强制收口返回。
+func TestEnsureInternalPGWaitDelayClosesOrphanedPipe(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "pg", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "initdb"),
+		[]byte("#!/bin/sh\nsleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataHome := t.TempDir()
+	dataDir := filepath.Join(dataHome, "pgdata")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		errc <- EnsureInternalPG(ctx, binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger())
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	// WaitDelay=5s + 起跑余量:10s 内必须返回(无保险带 = 挂到 300s)。
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("取消后应返回错误")
+		}
+		if el := time.Since(started); el > 10*time.Second {
+			t.Fatalf("返回过迟(%s):WaitDelay 保险带疑似失效", el)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("孤儿管道未被 WaitDelay 收口(10s 仍在等 EOF)")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("取消后 pgdata 不应落位: %v", err)
 	}
 }
 
