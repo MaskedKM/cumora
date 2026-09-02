@@ -62,8 +62,8 @@ for tag in "${SERVER_TAGS[@]}"; do
     echo
     # pipefail 下 grep 无匹配会杀脚本 —— 先捕获(空则跳过)再输出;
     # type 块与 const 块之间的空行是 gofmt 规范形(CI gofmt check 要求)。
-    pt="$(grep -oE '\b[A-Z][A-Za-z0-9]+Params\b' "$GEN_DIR/$tag/server-$tag.gen.go" | sort -u)" || true
-    st="$(grep -oE '\b[A-Z][A-Za-z0-9]+Scopes\b' "$GEN_DIR/$tag/server-$tag.gen.go" | sort -u)" || true
+    pt="$(grep -oE '\b[A-Z][A-Za-z0-9]+Params\b' "$GEN_DIR/$tag/server-$tag.gen.go" | LC_ALL=C sort -u)" || true
+    st="$(grep -oE '\b[A-Z][A-Za-z0-9]+Scopes\b' "$GEN_DIR/$tag/server-$tag.gen.go" | LC_ALL=C sort -u)" || true
     while read -r t; do
       [ -n "$t" ] && echo "type $t = contract.$t"
     done <<< "$pt"
