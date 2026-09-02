@@ -88,7 +88,17 @@ if (process.env.INTEGRATION_FILES) {
  * 随机端口起 pgvector + redis 各一容器,套件退出(含 bail/信号)即拆。
  * 此前本机测试直连 cumora-pg 里的 cumora_test:TRUNCATE churn 与生产共
  * 缓冲池/CPU/IO,是 #119 时序 flake 的环境根源(2026-08-28 实测
- * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。 */
+ * bgwriter ≈516GB/13.5h、checkpoint 每 ~93s)。
+ *
+ * 拆栈必须 rm -f -v(#322):pgvector/pgvector 与 redis:7 的镜像都声明
+ * 了 VOLUME(pg=/var/lib/postgresql/data,redis=/data),不带 -v 的 rm
+ * 只删容器、匿名卷留存 —— 本(auto)栈路径每轮漏 2 卷,开发机 9-02
+ * 已堆 218 个。**ser8 CI 的 1093 卷另有真凶**:auto 栈在 CI 永不触发
+ * (checks job 恒设 INTEGRATION_DATABASE_URL 且容器无 docker socket),
+ * 真凶是 pr.yml services: 块 —— actions/runner 拆 job/service 容器的
+ * docker rm 不带 -v(上游 actions/runner#1885,OPEN),每 checks job
+ * 漏 4 卷;workflow 侧无法加 -v,ser8 靠 runner-maintenance 的 nightly
+ * volume prune 常设清偿(不是兜底,是唯一防线)。 */
 let autoStack = null // { pg, redis, dbUrl, redisUrl }
 
 /** runCmd 在飞 promise 登记:teardownAutoStack 拆栈前必须等在飞的
@@ -151,6 +161,11 @@ async function provisionOneOffStack() {
   ], 300_000)
   if (pgRun.code !== 0) {
     console.error(`[integration] docker run pg failed: ${(pgRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
+    // 非信号路径(如 300s 超时 SIGKILL)容器可能已创建,主路径 exit 前
+    // 无人调 teardown —— 就地 rm 镜像 redis 失败分支(评审 P2)。信号
+    // 路径不受影响(earlySignal 拆预登记名,rm 不存在的名字无害)。
+    await runCmd('docker', ['rm', '-f', '-v', pg])
+    autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
   // 信号落在 pg run 期间:teardown 会等在飞 run 落地后 rm 预登记的名字,
@@ -161,7 +176,7 @@ async function provisionOneOffStack() {
   ], 300_000)
   if (rdRun.code !== 0) {
     console.error(`[integration] docker run redis failed: ${(rdRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
-    await runCmd('docker', ['rm', '-f', pg])
+    await runCmd('docker', ['rm', '-f', '-v', pg])
     autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -171,7 +186,7 @@ async function provisionOneOffStack() {
     && (await waitContainerReady(rd, ['redis-cli', 'ping'], 20_000))
   if (!ready) {
     console.error('[integration] one-off stack never became ready — tearing down')
-    await runCmd('docker', ['rm', '-f', pg, rd])
+    await runCmd('docker', ['rm', '-f', '-v', pg, rd])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -179,7 +194,7 @@ async function provisionOneOffStack() {
   const rdPort = (await runCmd('docker', ['port', rd, '6379'])).out.trim().split('\n')[0]?.split(':').pop()
   if (!pgPort || !rdPort) {
     console.error('[integration] could not discover one-off stack ports')
-    await runCmd('docker', ['rm', '-f', pg, rd])
+    await runCmd('docker', ['rm', '-f', '-v', pg, rd])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -202,7 +217,7 @@ async function teardownAutoStack() {
   ])
   if (names.length === 0) return
   await Promise.race([
-    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', n]))),
+    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', '-v', n]))),
     new Promise((r) => setTimeout(r, 10_000)),
   ])
 }
