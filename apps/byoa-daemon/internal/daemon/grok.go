@@ -127,10 +127,11 @@ func extractAcpUsage(result *struct {
 
 // grokSession:ACP stdio 上的持久会话。
 type grokSession struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	onLog func(string)
-	onHop func(HopReport)
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	onLog        func(string)
+	onHop        func(HopReport)
+	onTranscript func(TranscriptEntry) // #260 执行转录
 
 	mu sync.Mutex
 	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
@@ -165,6 +166,7 @@ func newGrokSession(bin string, spawnArgs []string, args SessionArgs) *grokSessi
 	s := &grokSession{
 		onLog:            args.OnLog,
 		onHop:            args.OnHopUsage,
+		onTranscript:     args.OnTranscript,
 		sid:              args.ResumeSessionID,
 		model:            args.Model,
 		carriesStanding:  args.StandingPrompt != "",
@@ -494,12 +496,21 @@ func (s *grokSession) handleLocked(msg *acpMsg) []func() {
 		switch kind {
 		case "tool_call":
 			s.wd.Activity(true, false) // #259 工具在飞(换 toolBudget 窗口)
+			if onT := s.onTranscript; onT != nil {
+				title, _ := update["title"].(string)
+				entry := TranscriptEntry{Type: "tool_use", Tool: title}
+				effects = append(effects, func() { onT(entry) })
+			}
 			if title, ok := update["title"].(string); ok {
 				logf("[grok] tool %s", title)
 			}
 		case "agent_message_chunk":
 			if content, ok := update["content"].(map[string]any); ok {
 				if text, ok := content["text"].(string); ok && strings.TrimSpace(text) != "" {
+					if onT := s.onTranscript; onT != nil {
+						entry := TranscriptEntry{Type: "text", Content: text}
+						effects = append(effects, func() { onT(entry) })
+					}
 					logf("[grok] » %s", collapseWS(text, 200))
 				}
 			}

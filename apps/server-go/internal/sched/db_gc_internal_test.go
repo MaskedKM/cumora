@@ -16,11 +16,12 @@ var wantGcTargets = []gcTarget{
 	{table: "ws_tickets", pkCol: "token_hash", timeCol: "expires_at", days: 1},
 	{table: "agent_log", pkCol: "id", timeCol: "created_at", days: 30},
 	{table: "agent_events", pkCol: "id", timeCol: "created_at", days: 30},
+	{table: "agent_transcript", pkCol: "id", timeCol: "created_at", days: 30},
 	{table: "agent_runs", pkCol: "id", timeCol: "started_at", days: 30},
 	{table: "llm_calls", pkCol: "id", timeCol: "created_at", days: 90},
 }
 
-// TestGcTargetsDefaults:六键全缺省 → 五表清单与保留窗默认值逐一等于
+// TestGcTargetsDefaults:env 全缺省 → 六表清单与保留窗默认值逐一等于
 // TS env.ts 默认(1/30/30/30/90)。
 func TestGcTargetsDefaults(t *testing.T) {
 	got := gcTargets()
@@ -104,12 +105,12 @@ func TestDbGcIntervalAndBatchEnv(t *testing.T) {
 // 的已关闭表——六键生效态一眼可读)。
 func TestGcWindows(t *testing.T) {
 	if got, want := gcWindows(wantGcTargets),
-		"ws_tickets=1d agent_log=30d agent_events=30d agent_runs=30d llm_calls=90d"; got != want {
+		"ws_tickets=1d agent_log=30d agent_events=30d agent_transcript=30d agent_runs=30d llm_calls=90d"; got != want {
 		t.Fatalf("gcWindows() = %q, want %q", got, want)
 	}
 	t.Setenv("DB_GC_AGENT_LOG_DAYS", "0")
 	if got, want := gcWindows(gcTargets()),
-		"ws_tickets=1d agent_log=0d agent_events=30d agent_runs=30d llm_calls=90d"; got != want {
+		"ws_tickets=1d agent_log=0d agent_events=30d agent_transcript=30d agent_runs=30d llm_calls=90d"; got != want {
 		t.Fatalf("gcWindows()(agent_log=0) = %q, want %q", got, want)
 	}
 	if strings.Contains(gcWindows(nil), "=") {

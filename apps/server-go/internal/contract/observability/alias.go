@@ -5,6 +5,7 @@ package observabilitycontract
 
 import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 
+type GetAgentRunTranscriptParams = contract.GetAgentRunTranscriptParams
 type GetAgentRunsParams = contract.GetAgentRunsParams
 type GetTriageEconomicsParams = contract.GetTriageEconomicsParams
 

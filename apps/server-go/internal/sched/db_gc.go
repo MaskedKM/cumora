@@ -55,6 +55,7 @@ func gcTargets() []gcTarget {
 		{table: "ws_tickets", pkCol: "token_hash", timeCol: "expires_at", days: gcEnvDay("DB_GC_WS_TICKETS_DAYS", 1)},
 		{table: "agent_log", pkCol: "id", timeCol: "created_at", days: gcEnvDay("DB_GC_AGENT_LOG_DAYS", 30)},
 		{table: "agent_events", pkCol: "id", timeCol: "created_at", days: gcEnvDay("DB_GC_AGENT_EVENTS_DAYS", 30)},
+		{table: "agent_transcript", pkCol: "id", timeCol: "created_at", days: gcEnvDay("DB_GC_AGENT_TRANSCRIPT_DAYS", 30)}, // #260 执行转录;agent_runs FK 级联兜零星掉队者
 		{table: "agent_runs", pkCol: "id", timeCol: "started_at", days: gcEnvDay("DB_GC_AGENT_RUNS_DAYS", 30)},
 		{table: "llm_calls", pkCol: "id", timeCol: "created_at", days: gcEnvDay("DB_GC_LLM_CALLS_DAYS", 90)},
 	}

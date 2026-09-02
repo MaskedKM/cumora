@@ -1420,6 +1420,31 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/AgentEvent' }
+  /api/agents/observability/runs/{runId}/transcript:
+    get:
+      tags: [observability]
+      operationId: getAgentRunTranscript
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+        - { name: sinceSeq, in: query, schema: { type: integer, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, default: 200, maximum: 1000 } }
+      summary: 运行工具级转录回放(#260)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    seq: { type: integer }
+                    type: { type: string }
+                    tool: { type: string, nullable: true }
+                    content: { type: string, nullable: true }
+                    input: { nullable: true }
+                    createdAt: { type: string }
   /api/agents/observability/triage:
     get:
       tags: [observability]
@@ -2882,6 +2907,47 @@ paths:
                 done: { type: boolean, description: true = 流结束(转瞬态,前端退场) }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /runtime/transcript-batch:
+    post:
+      tags: [runtime]
+      operationId: runtimeTranscriptBatch
+      security: [{ agentRuntimeJWT: [] }]
+      summary: 工具级执行转录批量上报(#260;text/thinking/tool_use/tool_result 按 seq 存档,回放用)
+      description: >-
+        daemon 把引擎事件的转录条目批量上送(200ms/finish 冲刷,单 run
+        2000 条帽在 daemon 侧强制)。agentId 恒取 JWT;目标 run 须属于本
+        agent 否则 403。(run_id, seq) 冲突静默跳过——daemon 重试幂等。
+        content 服务端截 8KB;input 原样 jsonb。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runId, entries]
+              properties:
+                runId: { type: string }
+                entries:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [seq, type]
+                    properties:
+                      seq: { type: integer, description: run 内单调递增,由 daemon 分配 }
+                      type: { type: string, enum: [text, thinking, tool_use, tool_result, note] }
+                      tool: { type: string, description: tool_use 的工具名 }
+                      content: { type: string, description: text/thinking 正文或 tool_result 输出 }
+                      input: { description: tool_use 入参(任意 JSON) }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  stored: { type: integer, description: 实际落库条数(冲突跳过不计) }
   /runtime/runs:
     post:
       tags: [runtime]

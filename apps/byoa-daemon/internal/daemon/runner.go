@@ -73,6 +73,8 @@ type AgentRunner struct {
 
 	// 持久引擎会话(懒孵化、跨唤醒复用;死亡即弃、下一唤醒复活)。
 	engineSession EngineSession
+	// transcript:#260 当前 run 的转录批处理器(nil=无在飞 run)。
+	transcript *transcriptBatcher
 
 	// 同轮 steering 状态。
 	sideSteering          bool
@@ -319,6 +321,7 @@ func (r *AgentRunner) ensureEngineSession() EngineSession {
 		OnLog:           func(line string) { r.logEngineLine(line) },
 		OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
 		OnAssistantText: func(text string) { r.onEngineText(text) },
+		OnTranscript:    func(e TranscriptEntry) { r.emitTranscript(e) },
 	})
 	r.mu.Lock()
 	r.engineSession = newSess
@@ -800,6 +803,21 @@ func (r *AgentRunner) runTurn(reason string) error {
 	r.mu.Lock()
 	r.currentRunID = run.RunID
 	r.mu.Unlock()
+	// #260:本 run 的转录批处理器(200ms 冲刷 + finish 兜底;上送 best-effort)。
+	if run.RunID != "" {
+		r.mu.Lock()
+		r.transcript = newTranscriptBatcher(run.RunID, r.postTranscriptBatch)
+		r.mu.Unlock()
+	}
+	defer func() {
+		r.mu.Lock()
+		tb := r.transcript
+		r.transcript = nil
+		r.mu.Unlock()
+		if tb != nil {
+			tb.finish()
+		}
+	}()
 	stopBeat := r.beatRun(token, run.RunID)
 	defer stopBeat()
 
@@ -860,6 +878,7 @@ func (r *AgentRunner) runTurn(reason string) error {
 				OnLog:           func(line string) { r.logEngineLine(line) },
 				OnHopUsage:      func(rep HopReport) { r.onEngineHop(rep) },
 				OnAssistantText: func(text string) { r.onEngineText(text) },
+				OnTranscript:    func(e TranscriptEntry) { r.emitTranscript(e) },
 			}
 			res = r.adapter.Run(r.ctx, args)
 			if res.SessionID != "" {
@@ -1039,4 +1058,14 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// emitTranscript:#260 引擎事件 → 当前 run 的批处理器(无在飞 run 时丢弃)。
+func (r *AgentRunner) emitTranscript(e TranscriptEntry) {
+	r.mu.Lock()
+	tb := r.transcript
+	r.mu.Unlock()
+	if tb != nil {
+		tb.emit(e)
+	}
 }

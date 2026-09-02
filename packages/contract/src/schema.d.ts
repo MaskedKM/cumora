@@ -1245,6 +1245,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/observability/runs/{runId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行工具级转录回放(#260) */
+        get: operations["getAgentRunTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/observability/triage": {
         parameters: {
             query?: never;
@@ -2569,6 +2586,26 @@ export interface paths {
          * @description daemon 把引擎产出的文本前缀按块上报(#210);服务端按租户发 message.delta,前端增量渲染,最终 body 由 /runtime/cli reply 的 message.new 收口(幂等替换)。authorId/companyId 取自 agent-runtime JWT,目标会话须为本 agent 的成员会话。
          */
         post: operations["runtimeMessageDelta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/transcript-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 工具级执行转录批量上报(#260;text/thinking/tool_use/tool_result 按 seq 存档,回放用)
+         * @description daemon 把引擎事件的转录条目批量上送(200ms/finish 冲刷,单 run 2000 条帽在 daemon 侧强制)。agentId 恒取 JWT;目标 run 须属于本 agent 否则 403。(run_id, seq) 冲突静默跳过——daemon 重试幂等。 content 服务端截 8KB;input 原样 jsonb。
+         */
+        post: operations["runtimeTranscriptBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5970,6 +6007,38 @@ export interface operations {
             };
         };
     };
+    getAgentRunTranscript: {
+        parameters: {
+            query?: {
+                sinceSeq?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        seq?: number;
+                        type?: string;
+                        tool?: string | null;
+                        content?: string | null;
+                        input?: unknown;
+                        createdAt?: string;
+                    }[];
+                };
+            };
+        };
+    };
     getTriageEconomics: {
         parameters: {
             query?: {
@@ -8439,6 +8508,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Ok"];
+                };
+            };
+        };
+    };
+    runtimeTranscriptBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    runId: string;
+                    entries: {
+                        /** @description run 内单调递增 */
+                        seq: number;
+                        /** @enum {string} */
+                        type: "text" | "thinking" | "tool_use" | "tool_result" | "note";
+                        /** @description tool_use 的工具名 */
+                        tool?: string;
+                        /** @description text/thinking 正文或 tool_result 输出 */
+                        content?: string;
+                        /** @description tool_use 入参(任意 JSON) */
+                        input?: unknown;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok?: boolean;
+                        /** @description 实际落库条数(冲突跳过不计) */
+                        stored?: number;
+                    };
                 };
             };
         };
