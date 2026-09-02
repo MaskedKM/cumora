@@ -5,6 +5,7 @@ package stackd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -418,7 +419,7 @@ func TestEnsureInternalPGIdempotent(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureInternalPG(filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
+	if err := EnsureInternalPG(context.Background(), filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
 		t.Fatalf("首启: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err != nil {
@@ -429,7 +430,7 @@ func TestEnsureInternalPGIdempotent(t *testing.T) {
 		t.Fatalf("runDir 应无条件 0700: %v %v", err, st)
 	}
 	first, _ := os.ReadFile(filepath.Join(dataHome, "initdb-ran.log"))
-	if err := EnsureInternalPG(filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
+	if err := EnsureInternalPG(context.Background(), filepath.Join(dir, "pg/bin"), dataDir, runDir, discardLogger()); err != nil {
 		t.Fatalf("二次: %v", err)
 	}
 	second, _ := os.ReadFile(filepath.Join(dataHome, "initdb-ran.log"))
@@ -452,7 +453,7 @@ func TestEnsureInternalPGFailureCleansUp(t *testing.T) {
 	}
 	dataHome := t.TempDir()
 	dataDir := filepath.Join(dataHome, "pgdata")
-	if err := EnsureInternalPG(binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger()); err == nil {
+	if err := EnsureInternalPG(context.Background(), binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger()); err == nil {
 		t.Fatal("initdb 失败应返回错误")
 	}
 	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
@@ -467,6 +468,101 @@ func TestEnsureInternalPGFailureCleansUp(t *testing.T) {
 	}
 	if leftover != 0 {
 		t.Fatalf("staging 残留 %d 份", leftover)
+	}
+}
+
+// ctx 取消(SIGTERM 同道)必须即刻打断 initdb(#313 评审 P3-1:冷启
+// 5 分钟预算内,栈停机不能被 initdb 拖住等 systemd SIGKILL)。同时断言
+// 失败路径的原子性:pgdata 不落位、staging 清理。
+func TestEnsureInternalPGContextCancelInterrupts(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "pg", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// initdb 桩:长跑(exec sleep —— 进程本体就是长跑者;若经 shell 留
+	// 孙进程,KILL 后孙进程抱管道会把 CombinedOutput 挂死,WaitDelay 保
+	// 险带正是为此)。取消必须把进程杀掉 CombinedOutput 才会返回。
+	if err := os.WriteFile(filepath.Join(binDir, "initdb"),
+		[]byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataHome := t.TempDir()
+	dataDir := filepath.Join(dataHome, "pgdata")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		errc <- EnsureInternalPG(ctx, binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger())
+	}()
+	time.Sleep(200 * time.Millisecond) // 等 initdb 真正起跑
+	cancel()
+
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("取消后应返回错误")
+		}
+		// 断言吃错误链而非中文文案(评审 P3:换文案即碎)。kill 成功
+		// 路径 Wait 直接返回 ctx.Err()。
+		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "被取消") {
+			t.Fatalf("错误应注明取消语义,实得: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("取消未打断 initdb(5s 仍在跑)")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("取消后 pgdata 不应落位: %v", err)
+	}
+	entries, _ := os.ReadDir(dataHome)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "pgdata.staging") {
+			t.Fatalf("取消后 staging 应清理,残留 %s", e.Name())
+		}
+	}
+}
+
+// WaitDelay 保险带的回归防线(评审 P3:误删 cmd.WaitDelay 无测试会红):
+// 桩不带 exec —— shell 被杀后 sleep 孙进程抱住输出管道,CombinedOutput
+// 若无 WaitDelay 会等管道 EOF 挂满 300s;有 WaitDelay 则取消后至多 5s
+// 强制收口返回。
+func TestEnsureInternalPGWaitDelayClosesOrphanedPipe(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "pg", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "initdb"),
+		[]byte("#!/bin/sh\nsleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataHome := t.TempDir()
+	dataDir := filepath.Join(dataHome, "pgdata")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		errc <- EnsureInternalPG(ctx, binDir, dataDir, filepath.Join(dataHome, "run"), discardLogger())
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	// WaitDelay=5s + 起跑余量:10s 内必须返回(无保险带 = 挂到 300s)。
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("取消后应返回错误")
+		}
+		if el := time.Since(started); el > 10*time.Second {
+			t.Fatalf("返回过迟(%s):WaitDelay 保险带疑似失效", el)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("孤儿管道未被 WaitDelay 收口(10s 仍在等 EOF)")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("取消后 pgdata 不应落位: %v", err)
 	}
 }
 

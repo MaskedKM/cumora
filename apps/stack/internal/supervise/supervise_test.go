@@ -283,6 +283,9 @@ func TestKillInstanceOrphans(t *testing.T) {
 		t.Fatalf("不同实例标记不应被误伤,实得 %d", n)
 	}
 	_ = other.Process.Kill()
+	// Kill 后必须 Wait 收尸(#282 评审 P3:留僵尸到测试二进制退出,
+	// -race 下是杂音源)。
+	_ = other.Wait()
 }
 
 // spawnStray —— 手工造一个带本包标记的"上一世残留"进程。

@@ -251,7 +251,7 @@ func cmdMigratePG(args []string) int {
 	//    postmaster.pid)。清理用独立 ctx —— 主 ctx 超时后 defer 仍要
 	//    能跑(评审 P2)。
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	if err := stackd.EnsureInternalPG(pgBin, cfg.PGDataDir(), cfg.RunDir(), log); err != nil {
+	if err := stackd.EnsureInternalPG(ctx, pgBin, cfg.PGDataDir(), cfg.RunDir(), log); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: %v\n", err)
 		return 2
 	}
