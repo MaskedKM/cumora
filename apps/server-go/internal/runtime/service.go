@@ -56,6 +56,14 @@ func (s *Service) StartCalendarReminderScheduler() { s.Sched.StartCalendarRemind
 // StartDbGcWorker:DB 行保留 GC(同族审计 P1-2;#70 退役时丢失的 TS
 // startDbGcWorker 移植)——五张高量表按保留窗小批扫删,详见 sched 包。
 func (s *Service) StartDbGcWorker() { s.Sched.StartDbGcWorker() }
+
+// StartCalendarDispatchScheduler:#263 例行事务 dispatch 半边(到点
+// agent_task 事件投递 + 唤醒;幂等由 dispatch 槽位唯一键承担)。
+func (s *Service) StartCalendarDispatchScheduler() { s.Sched.StartCalendarDispatchScheduler() }
+
+// StartRunSweeperWorker:#324(#262-M2)失败未决扫描兜底重排(三闸防
+// 双跑,详见 sched/run_sweeper.go)。
+func (s *Service) StartRunSweeperWorker() { s.Sched.StartRunSweeperWorker() }
 func (s *Service) WakeMentionedAgents(companyID string, mentions []string, actorID string) {
 	s.Sched.WakeMentionedAgents(companyID, mentions, actorID)
 }

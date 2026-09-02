@@ -168,6 +168,8 @@ func main() {
 	// 提醒窗口,落 calendar_reminders(唯一键去重)后 Redis 广播(toast)+
 	// Resend email(未配置静默跳过)。TS startCalendarScheduler 的提醒半边。
 	runtimeSvc.StartCalendarReminderScheduler()
+	runtimeSvc.StartCalendarDispatchScheduler() // #263 例行事务 dispatch 半边
+	runtimeSvc.StartRunSweeperWorker()          // #324 失败未决兜底重排
 	// DB 行保留 GC(同族审计 P1-2):#70 退役时丢失的 TS startDbGcWorker
 	// 移植——五张高量表(agent_log/agent_events/agent_runs/llm_calls/
 	// ws_tickets)按保留窗小批扫删;DB_GC_INTERVAL_MS=0 禁用整只,单表
