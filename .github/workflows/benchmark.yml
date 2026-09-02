@@ -94,7 +94,7 @@ jobs:
         with:
           name: bench-results-${{ steps.ctx.outputs.stamp }}
           path: benchmarks/results/
-          retention-days: 90
+          retention-days: 14 # schedule 运行会提交 benchmarks-history;dispatch 运行 artifact 即唯一副本,14 天诊断窗口(#312)
 
       - name: Commit results to benchmarks-history branch
         if: always() && github.event_name == 'schedule'
