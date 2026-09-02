@@ -89,6 +89,7 @@ type agentBody struct {
 	initial, avatarBg                  *string
 	avatarURL, model, fastModel        *string // nil 键=不动;存在但 null=显式清(用 hasNull 标)
 	avatarURLNull, modelNull, fastNull bool
+	chatRegister                       *bool // #24 聊天体语域开关(human-audience 说人话)
 	tools                              []string
 	hasTools                           bool
 }
@@ -154,6 +155,14 @@ func decodeAgentBody(r *http.Request) agentBody {
 				b.fastNull = true
 			} else if s, isStr := v.(string); isStr {
 				b.fastModel = &s
+			}
+		}
+	}
+	if rawKey, ok := raw["chatRegister"]; ok {
+		var v any
+		if json.Unmarshal(rawKey, &v) == nil {
+			if bv, isBool := v.(bool); isBool {
+				b.chatRegister = &bv
 			}
 		}
 	}
@@ -463,6 +472,9 @@ func (s *Server) UpdateAgent(w http.ResponseWriter, r *http.Request, id string) 
 		params = append(params, string(toolsJSON))
 		sets = append(sets, fmt.Sprintf("tools = $%d::jsonb", len(params)))
 	}
+	if body.chatRegister != nil {
+		push("chat_register", *body.chatRegister)
+	}
 	if len(sets) == 0 {
 		httpx.WriteError(w, http.StatusBadRequest, "nothing to update")
 		return
@@ -684,7 +696,7 @@ func (s *Server) GetParticipants(w http.ResponseWriter, r *http.Request) {
 		       p.bio, p.tools, p.system_prompt, p.model,
 		       p.computer_id, p.engine, p.fast_model,
 		       COALESCE(p.email, CASE WHEN p.kind = 'human' AND cm.user_id IS NOT NULL THEN u.email END),
-		       comp.slug, p.departed_at
+		       comp.slug, p.departed_at, p.chat_register
 		  FROM participants p
 		  JOIN companies comp ON comp.id = p.company_id
 		  LEFT JOIN company_members cm ON cm.user_id = p.id AND cm.company_id = p.company_id
@@ -704,10 +716,11 @@ func (s *Server) GetParticipants(w http.ResponseWriter, r *http.Request) {
 		var statusUpdatedAt time.Time
 		var computerID, engine, fastModel, emailCol, companySlug sql.NullString
 		var departedAt sql.NullTime
+		var chatRegister sql.NullBool
 		if err := rows.Scan(&id, &kind, &name, &role, &initial,
 			&avatarBg, &avatarUrl, &status, &statusUpdatedAt,
 			&bio, &tools, &systemPrompt, &model,
-			&computerID, &engine, &fastModel, &emailCol, &companySlug, &departedAt); err == nil {
+			&computerID, &engine, &fastModel, &emailCol, &companySlug, &departedAt, &chatRegister); err == nil {
 			var toolsAny any
 			_ = json.Unmarshal(tools, &toolsAny)
 			emailVal := any(nil)
@@ -715,6 +728,11 @@ func (s *Server) GetParticipants(w http.ResponseWriter, r *http.Request) {
 				emailVal = emailCol.String
 			} else if kind == "agent" && companySlug.Valid {
 				emailVal = emailpkg.ComputeAgentAddress(id, companySlug.String)
+			}
+			// #24:开关读回——P0 修复,缺失时按默认开(旧列空档)。
+			chatRegisterVal := true
+			if chatRegister.Valid {
+				chatRegisterVal = chatRegister.Bool
 			}
 			out = append(out, map[string]any{
 				"id": id, "kind": kind, "name": name, "role": nullStr(role),
@@ -724,6 +742,7 @@ func (s *Server) GetParticipants(w http.ResponseWriter, r *http.Request) {
 				"model": nullStr(model), "computerId": nullStr(computerID),
 				"engine": nullStr(engine), "fastModel": nullStr(fastModel),
 				"email": emailVal, "departedAt": nullTimeUTC(departedAt),
+				"chatRegister": chatRegisterVal,
 			})
 		}
 	}

@@ -2910,6 +2910,7 @@ export interface components {
             fastModel?: string | null;
             computerId?: string | null;
             engine?: string | null;
+            chatRegister?: boolean;
             email?: string | null;
             /** Format: date-time */
             departedAt?: string | null;
@@ -3124,6 +3125,7 @@ export interface components {
             avatarUrl?: string | null;
             model?: string | null;
             fastModel?: string | null;
+            chatRegister?: boolean;
             tools?: string[];
         };
         Whisper: {

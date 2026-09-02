@@ -119,10 +119,18 @@ func (r *AgentRunner) ConfigMatches(agent AgentInfo, engine string) bool {
 		strEqPtr(r.agent.Role, agent.Role) &&
 		strEqPtr(r.agent.SystemPrompt, agent.SystemPrompt) &&
 		strEqPtr(r.agent.Model, agent.Model) &&
-		strEqPtr(r.agent.FastModel, agent.FastModel)
+		strEqPtr(r.agent.FastModel, agent.FastModel) &&
+		boolEqPtr(r.agent.ChatRegister, agent.ChatRegister) // #24 开关变更也要换runner 快照
 }
 
 func strEqPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func boolEqPtr(a, b *bool) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
@@ -675,7 +683,13 @@ func (r *AgentRunner) maybeSteer(convo string) {
 		who = "someone"
 	}
 	body := collapseWS(str(latest["body"]), 300)
-	sess.Steer(fmt.Sprintf("⚡ A direct message arrived while you work — answer it BRIEFLY, then resume your current task (do NOT drop it). %s in %s: \"%s\". Reply one line now: `cumora reply %s 'text'` — a quick answer, or \"on it, mid-task, will follow up\". Then continue what you were doing.", who, convo, body, convo))
+	// #24:human-audience 会话的 steer 注入同样携带语域指令(票面 user
+	// story 11——多轮对话中语气不得中途退回机器腔)。
+	registerClause := ""
+	if ha, _ := latest["human_audience"].(bool); ha && r.agent.chatRegisterOn() {
+		registerClause = " This conversation's audience is humans only — answer in chat register: a few plain sentences, no headings or lists."
+	}
+	sess.Steer(fmt.Sprintf("⚡ A direct message arrived while you work — answer it BRIEFLY, then resume your current task (do NOT drop it). %s in %s: \"%s\". Reply one line now: `cumora reply %s 'text'` — a quick answer, or \"on it, mid-task, will follow up\". Then continue what you were doing.%s", who, convo, body, convo, registerClause))
 	r.logEngineLine(fmt.Sprintf("[computer] %s STEER → live turn (direct msg in %s from %s)", r.agent.ID, convo, who))
 }
 
@@ -691,9 +705,26 @@ func (r *AgentRunner) turnDelta(reason string, rows []map[string]any) string {
 	b.WriteString("You've been woken because there's new activity in your Cumora conversations — your job is to DO the work (write the reply / take the action), not to re-judge whether to. Follow your standing instructions for HOW.\n\n")
 	fmt.Fprintf(&b, "Current time (UTC): %s — use this for any --at / deadline math.\n\n", time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
 	if len(rows) > 0 {
+		// #24:human-audience 行(除本 agent 外成员全为人类)打标;任一命中
+		// 且该员工聊天体开关开 → 注入语域块(块内以"[humans-only] below"
+		// 引用行标)。混合受众的唤醒只影响命中行,其余照旧。
+		humanRows := 0
+		for _, row := range rows {
+			if ha, _ := row["human_audience"].(bool); ha {
+				humanRows++
+			}
+		}
+		if humanRows > 0 && r.agent.chatRegisterOn() {
+			b.WriteString(tick(humanRegisterRaw))
+			b.WriteString("\n")
+		}
 		b.WriteString("Your unread messages (ALREADY FETCHED — no need to re-run `cumora inbox` / `cumora messages` to re-read these; but DO `cumora glance` before posting in a group, to catch anything posted while you compose):\n")
 		for _, row := range rows {
-			fmt.Fprintf(&b, "- [%s] %s: %s\n", str(row["conversation_id"]), authorLabel(row), collapseWS(str(row["body"]), 200))
+			tag := ""
+			if ha, _ := row["human_audience"].(bool); ha {
+				tag = " [humans-only]"
+			}
+			fmt.Fprintf(&b, "- [%s]%s %s: %s\n", str(row["conversation_id"]), tag, authorLabel(row), collapseWS(str(row["body"]), 200))
 		}
 		b.WriteString("\n")
 	} else {

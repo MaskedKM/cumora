@@ -409,6 +409,9 @@ type AgentEntry struct {
 	Engine       *string `json:"engine"`
 	Model        *string `json:"model"`
 	FastModel    *string `json:"fastModel"`
+	// ChatRegister:#24 聊天体语域开关(human-audience 会话说人话)。
+	// 列 NOT NULL DEFAULT true;nil 仅出现在旧行迁移前的空档,按开处理。
+	ChatRegister *bool `json:"chatRegister"`
 }
 
 func engineDefault(engine string) *string {
@@ -427,7 +430,7 @@ func engineDefault(engine string) *string {
 
 func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) []AgentEntry {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, name, role, system_prompt, engine, model, fast_model FROM participants
+		SELECT id, name, role, system_prompt, engine, model, fast_model, chat_register FROM participants
 		 WHERE computer_id = $1 AND kind = 'agent' AND departed_at IS NULL
 		 ORDER BY name ASC`, computerID)
 	if err != nil {
@@ -437,7 +440,8 @@ func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) [
 	for rows.Next() {
 		var e AgentEntry
 		var role, sysPrompt, engine, model, fastModel sql.NullString
-		if rows.Scan(&e.ID, &e.Name, &role, &sysPrompt, &engine, &model, &fastModel) == nil {
+		var chatRegister sql.NullBool
+		if rows.Scan(&e.ID, &e.Name, &role, &sysPrompt, &engine, &model, &fastModel, &chatRegister) == nil {
 			if role.Valid {
 				e.Role = &role.String
 			}
@@ -452,6 +456,9 @@ func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) [
 			}
 			if fastModel.Valid {
 				e.FastModel = &fastModel.String
+			}
+			if chatRegister.Valid {
+				e.ChatRegister = &chatRegister.Bool
 			}
 			// 模型钉扎:无显式 model 时按引擎默认(#60 平价;防底层 CLI 换默认)
 			if e.Model == nil && e.Engine != nil {

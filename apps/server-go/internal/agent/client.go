@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
@@ -141,8 +142,65 @@ func (s *Service) LoadInbox(ctx context.Context, agentID string) ([]map[string]a
 	if out == nil {
 		out = []map[string]any{}
 	}
+	s.annotateHumanAudience(ctx, agentID, out)
 	freshenAttachmentURLs(out)
 	return out, nil
+}
+
+// annotateHumanAudience:#24 受众判定——每会话"除本 agent 外成员是否全为
+// 人类"(bool_and;空集/纯 agent 会话 → false)。判定内聚在 inbox 载荷的
+// 唯一生产点,daemon 侧只消费 human_audience 布尔零判定(1:1 人机私聊与
+// 单员工多人类频道都命中;混合受众 → false 保持现状)。
+func (s *Service) annotateHumanAudience(ctx context.Context, agentID string, rows []map[string]any) {
+	seen := map[string]bool{}
+	var ids []string
+	for _, row := range rows {
+		id, _ := row["conversation_id"].(string)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	audience := map[string]bool{} // 结果载体,缺省 false(未命中=非人类受众)
+	var ph strings.Builder
+	args := []any{agentID}
+	for i, id := range ids {
+		if i > 0 {
+			ph.WriteString(",")
+		}
+		ph.WriteString("$" + strconv.Itoa(i+2))
+		args = append(args, id)
+	}
+	qrows, err := s.DB.QueryContext(ctx, `SELECT c.id,
+       COALESCE(bool_and(pe.kind = 'human'), false) AS human_audience
+  FROM conversations c
+  JOIN LATERAL jsonb_array_elements_text(c.members) m(mid) ON m.mid <> $1
+  JOIN participants pe ON pe.id = m.mid AND pe.company_id = c.company_id
+ WHERE c.id IN (`+ph.String()+`)
+ GROUP BY c.id`, args...)
+	if err != nil {
+		for _, row := range rows {
+			row["human_audience"] = false // 形态归一:失败也补键(缺省=现状行为)
+		}
+		return
+	}
+	defer qrows.Close()
+	for qrows.Next() {
+		var id string
+		var human bool
+		if qrows.Scan(&id, &human) == nil {
+			audience[id] = human
+		}
+	}
+	_ = qrows.Err()
+	for _, row := range rows {
+		id, _ := row["conversation_id"].(string)
+		row["human_audience"] = audience[id] // 未命中的会话保持 false
+	}
 }
 
 // scanMessageRows:inbox/context 共用的消息行扫描(列序与两条 SQL 的
