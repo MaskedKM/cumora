@@ -105,12 +105,12 @@ func TestDbGcIntervalAndBatchEnv(t *testing.T) {
 // 的已关闭表——六键生效态一眼可读)。
 func TestGcWindows(t *testing.T) {
 	if got, want := gcWindows(wantGcTargets),
-		"ws_tickets=1d agent_log=30d agent_events=30d agent_runs=30d llm_calls=90d"; got != want {
+		"ws_tickets=1d agent_log=30d agent_events=30d agent_transcript=30d agent_runs=30d llm_calls=90d"; got != want {
 		t.Fatalf("gcWindows() = %q, want %q", got, want)
 	}
 	t.Setenv("DB_GC_AGENT_LOG_DAYS", "0")
 	if got, want := gcWindows(gcTargets()),
-		"ws_tickets=1d agent_log=0d agent_events=30d agent_runs=30d llm_calls=90d"; got != want {
+		"ws_tickets=1d agent_log=0d agent_events=30d agent_transcript=30d agent_runs=30d llm_calls=90d"; got != want {
 		t.Fatalf("gcWindows()(agent_log=0) = %q, want %q", got, want)
 	}
 	if strings.Contains(gcWindows(nil), "=") {
