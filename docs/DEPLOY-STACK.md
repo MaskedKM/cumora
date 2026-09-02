@@ -22,8 +22,8 @@ daemon / sidecar / stack / stackd + pg16+pgvector + redis)。数据与配置
 
 ## 存量部署迁入(migrate-pg,#285)
 
-已有系统 pg(Ubuntu apt 版)上的活数据一次性迁入内置 pg(同 16 major,
-dump/restore 无版本坎):
+已有外部 pg 上的活数据一次性迁入内置 pg(同 16 major,dump/restore
+无版本坎;本部署的实际源 = docker 容器 `cumora-pg`,见下节):
 
 ```bash
 ~/.local/share/cumora/current/cumora-stack migrate-pg
@@ -43,28 +43,42 @@ conversations / participants,不一致**阻断切链**)→ `stack.toml`
 - 失败语义:任一步失败 → 不切链、旧链路数据零动、自动起链恢复服务;
   修因后 `--force` 重做。
 
-## 旧库退役路径(系统 pg)
+## 旧依赖退役路径(docker 容器,2026-09-02 实态)
 
-迁移完成且新栈稳定运行一段时间后:
+迁移完成且新栈稳定运行后退役旧依赖。**本部署实态(#316 甄别):存量
+pg 与外部 redis 从来不是 systemd 系统服务,而是两个 docker 容器**
+(host 网络,`restart=unless-stopped`,数据在具名卷):
 
-1. 观察期建议 ≥ 1 周:doctor 全绿、无回退需求。
+| 容器 | 镜像 | 宿主端口 | 角色 |
+|---|---|---|---|
+| `cumora-pg` | postgres:16-alpine | 5432 | 迁移前存量库(migrate-pg 源,已迁完) |
+| `cumora-redis` | redis:7-alpine | 6379 | 切 internal 前的外部 redis 总线 |
+
+1. 前置:redis 先切受管形态 —— `stack.toml` `[redis] mode = "internal"`
+   → `cumora-stack restart` → 验证五子进程齐(含受管 redis socket)、
+   doctor 无 fail、livez 200。pg 侧 migrate-pg 后已是 internal。
 2. 备份已经独立存在(`<backups>/cumora-premigrate-*.dump`),随时可
-   `pg_restore` 回系统 pg 或任何 16+ 实例。
-3. 退役 = 常规系统操作,**cumora 不代劳**:
+   `pg_restore` 回任何 16+ 实例;旧库数据卷退役不删,是第二重回退材料。
+3. 退役 = 常规 docker 操作,**cumora 不代劳**(先摘自启再停,防 Docker
+   重启把僵尸拉回来;数据卷保留):
 
    ```bash
-   sudo systemctl disable --now postgresql      # 停系统服务
-   sudo apt remove 'postgresql-16*'             # 真删(可选)
+   docker update --restart=no cumora-pg cumora-redis
+   docker stop cumora-pg cumora-redis
+   docker volume rm <卷>            # 真删旧库数据(可选,确认不再回退后)
    ```
 
-4. 回退(如需):`stack.toml` 改回 `pg.mode = "external"`(备份目录里的
-   `stack.toml.premigrate` 是 external 期的**一次性**留底,internal 后的
-   修改不在内——以当前 toml 手工改回为准)+ `stack.env` 里的
-   `DATABASE_URL` 指回系统库 → 重启栈。数据以备份或系统库为准。
+4. 回退(如需):`docker start cumora-pg cumora-redis` + `stack.toml`
+   改回对应 `mode = "external"`(redis 直接改回;pg 的 external 形态还
+   需 `stack.env` 的 `DATABASE_URL` 指回 5432)→ 重启栈。数据以旧库
+   卷或备份为准(internal 期新写入不在其中)。
 5. 已切 internal 后确需重迁(高级,自担风险):`systemctl --user stop
    cumora` → `pg_ctl`(制品内)起内置 pg → `dropdb/createdb cumora` →
-   `pg_restore` 备份或系统库新 dump → `pg_ctl stop` → 起链。
+   `pg_restore` 备份或旧库新 dump → `pg_ctl stop` → 起链。
    `migrate-pg` 本体在此形态下恒拒,是有意防线。
+6. 注意:宿主 6379/5432 若再出现监听,先甄别归属(同机其他项目可能
+   跑自己的 redis/pg 容器,bridge 网络内同名端口与宿主面无关)——
+   只退役属于 cumora 的件。
 
 ## 升级与回滚(#286)
 
