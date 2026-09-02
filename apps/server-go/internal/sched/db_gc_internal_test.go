@@ -16,11 +16,12 @@ var wantGcTargets = []gcTarget{
 	{table: "ws_tickets", pkCol: "token_hash", timeCol: "expires_at", days: 1},
 	{table: "agent_log", pkCol: "id", timeCol: "created_at", days: 30},
 	{table: "agent_events", pkCol: "id", timeCol: "created_at", days: 30},
+	{table: "agent_transcript", pkCol: "id", timeCol: "created_at", days: 30},
 	{table: "agent_runs", pkCol: "id", timeCol: "started_at", days: 30},
 	{table: "llm_calls", pkCol: "id", timeCol: "created_at", days: 90},
 }
 
-// TestGcTargetsDefaults:六键全缺省 → 五表清单与保留窗默认值逐一等于
+// TestGcTargetsDefaults:env 全缺省 → 六表清单与保留窗默认值逐一等于
 // TS env.ts 默认(1/30/30/30/90)。
 func TestGcTargetsDefaults(t *testing.T) {
 	got := gcTargets()
