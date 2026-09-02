@@ -130,11 +130,11 @@ contextBridge.exposeInMainWorld('cumora', {
     absorb: (input) => ipcRenderer.invoke('stack:absorb', input),
     install: () => ipcRenderer.invoke('stack:install'),
     doctor: () => ipcRenderer.invoke('stack:doctor'),
-    /** 管理面(#286):status/releases/restart/rollback + degraded 上报。 */
+    /** 管理面(#286):status/releases/restart/rollback。degraded 托盘
+     *  警示已改主进程常驻轮询(#314),渲染端不再上报。 */
     status: () => ipcRenderer.invoke('stack:status'),
     releases: () => ipcRenderer.invoke('stack:releases'),
     restart: () => ipcRenderer.invoke('stack:restart'),
     rollback: (version) => ipcRenderer.invoke('stack:rollback', { version }),
-    reportDegraded: (degraded) => ipcRenderer.send('stack:degraded', !!degraded),
   },
 })

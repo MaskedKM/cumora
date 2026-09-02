@@ -86,7 +86,6 @@ interface CumoraBridge {
     releases: () => Promise<StackStepResult>
     restart: () => Promise<StackStepResult>
     rollback: (version: string) => Promise<StackStepResult>
-    reportDegraded: (degraded: boolean) => void
   }
   /** Main-window focus state, sourced from native OS events. */
   app?: {
