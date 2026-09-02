@@ -92,9 +92,13 @@ if (process.env.INTEGRATION_FILES) {
  *
  * 拆栈必须 rm -f -v(#322):pgvector/pgvector 与 redis:7 的镜像都声明
  * 了 VOLUME(pg=/var/lib/postgresql/data,redis=/data),不带 -v 的 rm
- * 只删容器、匿名卷留存 —— 8-30 起每轮集成漏 2 卷,9-02 堆到 1093 个
- * = 5400 万 inode,ser8 /home 分区 inode 100% 满(job ENOSPC 而 df -h
- * 看着 38G 空闲)。 */
+ * 只删容器、匿名卷留存 —— 本(auto)栈路径每轮漏 2 卷,开发机 9-02
+ * 已堆 218 个。**ser8 CI 的 1093 卷另有真凶**:auto 栈在 CI 永不触发
+ * (checks job 恒设 INTEGRATION_DATABASE_URL 且容器无 docker socket),
+ * 真凶是 pr.yml services: 块 —— actions/runner 拆 job/service 容器的
+ * docker rm 不带 -v(上游 actions/runner#1885,OPEN),每 checks job
+ * 漏 4 卷;workflow 侧无法加 -v,ser8 靠 runner-maintenance 的 nightly
+ * volume prune 常设清偿(不是兜底,是唯一防线)。 */
 let autoStack = null // { pg, redis, dbUrl, redisUrl }
 
 /** runCmd 在飞 promise 登记:teardownAutoStack 拆栈前必须等在飞的
@@ -157,6 +161,11 @@ async function provisionOneOffStack() {
   ], 300_000)
   if (pgRun.code !== 0) {
     console.error(`[integration] docker run pg failed: ${(pgRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
+    // 非信号路径(如 300s 超时 SIGKILL)容器可能已创建,主路径 exit 前
+    // 无人调 teardown —— 就地 rm 镜像 redis 失败分支(评审 P2)。信号
+    // 路径不受影响(earlySignal 拆预登记名,rm 不存在的名字无害)。
+    await runCmd('docker', ['rm', '-f', '-v', pg])
+    autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
   // 信号落在 pg run 期间:teardown 会等在飞 run 落地后 rm 预登记的名字,

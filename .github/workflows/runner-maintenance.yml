@@ -72,19 +72,25 @@ jobs:
       # to surface — du's nonzero exit is still swallowed by || true so
       # the step never fails the job.
       - name: Disk state before
-        # df -i 与 df -h 并重(#322):docker 数据根在 /home 分区,匿名卷
-        # 泄漏吃的是 inode —— 空间满看着健康时 inode 可以已经 100%。
-        run: df -h / && df -i / /home && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
+        # df -i 与 df -h 并重、两个分区都看(#322):docker 数据根在 /home
+        # 分区,匿名卷泄漏吃的是 inode —— 空间看着健康时 inode 可以已经
+        # 100%(根盘读数会误导)。
+        run: df -h / /home && df -i / /home && docker system df && du -sh /var/lib/cumora-ci-cache/* || true
       # Dangling images (old rolling-tag layers), stopped containers, unused
       # networks. NOT --all (tagged images stay cached for fast job startup),
       # NOT --volumes (never risks data).
       - name: Prune docker garbage
         run: docker system prune -f
-      # Anonymous unused volumes only (#322): the integration test stacks
-      # leak one anonymous volume per run (1093 of them = 54M inodes =
-      # /home inode exhaustion on 2026-09-02; jobs died with ENOSPC while
-      # df -h showed 38G free). Named volumes in use (ci-registry data)
-      # are never anonymous — prune default keeps them safe.
+      # Anonymous unused volumes only (#322). ser8's 1093 leaked volumes
+      # (=54M inodes = /home inode exhaustion on 2026-09-02; jobs died with
+      # ENOSPC while the ROOT fs showed 38G free) come from actions/runner
+      # removing pr.yml services: containers without -v (upstream
+      # actions/runner#1885, OPEN) — 4 volumes per checks job, unfixable
+      # from the workflow side. So on ser8 this prune is the ONLY standing
+      # defense (not a backstop); keep it even if the local-leak path
+      # (tests/integration run.mjs, dev machines only) gets fixed.
+      # Default prune = anonymous unused only; the named ci-registry data
+      # volume is never anonymous — always safe.
       - name: Prune leaked anonymous volumes
         run: |
           BEFORE="$(docker volume ls -q | wc -l)"
@@ -111,7 +117,7 @@ jobs:
             echo "no root-owned residue — nothing to do"
           fi
       - name: Disk state after
-        run: df -h / && df -i / /home && docker system df && docker volume ls -q | wc -l && du -sh /var/lib/cumora-ci-cache/* || true
+        run: df -h / /home && df -i / /home && docker system df && echo "volumes=$(docker volume ls -q | wc -l)" && du -sh /var/lib/cumora-ci-cache/* || true
 
   bake:
     name: Bake CI images → local registry (127.0.0.1:5500)
