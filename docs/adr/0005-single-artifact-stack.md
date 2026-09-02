@@ -44,6 +44,9 @@ systemd user unit(`cumora-go` / `cumora-daemon` / `cumora-sidecar`)+ 手动
    红线,R2_* 标可选(本部署未启用)。
 5. **存量数据**:`stack migrate-pg` 一次性迁入内置 pg(本机系统 pg 与内置同
    为 16 major,dump/restore 无版本坎):幂等、迁移前自动备份、旧库不动。
+   > 勘误(2026-09-02,#316 甄别):所称"系统 pg"实为 docker 容器
+   > `cumora-pg`(host 网络 5432)—— 本机从无 systemd 系统 postgres。
+   > 迁移语义不受影响,退役路径见 DEPLOY-STACK.md(docker 实态)。
 6. **登录链不动**:桌面连本机栈仍走完整 OAuth(系统浏览器 → 服务端回跳 →
    47823 回环/深链,#271/#272 修稳的链路),不新增本地信任捷径。
 7. **升级**:桌面更新下载后,设置页手动确认按钮触发栈升级——停链 → 迁移 →
