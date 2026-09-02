@@ -23,14 +23,24 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	os.Stdout = w
+	defer func() { os.Stdout = old }()
 	done := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(r)
 		done <- string(b)
 	}()
+	// fn 正常返回即显式关写端(EOF 供 ReadAll 收口,select 才有产出);
+	// fn 内 t.Fatal 走 Goexit 时由 defer 兜底关(免同包后续测试被占)。
+	closed := false
+	closeW := func() {
+		if !closed {
+			closed = true
+			_ = w.Close()
+		}
+	}
+	defer closeW()
 	fn()
-	_ = w.Close()
-	os.Stdout = old
+	closeW()
 	select {
 	case out := <-done:
 		return out
@@ -155,6 +165,25 @@ func TestRunWatchedHeartbeat(t *testing.T) {
 	})
 	if n := strings.Count(out, "仍在等"); n < 1 {
 		t.Fatalf("1s 等待 + 80ms 心跳应至少打 1 行,实得:\n%s", out)
+	}
+}
+
+func TestSummarizeArgsRedacts(t *testing.T) {
+	got := summarizeArgs([]string{
+		"--dbname", "postgres://u:secret@example.com:5432/db?sslmode=disable",
+		"--file", "/tmp/x.dump",
+		"--other", "host=/run user=cumora password=hunter2 dbname=cumora",
+	})
+	s := strings.Join(strings.Fields(got), " ")
+	for _, leak := range []string{"secret", "hunter2"} {
+		if strings.Contains(s, leak) {
+			t.Fatalf("argv 摘要泄漏凭据 %q: %s", leak, s)
+		}
+	}
+	for _, keep := range []string{"postgres://u:", "password=***", "/tmp/x.dump"} {
+		if !strings.Contains(s, keep) {
+			t.Fatalf("argv 摘要应保留 %q: %s", keep, s)
+		}
 	}
 }
 

@@ -246,15 +246,17 @@ func cmdMigratePG(args []string) int {
 	//    无子进程的死区(systemd 等待),心跳 + 5min 预算让它停死可定位。
 	if deps.StopStack != nil {
 		done7 := steps.begin("停链(迁移窗口开)")
-		defer done7() // 起链在 defer,此处 done 行标注窗口主体结束即可
 		if err := withBudget("停链", 5*time.Minute, deps.StopStack); err != nil {
 			fmt.Fprintf(os.Stderr, "migrate-pg: 停链失败,中止(栈未动数据未动): %v\n", err)
 			return 2
 		}
+		done7() // 停链完成 = stop 返回;起链是 defer 收尾,不属于本步
 	}
 	defer func() {
 		if deps.StartStack != nil {
-			if err := deps.StartStack(); err != nil {
+			// 收尾路径同款观测(评审 P3:起链是唯一无心跳/预算的调用,
+			// 挂死在全部输出之后零线索 —— 与本票目标不对称)。
+			if err := withBudget("起链", 5*time.Minute, deps.StartStack); err != nil {
 				fmt.Fprintf(os.Stderr, "migrate-pg: 起链失败 —— 数据已迁移,手动 systemctl --user start %s: %v\n", *stackUnit, err)
 			}
 		}

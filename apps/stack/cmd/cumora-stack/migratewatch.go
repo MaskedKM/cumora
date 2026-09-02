@@ -100,10 +100,14 @@ func runWatched(ctx context.Context, path string, args ...string) (string, error
 	fmt.Printf("%s migrate-pg: 子进程 %s pid=%d argv=%s 预算=%s\n",
 		migStamp(), filepath.Base(path), cmd.Process.Pid, summarizeArgs(args), budget)
 	started := time.Now()
+	// hb 先提局部再进 goroutine(评审 P1):包级变量是测试注入口,
+	// goroutine 若在函数返回后读到它与下一个测试的写并跑,-race 必红;
+	// go 语句自带 happens-before 边,提升后读的是快照。
+	hb := migrateHeartbeat
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		t := time.NewTicker(migrateHeartbeat)
+		t := time.NewTicker(hb)
 		defer t.Stop()
 		for {
 			select {
@@ -123,8 +127,11 @@ func runWatched(ctx context.Context, path string, args ...string) (string, error
 	}
 	fmt.Printf("%s migrate-pg: 子进程 %s pid=%d 退出(%s;耗时 %s)\n",
 		migStamp(), filepath.Base(path), cmd.Process.Pid, exitNote, time.Since(started).Round(time.Millisecond))
+	if ctx.Err() != nil {
+		return string(out), fmt.Errorf("%s 外层窗口耗尽/取消(%v;已杀,窗口 defer 会起链恢复): %w", filepath.Base(path), ctx.Err(), waitErr)
+	}
 	if cctx.Err() != nil {
-		return string(out), fmt.Errorf("%s 预算耗尽/取消(%v;已杀,窗口 defer 会起链恢复): %w", filepath.Base(path), cctx.Err(), waitErr)
+		return string(out), fmt.Errorf("%s 工具预算耗尽/取消(%v;已杀,窗口 defer 会起链恢复): %w", filepath.Base(path), cctx.Err(), waitErr)
 	}
 	return string(out), waitErr
 }
@@ -145,7 +152,11 @@ func withBudget(name string, budget time.Duration, fn func() error) error {
 	for {
 		select {
 		case err := <-errc:
-			fmt.Printf("%s migrate-pg: [%s] 完成(耗时 %s)\n", migStamp(), name, time.Since(started).Round(time.Millisecond))
+			if err != nil {
+				fmt.Printf("%s migrate-pg: [%s] 返回错误(耗时 %s): %v\n", migStamp(), name, time.Since(started).Round(time.Millisecond), err)
+			} else {
+				fmt.Printf("%s migrate-pg: [%s] 完成(耗时 %s)\n", migStamp(), name, time.Since(started).Round(time.Millisecond))
+			}
 			return err
 		case <-t.C:
 			fmt.Printf("%s migrate-pg: …仍在等 [%s],已 %s\n", migStamp(), name, time.Since(started).Round(time.Second))
