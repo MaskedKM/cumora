@@ -59,26 +59,41 @@ pg 与外部 redis 从来不是 systemd 系统服务,而是两个 docker 容器*
    doctor 无 fail、livez 200。pg 侧 migrate-pg 后已是 internal。
 2. 备份已经独立存在(`<backups>/cumora-premigrate-*.dump`),随时可
    `pg_restore` 回任何 16+ 实例;旧库数据卷退役不删,是第二重回退材料。
-3. 退役 = 常规 docker 操作,**cumora 不代劳**(先摘自启再停,防 Docker
-   重启把僵尸拉回来;数据卷保留):
+3. 退役 = 常规 docker 操作,**cumora 不代劳**(数据卷保留):
 
    ```bash
-   docker update --restart=no cumora-pg cumora-redis
+   docker update --restart=no cumora-pg cumora-redis  # 防御性自文档:手工 stop 后
+                                                      # unless-stopped 本就不自启,
+                                                      # 但显式 no 免歧义
    docker stop cumora-pg cumora-redis
-   docker volume rm <卷>            # 真删旧库数据(可选,确认不再回退后)
    ```
 
-4. 回退(如需):`docker start cumora-pg cumora-redis` + `stack.toml`
-   改回对应 `mode = "external"`(redis 直接改回;pg 的 external 形态还
-   需 `stack.env` 的 `DATABASE_URL` 指回 5432)→ 重启栈。数据以旧库
-   卷或备份为准(internal 期新写入不在其中)。
-5. 已切 internal 后确需重迁(高级,自担风险):`systemctl --user stop
+4. 真删旧数据(可选,**确认不再走 docker 回退后**):卷被容器引用时
+   `volume rm` 会拒,须先删容器 —— 而 `docker rm` 会摧毁第 5 步的
+   `docker start` 回退路径(届时只剩 `pg_restore` 备份一条路)。只有
+   `cumora-pg` 的卷是回退材料;redis 卷只是易失总线态,随手可删:
+
+   ```bash
+   docker rm cumora-pg cumora-redis
+   docker volume rm <pg卷> <redis卷>   # docker volume ls 查名
+   ```
+
+5. 回退(如需):`docker start cumora-pg cumora-redis` + `stack.toml`
+   改回对应 `mode = "external"`(redis 直接改回 —— external 形态解析
+   链吃 stack.env 的 `REDIS_URL` 或缺省 `localhost:6379`,本部署两者
+   仍指旧容器,无需动作;pg 的 external 形态需 `stack.env` 的
+   `DATABASE_URL` 指回 5432)→ 重启栈。数据以旧库卷或备份为准
+   (internal 期新写入不在其中)。**长期回 external** 另补
+   `docker update --restart=unless-stopped cumora-pg cumora-redis`,
+   否则宿主重启后旧依赖不再自启、external 形态静默断链。
+6. 已切 internal 后确需重迁(高级,自担风险):`systemctl --user stop
    cumora` → `pg_ctl`(制品内)起内置 pg → `dropdb/createdb cumora` →
    `pg_restore` 备份或旧库新 dump → `pg_ctl stop` → 起链。
    `migrate-pg` 本体在此形态下恒拒,是有意防线。
-6. 注意:宿主 6379/5432 若再出现监听,先甄别归属(同机其他项目可能
-   跑自己的 redis/pg 容器,bridge 网络内同名端口与宿主面无关)——
-   只退役属于 cumora 的件。
+7. 注意:宿主 6379/5432 若再出现监听,先 `ss -ltnp` 与 `docker ps` 交叉
+   甄别归属(同机其他项目可能跑自己的 redis/pg 容器;**未发布端口**的
+   bridge 容器在自身 netns 内绑 6379 与宿主面无关,`-p` 发布的才会占
+   宿主)—— 只退役属于 cumora 的件。
 
 ## 升级与回滚(#286)
 
