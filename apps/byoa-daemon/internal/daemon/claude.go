@@ -57,7 +57,8 @@ type claudeSession struct {
 	stdin           io.WriteCloser
 	onLog           func(string)
 	onHop           func(HopReport)
-	onText          func(string) // #210 assistant 文本前缀(delta 上报源)
+	onText          func(string)          // #210 assistant 文本前缀(delta 上报源)
+	onTranscript    func(TranscriptEntry) // #260 执行转录
 	carriesStanding bool
 
 	mu                     sync.Mutex
@@ -92,6 +93,7 @@ func newClaudeSession(bin string, argv []string, args SessionArgs, carriesStandi
 		onLog:           args.OnLog,
 		onHop:           args.OnHopUsage,
 		onText:          args.OnAssistantText,
+		onTranscript:    args.OnTranscript,
 		carriesStanding: carriesStanding,
 		sid:             args.ResumeSessionID,
 		pending:         nil,
@@ -372,6 +374,13 @@ func (s *claudeSession) onStdoutLine(line string) {
 		}
 	} else if ev.Type == "user" {
 		s.wd.Activity(false, true)
+	}
+	// #260:content 级转录条目(assistant: text/thinking/tool_use;user:
+	// tool_result)。尽力而为,不打断流。
+	if onT := s.onTranscript; onT != nil && ev.Message != nil && (ev.Type == "assistant" || ev.Type == "user") {
+		for _, te := range contentTranscriptEntries(ev.Type, ev.Message.Content) {
+			onT(te)
+		}
 	}
 	// 逐跳台账:每条 {assistant, message:{model, usage}} 是本轮一次出站
 	// 模型调用;终止 result 事件带全轮总和(只作轮总账,不重复记账)。

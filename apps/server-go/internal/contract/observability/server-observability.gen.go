@@ -24,6 +24,9 @@ type ServerInterface interface {
 	// 运行事件流
 	// (GET /api/agents/observability/runs/{id}/events)
 	GetAgentRunEvents(w http.ResponseWriter, r *http.Request, id string)
+	// 运行工具级转录回放(#260)
+	// (GET /api/agents/observability/runs/{runId}/transcript)
+	GetAgentRunTranscript(w http.ResponseWriter, r *http.Request, runId string, params GetAgentRunTranscriptParams)
 	// triage 成效台账
 	// (GET /api/agents/observability/triage)
 	GetTriageEconomics(w http.ResponseWriter, r *http.Request, params GetTriageEconomicsParams)
@@ -135,6 +138,56 @@ func (siw *ServerInterfaceWrapper) GetAgentRunEvents(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAgentRunEvents(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAgentRunTranscript operation middleware
+func (siw *ServerInterfaceWrapper) GetAgentRunTranscript(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "runId" -------------
+	var runId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetAgentRunTranscriptParams
+
+	// ------------- Optional query parameter "sinceSeq" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "sinceSeq", r.URL.Query(), &params.SinceSeq)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sinceSeq", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAgentRunTranscript(w, r, runId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -359,6 +412,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/agents/observability/llm-spend", wrapper.GetLlmSpend)
 	m.HandleFunc("GET "+options.BaseURL+"/api/agents/observability/runs", wrapper.GetAgentRuns)
 	m.HandleFunc("GET "+options.BaseURL+"/api/agents/observability/runs/{id}/events", wrapper.GetAgentRunEvents)
+	m.HandleFunc("GET "+options.BaseURL+"/api/agents/observability/runs/{runId}/transcript", wrapper.GetAgentRunTranscript)
 	m.HandleFunc("GET "+options.BaseURL+"/api/agents/observability/triage", wrapper.GetTriageEconomics)
 	m.HandleFunc("GET "+options.BaseURL+"/api/peek/agent-chats", wrapper.GetWhispers)
 	m.HandleFunc("GET "+options.BaseURL+"/api/peek/agent-chats/{id}/messages", wrapper.GetWhisperMessages)

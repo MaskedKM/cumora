@@ -189,6 +189,63 @@ func (s *Server) GetAgentRunEvents(w http.ResponseWriter, r *http.Request, id st
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
+// GetAgentRunTranscript:#260 工具级转录回放(sinceSeq 游标分页,限幅)。
+func (s *Server) GetAgentRunTranscript(w http.ResponseWriter, r *http.Request, runId string, params obscontract.GetAgentRunTranscriptParams) {
+	tenant, ok := requireDevtools(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var one int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT 1 FROM agent_runs WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		runId, tenant).Scan(&one); err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+		} else {
+			httpx.WriteInternalError(w, r, err)
+		}
+		return
+	}
+	limit := 200
+	if params.Limit != nil && *params.Limit > 0 && *params.Limit <= 1000 {
+		limit = *params.Limit
+	}
+	sinceSeq := 0
+	if params.SinceSeq != nil && *params.SinceSeq > 0 {
+		sinceSeq = *params.SinceSeq
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT seq, type, tool, content, input, created_at
+		  FROM agent_transcript
+		 WHERE run_id = $1 AND seq > $2
+		 ORDER BY seq ASC
+		 LIMIT $3`, runId, sinceSeq, limit)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var seq int
+		var typ string
+		var tool sql.NullString
+		var content sql.NullString
+		var input []byte
+		var createdAt time.Time
+		if err := rows.Scan(&seq, &typ, &tool, &content, &input, &createdAt); err != nil {
+			continue
+		}
+		var inputAny any
+		_ = json.Unmarshal(input, &inputAny)
+		out = append(out, map[string]any{
+			"seq": seq, "type": typ, "tool": nullStrOf(tool), "content": nullStrOf(content),
+			"input": inputAny, "createdAt": httpx.ISOms(createdAt),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
 /* ───────── GET /peek/agent-chats/{id}/messages ───────── */
 
 // GetWhisperMessages:owner-only;绕过"必须是成员"规则以允许人类旁听纯

@@ -517,6 +517,15 @@ const (
 	StatusHeartbeatJSONBodyStatusWorking  StatusHeartbeatJSONBodyStatus = "working"
 )
 
+// Defines values for RuntimeTranscriptBatchJSONBodyEntriesType.
+const (
+	Note       RuntimeTranscriptBatchJSONBodyEntriesType = "note"
+	Text       RuntimeTranscriptBatchJSONBodyEntriesType = "text"
+	Thinking   RuntimeTranscriptBatchJSONBodyEntriesType = "thinking"
+	ToolResult RuntimeTranscriptBatchJSONBodyEntriesType = "tool_result"
+	ToolUse    RuntimeTranscriptBatchJSONBodyEntriesType = "tool_use"
+)
+
 // AdminSettings defines model for AdminSettings.
 type AdminSettings struct {
 	CerebellumApiKeyConfigured bool                         `json:"cerebellum_api_key_configured"`
@@ -1795,6 +1804,12 @@ type GetAgentRunsParams struct {
 	Limit   *string `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// GetAgentRunTranscriptParams defines parameters for GetAgentRunTranscript.
+type GetAgentRunTranscriptParams struct {
+	SinceSeq *int `form:"sinceSeq,omitempty" json:"sinceSeq,omitempty"`
+	Limit    *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // GetTriageEconomicsParams defines parameters for GetTriageEconomics.
 type GetTriageEconomicsParams struct {
 	AgentId    *string `form:"agentId,omitempty" json:"agentId,omitempty"`
@@ -2379,6 +2394,28 @@ type ThinkingUnmarkJSONBody struct {
 	ConversationIds *[]string `json:"conversationIds,omitempty"`
 }
 
+// RuntimeTranscriptBatchJSONBody defines parameters for RuntimeTranscriptBatch.
+type RuntimeTranscriptBatchJSONBody struct {
+	Entries []struct {
+		// Content text/thinking 正文或 tool_result 输出
+		Content *string `json:"content,omitempty"`
+
+		// Input tool_use 入参(任意 JSON)
+		Input interface{} `json:"input,omitempty"`
+
+		// Seq run 内单调递增
+		Seq int `json:"seq"`
+
+		// Tool tool_use 的工具名
+		Tool *string                                   `json:"tool,omitempty"`
+		Type RuntimeTranscriptBatchJSONBodyEntriesType `json:"type"`
+	} `json:"entries"`
+	RunId string `json:"runId"`
+}
+
+// RuntimeTranscriptBatchJSONBodyEntriesType defines parameters for RuntimeTranscriptBatch.
+type RuntimeTranscriptBatchJSONBodyEntriesType string
+
 // RecordTriageJSONBody defines parameters for RecordTriage.
 type RecordTriageJSONBody map[string]interface{}
 
@@ -2666,6 +2703,9 @@ type ThinkingMarkJSONRequestBody ThinkingMarkJSONBody
 
 // ThinkingUnmarkJSONRequestBody defines body for ThinkingUnmark for application/json ContentType.
 type ThinkingUnmarkJSONRequestBody ThinkingUnmarkJSONBody
+
+// RuntimeTranscriptBatchJSONRequestBody defines body for RuntimeTranscriptBatch for application/json ContentType.
+type RuntimeTranscriptBatchJSONRequestBody RuntimeTranscriptBatchJSONBody
 
 // RecordTriageJSONRequestBody defines body for RecordTriage for application/json ContentType.
 type RecordTriageJSONRequestBody RecordTriageJSONBody

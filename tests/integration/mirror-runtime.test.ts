@@ -182,6 +182,34 @@ test('[mirror-runtime] /inbox surfaces unread rows with the InboxRow shape', asy
   assert.equal(again.body.rows.length, 1)
 })
 
+test('[mirror-runtime] /runtime/transcript-batch + observability readback (#260)', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  // 开一个 run(daemon 形态:trigger byoa)。
+  const run = await call('/runtime/runs', { token, body: { trigger: { source: 'byoa', engine: 'claude', reason: 'test' }, inboxCount: 1 } })
+  assert.equal(run.status, 200)
+  const runId = run.body.runId
+  const post = await call('/runtime/transcript-batch', { token, body: { runId, entries: [
+    { seq: 1, type: 'text', content: 'starting' },
+    { seq: 2, type: 'tool_use', tool: 'bash', input: { command: 'ls' } },
+    { seq: 3, type: 'tool_result', tool: 'bash', content: 'fileA\\nfileB' },
+  ] } })
+  assert.equal(post.status, 200)
+  assert.equal(post.body.stored, 3)
+  // 幂等:同 seq 重发 → 冲突跳过。
+  const dup = await call('/runtime/transcript-batch', { token, body: { runId, entries: [{ seq: 1, type: 'text', content: 'again' }] } })
+  assert.equal(dup.body.stored, 0)
+  // 归属门:另一个 agent 的 token 写别人的 run → 403。
+  const other = await seedAgent()
+  const foreign = await call('/runtime/transcript-batch', { token: other.token, body: { runId, entries: [{ seq: 9, type: 'text', content: 'x' }] } })
+  assert.equal(foreign.status, 403)
+  // 读面:devtools 需要人类 session —— 直接按 devtools 契约用 admin 面?此处仅
+  // 断言 run 内 seq 有序:经 pool 直查(端到端读面断言归 devtools 契约测)。
+  const { rows } = await pool.query(`SELECT seq, type, tool FROM agent_transcript WHERE run_id = $1 ORDER BY seq`, [runId])
+  assert.equal(rows.length, 3)
+  assert.deepEqual(rows.map((r: any) => r.seq), [1, 2, 3])
+  assert.equal(rows[1].tool, 'bash')
+})
+
 test('[mirror-runtime] /inbox rows carry human_audience (#24 register)', async () => {
   // 受众判定三形态:1:1 人机私聊 true;单员工+多人类频道 true(票面
   // story 14);混合受众 false(行为零改动)。判定内聚在 LoadInbox 的

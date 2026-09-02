@@ -80,11 +80,12 @@ func maxInt64(a, b int64) int64 {
 
 // codexSession:app-server JSON-RPC 上的持久会话。
 type codexSession struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	onLog  func(string)
-	onHop  func(HopReport)
-	onText func(string) // #210 agentMessage 增量(delta 上报源)
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	onLog        func(string)
+	onHop        func(HopReport)
+	onText       func(string)          // #210 agentMessage 增量(delta 上报源)
+	onTranscript func(TranscriptEntry) // #260 执行转录
 
 	mu sync.Mutex
 	// wd:#259 活性看门狗(空闲/工具在飞/首声三层,判死不靠墙钟)。
@@ -560,6 +561,31 @@ func (s *codexSession) handleLocked(msg *codexRpcMsg) []func() {
 				}
 			} else {
 				s.wd.Activity(false, true)
+			}
+			// #260:item 级转录(命令/工具启停 + agentMessage 完成文本)。
+			if onT := s.onTranscript; onT != nil {
+				if msg.Method == "item/started" && (ty == "commandExecution" || ty == "mcpToolCall" || ty == "applyPatch") {
+					inp := map[string]any{}
+					if cmd, ok := item["command"].(string); ok {
+						inp["command"] = cmd
+					}
+					onT(TranscriptEntry{Type: "tool_use", Tool: ty, Input: inp})
+				} else if msg.Method == "item/completed" {
+					if ty == "agentMessage" {
+						if text, ok := item["text"].(string); ok && text != "" {
+							onT(TranscriptEntry{Type: "text", Content: text})
+						}
+					} else {
+						outc := ""
+						for _, k := range []string{"output", "stdout", "text"} {
+							if v, ok := item[k].(string); ok && v != "" {
+								outc = v
+								break
+							}
+						}
+						onT(TranscriptEntry{Type: "tool_result", Tool: ty, Content: outc})
+					}
+				}
 			}
 			switch {
 			case ty == "contextCompaction":

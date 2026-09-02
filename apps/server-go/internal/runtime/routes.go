@@ -124,6 +124,10 @@ func (h *Server) RuntimeMessageDelta(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleMessageDelta)(w, r)
 }
 
+func (h *Server) RuntimeTranscriptBatch(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleTranscriptBatch)(w, r)
+}
+
 func (h *Server) StartRun(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleCreateRun)(w, r)
 }

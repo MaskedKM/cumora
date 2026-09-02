@@ -84,6 +84,8 @@ type RunArgs struct {
 	// OnAssistantText:#210 —— 引擎流输出的文本前缀(Claude 逐跳
 	// assistant 文本块)。nil = 该引擎/路径无增量可报,流式上屏自然降级。
 	OnAssistantText func(text string)
+	// OnTranscript:#260 执行转录条目(尽力而为,不打断流)。
+	OnTranscript func(TranscriptEntry)
 }
 
 // RunResult:一次性 turn 产物。SessionID 非空则落盘供下轮 resume。
@@ -145,6 +147,8 @@ type SessionArgs struct {
 	OnHopUsage      func(HopReport)
 	// OnAssistantText:#210 —— 见 RunArgs 同名字段。
 	OnAssistantText func(text string)
+	// OnTranscript:#260 执行转录条目(尽力而为,不打断流)。
+	OnTranscript func(TranscriptEntry)
 }
 
 // EngineSession:一个 agent 的长活引擎进程。Send 串行调用(一次一个

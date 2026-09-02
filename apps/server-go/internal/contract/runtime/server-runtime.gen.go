@@ -102,6 +102,9 @@ type ServerInterface interface {
 	// 解除思考
 	// (POST /runtime/thinking/unmark)
 	ThinkingUnmark(w http.ResponseWriter, r *http.Request)
+	// 工具级执行转录批量上报(#260;text/thinking/tool_use/tool_result 按 seq 存档,回放用)
+	// (POST /runtime/transcript-batch)
+	RuntimeTranscriptBatch(w http.ResponseWriter, r *http.Request)
 	// 记 triage 台账
 	// (POST /runtime/triage)
 	RecordTriage(w http.ResponseWriter, r *http.Request)
@@ -733,6 +736,26 @@ func (siw *ServerInterfaceWrapper) ThinkingUnmark(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// RuntimeTranscriptBatch operation middleware
+func (siw *ServerInterfaceWrapper) RuntimeTranscriptBatch(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, AgentRuntimeJWTScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RuntimeTranscriptBatch(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // RecordTriage operation middleware
 func (siw *ServerInterfaceWrapper) RecordTriage(w http.ResponseWriter, r *http.Request) {
 
@@ -1002,6 +1025,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/thinking/mark", wrapper.ThinkingMark)
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/thinking/peek", wrapper.ThinkingPeek)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/thinking/unmark", wrapper.ThinkingUnmark)
+	m.HandleFunc("POST "+options.BaseURL+"/runtime/transcript-batch", wrapper.RuntimeTranscriptBatch)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/triage", wrapper.RecordTriage)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/typing", wrapper.RuntimeTyping)
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/wake-stream", wrapper.WakeStream)
