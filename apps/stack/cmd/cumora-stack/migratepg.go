@@ -30,7 +30,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -74,11 +73,9 @@ type MigrateDeps struct {
 func NewMigrateDeps(stackUnit string) MigrateDeps {
 	d := probe.NewDeps()
 	deps := MigrateDeps{
-		RunCmd: func(ctx context.Context, path string, args ...string) (string, error) {
-			cmd := exec.CommandContext(ctx, path, args...)
-			out, err := cmd.CombinedOutput()
-			return string(out), err
-		},
+		// runWatched(#315):PID + 脱敏 argv + 心跳 + 按工具预算 ——
+		// 停死可定位,不再无输出挂死。
+		RunCmd:        runWatched,
 		CountRows:     countRowsPG,
 		TableCount:    tableCountPG,
 		ServerVersion: serverVersionPG,
@@ -124,8 +121,12 @@ func cmdMigratePG(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	deps := newMigrateDeps(*stackUnit)
+	// 步骤观测面(#315):每步带墙钟与耗时 —— 首跑停死那类无输出挂死,
+	// 下一次必须能从日志直接读出卡在哪一步。
+	steps := newStepTracker(14)
 
 	// 1) 配置面:toml 必须在且可载(迁移本身就是切 toml 的动作)。
+	done1 := steps.begin("载 stack.toml")
 	cfg, err := stackconfig.Load(*configFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: stack.toml 非法或缺失(先 import-env): %v\n", err)
@@ -140,12 +141,14 @@ func cmdMigratePG(args []string) int {
 	if *currentDir == "" {
 		*currentDir = cfg.CurrentDir()
 	}
+	done1()
 	if *backupDir == "" {
 		*backupDir = filepath.Join(cfg.Data.Home, "backups")
 	}
 	statePath := filepath.Join(cfg.Data.Home, "migrate-pg.state.json")
 
 	// 2) 源 DSN:env 文件 → OS env。缺 = 没有可迁的东西。
+	done2 := steps.begin("取源 DATABASE_URL")
 	srcDSN := dsnFromEnvFile(*envFile)
 	if srcDSN == "" {
 		srcDSN = os.Getenv("DATABASE_URL")
@@ -154,9 +157,11 @@ func cmdMigratePG(args []string) int {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 源 DATABASE_URL 缺失(%s 与 OS env 均无)—— 没有可迁移的存量库\n", *envFile)
 		return 2
 	}
+	done2()
 
 	// 3) 幂等面。dry-run 绕过 no-op(计划总是可看);标记损坏按
 	//    "状态未知"拒跑,不 fail-open 到破坏性重做。
+	done3 := steps.begin("幂等标记检查")
 	stateExists := false
 	if st, err := loadMigrateState(statePath); err == nil {
 		stateExists = true
@@ -173,8 +178,10 @@ func cmdMigratePG(args []string) int {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 迁移标记 %s 损坏(%v)—— 状态未知拒跑;确认从未迁移可删该文件后重跑\n", statePath, err)
 		return 2
 	}
+	done3()
 
 	// 4) 制品面:迁移工具随载荷走。
+	done4 := steps.begin("制品工具面检查")
 	pgBin := filepath.Join(*currentDir, "pg", "bin")
 	for _, tool := range []string{"postgres", "initdb", "pg_ctl", "pg_dump", "pg_restore"} {
 		if _, err := os.Stat(filepath.Join(pgBin, tool)); err != nil {
@@ -182,8 +189,10 @@ func cmdMigratePG(args []string) int {
 			return 2
 		}
 	}
+	done4()
 
 	// 5) 源探活 + 基线:连不上/版本不对就不停链(不把窗口开在天灾上)。
+	done5 := steps.begin("源探活 + 基线计数")
 	ver, err := deps.ServerVersion(ctx, srcDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 源库连不上,不动栈: %v\n", err)
@@ -207,6 +216,7 @@ func cmdMigratePG(args []string) int {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 源库表计数失败: %v\n", err)
 		return 2
 	}
+	done5()
 
 	if *dryRun {
 		printDryRun(cfg, srcDSN, srcCounts, srcTableCount, *backupDir, stateExists)
@@ -214,6 +224,7 @@ func cmdMigratePG(args []string) int {
 	}
 
 	// 6) 互斥锁(评审 P3:双跑交错 DROP/CREATE 不可想象)。
+	done6 := steps.begin("取互斥锁")
 	lockPath := filepath.Join(cfg.Data.Home, "migrate-pg.lock")
 	lock, err := lockFile(lockPath)
 	if err != nil {
@@ -222,6 +233,7 @@ func cmdMigratePG(args []string) int {
 	}
 	defer os.Remove(lockPath)
 	defer lock.Close()
+	done6()
 
 	// pg_ctl 的 -o 是空格分词的透传串,rundir 带空白会碎(评审 P3)。
 	if strings.ContainsAny(cfg.RunDir(), " \t") {
@@ -230,10 +242,12 @@ func cmdMigratePG(args []string) int {
 	}
 
 	// 7) 停链(数据静默窗口从这开始)。中断安全原则:后续任一步失败,
-	//    旧链路数据零动,defer 起链恢复原状。
+	//    旧链路数据零动,defer 起链恢复原状。withBudget(#315):停链是
+	//    无子进程的死区(systemd 等待),心跳 + 5min 预算让它停死可定位。
 	if deps.StopStack != nil {
-		fmt.Println("migrate-pg: 停链(迁移窗口开)")
-		if err := deps.StopStack(); err != nil {
+		done7 := steps.begin("停链(迁移窗口开)")
+		defer done7() // 起链在 defer,此处 done 行标注窗口主体结束即可
+		if err := withBudget("停链", 5*time.Minute, deps.StopStack); err != nil {
 			fmt.Fprintf(os.Stderr, "migrate-pg: 停链失败,中止(栈未动数据未动): %v\n", err)
 			return 2
 		}
@@ -250,6 +264,7 @@ func cmdMigratePG(args []string) int {
 	//    等价:结束前都 pg_ctl stop 交还 stackd(评审 P2:不交还必撞
 	//    postmaster.pid)。清理用独立 ctx —— 主 ctx 超时后 defer 仍要
 	//    能跑(评审 P2)。
+	done8 := steps.begin("内部 pg bootstrap + 独立拉起")
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	if err := stackd.EnsureInternalPG(pgBin, cfg.PGDataDir(), cfg.RunDir(), log); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: %v\n", err)
@@ -265,6 +280,7 @@ func cmdMigratePG(args []string) int {
 	} else {
 		fmt.Println("migrate-pg: 内部 pg 已在运行(收养;结束时会交还 stackd)")
 	}
+	done8()
 	defer func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer stopCancel()
@@ -278,6 +294,7 @@ func cmdMigratePG(args []string) int {
 
 	// 9) 目标库清位:恢复物含全量 schema,预置 schema 只会撞车
 	//    (DROP WITH FORCE 断掉残余连接;首迁 = 库不存在,容忍)。
+	done9 := steps.begin("目标库清位(DROP/CREATE)")
 	if err := deps.ExecSQL(ctx, cfg.AdminDSN(),
 		`DROP DATABASE IF EXISTS cumora WITH (FORCE)`); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 目标库清位失败: %v\n", err)
@@ -288,9 +305,11 @@ func cmdMigratePG(args []string) int {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 建目标库失败: %v\n", err)
 		return 2
 	}
+	done9()
 
 	// 10) 备份源库(迁移前自动备份;pg_dump 只读;.part 暂存 + 原子就位,
 	//     截断的失败产物不会混进 backups/;留最近 3 份)。
+	done10 := steps.begin("备份源库(pg_dump)")
 	if err := os.MkdirAll(*backupDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 建备份目录: %v\n", err)
 		return 2
@@ -311,18 +330,21 @@ func cmdMigratePG(args []string) int {
 		return 2
 	}
 	pruneBackups(*backupDir, 3)
+	done10()
 
 	// 11) 恢复进内部库。
-	fmt.Println("migrate-pg: 恢复进内置 pg …")
+	done11 := steps.begin("恢复进内置 pg(pg_restore)")
 	if out, err := deps.RunCmd(ctx, filepath.Join(pgBin, "pg_restore"),
 		"--exit-on-error", "--no-owner", "--no-privileges",
 		"--dbname", cfg.InternalDSN(), backupFile); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-pg: pg_restore 失败(源库未动;修正后直接重跑): %v\n%s\n", err, out)
 		return 2
 	}
+	done11()
 
 	// 12) 行数比对 smoke:六+二表逐表 + 全表计数;不一致 = 阻断切链
 	//     (数据完整性优先于窗口时长)。
+	done12 := steps.begin("行数 + 表数比对")
 	tgtCounts := map[string]int{}
 	for _, tbl := range smokeTables {
 		n, err := deps.CountRows(ctx, cfg.InternalDSN(), tbl)
@@ -349,9 +371,11 @@ func cmdMigratePG(args []string) int {
 			srcTableCount, tgtTableCount)
 		return 2
 	}
+	done12()
 
 	// 13) 切链:toml pg.mode=internal(旧 toml 一次性留底 —— 本命令在
 	//     internal 形态下恒拒,此处必为首次,不存在覆写回退材料问题)。
+	done13 := steps.begin("切 stack.toml → internal")
 	preSnap := filepath.Join(*backupDir, "stack.toml.premigrate")
 	if _, err := os.Stat(preSnap); err != nil && os.IsNotExist(err) {
 		if data, rerr := os.ReadFile(*configFile); rerr == nil {
@@ -363,10 +387,12 @@ func cmdMigratePG(args []string) int {
 		fmt.Fprintf(os.Stderr, "migrate-pg: 切 stack.toml 失败(数据已恢复,手工把 pg.mode 改 internal): %v\n", err)
 		return 2
 	}
+	done13()
 
 	// 14) 落标记(原子写;失败大声但不回滚 —— 数据已迁移,internal
 	//     恒拒门保证了缺标记也不 fail-open)→ 汇报(defer 收尾:
 	//     停内部 pg → 起链)。
+	done14 := steps.begin("落迁移标记 + 汇总")
 	st := MigrateState{
 		CompletedAt:  time.Now(),
 		SourceDSN:    redactDSN(srcDSN),
@@ -382,6 +408,7 @@ func cmdMigratePG(args []string) int {
 			fmt.Fprintf(os.Stderr, "migrate-pg: 警告 —— 迁移标记落位失败(%v);internal 恒拒门兜底\n", rerr)
 		}
 	}
+	done14()
 	if *jsonOut {
 		printJSON(map[string]any{"migrated": true, "state": st, "tableCount": tgtTableCount, "sourceTableCount": srcTableCount})
 	} else {
@@ -405,14 +432,21 @@ func loadMigrateState(path string) (MigrateState, error) {
 	return st, nil
 }
 
-// lockFile —— O_EXCL 互斥(进程退出即释;残留锁 = 上一轮硬死,提示手工清)。
+// lockFile —— O_EXCL 互斥(进程退出即释)。占用时甄别持有者死活
+// (#315):活 pid = 真并发在跑;死 pid = 硬死残锁,指引手工清。
 func lockFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("已有 migrate-pg 在跑或残留锁 %s(硬死后遗留可删): %w", path, err)
+		if pid := readLockPID(path); pid > 0 {
+			if procAlive(pid) {
+				return nil, fmt.Errorf("已有 migrate-pg 在跑(持有者 pid %d 活着,勿双跑): %s: %w", pid, path, err)
+			}
+			return nil, fmt.Errorf("残留锁(持有者 pid %d 已死,确认无在跑实例后可删): %s: %w", pid, path, err)
+		}
+		return nil, fmt.Errorf("锁 %s 无法取得且不可判读(手工核验): %w", path, err)
 	}
 	fmt.Fprintf(f, "%d\n", os.Getpid())
 	return f, nil
