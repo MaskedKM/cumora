@@ -85,10 +85,9 @@ export function StackTab() {
     }).catch(() => { /* 版本缺省 = 不给升级按钮,无害 */ })
   }, [])
 
-  // degraded → 托盘警示(面板红与托盘警示同源)。生命周期取舍(评审 P2):
-  // 轮询出错保留最后已知值(连接问题≠栈健康);unmount 清警示(宁可
-  // 少报也不冻结在旧 ⚠;用户回面板即恢复实时)。旧三 unit 形态无
-  // stackd.children,livez 非 ok 同样计入。
+  // 面板红条(托盘 ⚠ 已改主进程常驻轮询 #314,与这里同规则但独立
+  // 驱动)。轮询出错保留最后已知值(连接问题≠栈健康)。旧三 unit
+  // 形态无 stackd.children,livez 非 ok 同样计入。
   const degraded = useMemo(() => {
     if (!status) return false
     if (status.stackd?.children?.length) {
@@ -96,10 +95,6 @@ export function StackTab() {
     }
     return status.livez?.status !== 'ok'
   }, [status])
-  useEffect(() => {
-    window.cumora?.stack?.reportDegraded?.(degraded)
-    return () => { window.cumora?.stack?.reportDegraded?.(false) }
-  }, [degraded])
 
   // 操作进行中:轮询等 livez 回来(与向导 booting 同形态)。
   useEffect(() => {

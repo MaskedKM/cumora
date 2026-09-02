@@ -180,6 +180,9 @@ app.whenReady().then(() => {
   // in createWindow already has its `tray` guard satisfied — no chance
   // of hiding to a non-existent tray.
   createTray()
+  // 栈降级常驻感知(#314):主进程 60s 轮询驱动托盘 ⚠,面板外也生效
+  // (此前靠 StackTab 挂载上报,面板不开托盘就聋)。
+  stackWizard.startDegradedPoller()
   if (process.platform === 'darwin') {
     // Belt-and-suspenders: with `type: 'panel'` on the notification
     // BrowserWindow we should never lose the regular activation policy,
@@ -279,6 +282,7 @@ app.on('before-quit', () => {
   // Quit, window-all-closed on Win/Linux). Without this, every quit
   // path would just hide the window forever.
   state.appIsQuitting = true
+  stackWizard.stopDegradedPoller()
   if (state.notificationWindow && !state.notificationWindow.isDestroyed()) {
     try { state.notificationWindow.destroy() } catch { /* swallow */ }
     state.notificationWindow = null

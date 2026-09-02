@@ -27,7 +27,7 @@
     "sidecar:typecheck": "tsc -p apps/yjs-sidecar/tsconfig.json --noEmit",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "test": "node --import tsx --test --test-force-exit \"apps/yjs-sidecar/src/**/*.test.ts\" \"workers/**/*.test.ts\"",
+    "test": "node --import tsx --test --test-force-exit \"apps/yjs-sidecar/src/**/*.test.ts\" \"workers/**/*.test.ts\" && node --test \"electron/main/**/*.test.cjs\"",
     "web:test": "npm run test -w apps/web",
     "test:integration": "node tests/integration/run.mjs",
     "icons": "python3 scripts-make-mac-icon.py && npx -y electron-icon-builder -i build/icon.png -o build --flatten && node scripts-sync-electron-dev-icon.mjs",

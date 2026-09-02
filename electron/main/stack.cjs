@@ -13,6 +13,7 @@
 // in the OS temp dir and unlinked right after the import run.
 const { ipcMain, app } = require('electron')
 const tray = require('./tray.cjs')
+const { computeDegradedFromStatus } = require('./degraded.cjs')
 const { execFile } = require('node:child_process')
 const { mkdtemp, writeFile, rm, access } = require('node:fs/promises')
 const { constants } = require('node:fs')
@@ -138,7 +139,12 @@ function registerIpc() {
     return runStack(['absorb', dir], { timeout: 15 * 60_000 })
   })
 
-  ipcMain.handle('stack:install', () => runStack(['install'], { timeout: 5 * 60_000 }))
+  ipcMain.handle('stack:install', async () => {
+    const res = await runStack(['install'], { timeout: 5 * 60_000 })
+    // 安装落位 = 单 unit 形态诞生,降级感知立即起步(不等下一个整分)。
+    if (res.ok) tickDegradedSoon()
+    return res
+  })
 
   ipcMain.handle('stack:doctor', () => runStack(['doctor', '--json']))
 
@@ -156,10 +162,51 @@ function registerIpc() {
     return runStack(['rollback', input.version], { timeout: 5 * 60_000 })
   })
 
-  // degraded 提醒(渲染端状态轮询发现熔断/子进程死 → 托盘警示)。
-  ipcMain.on('stack:degraded', (_evt, degraded) => {
-    try { tray.setStackDegraded(!!degraded) } catch { /* tray 非关键路径 */ }
-  })
+  // ==== degraded 常驻感知(#314)====
+  // 旧路径是渲染端 StackTab 面板挂载/轮询时经 IPC 上报 —— 面板不开,
+  // 栈熔断了托盘也不响。现改主进程常驻轮询为单一来源(60s;探测失败
+  // 保持上一次判定,未知 ≠ 降级),渲染端上报路径已退役。
+}
+
+// ==== degraded 常驻轮询(#314,#287 余量)====
+// 面板外也感知:主进程每 60s 跑一次 `status --json`(只读命令,与面板
+// 轮询/升降级操作并发安全),computeDegradedFromStatus 判定 → 托盘。
+// 非零退出/解析失败 = 无法判定,保持上一次(stack 二进制缺失同理,
+// dev 形态 PATH 无 cumora-stack 不误报)。cleanExit 防定时器截住进程
+// 退出(before-quit 停表)。
+let degradedTimer = null
+let degradedInFlight = false
+
+async function pollDegradedOnce() {
+  if (degradedInFlight) return
+  degradedInFlight = true
+  try {
+    const res = await runStack(['status', '--json'], { timeout: 30_000 })
+    if (res.code !== 0) return
+    const verdict = computeDegradedFromStatus(parseReport(res.stdout))
+    if (verdict === null) return
+    try { tray.setStackDegraded(verdict) } catch { /* tray 非关键路径 */ }
+  } finally {
+    degradedInFlight = false
+  }
+}
+
+function tickDegradedSoon() {
+  setTimeout(() => { void pollDegradedOnce() }, 5_000).unref?.()
+}
+
+function startDegradedPoller() {
+  if (degradedTimer) return
+  tickDegradedSoon()
+  degradedTimer = setInterval(() => { void pollDegradedOnce() }, 60_000)
+  degradedTimer.unref?.()
+}
+
+function stopDegradedPoller() {
+  if (degradedTimer) {
+    clearInterval(degradedTimer)
+    degradedTimer = null
+  }
 }
 
 function parseReport(stdout) {
@@ -174,4 +221,4 @@ function parseReport(stdout) {
   }
 }
 
-module.exports = { registerIpc, resolveStackBin }
+module.exports = { registerIpc, resolveStackBin, startDegradedPoller, stopDegradedPoller }
