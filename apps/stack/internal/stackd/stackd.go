@@ -296,7 +296,11 @@ func (c Config) internalRedisURLFace() string { return "unix://" + c.redisSocket
 // 原子性(评审 P2):initdb 落在同级 staging 目录,成功才 rename 进
 // pgdata —— 中途被杀/失败不残缺集群,残缺目录会把幂等门(PG_VERSION
 // 在=跳过 / 目录非空=initdb 拒跑)永久卡死,净机向导无自愈路径。
-func EnsureInternalPG(binDir, dataDir, runDir string, log *slog.Logger) error {
+//
+// ctx(评审 P3,#313):caller 的取消/SIGTERM 即刻打断 initdb —— 净机
+// 冷启最坏 5 分钟预算内,栈停机不应被 initdb 拖住(systemd
+// TimeoutStopSec 会先 SIGKILL 留 staging 残骸)。
+func EnsureInternalPG(ctx context.Context, binDir, dataDir, runDir string, log *slog.Logger) error {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return fmt.Errorf("stackd: 建 socket 目录 %s: %w", runDir, err)
 	}
@@ -316,14 +320,21 @@ func EnsureInternalPG(binDir, dataDir, runDir string, log *slog.Logger) error {
 	}
 	staging := fmt.Sprintf("%s.staging-initdb.%d", dataDir, os.Getpid())
 	defer os.RemoveAll(staging)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ictx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(binDir, "initdb"),
+	cmd := exec.CommandContext(ictx, filepath.Join(binDir, "initdb"),
 		"-D", staging, "-U", "cumora",
 		"--auth-local=trust", "--auth-host=reject",
 		"--encoding=UTF8", "--no-locale")
+	// WaitDelay 保险带(实测踩实):ctx 取消杀的是 initdb 本体,若它留有
+	// 抱着 stdout/stderr 管道的孙进程,CombinedOutput 会等 EOF 挂死 ——
+	// 取消后至多再等 5s 强制收口(SIGTERM 语义优先于日志收全)。
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ictx.Err() != nil {
+			return fmt.Errorf("stackd: initdb 被取消/超时(%v;staging 已清理,可重试): %w", ictx.Err(), err)
+		}
 		return fmt.Errorf("stackd: initdb 失败(staging 已清理,可重试): %w\n%s", err, tailLines(out, 25))
 	}
 	if err := os.Rename(staging, dataDir); err != nil {
@@ -410,6 +421,11 @@ type Snapshot struct {
 // SIGTERM/SIGINT 逆序优雅停链。BringUp 失败 = 启动失败,交 systemd
 // Restart=always(与旧三 unit 的 ExecStartPost 门同语义)。
 func Run(cfg Config, log *slog.Logger) error {
+	// 停机信号面从第一行就位(#313 评审 P3):SIGTERM 必须能打断冷启
+	// initdb(EnsureInternalPG 穿本 ctx),不能等链起来才有取消面。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	if killed := supervise.KillInstanceOrphans(cfg.InstanceID); killed > 0 {
 		log.Warn("上一世残留子进程已清杀", "count", killed)
 	}
@@ -422,7 +438,7 @@ func Run(cfg Config, log *slog.Logger) error {
 
 	// 受管 pg 首启 bootstrap(幂等):既有集群零动作;净机首启 initdb。
 	if cfg.pgInternal() {
-		if err := EnsureInternalPG(filepath.Join(cfg.CurrentDir, "pg/bin"), cfg.pgDataDir(), cfg.runDir(), log); err != nil {
+		if err := EnsureInternalPG(ctx, filepath.Join(cfg.CurrentDir, "pg/bin"), cfg.pgDataDir(), cfg.runDir(), log); err != nil {
 			return err
 		}
 	}
@@ -433,9 +449,6 @@ func Run(cfg Config, log *slog.Logger) error {
 			log.Info(msg, kv...)
 		},
 	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	nodes, err := BuildNodes(cfg)
 	if err != nil {
@@ -515,6 +528,11 @@ func orDefault(v, def time.Duration) time.Duration {
 // pid 派生(每世新 ID)会让 KillInstanceOrphans 永远找不到上一世孤儿
 // (评审 P0-2);同 boot 同 uid 的崩溃重启共享 ID = 孤儿可认领,跨 boot/
 // 跨用户天然隔离(重启后无残留进程,他人栈不相干)。
+//
+// 反面(评审 P3,#313 落文档):同机手动起第二个 stackd(沙箱/调试)
+// 不带 --instance-id 时与生产共享本 ID → 两者 KillInstanceOrphans 互认
+// 对方子进程为孤儿**互杀**。#284 沙箱已实踩;同机多栈必带
+// --instance-id(cumora-stackd -h 有说明)。
 func StableInstanceID() string {
 	boot := "unknown-boot"
 	if data, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
