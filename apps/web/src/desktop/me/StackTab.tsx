@@ -85,9 +85,10 @@ export function StackTab() {
     }).catch(() => { /* 版本缺省 = 不给升级按钮,无害 */ })
   }, [])
 
-  // 面板红条(托盘 ⚠ 已改主进程常驻轮询 #314,与这里同规则但独立
-  // 驱动)。轮询出错保留最后已知值(连接问题≠栈健康)。旧三 unit
-  // 形态无 stackd.children,livez 非 ok 同样计入。
+  // 面板红条(托盘 ⚠ 已改主进程常驻轮询 #314,独立驱动:children 分支
+  // 同规则,units 分支托盘多一层全停门 + 快照新鲜度门)。轮询出错保留
+  // 最后已知值(连接问题≠栈健康)。旧三 unit 形态无 stackd.children,
+  // livez 非 ok 同样计入。
   const degraded = useMemo(() => {
     if (!status) return false
     if (status.stackd?.children?.length) {

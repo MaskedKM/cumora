@@ -5,9 +5,11 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { computeDegradedFromStatus } = require('./degraded.cjs')
 
+const fresh = () => new Date(Date.now() - 2_000).toISOString()
+
 test('单 unit 形态:子进程全活且未熔断 = 不降级', () => {
   assert.equal(computeDegradedFromStatus({
-    stackd: { children: [
+    stackd: { updatedAt: fresh(), children: [
       { name: 'postgres', running: true, circuitOpen: false },
       { name: 'server', running: true, circuitOpen: false },
     ] },
@@ -16,7 +18,7 @@ test('单 unit 形态:子进程全活且未熔断 = 不降级', () => {
 
 test('单 unit 形态:任一子进程死 = 降级', () => {
   assert.equal(computeDegradedFromStatus({
-    stackd: { children: [
+    stackd: { updatedAt: fresh(), children: [
       { name: 'postgres', running: true, circuitOpen: false },
       { name: 'server', running: false, circuitOpen: false },
     ] },
@@ -25,8 +27,27 @@ test('单 unit 形态:任一子进程死 = 降级', () => {
 
 test('单 unit 形态:熔断开门 = 降级(进程可能被拉回但熔断未合)', () => {
   assert.equal(computeDegradedFromStatus({
-    stackd: { children: [{ name: 'daemon', running: true, circuitOpen: true }] },
+    stackd: { updatedAt: fresh(), children: [{ name: 'daemon', running: true, circuitOpen: true }] },
   }), true)
+})
+
+test('单 unit 形态:快照陈旧(>30s)= null —— 主动全停不永久挂 ⚠,SIGKILL 残留 running=true 不装活', () => {
+  const stale = new Date(Date.now() - 60_000).toISOString()
+  assert.equal(computeDegradedFromStatus({
+    stackd: { updatedAt: stale, children: [{ name: 'server', running: false, circuitOpen: false }] },
+  }), null)
+  assert.equal(computeDegradedFromStatus({
+    stackd: { updatedAt: stale, children: [{ name: 'server', running: true, circuitOpen: false }] },
+  }), null)
+})
+
+test('单 unit 形态:updatedAt 缺失/非法 = null', () => {
+  assert.equal(computeDegradedFromStatus({
+    stackd: { children: [{ name: 'server', running: false, circuitOpen: false }] },
+  }), null)
+  assert.equal(computeDegradedFromStatus({
+    stackd: { updatedAt: 'garbage', children: [{ name: 'server', running: false }] },
+  }), null)
 })
 
 test('旧三 unit 形态:unit 活着 + livez 死 = 降级(8-31 事故形态)', () => {
