@@ -412,6 +412,9 @@ type AgentEntry struct {
 	// ChatRegister:#24 聊天体语域开关(human-audience 会话说人话)。
 	// 列 NOT NULL DEFAULT true;nil 仅出现在旧行迁移前的空档,按开处理。
 	ChatRegister *bool `json:"chatRegister"`
+	// CompanyID:#261 公司 Skills 分发的分组键——daemon 按它把公司手册
+	// 物化进对应 agent 的 home。空(异常行)按无手册处理。
+	CompanyID string `json:"companyId"`
 }
 
 func engineDefault(engine string) *string {
@@ -430,7 +433,8 @@ func engineDefault(engine string) *string {
 
 func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) []AgentEntry {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, name, role, system_prompt, engine, model, fast_model, chat_register FROM participants
+		SELECT id, name, role, system_prompt, engine, model, fast_model, chat_register,
+		       COALESCE(company_id, '') FROM participants
 		 WHERE computer_id = $1 AND kind = 'agent' AND departed_at IS NULL
 		 ORDER BY name ASC`, computerID)
 	if err != nil {
@@ -441,7 +445,7 @@ func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) [
 		var e AgentEntry
 		var role, sysPrompt, engine, model, fastModel sql.NullString
 		var chatRegister sql.NullBool
-		if rows.Scan(&e.ID, &e.Name, &role, &sysPrompt, &engine, &model, &fastModel, &chatRegister) == nil {
+		if rows.Scan(&e.ID, &e.Name, &role, &sysPrompt, &engine, &model, &fastModel, &chatRegister, &e.CompanyID) == nil {
 			if role.Valid {
 				e.Role = &role.String
 			}

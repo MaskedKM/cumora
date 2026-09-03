@@ -2197,6 +2197,28 @@ type CreateShippingFrictionJSONBody map[string]interface{}
 // UpdateShippingFrictionJSONBody defines parameters for UpdateShippingFriction.
 type UpdateShippingFrictionJSONBody map[string]interface{}
 
+// CreateCompanySkillJSONBody defines parameters for CreateCompanySkill.
+type CreateCompanySkillJSONBody struct {
+	// Body 便捷位——省略 files 时组装为单文件 SKILL.md
+	Body        *string `json:"body,omitempty"`
+	Description string  `json:"description"`
+	Files       *[]struct {
+		Body string `json:"body"`
+		Path string `json:"path"`
+	} `json:"files,omitempty"`
+	Name string `json:"name"`
+}
+
+// UpdateCompanySkillJSONBody defines parameters for UpdateCompanySkill.
+type UpdateCompanySkillJSONBody struct {
+	Body        *string `json:"body,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Files       *[]struct {
+		Body string `json:"body"`
+		Path string `json:"path"`
+	} `json:"files,omitempty"`
+}
+
 // UploadBase64JSONBody defines parameters for UploadBase64.
 type UploadBase64JSONBody struct {
 	DataBase64 string `json:"dataBase64"`
@@ -2622,6 +2644,12 @@ type CreateShippingFrictionJSONRequestBody CreateShippingFrictionJSONBody
 
 // UpdateShippingFrictionJSONRequestBody defines body for UpdateShippingFriction for application/json ContentType.
 type UpdateShippingFrictionJSONRequestBody UpdateShippingFrictionJSONBody
+
+// CreateCompanySkillJSONRequestBody defines body for CreateCompanySkill for application/json ContentType.
+type CreateCompanySkillJSONRequestBody CreateCompanySkillJSONBody
+
+// UpdateCompanySkillJSONRequestBody defines body for UpdateCompanySkill for application/json ContentType.
+type UpdateCompanySkillJSONRequestBody UpdateCompanySkillJSONBody
 
 // UploadBase64JSONRequestBody defines body for UploadBase64 for application/json ContentType.
 type UploadBase64JSONRequestBody UploadBase64JSONBody

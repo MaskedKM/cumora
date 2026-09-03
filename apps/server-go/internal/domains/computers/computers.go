@@ -207,3 +207,68 @@ func (s *Server) MintAgentRuntimeToken(w http.ResponseWriter, r *http.Request, i
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"token": token, "expiresInSeconds": ttl})
 }
+
+// ListComputerSkills:#261 公司 Skills 分发清单——daemon 每同步周期拉一次,
+// 以 bundle_hash 为增量键(哈希不变不重拉整包)。公司集合 = 本机托管
+// agent 的公司去重; departed/换机的 agent 不再带出其公司(除非同公司
+// 还有别的在管 agent)。
+func (s *Server) ListComputerSkills(w http.ResponseWriter, r *http.Request) {
+	computerID, _, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT DISTINCT cs.company_id, cs.name, cs.description, cs.bundle_hash
+		  FROM company_skills cs
+		  JOIN participants p ON p.company_id = cs.company_id
+		 WHERE p.computer_id = $1 AND p.kind = 'agent' AND p.departed_at IS NULL
+		 ORDER BY cs.company_id, cs.name`, computerID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	type skillRef struct {
+		CompanyID   string `json:"companyId"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		BundleHash  string `json:"bundleHash"`
+	}
+	out := []skillRef{}
+	for rows.Next() {
+		var ref skillRef
+		if rows.Scan(&ref.CompanyID, &ref.Name, &ref.Description, &ref.BundleHash) == nil {
+			out = append(out, ref)
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+// GetComputerSkillBundle:#261 按内容哈希取整包。哈希查询 + 本机公司域
+// 存在性约束(设备只能拉它托管公司的包);同内容跨公司重复时任取一份
+// ——内容寻址键保证两者字节相同。
+func (s *Server) GetComputerSkillBundle(w http.ResponseWriter, r *http.Request, hash string) {
+	computerID, _, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var name string
+	var filesRaw json.RawMessage
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT cs.name, cs.files FROM company_skills cs
+		 WHERE cs.bundle_hash = $1 AND EXISTS (
+		     SELECT 1 FROM participants p
+		      WHERE p.computer_id = $2 AND p.company_id = cs.company_id
+		        AND p.kind = 'agent' AND p.departed_at IS NULL)
+		 LIMIT 1`, hash, computerID).Scan(&name, &filesRaw)
+	if err != nil {
+		httpx.WriteError(w, http.StatusNotFound, "skill bundle not found")
+		return
+	}
+	var files []struct {
+		Path string `json:"path"`
+		Body string `json:"body"`
+	}
+	_ = json.Unmarshal(filesRaw, &files)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"name": name, "files": files})
+}

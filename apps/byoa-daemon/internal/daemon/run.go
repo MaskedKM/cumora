@@ -359,6 +359,18 @@ func doRun(ctx context.Context, serverOverride string) error {
 				delete(runners, id)
 			}
 		}
+		// #261 公司 Skills 分发:对全部在管 runner 物化(不只新建的——
+		// 手册更新时 agent 配置未变,ConfigMatches 会 continue 主流程)。
+		// 无在管 runner 时跳过(清单白拉);清单拉取失败返回 nil,逐
+		// agent 落到"清单为空"→ 会误回收!故 nil 时跳过本轮。
+		if len(runners) > 0 {
+			syncer := newSkillSyncer(ctx, cfg)
+			if refs := syncer.list(); refs != nil {
+				for _, runner := range runners {
+					syncer.materializeAgent(runner.agent, runner.adapter.ID(), runner.home, refs)
+				}
+			}
+		}
 	}
 
 	heartbeat := func() {
