@@ -1,5 +1,5 @@
-// skills_sync 内部测试:物化的三态(命中跳过/变更重写/消失回收)+
-// 拉取失败保旧 + 引擎目录定址。纯文件系统直驱,不起 HTTP。
+// skills_sync 内部测试:物化三态(命中跳过/变更重写/消失回收)+ 拉取
+// 失败保旧 + 哈希复核 + 引擎目录定址。纯文件系统直驱,不起 HTTP。
 package daemon
 
 import (
@@ -17,56 +17,70 @@ func readSkillTest(t *testing.T, path string) string {
 	return string(b)
 }
 
+// refOf:按文件集算真哈希(物化端按 sha256 复核整包,假哈希会被拒)。
+func refOf(company, name string, files ...skillBundleFile) companySkillRef {
+	return companySkillRef{CompanyID: company, Name: name, BundleHash: bundleHashDaemon(files)}
+}
+
+func bundleOf(name string, files ...skillBundleFile) *skillBundle {
+	return &skillBundle{Name: name, Files: files}
+}
+
+var skillMdV1 = []skillBundleFile{
+	{Path: "SKILL.md", Body: "---\nname: deploy-runbook\n---\n\nv1"},
+	{Path: "references/rollback.md", Body: "rollback steps"},
+}
+
 func TestMaterializeSkillDirWritesAndSkips(t *testing.T) {
 	dir := t.TempDir()
-	refs := []companySkillRef{{
-		CompanyID: "co", Name: "deploy-runbook", Description: "d", BundleHash: "h1",
-	}}
-	b1 := &skillBundle{Name: "deploy-runbook", Files: []skillBundleFile{
-		{Path: "SKILL.md", Body: "---\nname: deploy-runbook\n---\n\nv1"},
-		{Path: "references/rollback.md", Body: "rollback steps"},
-	}}
-	var fetches int
+	ref := refOf("co", "deploy-runbook", skillMdV1...)
+	refs := []companySkillRef{ref}
 	fetch := func(hash string) *skillBundle {
-		fetches++
-		return b1
+		if hash != ref.BundleHash {
+			t.Fatalf("fetch hash mismatch")
+		}
+		return bundleOf("deploy-runbook", skillMdV1...)
 	}
 	if err := materializeSkillDir(dir, refs, fetch); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "SKILL.md")); got != b1.Files[0].Body {
+	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "SKILL.md")); got != skillMdV1[0].Body {
 		t.Fatalf("SKILL.md body = %q", got)
 	}
 	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "references", "rollback.md")); got != "rollback steps" {
 		t.Fatalf("nested file missing: %q", got)
 	}
-	if fetches != 1 {
-		t.Fatalf("fetches = %d, want 1", fetches)
-	}
 
-	// 第二轮同哈希:零拉取零写盘(stamp 命中)。
+	// 第二轮同哈希:stamp 命中 + 目录在 → 零拉取零写盘。
+	stampBefore := readSkillTest(t, filepath.Join(dir, stampsFile))
 	if err := materializeSkillDir(dir, refs, fetch); err != nil {
 		t.Fatalf("re-materialize: %v", err)
 	}
-	if fetches != 1 {
-		t.Fatalf("fetches after no-op round = %d, want 1", fetches)
+	if got := readSkillTest(t, filepath.Join(dir, stampsFile)); got != stampBefore {
+		t.Fatalf("stamps rewritten on no-op round")
+	}
+
+	// stamp 命中但目录被手删 → 重物化自愈。
+	if err := os.RemoveAll(filepath.Join(dir, "deploy-runbook")); err != nil {
+		t.Fatal(err)
+	}
+	if err := materializeSkillDir(dir, refs, fetch); err != nil {
+		t.Fatalf("self-heal round: %v", err)
+	}
+	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "SKILL.md")); got != skillMdV1[0].Body {
+		t.Fatalf("SKILL.md after self-heal = %q", got)
 	}
 
 	// 哈希变更:整包重写(嵌套新文件就位,旧内容不留)。
-	b2 := &skillBundle{Name: "deploy-runbook", Files: []skillBundleFile{
-		{Path: "SKILL.md", Body: "---\nname: deploy-runbook\n---\n\nv2"},
-	}}
-	refs[0].BundleHash = "h2"
-	fetch2 := func(hash string) *skillBundle {
-		if hash != "h2" {
-			t.Fatalf("fetch hash = %s, want h2", hash)
-		}
-		return b2
-	}
-	if err := materializeSkillDir(dir, refs, fetch2); err != nil {
+	v2 := []skillBundleFile{{Path: "SKILL.md", Body: "---\nname: deploy-runbook\n---\n\nv2"}}
+	ref2 := refOf("co", "deploy-runbook", v2...)
+	refs2 := []companySkillRef{ref2}
+	if err := materializeSkillDir(dir, refs2, func(string) *skillBundle {
+		return bundleOf("deploy-runbook", v2...)
+	}); err != nil {
 		t.Fatalf("rematerialize on change: %v", err)
 	}
-	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "SKILL.md")); got != b2.Files[0].Body {
+	if got := readSkillTest(t, filepath.Join(dir, "deploy-runbook", "SKILL.md")); got != v2[0].Body {
 		t.Fatalf("SKILL.md after change = %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "deploy-runbook", "references")); !os.IsNotExist(err) {
@@ -76,10 +90,9 @@ func TestMaterializeSkillDirWritesAndSkips(t *testing.T) {
 
 func TestMaterializeSkillDirRemovesDeleted(t *testing.T) {
 	dir := t.TempDir()
-	refs := []companySkillRef{{CompanyID: "co", Name: "a", BundleHash: "h1"}}
-	fetch := func(string) *skillBundle {
-		return &skillBundle{Name: "a", Files: []skillBundleFile{{Path: "SKILL.md", Body: "A"}}}
-	}
+	files := []skillBundleFile{{Path: "SKILL.md", Body: "A"}}
+	refs := []companySkillRef{refOf("co", "a", files...)}
+	fetch := func(string) *skillBundle { return bundleOf("a", files...) }
 	if err := materializeSkillDir(dir, refs, fetch); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
@@ -98,16 +111,16 @@ func TestMaterializeSkillDirRemovesDeleted(t *testing.T) {
 
 func TestMaterializeSkillDirFetchFailureKeepsStale(t *testing.T) {
 	dir := t.TempDir()
-	refs := []companySkillRef{{CompanyID: "co", Name: "a", BundleHash: "h1"}}
-	good := func(string) *skillBundle {
-		return &skillBundle{Name: "a", Files: []skillBundleFile{{Path: "SKILL.md", Body: "v1"}}}
-	}
+	files := []skillBundleFile{{Path: "SKILL.md", Body: "v1"}}
+	ref := refOf("co", "a", files...)
+	refs := []companySkillRef{ref}
+	good := func(string) *skillBundle { return bundleOf("a", files...) }
 	if err := materializeSkillDir(dir, refs, good); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	// 哈希变了但整包拉取失败:旧目录保留、stamp 留旧值(宁可陈旧不可
 	// 缺失),下一轮再试。
-	refs[0].BundleHash = "h2"
+	refs[0].BundleHash = "deadbeef"
 	fail := func(string) *skillBundle { return nil }
 	if err := materializeSkillDir(dir, refs, fail); err != nil {
 		t.Fatalf("materialize on fetch failure: %v", err)
@@ -116,8 +129,44 @@ func TestMaterializeSkillDirFetchFailureKeepsStale(t *testing.T) {
 		t.Fatalf("stale body lost on fetch failure: %q", got)
 	}
 	stamps, _ := readSkillStamps(dir)
-	if stamps["a"] != "h1" {
-		t.Fatalf("stamp on fetch failure = %v, want h1", stamps)
+	if stamps["a"] != ref.BundleHash {
+		t.Fatalf("stamp on fetch failure = %v, want %s", stamps, ref.BundleHash)
+	}
+}
+
+func TestMaterializeSkillDirRejectsTamperedBundle(t *testing.T) {
+	dir := t.TempDir()
+	// 清单哈希与整包内容不符(错包/中间人)→ 不落盘。
+	claimed := []skillBundleFile{{Path: "SKILL.md", Body: "claimed"}}
+	ref := refOf("co", "a", claimed...)
+	refs := []companySkillRef{ref}
+	tampered := bundleOf("a", skillBundleFile{Path: "SKILL.md", Body: "tampered"})
+	if err := materializeSkillDir(dir, refs, func(string) *skillBundle { return tampered }); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a")); !os.IsNotExist(err) {
+		t.Fatalf("tampered bundle must not land on disk")
+	}
+}
+
+func TestMaterializeSkillDirRejectsBadName(t *testing.T) {
+	// 用未创建的目标路径:坏名字清单 → 早退不建目录、零落盘。
+	dir := filepath.Join(t.TempDir(), "skills")
+	refs := []companySkillRef{{CompanyID: "co", Name: "../../evil", BundleHash: "x"}}
+	if err := materializeSkillDir(dir, refs, func(string) *skillBundle { return nil }); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("bad name must not even create the dir")
+	}
+}
+
+func TestWriteSkillFilesRejectsUnsafePaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{"../evil.md", "/abs.md", ".", "a\x00b"} {
+		if err := writeSkillFiles(filepath.Join(dir, "x"), []skillBundleFile{{Path: path, Body: "x"}}); err == nil {
+			t.Fatalf("unsafe path %q accepted", path)
+		}
 	}
 }
 

@@ -74,20 +74,20 @@ export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
 export type MeResponse = Schemas['MeResponse']
 
-import { getActiveCompanyId, getAuthToken } from '@/stores/auth'
 /* #221:Status/CalendarEventKind/ComputerStatus 原只被手写 WsEvent union 引用,
  * 契约化后随之退役(事件载荷里的枚举由生成物直接引用契约 schema)。 */
-import type {BoardCardComment, BoardCardLookup,BoardSnapshot, 
-  BoardSummary, CalendarDispatch, 
-  CalendarEvent, CalendarEventStatus, ComputerKind, EngineId,
+import type {
+  BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
+  CalendarEvent, CalendarEventStatus, CalendarDispatch, ComputerKind, EngineId,
 } from '@/types'
-import { fetchJson, getDevModeEnabled, SERVER_ORIGIN } from './core'
+import { getAuthToken, getActiveCompanyId } from '@/stores/auth'
+import { SERVER_ORIGIN, fetchJson, getDevModeEnabled } from './core'
 
 // 共享骨架(#147 ①)挪到 ./core —— origin 三层解析/Bearer/401 清 session/
 // 错误 detail 解析与 admin 面合一;此处 re-export 维持既有导入方不变。
 export {
-  ApiError,getDevModeEnabled, 
-  getServerOrigin, setDevModeEnabled,setServerOrigin, 
+  getServerOrigin, setServerOrigin, getDevModeEnabled, setDevModeEnabled,
+  ApiError,
 } from './core'
 
 const DEV_API_TARGET = import.meta.env.DEV

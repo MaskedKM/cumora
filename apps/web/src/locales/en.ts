@@ -1868,6 +1868,7 @@ export const en = {
   'skills.description': 'One-line description',
   'skills.body': 'Body (SKILL.md)',
   'skills.bodyHint': 'Frontmatter is generated from the name and description; write the body only.',
+  'skills.bodyHintMulti': 'Multi-file skill: saving updates SKILL.md only; bundled files are kept.',
   'skills.fileCount': '{n} files',
   'skills.empty': 'No company skills yet. Capture your team\'s routines as skills and agents can use them on demand.',
   'skills.deleteConfirm': 'Delete skill "{name}"? Materialized copies will be reclaimed on the next sync cycle.',

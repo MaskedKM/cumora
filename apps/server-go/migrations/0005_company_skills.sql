@@ -18,3 +18,5 @@ CREATE TABLE public.company_skills (
     CONSTRAINT company_skills_company_name_unique UNIQUE (company_id, name)
 );
 CREATE INDEX idx_company_skills_company ON public.company_skills (company_id);
+-- daemon 整包拉取按 bundle_hash 定址 —— 无索引则每包一次全表扫。
+CREATE INDEX idx_company_skills_bundle_hash ON public.company_skills (bundle_hash);

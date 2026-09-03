@@ -6,11 +6,17 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -99,9 +105,11 @@ func (s *skillSyncer) bundle(hash string) *skillBundle {
 }
 
 // materializeAgent:把 refs 中属于 agent 公司的技能物化进 home。错误只
-// 记日志——手册缺失不许影响唤醒主路径。
-func (s *skillSyncer) materializeAgent(agent AgentInfo, home string, refs []companySkillRef) {
-	dir := engineSkillsDir(engineOf(agent), home)
+// 记日志——手册缺失不许影响唤醒主路径。物化目录按 adapterID 定址(而非
+// agent 声明引擎:run.go 的同步循环在本机无声明引擎时回落 engines[0],
+// runner.adapter 才是实际在跑的引擎)。
+func (s *skillSyncer) materializeAgent(agent AgentInfo, adapterID, home string, refs []companySkillRef) {
+	dir := engineSkillsDir(adapterID, home)
 	if dir == "" || agent.CompanyID == "" {
 		return
 	}
@@ -116,9 +124,18 @@ func (s *skillSyncer) materializeAgent(agent AgentInfo, home string, refs []comp
 	}
 }
 
+// skillNameRe:服务端 create/update 同款名字规则。daemon 侧再校验一遍是
+// 纵深防御——物化端直接 RemoveAll/写盘,不裸信网络回包。
+var skillNameRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// bundleMatchesHash:按请求哈希复核整包(sha256 重算),错内容不落盘。
+func bundleMatchesHash(hash string, files []skillBundleFile) bool {
+	return bundleHashDaemon(files) == hash
+}
+
 // materializeSkillDir:目录级物化(与 agent 解耦,便于单测直驱)。
 // fetch 返回 nil = 拉取失败:该技能本轮跳过,stamp 保留旧值(下轮再试),
-// 不清既有目录——宁可陈旧不可缺失。
+// 不清既有目录——宁可陈旧不可缺失。stamp 命中但目录被手删 → 重物化自愈。
 func materializeSkillDir(dir string, refs []companySkillRef, fetch func(hash string) *skillBundle) error {
 	stamps, err := readSkillStamps(dir)
 	if err != nil {
@@ -126,12 +143,15 @@ func materializeSkillDir(dir string, refs []companySkillRef, fetch func(hash str
 	}
 	next := map[string]string{}
 	for _, ref := range refs {
-		if stamps[ref.Name] == ref.BundleHash {
+		if !skillNameRe.MatchString(ref.Name) {
+			continue // 防御:坏名字不许进 RemoveAll/Join
+		}
+		if stamps[ref.Name] == ref.BundleHash && pathExists(filepath.Join(dir, ref.Name)) {
 			next[ref.Name] = ref.BundleHash
 			continue
 		}
 		b := fetch(ref.BundleHash)
-		if b == nil || len(b.Files) == 0 {
+		if b == nil || len(b.Files) == 0 || !bundleMatchesHash(ref.BundleHash, b.Files) {
 			next[ref.Name] = stamps[ref.Name] // 陈旧但保命
 			continue
 		}
@@ -149,6 +169,9 @@ func materializeSkillDir(dir string, refs []companySkillRef, fetch func(hash str
 			_ = os.RemoveAll(filepath.Join(dir, name))
 		}
 	}
+	if stampsEqual(stamps, next) {
+		return nil // 无变化零写盘
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -160,6 +183,11 @@ func writeSkillFiles(target string, files []skillBundleFile) error {
 		return err
 	}
 	for _, f := range files {
+		// 纵深防御:服务端已校验,但写盘端不裸信网络回包。
+		if f.Path == "" || f.Path == "." || strings.HasPrefix(f.Path, "/") ||
+			strings.Contains(f.Path, "..") || strings.ContainsRune(f.Path, 0) {
+			return fmt.Errorf("unsafe path in bundle: %q", f.Path)
+		}
 		p := filepath.Join(target, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return err
@@ -169,6 +197,19 @@ func writeSkillFiles(target string, files []skillBundleFile) error {
 		}
 	}
 	return nil
+}
+
+// bundleHashDaemon:与 server domains/skills.bundleHash 同算法(文件按
+// path 排序的长度前缀拼接体 sha256)——拉回的整包按请求哈希复核,错
+// 内容不落盘。
+func bundleHashDaemon(files []skillBundleFile) string {
+	sorted := append([]skillBundleFile(nil), files...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	h := sha256.New()
+	for _, f := range sorted {
+		fmt.Fprintf(h, "%d:%s%d:%s", len(f.Path), f.Path, len(f.Body), f.Body)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func readSkillStamps(dir string) (map[string]string, error) {
@@ -187,6 +228,20 @@ func readSkillStamps(dir string) (map[string]string, error) {
 	return stamps, nil
 }
 
+// stampsEqual:浅比较(键值集相同)。stamp 未变就不重写——物化轮次里
+// 命中路径零写盘。
+func stampsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func writeSkillStamps(dir string, stamps map[string]string) error {
 	// encoding/json 对 map 键按字典序输出——落盘字节天然稳定。
 	b, err := json.MarshalIndent(stamps, "", "  ")
@@ -194,12 +249,4 @@ func writeSkillStamps(dir string, stamps map[string]string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, stampsFile), b, 0o644)
-}
-
-// engineOf:AgentInfo.Engine 的解引用(空引擎 → 空串 → 物化跳过)。
-func engineOf(a AgentInfo) string {
-	if a.Engine == nil {
-		return ""
-	}
-	return *a.Engine
 }

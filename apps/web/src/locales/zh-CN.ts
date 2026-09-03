@@ -1871,6 +1871,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'skills.description': '一句话描述',
   'skills.body': '正文(SKILL.md)',
   'skills.bodyHint': 'frontmatter 由系统按名称与描述自动生成;此处只写正文。',
+  'skills.bodyHintMulti': '多文件技能:保存正文只更新 SKILL.md,附属文件保留。',
   'skills.fileCount': '{n} 个文件',
   'skills.empty': '还没有公司技能。把团队的常用流程沉淀成技能,智能体即可按需取用。',
   'skills.deleteConfirm': '删除技能「{name}」?各端已物化的副本会在下个同步周期回收。',

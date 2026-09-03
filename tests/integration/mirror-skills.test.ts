@@ -41,11 +41,12 @@ function composeSkillMd(name: string, description: string, body: string): string
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}`
 }
 
-/** 服务端 bundleHash 的 TS 镜像(长度前缀拼接,文件按 path 排序)。 */
+/** 服务端 bundleHash 的 TS 镜像(长度前缀拼接,文件按 path 排序;长度
+ * 用字节数——Go 侧 len() 是字节,UTF-16 码元在非 ASCII 内容上会漂移)。 */
 function bundleHash(files: Array<{ path: string; body: string }>): string {
   const h = createHash('sha256')
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
-    h.update(`${f.path.length}:${f.path}${f.body.length}:${f.body}`)
+    h.update(`${Buffer.byteLength(f.path)}:${f.path}${Buffer.byteLength(f.body)}:${f.body}`)
   }
   return h.digest('hex')
 }
@@ -57,7 +58,8 @@ test('[mirror-skills] list starts empty (skills array, never null)', async () =>
 })
 
 test('[mirror-skills] create via body convenience: frontmatter composed, hash content-addressed', async () => {
-  const body = 'Step 1. Deploy.\nStep 2. Verify.'
+  // 正文带非 ASCII:长度前缀必须按字节计(Go len),UTF-16 码元会漂移。
+  const body = 'Step 1. Deploy.\nStep 2. Verify.\n中文注记。'
   const r = await call('/skills', {
     method: 'POST',
     body: JSON.stringify({ name: 'deploy-runbook', description: 'How we ship', body }),
@@ -126,6 +128,43 @@ test('[mirror-skills] validation: name/description/files rules', async () => {
     name: 'ok', description: 'd',
     files: [{ path: '../evil.md', body: 'x' }, { path: 'SKILL.md', body: 'x' }],
   })).status, 400)
+  // 重复 path
+  assert.equal((await bad({
+    name: 'ok', description: 'd',
+    files: [{ path: 'SKILL.md', body: 'x' }, { path: 'SKILL.md', body: 'y' }],
+  })).status, 400)
+})
+
+test('[mirror-skills] update body on multi-file skill preserves bundled files', async () => {
+  const created = await call('/skills', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'multi-edit', description: 'd',
+      files: [
+        { path: 'SKILL.md', body: 'See references.' },
+        { path: 'references/rollback.md', body: 'rollback steps' },
+      ],
+    }),
+  })
+  assert.equal(created.status, 201)
+  const r = await call(`/skills/${created.json.id}`, {
+    method: 'PUT', body: JSON.stringify({ body: 'rewritten body' }),
+  })
+  assert.equal(r.status, 200)
+  const got = await call(`/skills/${created.json.id}`)
+  const paths = (got.json.files as any[]).map((f: any) => f.path).sort()
+  assert.deepEqual(paths, ['SKILL.md', 'references/rollback.md'])
+  assert.equal(got.json.files.find((f: any) => f.path === 'SKILL.md').body,
+    composeSkillMd('multi-edit', 'd', 'rewritten body'))
+  assert.equal(got.json.files.find((f: any) => f.path === 'references/rollback.md').body, 'rollback steps')
+  // 显式 files 整包替换仍是强路径:给单文件 → 附属文件按语义移除。
+  const replaced = await call(`/skills/${created.json.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ files: [{ path: 'SKILL.md', body: 'solo now' }] }),
+  })
+  assert.equal(replaced.status, 200)
+  const got2 = await call(`/skills/${created.json.id}`)
+  assert.equal(got2.json.files.length, 1)
 })
 
 test('[mirror-skills] update: description-only keeps bundle; body change re-keys', async () => {

@@ -425,7 +425,10 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		// #261 公司 Skills 库(SOP 手册)只读索引:内容已由 daemon 物化到
 		// 引擎原生 skills 目录(引擎加载器直接可用),这里给人/agent 一个
 		// 可发现的清单面。
-		companyID, _ := s.AgentCompany(ctx, me)
+		companyID, err := s.AgentCompany(ctx, me)
+		if err != nil {
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
+		}
 		if companyID == "" {
 			return agent.Err("no company")
 		}

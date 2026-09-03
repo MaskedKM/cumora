@@ -122,7 +122,8 @@ func (r *AgentRunner) ConfigMatches(agent AgentInfo, engine string) bool {
 		strEqPtr(r.agent.SystemPrompt, agent.SystemPrompt) &&
 		strEqPtr(r.agent.Model, agent.Model) &&
 		strEqPtr(r.agent.FastModel, agent.FastModel) &&
-		boolEqPtr(r.agent.ChatRegister, agent.ChatRegister) // #24 开关变更也要换runner 快照
+		boolEqPtr(r.agent.ChatRegister, agent.ChatRegister) && // #24 开关变更也要换runner 快照
+		r.agent.CompanyID == agent.CompanyID // #261 公司变更换快照(手册分组键)
 }
 
 func strEqPtr(a, b *string) bool {

@@ -21,7 +21,7 @@ export function SkillsView() {
       setSkills(list)
       setError('')
     } catch (err) {
-      setError(String(err))
+      setError(errText(err))
     }
   }, [])
 
@@ -33,7 +33,7 @@ export function SkillsView() {
       await api.deleteCompanySkill(id)
       await reload()
     } catch (err) {
-      setError(String(err))
+      setError(errText(err))
     }
   }
 
@@ -123,16 +123,19 @@ function SkillEditor({ skill, onClose, onSaved }: {
   const [name, setName] = useState(skill?.name ?? '')
   const [description, setDescription] = useState(skill?.description ?? '')
   const [body, setBody] = useState('')
+  const [multiFile, setMultiFile] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   // 编辑回填:拉全量取 SKILL.md,剥掉 frontmatter(保存时服务端按
-  // name/description 重组装,前后台不双写这份头)。
+  // name/description 重组装,前后台不双写这份头)。多文件技能:body
+  // 编辑只更新 SKILL.md,附属文件服务端保留——提示用户。
   useEffect(() => {
     if (!skill) return
     let alive = true
     void api.getCompanySkill(skill.id).then((detail) => {
       if (!alive) return
+      setMultiFile(detail.files.length > 1)
       const md = detail.files.find((f) => f.path === 'SKILL.md')?.body ?? ''
       setBody(stripSkillFrontmatter(md))
     }).catch((err: unknown) => { if (alive) setError(errText(err)) })
@@ -191,7 +194,9 @@ function SkillEditor({ skill, onClose, onSaved }: {
         </label>
         <label className="mb-3 block flex-1 text-sm font-medium">
           {t('skills.body')}
-          <span className="mb-1 block font-normal opacity-50">{t('skills.bodyHint')}</span>
+          <span className="mb-1 block font-normal opacity-50">
+            {multiFile ? t('skills.bodyHintMulti') : t('skills.bodyHint')}
+          </span>
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
@@ -224,11 +229,11 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-// stripSkillFrontmatter:剥 SKILL.md 的 --- 头块(无头块原样返回;
-// 头后多余空行压成单个换行)。
+// stripSkillFrontmatter:剥 SKILL.md 的 --- 头块(无头块原样返回)。锚
+// 定 '\n---\n' 而非 '\n---':后者会切在正文 ---- 分隔线的中间。
 function stripSkillFrontmatter(md: string): string {
   if (!md.startsWith('---\n')) return md
-  const end = md.indexOf('\n---', 4)
+  const end = md.indexOf('\n---\n', 4)
   if (end < 0) return md
-  return md.slice(end + 4).replace(/^\n+/, '\n').trimStart()
+  return md.slice(end + 5).replace(/^\n+/, '')
 }

@@ -11,15 +11,24 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/skills"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
+
+// isUniqueViolation:pg 23505(workspaces 域同款判定)。
+func isUniqueViolation(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505"
+}
 
 // SkillFile:包内一个文件(path 相对技能根,SKILL.md 必在根)。
 type SkillFile struct {
@@ -75,13 +84,23 @@ func validateSkillFiles(files []SkillFile) ([]SkillFile, string) {
 		return nil, fmt.Sprintf("too many files: %d > %d", len(files), skillMaxFiles)
 	}
 	hasSkillMd := false
+	seen := map[string]bool{}
 	for _, f := range files {
 		if len(f.Path) == 0 || len(f.Path) > 200 {
 			return nil, fmt.Sprintf("bad path length: %s", f.Path)
 		}
-		if strings.HasPrefix(f.Path, "/") || strings.Contains(f.Path, "..") || skillUnsafePathRe.MatchString(f.Path) {
+		if f.Path == "." || strings.HasPrefix(f.Path, "/") || strings.Contains(f.Path, "..") || skillUnsafePathRe.MatchString(f.Path) {
 			return nil, fmt.Sprintf("unsafe path: %s", f.Path)
 		}
+		// 控制字符(含 NUL)存库能过,daemon 每轮物化必炸——入口拦死。
+		if strings.ContainsFunc(f.Path, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return nil, fmt.Sprintf("control characters in path: %q", f.Path)
+		}
+		// 重复 path:落盘 last-write 不定、hash 计双份——去重即拒。
+		if seen[f.Path] {
+			return nil, fmt.Sprintf("duplicate path: %s", f.Path)
+		}
+		seen[f.Path] = true
 		if len(f.Body) > skillMaxFileBody {
 			return nil, fmt.Sprintf("file %s > %d bytes", f.Path, skillMaxFileBody)
 		}
@@ -253,6 +272,11 @@ func (s *Server) CreateCompanySkill(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO company_skills (id, company_id, name, description, files, bundle_hash, created_by)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		id, companyID, name, description, flJSON, hash, userID); err != nil {
+		// 并发同名创建撞 UNIQUE(company_id,name) 也按 409,不裸 500。
+		if isUniqueViolation(err) {
+			httpx.WriteError(w, http.StatusConflict, fmt.Sprintf("skill %q already exists", name))
+			return
+		}
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -300,11 +324,14 @@ func (s *Server) UpdateCompanySkill(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, http.StatusBadRequest, "nothing to update (description, body or files)")
 		return
 	}
-	// description-only 变更不碰文件(既有集原样;SKILL.md frontmatter 仅
-	// 在 body/files 提供时随包重写)。
+	// description-only 变更不碰文件;files 显式给 = 整包替换(CLI 强路
+	// 径);body 给 = 只重组 SKILL.md,其余附属文件(references/* 等)
+	// 原样保留——管理页的 body 编辑不许静默摧毁多文件技能。
 	files := existing.files
-	if in.Files != nil || in.Body != nil {
-		files = resolveFiles(existing.name, description, in)
+	if in.Files != nil {
+		files = *in.Files
+	} else if in.Body != nil {
+		files = mergeSkillMdFiles(existing.name, description, *in.Body, existing.files)
 	}
 	files, filesErr := validateSkillFiles(files)
 	if filesErr != "" {
@@ -345,9 +372,8 @@ func (s *Server) DeleteCompanySkill(w http.ResponseWriter, r *http.Request, id s
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// resolveFiles:请求体 → 文件集。files 显式给则原样(调用方校验);否则
-// body 便捷位组装单文件 SKILL.md;两者皆缺 → 既有文件集(update 路径,
-// description-only 变更不碰文件)。
+// resolveFiles:create 路径的请求体 → 文件集。files 显式给则原样(调用
+// 方校验);否则 body 便捷位组装单文件 SKILL.md。
 func resolveFiles(name, description string, in skillBody) []SkillFile {
 	if in.Files != nil {
 		return *in.Files
@@ -356,4 +382,17 @@ func resolveFiles(name, description string, in skillBody) []SkillFile {
 		return []SkillFile{{Path: "SKILL.md", Body: composeSkillMd(name, description, *in.Body)}}
 	}
 	return nil
+}
+
+// mergeSkillMdFiles:update-with-body 的合并语义:重组 SKILL.md,其余
+// 附属文件原样保留(顺序无关——validate/hash 都会重排序)。
+func mergeSkillMdFiles(name, description, body string, existing []SkillFile) []SkillFile {
+	md := composeSkillMd(name, description, body)
+	out := []SkillFile{{Path: "SKILL.md", Body: md}}
+	for _, f := range existing {
+		if f.Path != "SKILL.md" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

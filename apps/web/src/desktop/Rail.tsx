@@ -1,16 +1,16 @@
 import { useEffect } from 'react'
-import { api } from '@/api/client'
-import { Avatar } from '@/components/Avatar'
-import { IAgent, IAgents, IBoard, ICalendar, IChat, IDoc, IExit, IFile,
-  IFolder, IObserve, IShip, IWhisper } from '@/components/icons'
-import { type MessageKey, useT } from '@/lib/i18n'
-import { cn } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useAuth, useMe } from '@/stores/auth'
+import { useConversations, isMuted } from '@/stores/conversations'
 import { useComputers } from '@/stores/computers'
-import { isMuted, useConversations } from '@/stores/conversations'
 import { useDevtools } from '@/stores/devtools'
 import { useParticipants } from '@/stores/participants'
+import { Avatar } from '@/components/Avatar'
+import { IChat, IWhisper, IAgent, IAgents, IBoard, IDoc, IFile,
+  IFolder, ICalendar, IObserve, IExit, IShip } from '@/components/icons'
+import { api } from '@/api/client'
+import { cn } from '@/lib/utils'
+import { useT, type MessageKey } from '@/lib/i18n'
 import type { Participant, ViewKey } from '@/types'
 
 // `label` is a message key rather than the string itself — the array is
