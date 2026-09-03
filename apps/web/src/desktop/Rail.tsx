@@ -4,6 +4,7 @@ import { useAuth, useMe } from '@/stores/auth'
 import { useConversations, isMuted } from '@/stores/conversations'
 import { useComputers } from '@/stores/computers'
 import { useDevtools } from '@/stores/devtools'
+import { useInbox } from '@/stores/inbox'
 import { useParticipants } from '@/stores/participants'
 import { Avatar } from '@/components/Avatar'
 import { IChat, IWhisper, IAgent, IAgents, IBoard, IDoc, IFile,
@@ -18,6 +19,7 @@ import type { Participant, ViewKey } from '@/types'
 // locale switch. Resolution happens at render.
 const baseItems: Array<{ key: ViewKey['view']; Icon: typeof IChat; label: MessageKey }> = [
   { key: 'conversations', Icon: IChat, label: 'nav.conversations' },
+  { key: 'inbox', Icon: IObserve, label: 'nav.inbox' },
   { key: 'whispers', Icon: IWhisper, label: 'nav.whispers' },
   { key: 'shipping', Icon: IShip, label: 'nav.ship' },
   { key: 'boards', Icon: IBoard, label: 'nav.boards' },
@@ -40,6 +42,9 @@ export function Rail() {
   const totalUnread = useConversations((s) =>
     s.list.reduce((acc, c) => acc + (isMuted(c) ? 0 : (c.unread ?? 0)), 0),
   )
+  // #264 Inbox 徽标:action_required + attention 的未读(info 不进徽标——
+  // 纯落账不占注意力)。
+  const inboxBadge = useInbox((s) => s.counts.actionRequired + s.counts.attention)
   // Any paired computer running an outdated daemon → a gold dot on the avatar
   // so the upgrade nudge is visible app-wide, not just inside the You view.
   const daemonOutdated = useComputers((s) => Object.values(s.byId).some((c) => c.daemonOutdated))
@@ -98,7 +103,9 @@ export function Rail() {
 
       {items.map(({ key, Icon, label }) => {
         const active = view === key
-        const badge = key === 'conversations' && totalUnread > 0 ? totalUnread : undefined
+        const badge = key === 'conversations' && totalUnread > 0 ? totalUnread
+          : key === 'inbox' && inboxBadge > 0 ? inboxBadge
+          : undefined
         return (
           <button
             key={key}

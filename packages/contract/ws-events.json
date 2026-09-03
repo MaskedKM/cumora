@@ -84,6 +84,11 @@
       "go": "ChCalendarEvents",
       "ts": "CH_CALENDAR_EVENTS",
       "description": "日历行 CRUD/派发推进(calendar.changed)。"
+    },
+    "cumora:inbox": {
+      "go": "ChInbox",
+      "ts": "CH_INBOX",
+      "description": "人侧 Inbox 分级(#264):inbox.new 按严重度打扰。"
     }
   },
   "$defs": {
@@ -961,6 +966,55 @@
         "instanceId",
         "ts"
       ]
+    },
+    "InboxNewEvent": {
+      "type": "object",
+      "x-event": {
+        "type": "inbox.new",
+        "channel": "cumora:inbox",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "inbox.new"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "recipientUserId": {
+          "type": "string",
+          "description": "收件人(users.id;human participant 同 id)。客户端按它过滤自己的条目。"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["action_required", "attention", "info"]
+        },
+        "itemType": {
+          "type": "string",
+          "description": "生成源类型:run.failed / card.needs-human / card.assigned / dispatch.failed / dispatch.done"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "linkKind": {
+          "type": "string",
+          "description": "conversation / board / calendar / observability"
+        },
+        "linkId": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["type", "recipientUserId", "itemId", "severity", "itemType", "title", "at"]
     }
   }
 }

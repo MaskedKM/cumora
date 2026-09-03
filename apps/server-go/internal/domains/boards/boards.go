@@ -16,6 +16,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/boards"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -689,6 +690,7 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 		args = append(args, av)
 		sets = append(sets, fmt.Sprintf("assignee_id = $%d", len(args)))
 	}
+	newColID := ""
 	if v, has := raw["columnId"]; has {
 		var newCol string
 		_ = json.Unmarshal(v, &newCol)
@@ -703,6 +705,7 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 			}
 			args = append(args, newCol)
 			sets = append(sets, fmt.Sprintf("column_id = $%d", len(args)))
+			newColID = newCol
 			columnChanged = true
 		}
 	}
@@ -739,14 +742,16 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 	})
 	s.Wake(companyID, mentions, uid)
 	// 重指派也唤醒新 assignee(键在请求体出现才算变化路径)。
+	newAssignee := ""
 	if v, has := raw["assigneeId"]; has && string(v) != "null" {
-		var newAssignee string
 		_ = json.Unmarshal(v, &newAssignee)
 		newAssignee = strings.TrimSpace(newAssignee)
 		if newAssignee != "" && newAssignee != uid {
 			s.Wake(companyID, []string{newAssignee}, uid)
 		}
 	}
+	emitCardInbox(r.Context(), s.DB, companyID, uid, boardID, cardID, nextTitle,
+		newAssignee, columnChanged, newColID)
 	resp := map[string]any{"ok": true}
 	if mentionsOut != nil {
 		resp["mentions"] = mentionsOut
@@ -881,3 +886,35 @@ func (s *Server) DeleteCardComment(w http.ResponseWriter, r *http.Request, bid s
 	})
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// emitCardInbox:#264 看板 → 人侧 inbox。两条规则:卡片指派给人类 →
+// attention(该人类收);移入 ready-for-human 列(五标签约定的裁决列,
+// 标题大小写不敏感匹配)→ action_required(owner 收)。尽力而为。
+func emitCardInbox(ctx context.Context, db *sql.DB, companyID, actorID, boardID, cardID, cardTitle, assigneeID string, columnChanged bool, newColID string) {
+	if assigneeID != "" && assigneeID != actorID {
+		var kind string
+		if db.QueryRowContext(ctx,
+			`SELECT kind FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+			assigneeID, companyID).Scan(&kind) == nil && kind == "human" {
+			inbox.Emit(ctx, db, companyID, assigneeID, "attention", "card.assigned",
+				"Card assigned to you: "+cardTitle, "moved by "+actorID, "board", boardID)
+		}
+	}
+	if columnChanged && newColID != "" {
+		var colTitle string
+		if db.QueryRowContext(ctx,
+			`SELECT title FROM board_columns WHERE id = $1 AND board_id = $2 LIMIT 1`,
+			newColID, boardID).Scan(&colTitle) == nil {
+			if readyForHumanRe.MatchString(strings.ToLower(colTitle)) {
+				if owner := inbox.CompanyOwner(ctx, db, companyID); owner != "" {
+					inbox.Emit(ctx, db, companyID, owner, "action_required", "card.needs-human",
+						"Card needs a human: "+cardTitle, "column: "+colTitle, "board", boardID)
+				}
+			}
+		}
+	}
+}
+
+// readyForHumanRe:triage 五标签约定列(triage-labels.md),宽容匹配
+// ready for human / ready-for-human / readyforhuman。
+var readyForHumanRe = regexp.MustCompile(`ready[ -]?for[ -]?human`)

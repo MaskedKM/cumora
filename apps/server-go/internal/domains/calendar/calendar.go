@@ -18,6 +18,7 @@ import (
 	"time"
 
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/calendar"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -904,12 +905,32 @@ func DispatchEvent(ctx context.Context, db *sql.DB, e eventRow, scheduledFor tim
 		_, _ = db.ExecContext(ctx,
 			`UPDATE calendar_dispatches SET status = 'failed', error = $2, conversation_id = $3 WHERE id = $1`,
 			dispatchID, err.Error(), convoID)
+		emitDispatchInbox(ctx, db, e, scheduledFor, "failed", err.Error())
 		return DispatchResult{Status: "failed", Error: strp(err.Error()), ConversationID: strp(convoID)}
 	}
 	_, _ = db.ExecContext(ctx,
 		`UPDATE calendar_dispatches SET status = 'dispatched', conversation_id = $2, message_id = $3 WHERE id = $1`,
 		dispatchID, convoID, messageID)
+	emitDispatchInbox(ctx, db, e, scheduledFor, "dispatched", "")
 	return DispatchResult{Status: "dispatched", MessageID: strp(messageID), ConversationID: strp(convoID)}
+}
+
+// emitDispatchInbox:#264 例行事务派发结果 → 人侧 inbox。失败 =
+// action_required(例行坏了,要人裁决);成功 = info(纯落账,不打扰)。
+// 尽力而为。
+func emitDispatchInbox(ctx context.Context, db *sql.DB, e eventRow, scheduledFor time.Time, status, errMsg string) {
+	owner := inbox.CompanyOwner(ctx, db, e.CompanyID)
+	if owner == "" {
+		return
+	}
+	title := "Routine '" + e.Title + "'"
+	if status == "failed" {
+		inbox.Emit(ctx, db, e.CompanyID, owner, "action_required", "dispatch.failed",
+			title+" failed to fire", errMsg, "calendar", e.ID)
+		return
+	}
+	inbox.Emit(ctx, db, e.CompanyID, owner, "info", "dispatch.done",
+		title+" fired", scheduledFor.Format(time.RFC3339), "calendar", e.ID)
 }
 
 func resolveTargetConversation(ctx context.Context, db *sql.DB, e eventRow) (string, bool) {

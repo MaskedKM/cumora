@@ -38,6 +38,24 @@ export type ApiCompanySkill = {
   createdAt: string
   updatedAt: string
 }
+// #264 人侧 Inbox 条目/响应形状(/api/inbox;store 消费)。
+export type ApiInboxItem = {
+  id: string
+  severity: 'action_required' | 'attention' | 'info'
+  type: string
+  title: string
+  body?: string | null
+  linkKind?: string | null
+  linkId?: string | null
+  read: boolean
+  createdAt: string
+}
+export type ApiInboxResponse = {
+  items: ApiInboxItem[]
+  counts: { actionRequired: number; attention: number; info: number }
+  mutedTypes: string[]
+}
+
 export type ApiCompanySkillDetail = {
   id: string
   name: string
@@ -666,6 +684,16 @@ export const api = {
   // #260 工具级转录回放(sinceSeq 分页;UI 一次拉全量即停)。
   getAgentRunTranscript: (runId: string, sinceSeq = 0) =>
     http<ApiTranscriptEntry[]>(`/agents/observability/runs/${encodeURIComponent(runId)}/transcript?sinceSeq=${sinceSeq}&limit=1000`),
+
+  // #264 人侧 Inbox 分级:列表/已读/静音。
+  getInbox: () => http<ApiInboxResponse>('/inbox'),
+  markInboxItemRead: (id: string) =>
+    http<{ ok: boolean }>(`/inbox/${encodeURIComponent(id)}/read`, { method: 'POST' }),
+  markAllInboxRead: () =>
+    http<{ ok: boolean }>('/inbox/read-all', { method: 'POST' }),
+  getInboxMutes: () => http<{ types: string[] }>('/inbox/mutes'),
+  setInboxMutes: (types: string[]) =>
+    http<{ ok: boolean }>('/inbox/mutes', { method: 'PUT', body: JSON.stringify({ types }) }),
 
   // #261 公司 Skills 库(SOP 手册):管理页 CRUD。写面 owner/admin
   // (服务端 privileged 门);body 便捷位 = 服务端组装单文件 SKILL.md。

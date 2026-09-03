@@ -23,6 +23,7 @@ import { useMe } from '@/stores/auth'
 import { useConversations, isMuted } from '@/stores/conversations'
 import { useParticipants } from '@/stores/participants'
 import { isElectron } from '@/lib/runtime'
+import { useInbox } from '@/stores/inbox'
 import { playNotificationChime } from '@/lib/chime'
 import { Avatar } from './Avatar'
 import { ICalendar } from './icons'
@@ -34,7 +35,7 @@ interface Toast {
   /** Stable id we use for React key + dismissal lookup. */
   id: string
   /** What surface this toast points at — drives the click handler. */
-  kind: 'message' | 'doc.mention' | 'calendar.reminder'
+  kind: 'message' | 'doc.mention' | 'calendar.reminder' | 'inbox'
   /** Set when kind === 'message'. The conversation the message belongs to. */
   conversationId?: string
   /** Set when kind === 'doc.mention'. The doc that was mentioned in. */
@@ -56,6 +57,11 @@ interface Toast {
   /** Conversation title (message kind) OR doc title (mention kind) OR
    *  event title (reminder), captured at toast-creation time. */
   conversationTitle: string
+  /** #264 inbox 专用:条目 id / 跳转面 / 严重度。 */
+  itemId?: string
+  linkKind?: string
+  linkId?: string
+  severity?: 'action_required' | 'attention' | 'info'
   /** Wall-clock time of the most recent message. */
   at: number
   /** Number of distinct messages folded into this toast. */
@@ -281,6 +287,39 @@ export function NotificationToasts() {
       })
     })
 
+    // ============ inbox.new toasts (#264) ============
+    // 分级纪律:action_required 弹条 + 响铃(服务端已按静音过滤推送);
+    // attention 弹条不响铃;info 永不弹(纯落账,进 Inbox 视图自己看)。
+    // 客户端再按 mutedTypes 过滤一次(静音 = 不弹不推,条目仍在)。
+    const offInbox = ws.on((e) => {
+      if (e.type !== 'inbox.new') return
+      const me = meRef.current
+      if (!me || e.recipientUserId !== me) return
+      void useInbox.getState().load()
+      if (e.severity === 'info') return
+      if (useInbox.getState().mutedTypes.includes(e.itemType)) return
+      const at = Date.now()
+      setToasts((prev) => {
+        const idx = prev.findIndex((t) => t.kind === 'inbox' && t.itemId === e.itemId)
+        if (idx >= 0) return prev
+        if (e.severity === 'action_required') queueMicrotask(playNotificationChime)
+        const fresh: Toast = {
+          id: `toast-inbox-${e.itemId}`,
+          kind: 'inbox',
+          itemId: e.itemId,
+          linkKind: e.linkKind,
+          linkId: e.linkId,
+          severity: e.severity,
+          authorId: '',
+          body: e.body || e.title,
+          conversationTitle: e.title,
+          at, count: 1,
+        }
+        const merged = [fresh, ...prev]
+        return merged.length > MAX_TOASTS ? merged.slice(0, MAX_TOASTS) : merged
+      })
+    })
+
     // Electron: chime is played from the MAIN WINDOW (always loaded,
     // zero boot delay) the instant main signals the notification panel
     // is on screen. Firing from inside the notification window's React
@@ -302,6 +341,7 @@ export function NotificationToasts() {
       off()
       offMention()
       offReminder()
+      offInbox()
       offFocus?.()
       offVisible?.()
     }
@@ -324,6 +364,17 @@ export function NotificationToasts() {
       // Jump to Calendar. Deep-linking to the specific event is a
       // follow-up — Calendar will scroll to the day on load anyway.
       setView('calendar')
+    } else if (t.kind === 'inbox') {
+      if (t.linkKind === 'conversation' && t.linkId) {
+        setView('conversations')
+        select(t.linkId)
+      } else if (t.linkKind === 'board') {
+        setView('boards')
+      } else if (t.linkKind === 'calendar') {
+        setView('calendar')
+      } else if (t.linkKind === 'observability') {
+        setView('observability')
+      }
     } else if (t.conversationId) {
       setView('conversations')
       select(t.conversationId)
@@ -392,7 +443,18 @@ function ToastCard({ toast, onClick, onDismiss }: { toast: Toast; onClick: () =>
       }}
     >
       <div className="flex items-start gap-2.5">
-        {toast.kind === 'calendar.reminder' ? (
+        {toast.kind === 'inbox' ? (
+          // Inbox toasts: severity-tinted chip in place of avatar —
+          // action_required leans coral (interrupt), attention sky.
+          <div
+            className="w-8 h-8 rounded-full grid place-items-center shrink-0 text-[15px]"
+            style={toast.severity === 'action_required'
+              ? { background: 'var(--coral-soft, #ffe3dd)', color: 'var(--coral-deep, #c2402a)' }
+              : { background: 'var(--sky-100)', color: 'var(--skype-deep)' }}
+          >
+            {toast.severity === 'action_required' ? '⚡' : '◎'}
+          </div>
+        ) : toast.kind === 'calendar.reminder' ? (
           // Reminder toasts: skype-tinted calendar tile in place of avatar.
           // The author slot is meaningless for these (the "sender" is the
           // scheduler), so we render an icon chip that visually anchors the
@@ -414,7 +476,11 @@ function ToastCard({ toast, onClick, onDismiss }: { toast: Toast; onClick: () =>
               {toast.kind === 'calendar.reminder' ? toast.conversationTitle : (author?.name ?? toast.authorId)}
             </span>
             <span className="text-[10.5px] text-ink-300 italic font-display truncate">
-              {toast.kind === 'calendar.reminder' ? t('notif.calendarReminder') : toast.conversationTitle}
+              {toast.kind === 'calendar.reminder'
+                ? t('notif.calendarReminder')
+                : toast.kind === 'inbox'
+                  ? (toast.severity === 'action_required' ? t('inbox.sevAction') : t('inbox.sevAttention')) + ' · ' + toast.conversationTitle
+                  : toast.conversationTitle}
             </span>
             {toast.count > 1 && (
               <span

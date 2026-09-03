@@ -2048,6 +2048,11 @@ type SendEmailJSONBody struct {
 	To      []string  `json:"to"`
 }
 
+// SetInboxMutesJSONBody defines parameters for SetInboxMutes.
+type SetInboxMutesJSONBody struct {
+	Types []string `json:"types"`
+}
+
 // PutPreferencesJSONBody defines parameters for PutPreferences.
 type PutPreferencesJSONBody map[string]interface{}
 
@@ -2578,6 +2583,9 @@ type ReplyEmailJSONRequestBody ReplyEmailJSONBody
 
 // SendEmailJSONRequestBody defines body for SendEmail for application/json ContentType.
 type SendEmailJSONRequestBody SendEmailJSONBody
+
+// SetInboxMutesJSONRequestBody defines body for SetInboxMutes for application/json ContentType.
+type SetInboxMutesJSONRequestBody SetInboxMutesJSONBody
 
 // PutPreferencesJSONRequestBody defines body for PutPreferences for application/json ContentType.
 type PutPreferencesJSONRequestBody PutPreferencesJSONBody

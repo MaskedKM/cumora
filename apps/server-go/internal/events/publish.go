@@ -111,3 +111,15 @@ func publishJSON(ctx context.Context, channel string, payload any) error {
 	}
 	return nil
 }
+
+// InboxNew 广播一条人侧 Inbox 条目(#264)。客户端按 recipientUserId 过滤
+// 自己的条目;severity 驱动弹条分级(action_required 弹+响 / attention
+// 弹 / info 不弹只落账)。companyId 空 = 死帧,拒发(同 message.delta)。
+func InboxNew(ctx context.Context, evt InboxNewEvent) {
+	if evt.CompanyID == "" {
+		slog.Warn("inbox.new publish skipped — empty companyId would be dropped by the wsx bridge", "item", evt.ItemID)
+		return
+	}
+	evt.Type = EventInboxNew
+	_ = publishJSON(ctx, ChInbox, evt)
+}

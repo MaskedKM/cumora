@@ -38,6 +38,7 @@ export const en = {
   'common.peek': 'Peek',
   // ─── navigation: desktop rail + mobile tab bar ────────────────────
   'nav.conversations': 'Conversations',
+  'nav.inbox': 'Inbox',
   'nav.chats': 'Chats',
   'nav.whispers': 'Whispers',
   'nav.ship': 'Ship',
@@ -1872,4 +1873,16 @@ export const en = {
   'skills.fileCount': '{n} files',
   'skills.empty': 'No company skills yet. Capture your team\'s routines as skills and agents can use them on demand.',
   'skills.deleteConfirm': 'Delete skill "{name}"? Materialized copies will be reclaimed on the next sync cycle.',
+
+  // ─── Human inbox severity (#264) ──────────────────────────────
+  'inbox.title': 'Inbox',
+  'inbox.subtitle': 'Only needs-you interrupts: decisions ping you, attention is worth a look, the rest just logs.',
+  'inbox.sevAction': 'Needs you',
+  'inbox.sevAttention': 'Attention',
+  'inbox.sevInfo': 'Log',
+  'inbox.readAll': 'Mark all read',
+  'inbox.mutes': 'Mute settings',
+  'inbox.mutesHint': 'Mute by type: muted = no push, no toast; items still land in the list.',
+  'inbox.mutesEmpty': '(No muteable types yet — wait for the first items to arrive)',
+  'inbox.empty': 'Nothing here. Agent blockers and decisions that need you will land in this inbox.',
 } as const
