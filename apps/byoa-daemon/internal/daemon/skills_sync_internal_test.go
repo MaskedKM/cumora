@@ -3,8 +3,10 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -193,5 +195,40 @@ func TestReadSkillStampsBadFileSelfHeals(t *testing.T) {
 	stamps, err := readSkillStamps(dir)
 	if err != nil || stamps == nil || len(stamps) != 0 {
 		t.Fatalf("bad stamps file: %v, %v", stamps, err)
+	}
+}
+
+func TestBuiltinSkillsEmbedAndMaterialize(t *testing.T) {
+	// 内置技能:名字落在 cumora- 命名空间,SKILL.md 带 frontmatter。
+	if len(builtinSkills) < 2 {
+		t.Fatalf("builtin skills = %d, want ≥2", len(builtinSkills))
+	}
+	for _, b := range builtinSkills {
+		if !strings.HasPrefix(b.ref.Name, "cumora-") {
+			t.Fatalf("builtin %q outside the cumora- namespace", b.ref.Name)
+		}
+		if len(b.bundle.Files) != 1 || b.bundle.Files[0].Path != "SKILL.md" {
+			t.Fatalf("builtin %q must be a single SKILL.md", b.ref.Name)
+		}
+		if !strings.Contains(b.bundle.Files[0].Body, "name: "+b.ref.Name) {
+			t.Fatalf("builtin %q frontmatter name mismatch", b.ref.Name)
+		}
+	}
+	// 物化:无公司 refs 也落内置技能(CompanyID 空不挡内置)。
+	home := t.TempDir()
+	dir := engineSkillsDir("claude", home)
+	s := newSkillSyncer(context.Background(), &DaemonConfig{})
+	s.materializeAgent(AgentInfo{ID: "a1"}, "claude", home, nil)
+	for _, b := range builtinSkills {
+		target := filepath.Join(dir, b.ref.Name, "SKILL.md")
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("builtin %s not materialized: %v", b.ref.Name, err)
+		}
+	}
+	// 第二轮:零变化(stamps 稳定)。
+	stampBefore := readSkillTest(t, filepath.Join(dir, stampsFile))
+	s.materializeAgent(AgentInfo{ID: "a1"}, "claude", home, nil)
+	if got := readSkillTest(t, filepath.Join(dir, stampsFile)); got != stampBefore {
+		t.Fatalf("builtin-only round must be a no-op")
 	}
 }

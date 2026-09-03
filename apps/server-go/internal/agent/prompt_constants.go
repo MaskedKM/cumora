@@ -10,11 +10,11 @@ import "strings"
 func untick(s string) string { return strings.ReplaceAll(s, "§", "`") }
 
 var (
-	agentVoiceRules     = untick(agentVoiceRulesRaw)
-	skypeEmoticonsGuide = untick(skypeEmoticonsGuideRaw)
+	agentVoiceRules = untick(agentVoiceRulesRaw)
 
 	// globalRules:GLOBAL_RULES 成品。head 尾部与 tail 头部各自携带模板里
-	// 的 \n\n 定界,不再额外加分隔。
+	// 的 \n\n 定界,不再额外加分隔。#261b:skype 表情包指南技能化
+	// (skills/cumora-conversation-style),不再逐唤醒内联。
 	globalRules = untick(rulesHeadRaw) + agentVoiceRules + "\n\n" +
-		skypeEmoticonsGuide + untick(rulesTailRaw)
+		untick(rulesTailRaw)
 )
