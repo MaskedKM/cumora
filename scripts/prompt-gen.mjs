@@ -94,6 +94,14 @@ if (skillDirs.length > 0) {
     mkdirSync(join(SKILLS_DST, name), { recursive: true });
     writeFileSync(join(SKILLS_DST, name, "SKILL.md"), body);
   }
+} else {
+  // 源技能清空也不许留孤儿;但 go:embed 不收空目录 —— 占位文件保编译。
+  rmSync(SKILLS_DST, { recursive: true, force: true });
+  mkdirSync(SKILLS_DST, { recursive: true });
+  writeFileSync(
+    join(SKILLS_DST, "README.md"),
+    "# skillsdata\n\n生成物占位(packages/prompt/skills/ 当前为空)。go:embed 不收空目录。\n由 scripts/prompt-gen.mjs 维护,勿手改。\n",
+  );
 }
 console.log(
   `[prompt-gen] 2 个生成物已写(server ${SERVER.length} 常量 / daemon ${DAEMON.length} 常量)` +

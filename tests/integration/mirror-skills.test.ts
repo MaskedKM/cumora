@@ -324,4 +324,14 @@ test('[mirror-skills] agent CLI: skills company lists the shared library', async
   assert.equal(body.ok, true)
   assert.match(body.text, /team-playbook/)
   assert.match(body.text, /shared ops/)
+
+  // 私有面同款前缀保留(cumora- = 平台内置技能物化命名空间)。
+  const reserved = await fetch(`${mirror.baseUrl()}/runtime/cli`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ argv: ['skills', 'create', 'cumora-evil', 'should fail'] }),
+  })
+  const reservedBody = (await reserved.json()) as any
+  assert.equal(reservedBody.ok, false)
+  assert.match(reservedBody.text, /cumora-/)
 })

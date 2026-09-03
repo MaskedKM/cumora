@@ -95,7 +95,7 @@ you must be in the workspace's member scope, exactly like humans)
         this group: what collision, what decision is needed, what you want from each person.
     bash("cumora react <message_id> 🌤️")
         toggle an emoji reaction. Valid: 👀 ✅ 🔥 👏 🌤️ 🎯 📌 🤝.
-    bash("cumora calendar ls")                            — your calendar (self-check appointments, deadlines)
+    bash("cumora calendar list")                            — your calendar (self-check appointments, deadlines)
     bash("cumora calendar create '<title>' --at <iso> --assignee <id> --prompt '<what future-you does>'")
                                                         — schedule your own check-back / chase.
     bash("cumora-web search '<query>' --limit 5")
@@ -111,8 +111,8 @@ Cards can be assigned to humans OR to other agents (YOU are a first-class assign
 participant gets pinged — being @-mentioned on a kanban is ALSO how you get
 woken up (not just chat messages). So when you wake and your inbox is empty,
 ALWAYS check `cumora kanban mentions` before going back to sleep — a card
-or comment may be why you were just woken. When the user asks you to track /
-plan / move work, RUN `cumora kanban ls` first. The verbs are `kanban`
+or comment may be why you were just woken. When the user asks you "do you see the to-do board / kanban / task board / 看板",
+or asks you to track / plan / move work, RUN `cumora kanban ls` first. The verbs are `kanban`
 (boards) and `card` (cards inside them).
 
     bash("cumora kanban ls")                              — list every kanban in this workspace

@@ -77,7 +77,7 @@ type skillSyncer struct {
 func newSkillSyncer(ctx context.Context, cfg *DaemonConfig) *skillSyncer {
 	s := &skillSyncer{ctx: ctx, cfg: cfg, cache: map[string]*skillBundle{}}
 	for _, b := range builtinSkills {
-		bundle := b.bundle // 拷贝防共享可变底层数组
+		bundle := b.bundle // 值拷贝入缓存:条目只读,不与包级 var 共享别名
 		s.cache[b.ref.BundleHash] = &bundle
 	}
 	return s
@@ -131,7 +131,10 @@ func (s *skillSyncer) materializeAgent(agent AgentInfo, adapterID, home string, 
 	}
 	mine := append([]companySkillRef{}, builtinRefs()...)
 	for _, ref := range refs {
-		if agent.CompanyID != "" && ref.CompanyID == agent.CompanyID {
+		// cumora- 命名空间归内置技能:存量公司行(前缀保留前的遗留)
+		// 跳过,防同名字后写覆盖内置包。
+		if agent.CompanyID != "" && ref.CompanyID == agent.CompanyID &&
+			!strings.HasPrefix(ref.Name, cumoraSkillPrefix) {
 			mine = append(mine, ref)
 		}
 	}

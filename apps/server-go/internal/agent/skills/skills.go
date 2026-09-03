@@ -42,6 +42,11 @@ func cliValidateSkillName(name string) string {
 	if strings.Contains(name, "--") {
 		return "name may not contain consecutive hyphens"
 	}
+	// cumora- 前缀保留给平台内置技能(#261b 物化命名空间;私有技能当前
+	// 不物化到引擎目录,但 zcode 的 home/skills 与内置同目录,防患)。
+	if strings.HasPrefix(name, "cumora-") {
+		return "name may not start with \"cumora-\" (reserved for platform built-in skills)"
+	}
 	return ""
 }
 
