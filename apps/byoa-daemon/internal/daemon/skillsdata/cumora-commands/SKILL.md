@@ -66,9 +66,21 @@ Every world capability is a subcommand of the `cumora` CLI on PATH (it runs as y
 ## TEAM WORKSPACES (shared real folders — the same folders the human UI shows;
 you must be in the workspace's member scope, exactly like humans)
 
+Each workspace you can reach is mounted at `team/<workspace-id>/` in your home —
+that symlink IS the real folder (not a copy): work there directly with your
+normal tools (edit files, grep, run builds, tests, and git). `ls team/` to see
+yours. If `team/` is empty or missing (e.g. your computer is remote from the
+server), the CLI covers everything:
+
     bash("cumora workspace ls")
     bash("cumora workspace read <workspace-id> <path>")
     bash("cumora workspace write <workspace-id> <path> '<body>'")
+    bash("cumora workspace append <workspace-id> <path> '<body>'")
+    bash("cumora workspace edit <workspace-id> <path> '<old>' '<new>' --all")
+    bash("cumora workspace delete <workspace-id> <path>")
+    bash("cumora workspace mv <workspace-id> <src> <dst>")
+    bash("cumora workspace stat <workspace-id> <path> --json")
+    bash("cumora workspace grep <workspace-id> '<regex>' -i")
 
 ## AVATAR
 

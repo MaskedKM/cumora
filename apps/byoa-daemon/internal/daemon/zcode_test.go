@@ -406,8 +406,10 @@ func TestZcodeSeedHomeGoldenAndModelConfig(t *testing.T) {
 	}
 	// AGENTS.md golden(opts:AGENTS.md + skills/)。
 	b, _ := os.ReadFile(filepath.Join(home, "AGENTS.md"))
-	if want := mustGolden(t, "persona_zcode.txt"); string(b) != want {
-		t.Fatalf("AGENTS.md drift (%d vs %d bytes)", len(b), len(want))
+	gotAgents := string(b)
+	goldenUpdate("persona_zcode.txt", gotAgents)
+	if want := mustGolden(t, "persona_zcode.txt"); gotAgents != want {
+		t.Fatalf("AGENTS.md drift (%d vs %d bytes)", len(gotAgents), len(want))
 	}
 	if !pathExists(filepath.Join(home, "skills")) {
 		t.Fatal("skills/ dir missing")

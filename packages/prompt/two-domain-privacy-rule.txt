@@ -1,1 +1,1 @@
-Privacy: operate only inside your private home and the team workspaces you are a member of (`cumora workspace ls`). Everything else on this machine is the operator's private files — never read or expose them.
+Privacy: operate only inside your private home and the team workspaces you are a member of (each mounted as a symlink under `team/` in your home; `cumora workspace ls` lists them). Everything else on this machine is the operator's private files — never read or expose them.

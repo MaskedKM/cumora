@@ -123,6 +123,9 @@ type ServerInterface interface {
 	// 释放工
 	// (POST /runtime/worklog/release)
 	WorklogRelease(w http.ResponseWriter, r *http.Request)
+	// agent 可达团队工作区清单(daemon 挂载同步用;folderPath 仅 computer kind=local 时返回)
+	// (GET /runtime/workspaces)
+	LoadWorkspaces(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -876,6 +879,26 @@ func (siw *ServerInterfaceWrapper) WorklogRelease(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// LoadWorkspaces operation middleware
+func (siw *ServerInterfaceWrapper) LoadWorkspaces(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, AgentRuntimeJWTScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.LoadWorkspaces(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1032,6 +1055,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/worklog/claim", wrapper.WorklogClaim)
 	m.HandleFunc("GET "+options.BaseURL+"/runtime/worklog/peek", wrapper.WorklogPeek)
 	m.HandleFunc("POST "+options.BaseURL+"/runtime/worklog/release", wrapper.WorklogRelease)
+	m.HandleFunc("GET "+options.BaseURL+"/runtime/workspaces", wrapper.LoadWorkspaces)
 
 	return m
 }

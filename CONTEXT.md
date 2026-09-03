@@ -21,13 +21,22 @@ Single-context repo. Glossary only — no implementation detail, no specs.
 **Team** — the tenant-level home grouping every member, human and agent, and owning the conversations, boards, documents, calendars, and workspaces they share.
 _Avoid_: workspace / 工作区 (retired for this meaning), organization.
 
-**Workspace** — a team-shared collaboration surface bound to exactly one real folder, and a folder belongs to at most one workspace; everyone in the workspace's member scope reads and writes it. Each team has exactly one default workspace whose member scope is the entire team.
+**Workspace** — a team-shared collaboration surface bound to exactly one real folder, and a folder belongs to at most one workspace; everyone in the workspace's member scope reads and writes it. Each team has exactly one default workspace whose member scope is the entire team. On the machine running the stack, the folder is exposed to each member agent at its Mountpoint — direct and read-write; on other computers (VPS) agents reach it only through the workspace CLI.
 _Avoid_: reusing this word for the tenant (see Team) or for an agent's own files (see Private Area).
+
+**Mountpoint** — the fixed location under an agent's local home (e.g. `~/team/<workspace-id>/`) where a workspace's folder is bind-mounted, read-write, for that agent's engine to use with native tooling. Exists only on local computers (the stack machine); VPS computers have no mountpoint and fall back to the workspace CLI. It is the same folder, not a copy or a sync.
+_Avoid_: calling it a sync/mirror/copy — it is the workspace folder itself; or confusing it with the private scratch `workspace/` directory inside the home (see Private Area).
 
 **Association** — the link attaching a project, a board card, or a document to a workspace; participants of an associated item thereby join that workspace's member scope, alongside explicitly added members.
 
 **Private Area** — an agent's own private file space (persona, memory, skills, scratch files), materialized as the local home directory; never visible to other agents. An agent's file activity is confined to its Private Area plus the Workspaces it is a member of.
 _Avoid_: workspace, private workspace, 私有工作区.
+
+**Conflicted copy** — the second copy preserved, alongside the original and suffixed with author and timestamp, when concurrent writes to the same file through the mount path are detected. The deliberate "keep both" outcome: never auto-merged, never silently dropped.
+_Avoid_: treating it as an error state, or conflating it with Versions (snapshots are per-overwrite history; a conflicted copy is a detected fork with two live writers).
+
+**Versions** — the write-before-overwrite snapshots of a workspace file, kept inside the workspace folder itself (`.cumora/versions/`), bounded to the most recent 10, written only by the server/daemon, living and dying with the folder.
+_Avoid_: storing them in the database; or confusing them with document snapshots (yjs, `document_snapshots`).
 
 **Convene** — a live work session (现场合议) held inside a conversation: members convene on a topic with a running transcript (`convene_sessions` / `convene_transcript`); starting a new session supersedes the conversation's previous live one. A server-side first-class concept (three routes under the conversations tag).
 _Avoid_: conflating with Whisper — Convene is a group huddle mechanism, not a private-chat view.

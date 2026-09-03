@@ -84,7 +84,9 @@ func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow
 // server/uploads 相对 cwd,设 env 会被无视)。
 // 必须 Abs 化再落库:folder_path 的唯一约束与双重绑定防御都以绝对路径为
 // 不变量,CWD 变了也不能搬家。
-func ensureDefault(ctx context.Context, db *sql.DB, companyID string) error {
+// EnsureDefault:默认区惰性自愈(导出供 runtime 挂载清单 #336 复用——
+// daemon 同步周期拉可达清单,全新 team 不能因未开过人侧 UI 就漏掉默认区)。
+func EnsureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 	var exists bool
 	if err := db.QueryRowContext(ctx,
 		`SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`, companyID).Scan(&exists); err == nil && exists {
@@ -287,7 +289,7 @@ func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := ensureDefault(r.Context(), s.DB, companyID); err != nil {
+	if err := EnsureDefault(r.Context(), s.DB, companyID); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

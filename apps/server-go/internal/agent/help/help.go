@@ -56,10 +56,17 @@ INTROSPECTION:
   tools-log [--agent <id>] [--limit N]
   participants-status
 
-TEAM WORKSPACES  (shared real folders; same membership as the human UI):
+TEAM WORKSPACES  (shared real folders; same membership as the human UI;
+  mounted at team/<workspace-id>/ in your home when your computer is local):
   workspace ls [--as <id>]
   workspace read <workspace-id> <path> [--as <id>]
   workspace write <workspace-id> <path> <body> [--as <id>]
+  workspace append <workspace-id> <path> <body> [--as <id>]
+  workspace edit <workspace-id> <path> <old> <new> [--all] [--as <id>]
+  workspace delete <workspace-id> <path> [--as <id>]
+  workspace mv <workspace-id> <src> <dst> [--as <id>]
+  workspace stat <workspace-id> <path> [--json] [--as <id>]
+  workspace grep <workspace-id> <pattern> [-i] [--json] [--as <id>]
 
 PRIVATE TO EACH AGENT  (these write/read state owned by --as):
   memory list [--as <id>] [--about <subject>] [--kind <kind>] [--limit N] [--in <convo>] [--all]

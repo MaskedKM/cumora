@@ -1031,3 +1031,76 @@ test('[mirror-runtime] /wake-stream: steer events ride the same stream', async (
   })
   await Promise.all([streamDone, steerSeen])
 })
+
+// #336 /runtime/workspaces:daemon 挂载同步拉取面。可达语义 = 默认区
+// 全员 ∪ 显式成员 ∪ 关联推导(与 resolveAccess 同构);folderPath 仅
+// computer kind=local 返回(vps/无 computer → 省略,daemon 落 CLI 形态)。
+test('[mirror-runtime] /workspaces: 401 without token', async () => {
+  const res = await call('/runtime/workspaces', { method: 'GET' })
+  assert.equal(res.status, 401)
+})
+
+test('[mirror-runtime] /workspaces: default workspace self-heals; no computer → no folderPath', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  assert.ok(Array.isArray(res.body))
+  assert.equal(res.body.length, 1)
+  const ws = res.body[0]
+  assert.equal(ws.id, `ws-default-${companyId}`)
+  assert.equal(ws.isDefault, true)
+  assert.equal(ws.folderPath, undefined, 'no computer row → kind NULL → treated as remote, folderPath omitted')
+  void agentId
+})
+
+test('[mirror-runtime] /workspaces: local computer gets folderPath; membership gates the rest', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  // local computer + 挂到 agent
+  const computerId = `cp-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO computers (id, company_id, owner_user_id, name, kind, status)
+       VALUES ($1, $2, 'test-owner', 'box', 'local', 'active')`,
+    [computerId, companyId],
+  )
+  await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
+  // 自建区:未加成员 → 不可达
+  const otherWs = `ws-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Secret', '/tmp/not-yours')`,
+    [otherWs, companyId],
+  )
+  // 自建区:显式成员 → 可达且带 folderPath
+  const mineWs = `ws-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Mine', '/tmp/mine')`,
+    [mineWs, companyId],
+  )
+  await pool.query(
+    `INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`,
+    [mineWs, agentId],
+  )
+
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  const ids = res.body.map((w: any) => w.id)
+  assert.ok(ids.includes(`ws-default-${companyId}`))
+  assert.ok(ids.includes(mineWs))
+  assert.ok(!ids.includes(otherWs), 'non-member workspace must not leak')
+  const mine = res.body.find((w: any) => w.id === mineWs)
+  assert.equal(mine.folderPath, '/tmp/mine', 'local computer gets folderPath')
+})
+
+test('[mirror-runtime] /workspaces: vps computer → folderPath omitted', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const computerId = `cp-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO computers (id, company_id, owner_user_id, name, kind, status)
+       VALUES ($1, $2, 'test-owner', 'vps-box', 'vps', 'active')`,
+    [computerId, companyId],
+  )
+  await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  assert.equal(res.body.length, 1)
+  assert.equal(res.body[0].folderPath, undefined, 'vps computer never receives folderPath')
+})
