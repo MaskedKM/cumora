@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -805,13 +806,18 @@ func init() { RegisterAdapter(codexAdapter{}) }
 func (codexAdapter) ID() string  { return "codex" }
 func (codexAdapter) Bin() string { return "codex" }
 
-// SeedHome:ensureCommonHome + AGENTS.md(内容仍是默认 personaHeader——
-// TS 同此:文件名按 Codex 约定,内容里的布局说明保持上游原文)。
+// SeedHome:ensureCommonHome + AGENTS.md(personaFile/skillsDir 按 Codex
+// 约定——此前传 TS 遗留的 CLAUDE.md/.claude/skills/,与落盘文件名及
+// #261 物化目录(.codex/skills,Codex 2025-12 起官方支持)双错位;
+// golden persona_codex.txt 本就期望 AGENTS.md/.codex/skills/)。
 func (codexAdapter) SeedHome(home string, p Persona) error {
 	if err := ensureCommonHome(home); err != nil {
 		return err
 	}
-	return os.WriteFile(home+string(os.PathSeparator)+"AGENTS.md", []byte(personaHeader(p, "CLAUDE.md", ".claude/skills/")), 0o644)
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "skills"), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(home+string(os.PathSeparator)+"AGENTS.md", []byte(personaHeader(p, "AGENTS.md", ".codex/skills/")), 0o644)
 }
 
 // Classify:ChatGPT 账户挑不动任意小模型(gpt-5-mini 被拒)但接受

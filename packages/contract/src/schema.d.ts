@@ -594,6 +594,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/computers/me/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** #261 daemon 拉取其托管 agent 所属公司的 skills 清单(带 bundle_hash 增量键) */
+        get: operations["listComputerSkills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/computers/me/skills/{hash}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** #261 daemon 按内容哈希拉取整包技能文件集 */
+        get: operations["getComputerSkillBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{id}/runtime-token": {
         parameters: {
             query?: never;
@@ -1589,6 +1623,43 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 公司 Skills 库(SOP 手册)列表 */
+        get: operations["listCompanySkills"];
+        put?: never;
+        /** 建公司技能(owner/admin;body 便捷位 = 单文件 SKILL.md) */
+        post: operations["createCompanySkill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 单技能全量(name/description + 文件集,编辑面回填用) */
+        get: operations["getCompanySkill"];
+        /** 改公司技能(name 只读;description/body/files 任一即可) */
+        put: operations["updateCompanySkill"];
+        post?: never;
+        /** 删公司技能(daemon 下一同步周期自动回收物化副本) */
+        delete: operations["deleteCompanySkill"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4839,6 +4910,59 @@ export interface operations {
             };
         };
     };
+    listComputerSkills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        companyId: string;
+                        name: string;
+                        description: string;
+                        bundleHash: string;
+                    }[];
+                };
+            };
+        };
+    };
+    getComputerSkillBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                hash: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        files: {
+                            path: string;
+                            body: string;
+                        }[];
+                    };
+                };
+            };
+        };
+    };
     mintAgentRuntimeToken: {
         parameters: {
             query?: never;
@@ -6761,6 +6885,164 @@ export interface operations {
                     "application/json": {
                         dispatches: components["schemas"]["CalendarDispatch"][];
                     };
+                };
+            };
+        };
+    };
+    listCompanySkills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        skills: {
+                            id: string;
+                            name: string;
+                            description: string;
+                            bundleHash: string;
+                            fileCount: number;
+                            createdBy?: string | null;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        }[];
+                    };
+                };
+            };
+        };
+    };
+    createCompanySkill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    name: string;
+                    description: string;
+                    /** @description 便捷位——省略 files 时组装为单文件 SKILL.md */
+                    body?: string;
+                    files?: {
+                        path: string;
+                        body: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        bundleHash: string;
+                    };
+                };
+            };
+        };
+    };
+    getCompanySkill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        name: string;
+                        description: string;
+                        bundleHash: string;
+                        files: {
+                            path: string;
+                            body: string;
+                        }[];
+                    };
+                };
+            };
+        };
+    };
+    updateCompanySkill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    description?: string;
+                    body?: string;
+                    files?: {
+                        path: string;
+                        body: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        bundleHash: string;
+                    };
+                };
+            };
+        };
+    };
+    deleteCompanySkill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ok"];
                 };
             };
         };

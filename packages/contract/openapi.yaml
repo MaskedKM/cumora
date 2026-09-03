@@ -596,6 +596,53 @@ paths:
             schema: { type: object, additionalProperties: true }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/computers/me/skills:
+    get:
+      tags: [computers]
+      operationId: listComputerSkills
+      security: [{ deviceToken: [] }]
+      summary: '#261 daemon 拉取其托管 agent 所属公司的 skills 清单(带 bundle_hash 增量键)'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [companyId, name, description, bundleHash]
+                  properties:
+                    companyId: { type: string }
+                    name: { type: string }
+                    description: { type: string }
+                    bundleHash: { type: string }
+  /api/computers/me/skills/{hash}:
+    get:
+      tags: [computers]
+      operationId: getComputerSkillBundle
+      security: [{ deviceToken: [] }]
+      summary: '#261 daemon 按内容哈希拉取整包技能文件集'
+      parameters:
+        - { name: hash, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, files]
+                properties:
+                  name: { type: string }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, body]
+                      properties:
+                        path: { type: string }
+                        body: { type: string }
   /api/agents/{id}/runtime-token:
     post:
       tags: [agents]
@@ -1897,6 +1944,133 @@ paths:
                   dispatches:
                     type: array
                     items: { $ref: '#/components/schemas/CalendarDispatch' }
+  /api/skills:
+    get:
+      tags: [skills]
+      operationId: listCompanySkills
+      summary: 公司 Skills 库(SOP 手册)列表
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skills]
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, description, bundleHash, fileCount, createdAt, updatedAt]
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        description: { type: string }
+                        bundleHash: { type: string }
+                        fileCount: { type: integer }
+                        createdBy: { type: string, nullable: true }
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+    post:
+      tags: [skills]
+      operationId: createCompanySkill
+      summary: 建公司技能(owner/admin;body 便捷位 = 单文件 SKILL.md)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, description]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                body: { type: string, description: 便捷位——省略 files 时组装为单文件 SKILL.md }
+                files:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, body]
+                    properties:
+                      path: { type: string }
+                      body: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, bundleHash]
+                properties:
+                  id: { type: string }
+                  bundleHash: { type: string }
+  /api/skills/{id}:
+    get:
+      tags: [skills]
+      operationId: getCompanySkill
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 单技能全量(name/description + 文件集,编辑面回填用)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, description, bundleHash, files]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  description: { type: string }
+                  bundleHash: { type: string }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, body]
+                      properties:
+                        path: { type: string }
+                        body: { type: string }
+    put:
+      tags: [skills]
+      operationId: updateCompanySkill
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 改公司技能(name 只读;description/body/files 任一即可)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                body: { type: string }
+                files:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, body]
+                    properties:
+                      path: { type: string }
+                      body: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, bundleHash]
+                properties:
+                  id: { type: string }
+                  bundleHash: { type: string }
+    delete:
+      tags: [skills]
+      operationId: deleteCompanySkill
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 删公司技能(daemon 下一同步周期自动回收物化副本)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/documents:
     get:
       tags: [documents]

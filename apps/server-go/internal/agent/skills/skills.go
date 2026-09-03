@@ -421,6 +421,48 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		}
 		return agent.OK(strings.Join(blocks, "\n\n"))
 
+	case "company":
+		// #261 公司 Skills 库(SOP 手册)只读索引:内容已由 daemon 物化到
+		// 引擎原生 skills 目录(引擎加载器直接可用),这里给人/agent 一个
+		// 可发现的清单面。
+		companyID, _ := s.AgentCompany(ctx, me)
+		if companyID == "" {
+			return agent.Err("no company")
+		}
+		rows, err := s.DB.QueryContext(ctx, `
+			SELECT name, description FROM company_skills
+			 WHERE company_id = $1 ORDER BY name ASC`, companyID)
+		if err != nil {
+			return agent.ErrCode(fmt.Sprintf("error: %v", err), 2)
+		}
+		defer rows.Close()
+		type coSkill struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		skills := []coSkill{}
+		for rows.Next() {
+			var sk coSkill
+			if rows.Scan(&sk.Name, &sk.Description) == nil {
+				skills = append(skills, sk)
+			}
+		}
+		if parsed.FlagTruey("json") {
+			txt, jerr := agent.JSONList(skills)
+			if jerr != nil {
+				return agent.ErrCode(fmt.Sprintf("error: %v", jerr), 2)
+			}
+			return agent.OK(txt)
+		}
+		if len(skills) == 0 {
+			return agent.OK("(no company skills — ask a human to add them in the desktop app)")
+		}
+		lines := make([]string, 0, len(skills))
+		for _, sk := range skills {
+			lines = append(lines, fmt.Sprintf("  %s\n    %s", sk.Name, sk.Description))
+		}
+		return agent.OK("Company skills (the team playbook — already materialized in your skills directory):\n" + strings.Join(lines, "\n"))
+
 	case "install":
 		idOrURL := ""
 		if len(parsed.Positional()) > 1 {
@@ -458,6 +500,7 @@ on demand via `+"`cumora skills read %s references/<file>`"+`._
 		"  skills list                                 list installed skills (name + description only)",
 		"  skills read <name> [<sub-path>]             load full SKILL.md (or a bundled file)",
 		"  skills create <name> \"<description>\"        scaffold a new skill",
+		"  skills company                              list the company skill library (shared playbook)",
 		"  skills search <query>                       search the configured SkillHub",
 		"  skills install <id_or_url>                  install a skill from SkillHub (or any compatible URL)",
 		"  skills delete <name>                        remove a skill and all its files",

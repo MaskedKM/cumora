@@ -649,13 +649,17 @@ func TestSeedHomeIdempotentAndNonDestructive(t *testing.T) {
 	if string(st) != `{"custom":true}` {
 		t.Fatal("seedHome must not overwrite user settings.json")
 	}
-	// codex:AGENTS.md(内容保持 TS 默认 personaHeader)。
+	// codex:AGENTS.md(personaFile/skillsDir 按 Codex 约定,#261 起对齐
+	// .codex/skills 物化目录;基准 = persona_codex.txt)。
 	if err := (codexAdapter{}).SeedHome(home, p); err != nil {
 		t.Fatal(err)
 	}
 	agentsMD, _ := os.ReadFile(filepath.Join(home, "AGENTS.md"))
-	if string(agentsMD) != want {
-		t.Fatalf("AGENTS.md content drift (%d vs %d bytes)", len(agentsMD), len(want))
+	if string(agentsMD) != mustGolden(t, "persona_codex.txt") {
+		t.Fatalf("AGENTS.md content drift (%d bytes)", len(agentsMD))
+	}
+	if !pathExists(filepath.Join(home, ".codex", "skills")) {
+		t.Fatal("codex seedHome must create .codex/skills")
 	}
 	if _, err := os.Stat(claudeMD); err != nil {
 		t.Fatal("codex seedHome must not remove the claude layout")

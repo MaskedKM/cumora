@@ -27,6 +27,24 @@ export type ApiTriagePriceRow = Schemas['TriagePriceRow']
 export type ApiTriageEconomics = Schemas['TriageEconomics']
 export type ApiAgentEvent = Schemas['AgentEvent']
 export type ApiTranscriptEntry = { seq: number; type: string; tool?: string | null; content?: string | null; input?: unknown; createdAt?: string }
+// #261 公司 Skills 库(SOP 手册)行形状(/api/skills 列表)。
+export type ApiCompanySkill = {
+  id: string
+  name: string
+  description: string
+  bundleHash: string
+  fileCount: number
+  createdBy?: string | null
+  createdAt: string
+  updatedAt: string
+}
+export type ApiCompanySkillDetail = {
+  id: string
+  name: string
+  description: string
+  bundleHash: string
+  files: Array<{ path: string; body: string }>
+}
 export type ApiConveneSession = Schemas['ConveneSession']
 export type ApiConveneTranscript = Schemas['ConveneTranscript']
 export type ApiDevtoolsCapabilities = Schemas['DevtoolsCapabilities']
@@ -56,20 +74,20 @@ export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
 export type MeResponse = Schemas['MeResponse']
 
+import { getActiveCompanyId, getAuthToken } from '@/stores/auth'
 /* #221:Status/CalendarEventKind/ComputerStatus 原只被手写 WsEvent union 引用,
  * 契约化后随之退役(事件载荷里的枚举由生成物直接引用契约 schema)。 */
-import type {
-  BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
-  CalendarEvent, CalendarEventStatus, CalendarDispatch, ComputerKind, EngineId,
+import type {BoardCardComment, BoardCardLookup,BoardSnapshot, 
+  BoardSummary, CalendarDispatch, 
+  CalendarEvent, CalendarEventStatus, ComputerKind, EngineId,
 } from '@/types'
-import { getAuthToken, getActiveCompanyId } from '@/stores/auth'
-import { SERVER_ORIGIN, fetchJson, getDevModeEnabled } from './core'
+import { fetchJson, getDevModeEnabled, SERVER_ORIGIN } from './core'
 
 // 共享骨架(#147 ①)挪到 ./core —— origin 三层解析/Bearer/401 清 session/
 // 错误 detail 解析与 admin 面合一;此处 re-export 维持既有导入方不变。
 export {
-  getServerOrigin, setServerOrigin, getDevModeEnabled, setDevModeEnabled,
-  ApiError,
+  ApiError,getDevModeEnabled, 
+  getServerOrigin, setDevModeEnabled,setServerOrigin, 
 } from './core'
 
 const DEV_API_TARGET = import.meta.env.DEV
@@ -648,6 +666,18 @@ export const api = {
   // #260 工具级转录回放(sinceSeq 分页;UI 一次拉全量即停)。
   getAgentRunTranscript: (runId: string, sinceSeq = 0) =>
     http<ApiTranscriptEntry[]>(`/agents/observability/runs/${encodeURIComponent(runId)}/transcript?sinceSeq=${sinceSeq}&limit=1000`),
+
+  // #261 公司 Skills 库(SOP 手册):管理页 CRUD。写面 owner/admin
+  // (服务端 privileged 门);body 便捷位 = 服务端组装单文件 SKILL.md。
+  listCompanySkills: () => http<{ skills: ApiCompanySkill[] }>('/skills'),
+  getCompanySkill: (id: string) =>
+    http<ApiCompanySkillDetail>(`/skills/${encodeURIComponent(id)}`),
+  createCompanySkill: (input: { name: string; description: string; body: string }) =>
+    http<{ id: string; bundleHash: string }>('/skills', { method: 'POST', body: JSON.stringify(input) }),
+  updateCompanySkill: (id: string, input: { description?: string; body?: string }) =>
+    http<{ id: string; bundleHash: string }>(`/skills/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) }),
+  deleteCompanySkill: (id: string) =>
+    http<{ ok: boolean }>(`/skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   getTriageEconomics: (filters?: { agentId?: string | null; sinceHours?: number }) => {
     const q = new URLSearchParams()

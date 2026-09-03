@@ -133,6 +133,8 @@ type AgentInfo struct {
 	// ChatRegister:#24 聊天体语域开关(human-audience 会话说人话)。
 	// 服务端列 NOT NULL DEFAULT true;nil(旧版服务端/迁移空档)按开。
 	ChatRegister *bool `json:"chatRegister"`
+	// CompanyID:#261 公司 Skills 分发分组键(空 = 无手册)。
+	CompanyID string `json:"companyId"`
 }
 
 // chatRegisterOn:开关语义收口——nil/true = 开(#24 默认)。
