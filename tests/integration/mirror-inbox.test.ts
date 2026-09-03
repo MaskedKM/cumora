@@ -98,11 +98,16 @@ test('[mirror-inbox] card assigned to human → attention to the assignee', asyn
     method: 'PATCH', body: JSON.stringify({ assigneeId: human }),
   })
   assert.equal(moved.status, 200)
-  const r = await call('/inbox')
-  assert.equal(r.json.items.length, 1)
-  assert.equal(r.json.items[0].severity, 'attention')
-  assert.equal(r.json.items[0].type, 'card.assigned')
-  assert.match(r.json.items[0].title, /Ship it/)
+  // 条目发给 assignee(不是 owner)—— 以 assignee 身份读。
+  const r = await fetch(`${mirror.baseUrl()}/api/inbox`, {
+    headers: { 'x-test-user': human, 'x-company-id': COMPANY },
+  })
+  const body = (await r.json()) as any
+  assert.equal(r.status, 200)
+  assert.equal(body.items.length, 1)
+  assert.equal(body.items[0].severity, 'attention')
+  assert.equal(body.items[0].type, 'card.assigned')
+  assert.match(body.items[0].title, /Ship it/)
 })
 
 test('[mirror-inbox] card into a ready-for-human column → action_required to owner', async () => {
