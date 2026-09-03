@@ -364,6 +364,19 @@ func TestBuildNodesInternalManaged(t *testing.T) {
 	if !strings.Contains(vEnv, "REDIS_URL=unix://"+cfg.redisSocket()) {
 		t.Fatalf("server env 缺受管 REDIS_URL: %s", vEnv)
 	}
+	// #333:sidecar 与 server 同款注入 —— 缺这半边时 sidecar 捡继承的
+	// 外部 DSN/客户端默认 TCP,internal 形态启动即 fatal。DATABASE_URL
+	// 是 URL 形态(node-pg 不认 libpq 关键字串),REDIS_URL 与 server 同值。
+	sEnv := strings.Join(nodes[2].Child.Env, "\n")
+	if !strings.Contains(sEnv, "YJS_SIDECAR_PORT=") {
+		t.Fatalf("sidecar env 缺端口注入: %s", sEnv)
+	}
+	if !strings.Contains(sEnv, "DATABASE_URL=postgres://cumora@localhost/"+cfg.pgDatabase()+"?host="+cfg.runDir()) {
+		t.Fatalf("sidecar env 缺受管 DATABASE_URL(URL 形态): %s", sEnv)
+	}
+	if !strings.Contains(sEnv, "REDIS_URL=unix://"+cfg.redisSocket()) {
+		t.Fatalf("sidecar env 缺受管 REDIS_URL: %s", sEnv)
+	}
 }
 
 // external 装配零变:存量部署回归锁(不注入 DSN,保持探测形态)。
@@ -377,9 +390,14 @@ func TestBuildNodesExternalDoesNotInjectDSN(t *testing.T) {
 	if nodes[0].Mode != chain.External || nodes[1].Mode != chain.External {
 		t.Fatal("缺省形态应 external")
 	}
-	vEnv := strings.Join(nodes[3].Child.Env, "\n")
-	if strings.Contains(vEnv, "DATABASE_URL=") || strings.Contains(vEnv, "REDIS_URL=") {
-		t.Fatalf("external 不应注入 DSN: %s", vEnv)
+	for _, n := range []struct {
+		name string
+		idx  int
+	}{{"server", 3}, {"sidecar", 2}} {
+		env := strings.Join(nodes[n.idx].Child.Env, "\n")
+		if strings.Contains(env, "DATABASE_URL=") || strings.Contains(env, "REDIS_URL=") {
+			t.Fatalf("external 不应给 %s 注入 DSN: %s", n.name, env)
+		}
 	}
 }
 
