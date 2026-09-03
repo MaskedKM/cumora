@@ -116,6 +116,8 @@ test('[mirror-skills] validation: name/description/files rules', async () => {
     method: 'POST', body: JSON.stringify(payload),
   })
   assert.equal((await bad({ name: 'Bad_Name', description: 'd', body: 'x' })).status, 400)
+  // 平台命名空间保留(#261b 内置技能物化端不与公司技能撞名)
+  assert.equal((await bad({ name: 'cumora-commands', description: 'd', body: 'x' })).status, 400)
   assert.equal((await bad({ name: 'ok', description: '', body: 'x' })).status, 400)
   assert.equal((await bad({ name: 'ok', description: 'd', body: 'x', files: [] })).status, 400)
   // files 给了但没有根 SKILL.md

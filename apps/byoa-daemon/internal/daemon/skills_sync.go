@@ -65,7 +65,8 @@ func engineSkillsDir(adapterID, home string) string {
 }
 
 // skillSyncer:一轮同步的物化器。清单拉一次,整包按哈希记忆化(公司间
-// 同内容共享;同轮多 agent 同公司不重复拉)。
+// 同内容共享;同轮多 agent 同公司不重复拉);内置技能(cumora-*)预填
+// 缓存——零网络,与公司手册同一管线。
 type skillSyncer struct {
 	ctx   context.Context
 	cfg   *DaemonConfig
@@ -74,7 +75,21 @@ type skillSyncer struct {
 }
 
 func newSkillSyncer(ctx context.Context, cfg *DaemonConfig) *skillSyncer {
-	return &skillSyncer{ctx: ctx, cfg: cfg, cache: map[string]*skillBundle{}}
+	s := &skillSyncer{ctx: ctx, cfg: cfg, cache: map[string]*skillBundle{}}
+	for _, b := range builtinSkills {
+		bundle := b.bundle // 拷贝防共享可变底层数组
+		s.cache[b.ref.BundleHash] = &bundle
+	}
+	return s
+}
+
+// builtinRefs:内置技能引用(每个 agent 都有,与公司无关)。
+func builtinRefs() []companySkillRef {
+	out := make([]companySkillRef, 0, len(builtinSkills))
+	for _, b := range builtinSkills {
+		out = append(out, b.ref)
+	}
+	return out
 }
 
 // list:公司 skills 清单(拉取失败返回 nil,调用方按无变化处理)。
@@ -104,18 +119,19 @@ func (s *skillSyncer) bundle(hash string) *skillBundle {
 	return &b
 }
 
-// materializeAgent:把 refs 中属于 agent 公司的技能物化进 home。错误只
-// 记日志——手册缺失不许影响唤醒主路径。物化目录按 adapterID 定址(而非
-// agent 声明引擎:run.go 的同步循环在本机无声明引擎时回落 engines[0],
-// runner.adapter 才是实际在跑的引擎)。
+// materializeAgent:把内置技能 + refs 中属于 agent 公司的技能物化进 home
+// (并成一张清单一次物化——分两次调用会让彼此的 stamp 互当"清单消失"
+// 误回收)。错误只记日志——手册缺失不许影响唤醒主路径。物化目录按
+// adapterID 定址(而非 agent 声明引擎:run.go 的同步循环在本机无声明
+// 引擎时回落 engines[0],runner.adapter 才是实际在跑的引擎)。
 func (s *skillSyncer) materializeAgent(agent AgentInfo, adapterID, home string, refs []companySkillRef) {
 	dir := engineSkillsDir(adapterID, home)
-	if dir == "" || agent.CompanyID == "" {
+	if dir == "" {
 		return
 	}
-	var mine []companySkillRef
+	mine := append([]companySkillRef{}, builtinRefs()...)
 	for _, ref := range refs {
-		if ref.CompanyID == agent.CompanyID {
+		if agent.CompanyID != "" && ref.CompanyID == agent.CompanyID {
 			mine = append(mine, ref)
 		}
 	}

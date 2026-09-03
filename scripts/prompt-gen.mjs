@@ -12,7 +12,7 @@
 // 组装逻辑(globalRules 拼接、standingPrompt 顺序)仍住手写 Go:
 // 生成器只做纯文本搬运,不承载业务。
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,15 +24,15 @@ const raw = (f) => readFileSync(dir("packages/prompt/" + f), "utf8").replaceAll(
 const esc = (s) => s.replaceAll("`", "§");
 
 // 文件名 → [生成 Go 常量名, 所属目标]
+// #261b:skype-emoticons-guide.txt 退役——内容迁入平台技能
+// skills/cumora-conversation-style(引擎按需拉取,不再每次唤醒内联)。
 const SERVER = [
   ["agent-voice.txt", "agentVoiceRulesRaw"],
-  ["skype-emoticons-guide.txt", "skypeEmoticonsGuideRaw"],
   ["rules-head.txt", "rulesHeadRaw"],
   ["rules-tail.txt", "rulesTailRaw"],
 ];
 const DAEMON = [
   ["glance-yield-rules.txt", "glanceYieldRulesRaw"],
-  ["skype-emoticons-guide.txt", "skypeEmoticonsGuideRaw"],
   ["two-domain-privacy-rule.txt", "twoDomainPrivacyRuleRaw"],
   ["human-register.txt", "humanRegisterRaw"], // #24 human-audience 聊天体语域块
 ];
@@ -72,4 +72,30 @@ writeFileSync(
   dir("apps/byoa-daemon/internal/daemon/persona_prompts.gen.go"),
   header("daemon") + emit(DAEMON) + "\n",
 );
-console.log(`[prompt-gen] 2 个生成物已写(server ${SERVER.length} 常量 / daemon ${DAEMON.length} 常量)`);
+
+// #261b 平台技能:packages/prompt/skills/<name>/SKILL.md 逐字拷贝到
+// daemon 的 go:embed 目录(字节一致;skills 是 markdown 走 embed,不经
+// § 占位转义)。源里删除的技能同步回收,生成物不留孤儿。
+const SKILLS_SRC = dir("packages/prompt/skills");
+const SKILLS_DST = dir("apps/byoa-daemon/internal/daemon/skillsdata");
+const skillDirs = existsSync(SKILLS_SRC)
+  ? readdirSync(SKILLS_SRC, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+  : [];
+if (skillDirs.length > 0) {
+  rmSync(SKILLS_DST, { recursive: true, force: true });
+  for (const name of skillDirs) {
+    const src = join(SKILLS_SRC, name, "SKILL.md");
+    if (!existsSync(src)) throw new Error(`skills/${name}: missing SKILL.md`);
+    const body = raw(`skills/${name}/SKILL.md`);
+    const fm = body.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!fm || !/^name: /m.test(fm[1]) || !/^description: /m.test(fm[1])) {
+      throw new Error(`skills/${name}: SKILL.md needs frontmatter with name + description`);
+    }
+    mkdirSync(join(SKILLS_DST, name), { recursive: true });
+    writeFileSync(join(SKILLS_DST, name, "SKILL.md"), body);
+  }
+}
+console.log(
+  `[prompt-gen] 2 个生成物已写(server ${SERVER.length} 常量 / daemon ${DAEMON.length} 常量)` +
+    (skillDirs.length > 0 ? ` + ${skillDirs.length} 个平台技能 → skillsdata/${skillDirs.join(", ")}` : ""),
+);

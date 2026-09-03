@@ -71,6 +71,11 @@ func validateSkillName(name string) string {
 	if strings.Contains(name, "--") {
 		return "name may not contain consecutive hyphens"
 	}
+	// 平台内置技能命名空间(#261b:daemon 物化 cumora-* 到各引擎目录,
+	// 公司技能撞名会与内置 stamp 互相覆盖)。
+	if strings.HasPrefix(name, "cumora-") {
+		return "name may not start with \"cumora-\" (reserved for platform built-in skills)"
+	}
 	return ""
 }
 

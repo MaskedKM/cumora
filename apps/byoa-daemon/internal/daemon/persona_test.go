@@ -20,6 +20,18 @@ func mustGolden(t *testing.T, name string) string {
 	return string(b)
 }
 
+// goldenUpdate:GOLDEN_UPDATE=1 时回写基准(#261b 起文案变更的再生路径;
+// 须同时跑 docker 单测,产物落宿主挂载卷)。
+func goldenUpdate(name, got string) {
+	if os.Getenv("GOLDEN_UPDATE") != "1" {
+		return
+	}
+	path := filepath.Join("testdata", name)
+	if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+		panic(err)
+	}
+}
+
 func strp(s string) *string { return &s }
 
 func TestPersonaHeaderGolden(t *testing.T) {
@@ -36,6 +48,7 @@ func TestPersonaHeaderGolden(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := personaHeader(tc.p, tc.file, tc.skills)
+			goldenUpdate(tc.name, got)
 			want := mustGolden(t, tc.name)
 			if got != want {
 				t.Fatalf("personaHeader drift vs %s:\n--- want %d bytes\n%s\n--- got %d bytes\n%s", tc.name, len(want), want, len(got), got)
@@ -46,6 +59,7 @@ func TestPersonaHeaderGolden(t *testing.T) {
 
 func TestStandingPromptGolden(t *testing.T) {
 	got := standingPrompt("test-agent")
+	goldenUpdate("standing_prompt.txt", got)
 	want := mustGolden(t, "standing_prompt.txt")
 	if got != want {
 		t.Fatalf("standingPrompt drift:\n--- want %d bytes\n%s\n--- got %d bytes\n%s", len(want), want, len(got), got)
