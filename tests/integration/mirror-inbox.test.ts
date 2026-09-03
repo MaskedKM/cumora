@@ -153,7 +153,7 @@ test('[mirror-inbox] mark read: single + read-all, idempotent 404 on foreign id'
   const list = await call('/inbox')
   const id = list.json.items[0].id
   assert.equal((await call(`/inbox/${id}/read`, { method: 'POST' })).status, 200)
-  assert.equal((await call(`/inbox/${id}/read`, { method: 'POST' })).status, 404) // 已读幂等 → 404
+  assert.equal((await call(`/inbox/${id}/read`, { method: 'POST' })).status, 200) // 已读幂等重放 → 200
   const after1 = await call('/inbox')
   assert.equal(after1.json.items[0].read, true)
   assert.equal(after1.json.counts.actionRequired, 0)

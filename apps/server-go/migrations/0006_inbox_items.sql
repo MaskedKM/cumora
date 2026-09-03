@@ -19,3 +19,6 @@ CREATE TABLE public.inbox_items (
 );
 CREATE INDEX idx_inbox_items_user_unread ON public.inbox_items (user_id, created_at DESC) WHERE (read_at IS NULL);
 CREATE INDEX idx_inbox_items_company ON public.inbox_items (company_id, created_at DESC);
+-- 列表主查询(company+user 过滤后按时间倒序):partial unread 索引盖不住
+-- 已读+未读混排的全量翻页。
+CREATE INDEX idx_inbox_items_user_recent ON public.inbox_items (user_id, created_at DESC);

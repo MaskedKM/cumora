@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -95,15 +96,12 @@ func (s *Server) MarkInboxItemRead(w http.ResponseWriter, r *http.Request, id st
 	if !ok {
 		return
 	}
-	res, err := s.DB.ExecContext(r.Context(),
+	// 幂等:已读重放/异己 id 都静默 200(契约只声明 200;重复标读无副作用)。
+	_, err := s.DB.ExecContext(r.Context(),
 		`UPDATE inbox_items SET read_at = now() WHERE id = $1 AND company_id = $2 AND user_id = $3 AND read_at IS NULL`,
 		id, companyID, userID)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		httpx.WriteError(w, http.StatusNotFound, "item not found")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -180,23 +178,13 @@ func MutedTypes(ctx context.Context, db *sql.DB, userID string) []string {
 }
 
 func setMutedTypes(ctx context.Context, db *sql.DB, userID string, types []string) error {
-	// prefs jsonb 整读 → 改一个键 → 整写(行缺失则插;ON CONFLICT 兜并发)。
-	var prefs []byte
-	err := db.QueryRowContext(ctx,
-		`SELECT prefs FROM user_preferences WHERE user_id = $1 LIMIT 1`, userID).Scan(&prefs)
-	var m map[string]any
-	if err == sql.ErrNoRows {
-		m = map[string]any{}
-	} else if err != nil {
-		return err
-	} else if json.Unmarshal(prefs, &m) != nil {
-		m = map[string]any{}
-	}
-	m["inboxMutedTypes"] = types
-	b, _ := json.Marshal(m)
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO user_preferences (user_id, prefs) VALUES ($1, $2)
-		ON CONFLICT (user_id) DO UPDATE SET prefs = EXCLUDED.prefs, updated_at = now()`,
+	// 单键合并写:只带 inboxMutedTypes 一个键,与其它偏好面(You 视图
+	// 整包写)并发时靠 jsonb || 保互不丢键。
+	b, _ := json.Marshal(map[string]any{"inboxMutedTypes": types})
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO user_preferences (user_id, prefs) VALUES ($1, $2::jsonb)
+		ON CONFLICT (user_id) DO UPDATE
+		  SET prefs = COALESCE(user_preferences.prefs, '{}'::jsonb) || $2::jsonb, updated_at = now()`,
 		userID, b)
 	return err
 }
@@ -214,13 +202,8 @@ func nullable(s sql.NullString) any {
 // 生成方(runtime finish / boards / calendar dispatch)尽力而为调用——
 // 内部任何失败只记日志,绝不影响主路径。返回条目 id(失败空串)。
 func Emit(ctx context.Context, db *sql.DB, companyID, userID, severity, typ, title, body, linkKind, linkID string) string {
-	title = strings.TrimSpace(title)
-	if len(title) > titleMax {
-		title = title[:titleMax]
-	}
-	if len(body) > bodyMax {
-		body = body[:bodyMax]
-	}
+	title = httpx.UTF16Cap(strings.TrimSpace(title), titleMax)
+	body = httpx.UTF16Cap(body, bodyMax)
 	id := "inbx-" + httpx.UUIDHex()[:20]
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO inbox_items (id, company_id, user_id, severity, type, title, body, link_kind, link_id)
@@ -232,6 +215,7 @@ func Emit(ctx context.Context, db *sql.DB, companyID, userID, severity, typ, tit
 	events.InboxNew(ctx, events.InboxNewEvent{
 		CompanyID:       companyID,
 		RecipientUserID: userID,
+		At:              httpx.ISOms(time.Now()),
 		ItemID:          id,
 		Severity:        severity,
 		ItemType:        typ,
@@ -277,4 +261,60 @@ func containsType(list []string, t string) bool {
 		}
 	}
 	return false
+}
+
+/* ───────────── 看板共享发射器(REST UpdateCard 与 agent CLI 同调) ───────────── */
+
+// EmitCardAssigned:卡片指派给人类 → attention(该人类收)。值变化判定
+// 在调用方(重发同值不发);kind=human 在此校验。
+func EmitCardAssigned(ctx context.Context, db *sql.DB, companyID, actorID, boardID, cardID, assigneeID string) {
+	if assigneeID == "" || assigneeID == actorID {
+		return
+	}
+	var kind string
+	if db.QueryRowContext(ctx,
+		`SELECT kind FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		assigneeID, companyID).Scan(&kind) != nil || kind != "human" {
+		return
+	}
+	var title string
+	if db.QueryRowContext(ctx,
+		`SELECT title FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
+		cardID, boardID).Scan(&title) != nil {
+		return
+	}
+	Emit(ctx, db, companyID, assigneeID, "attention", "card.assigned",
+		"Card assigned to you: "+title, "moved by "+actorID, "board", boardID)
+}
+
+// readyForHumanRe:triage 五标签约定列(triage-labels.md),宽容匹配。
+var readyForHumanRe = regexp.MustCompile(`ready[ -]?for[ -]?human`)
+
+// EmitCardNeedsHuman:卡片移入 ready-for-human 列 → action_required
+// (owner 收)。列名在此解析,调用方只给新列 id。
+func EmitCardNeedsHuman(ctx context.Context, db *sql.DB, companyID, boardID, cardID, newColID string) {
+	if newColID == "" {
+		return
+	}
+	var colTitle string
+	if db.QueryRowContext(ctx,
+		`SELECT title FROM board_columns WHERE id = $1 AND board_id = $2 LIMIT 1`,
+		newColID, boardID).Scan(&colTitle) != nil {
+		return
+	}
+	if !readyForHumanRe.MatchString(strings.ToLower(colTitle)) {
+		return
+	}
+	owner := CompanyOwner(ctx, db, companyID)
+	if owner == "" {
+		return
+	}
+	var title string
+	if db.QueryRowContext(ctx,
+		`SELECT title FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
+		cardID, boardID).Scan(&title) != nil {
+		return
+	}
+	Emit(ctx, db, companyID, owner, "action_required", "card.needs-human",
+		"Card needs a human: "+title, "column: "+colTitle, "board", boardID)
 }

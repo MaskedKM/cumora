@@ -7,7 +7,7 @@ import { useDevtools } from '@/stores/devtools'
 import { useInbox } from '@/stores/inbox'
 import { useParticipants } from '@/stores/participants'
 import { Avatar } from '@/components/Avatar'
-import { IChat, IWhisper, IAgent, IAgents, IBoard, IDoc, IFile,
+import { IChat, IWhisper, IAgent, IAgents, IBoard, IDoc, IFile, IMail,
   IFolder, ICalendar, IObserve, IExit, IShip } from '@/components/icons'
 import { api } from '@/api/client'
 import { cn } from '@/lib/utils'
@@ -19,7 +19,7 @@ import type { Participant, ViewKey } from '@/types'
 // locale switch. Resolution happens at render.
 const baseItems: Array<{ key: ViewKey['view']; Icon: typeof IChat; label: MessageKey }> = [
   { key: 'conversations', Icon: IChat, label: 'nav.conversations' },
-  { key: 'inbox', Icon: IObserve, label: 'nav.inbox' },
+  { key: 'inbox', Icon: IMail, label: 'nav.inbox' },
   { key: 'whispers', Icon: IWhisper, label: 'nav.whispers' },
   { key: 'shipping', Icon: IShip, label: 'nav.ship' },
   { key: 'boards', Icon: IBoard, label: 'nav.boards' },

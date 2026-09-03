@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	inbox "github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"regexp"
 	"sort"
 	"strings"
@@ -1190,6 +1191,9 @@ func (s *Domain) cliCardMove(ctx context.Context, parsed agent.Parsed, me, compa
 	if _, err := s.DB.ExecContext(ctx, `UPDATE boards SET updated_at = NOW() WHERE id = $1`, home.boardID); err != nil {
 		return agent.ErrThrow(err)
 	}
+	// #264 移入 ready-for-human 列 → 人侧 inbox action_required(agent 是
+	// 主要移卡方,REST 面之外的这条路径不能漏)。
+	inbox.EmitCardNeedsHuman(ctx, s.DB, companyID, home.boardID, cardID, toCol)
 	s.publishBoardCli(companyID, "card.moved", home.boardID, &cardID, &toCol, nil, nil, me)
 	return agent.OK("moved card "+cardID+" → "+toCol, agent.CliSideEffect{
 		"event":         "kanban.card_moved",
@@ -1224,9 +1228,18 @@ func (s *Domain) cliCardAssign(ctx context.Context, parsed agent.Parsed, me, com
 	if who != "" && !strings.EqualFold(who, "null") && who != "-" {
 		assignee = strings.TrimSpace(who)
 	}
+	var curAssignee sql.NullString
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT assignee_id FROM board_cards WHERE id = $1 LIMIT 1`, cardID).Scan(&curAssignee); err != nil {
+		return agent.ErrThrow(err)
+	}
 	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE board_cards SET assignee_id = $1, updated_at = NOW() WHERE id = $2`, assignee, cardID); err != nil {
 		return agent.ErrThrow(err)
+	}
+	// #264 指派给人类且值变化 → attention(与 REST 面共享发射器)。
+	if a, ok := assignee.(string); ok && a != curAssignee.String {
+		inbox.EmitCardAssigned(ctx, s.DB, companyID, me, home.boardID, cardID, a)
 	}
 	s.publishBoardCli(companyID, "card.updated", home.boardID, &cardID, nil, nil, nil, me)
 	if a, ok := assignee.(string); ok && a != "" && a != me {

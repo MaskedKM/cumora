@@ -14,8 +14,6 @@ interface InboxState {
   markRead: (id: string) => Promise<void>
   markAllRead: () => Promise<void>
   setMutes: (types: string[]) => Promise<void>
-  /** WS inbox.new 到达时的本地落账(条目入列 + 计数 bump)。 */
-  ingest: (item: ApiInboxItem) => void
 }
 
 export const useInbox = create<InboxState>((set, get) => ({
@@ -32,26 +30,28 @@ export const useInbox = create<InboxState>((set, get) => ({
     }
   },
   markRead: async (id) => {
-    const prev = get().items
-    set({ items: prev.map((it) => (it.id === id ? { ...it, read: true } : it)) })
+    const prevItems = get().items
+    const prevCounts = get().counts
+    set({ items: prevItems.map((it) => (it.id === id ? { ...it, read: true } : it)) })
     try {
       await api.markInboxItemRead(id)
     } catch {
-      set({ items: prev })
+      set({ items: prevItems, counts: prevCounts })
       return
     }
     get().load()
   },
   markAllRead: async () => {
-    const prev = get().items
+    const prevItems = get().items
+    const prevCounts = get().counts
     set({
-      items: prev.map((it) => ({ ...it, read: true })),
+      items: prevItems.map((it) => ({ ...it, read: true })),
       counts: { actionRequired: 0, attention: 0, info: 0 },
     })
     try {
       await api.markAllInboxRead()
     } catch {
-      set({ items: prev })
+      set({ items: prevItems, counts: prevCounts })
       return
     }
     get().load()
@@ -64,11 +64,5 @@ export const useInbox = create<InboxState>((set, get) => ({
     } catch {
       set({ mutedTypes: prev })
     }
-  },
-  ingest: (item) => {
-    const counts = { ...get().counts }
-    if (!counts[item.severity as keyof typeof counts]) counts[item.severity as keyof typeof counts] = 0
-    counts[item.severity as keyof typeof counts] += 1
-    set({ items: [item, ...get().items].slice(0, 200), counts })
   },
 }))

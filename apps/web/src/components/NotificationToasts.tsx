@@ -103,6 +103,10 @@ export function NotificationToasts() {
   // Keep the renderer-side `nativeAppFocused` cache in sync with the
   // main process. This is the source of truth for `isWindowAttentive()`
   // when running in Electron — `document.hasFocus()` can lie there.
+  // #264 boot 加载:徽标(Rail)与弹条静音过滤都依赖 store 有数据;
+  // 此前只有打开 InboxView 才 load,重启后徽标恒 0、静音形同虚设。
+  useEffect(() => { void useInbox.getState().load() }, [])
+
   useEffect(() => {
     if (!isElectron) return
     const bridge = window.cumora?.app

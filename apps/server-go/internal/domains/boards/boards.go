@@ -642,9 +642,10 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 	var curTitle string
 	var curDesc sql.NullString
 	var curColID string
+	var curAssignee sql.NullString
 	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT title, description, column_id FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
-		cardID, boardID).Scan(&curTitle, &curDesc, &curColID)
+		SELECT title, description, column_id, assignee_id FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
+		cardID, boardID).Scan(&curTitle, &curDesc, &curColID, &curAssignee)
 	if err != nil {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 		return
@@ -750,8 +751,13 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 			s.Wake(companyID, []string{newAssignee}, uid)
 		}
 	}
-	emitCardInbox(r.Context(), s.DB, companyID, uid, boardID, cardID, nextTitle,
-		newAssignee, columnChanged, newColID)
+	// #264 看板 → inbox:值变化才发(整卡 PATCH 重发同值不重复打扰)。
+	if newAssignee != curAssignee.String {
+		inbox.EmitCardAssigned(r.Context(), s.DB, companyID, uid, boardID, cardID, newAssignee)
+	}
+	if columnChanged {
+		inbox.EmitCardNeedsHuman(r.Context(), s.DB, companyID, boardID, cardID, newColID)
+	}
 	resp := map[string]any{"ok": true}
 	if mentionsOut != nil {
 		resp["mentions"] = mentionsOut
@@ -886,35 +892,3 @@ func (s *Server) DeleteCardComment(w http.ResponseWriter, r *http.Request, bid s
 	})
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
-
-// emitCardInbox:#264 看板 → 人侧 inbox。两条规则:卡片指派给人类 →
-// attention(该人类收);移入 ready-for-human 列(五标签约定的裁决列,
-// 标题大小写不敏感匹配)→ action_required(owner 收)。尽力而为。
-func emitCardInbox(ctx context.Context, db *sql.DB, companyID, actorID, boardID, cardID, cardTitle, assigneeID string, columnChanged bool, newColID string) {
-	if assigneeID != "" && assigneeID != actorID {
-		var kind string
-		if db.QueryRowContext(ctx,
-			`SELECT kind FROM participants WHERE id = $1 AND company_id = $2 LIMIT 1`,
-			assigneeID, companyID).Scan(&kind) == nil && kind == "human" {
-			inbox.Emit(ctx, db, companyID, assigneeID, "attention", "card.assigned",
-				"Card assigned to you: "+cardTitle, "moved by "+actorID, "board", boardID)
-		}
-	}
-	if columnChanged && newColID != "" {
-		var colTitle string
-		if db.QueryRowContext(ctx,
-			`SELECT title FROM board_columns WHERE id = $1 AND board_id = $2 LIMIT 1`,
-			newColID, boardID).Scan(&colTitle) == nil {
-			if readyForHumanRe.MatchString(strings.ToLower(colTitle)) {
-				if owner := inbox.CompanyOwner(ctx, db, companyID); owner != "" {
-					inbox.Emit(ctx, db, companyID, owner, "action_required", "card.needs-human",
-						"Card needs a human: "+cardTitle, "column: "+colTitle, "board", boardID)
-				}
-			}
-		}
-	}
-}
-
-// readyForHumanRe:triage 五标签约定列(triage-labels.md),宽容匹配
-// ready for human / ready-for-human / readyforhuman。
-var readyForHumanRe = regexp.MustCompile(`ready[ -]?for[ -]?human`)
