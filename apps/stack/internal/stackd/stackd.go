@@ -7,8 +7,9 @@
 // pg/redis 双形态(#284 受管化):external = 系统级服务,探测等就绪
 // (存量部署零变);internal = 本进程拉起受管实例 —— pg 走 unix socket
 // (trust-local + reject-host,凭据零落盘),redis 走 unix socket +
-// 端口 0(本机 6379 已被占)。受管形态下 server 的 DATABASE_URL/
-// REDIS_URL 由 stackd 派生注入(后写覆盖,见 supervise.overrideEnv)。
+// 端口 0(本机 6379 已被占)。受管形态下 server 与 sidecar 的
+// DATABASE_URL/REDIS_URL 由 stackd 派生注入(后写覆盖,见
+// supervise.overrideEnv)。
 // 环境传递:unit 的 EnvironmentFile(.env)→ stackd 继承 → 子进程;
 // daemon 子进程额外合并 daemon.env 并钉扎引擎 PATH(nvm/npx 发现)。
 package stackd
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -104,6 +106,17 @@ func (c Config) pgDatabase() string { return orString(c.PGDatabase, "cumora") }
 // 的 url 分支管不到 keyword 形态,这里直接带 sslmode=disable)。
 func (c Config) internalDSN() string {
 	return fmt.Sprintf("host=%s user=cumora dbname=%s sslmode=disable", c.runDir(), c.pgDatabase())
+}
+
+// internalDSNURL —— 受管 pg 连接串的 URL 形态(node-pg 侧)。sidecar 的
+// pg 客户端(pg-connection-string)不认 libpq 关键字串 —— 键值对落不进
+// host,整串被当相对路径 —— 必须 postgres:// URL:authority 的 localhost
+// 被 ?host=<socket 目录> 覆盖,socket 文件按目录+默认端口查找(2026-09-03
+// 对活集群双形态实测,#333)。query 走 url.Values 编码:runDir 源自
+// stack.toml data.home(可配路径),裸拼 &/#/+ 会碎 DSN(评审 P1)。
+func (c Config) internalDSNURL() string {
+	q := url.Values{"host": {c.runDir()}, "sslmode": {"disable"}}
+	return "postgres://cumora@localhost/" + url.PathEscape(c.pgDatabase()) + "?" + q.Encode()
 }
 
 // adminDSN —— 维护连接(postgres 库:CREATE DATABASE / 探活门)。
@@ -253,13 +266,31 @@ func BuildNodes(cfg Config) ([]chain.Node, error) {
 		serverEnv = append(serverEnv, "REDIS_URL="+cfg.internalRedisURLFace())
 	}
 
+	// sidecar 注入(#333):同款派生,缺这半边时 supervise 的"继承
+	// os.Environ + 同键覆盖"语义会让 sidecar 捡到 stack.env 里的外部
+	// 时代存量 DSN(internal 形态下全是死地址)或客户端默认 TCP ——
+	// 启动即 fatal,熔断循环把链卡死在 server 之前。DATABASE_URL 用
+	// URL 形态(node-pg 不认 libpq 关键字串);REDIS_URL 与 server 同值
+	// —— unix:// 形态 go-redis 与 ioredis 双认(ioredis 对 redis:// 协议
+	// 只把 pathname 当库名,socket 路径必须走非 redis 协议的 path 分支)。
+	sidecarEnv := []string{
+		"YJS_SIDECAR_PORT=" + strconv.Itoa(cfg.SidecarPort),
+		"CUMORA_UPLOADS_DIR=" + uploads,
+	}
+	if cfg.pgInternal() {
+		sidecarEnv = append(sidecarEnv, "DATABASE_URL="+cfg.internalDSNURL())
+	}
+	if cfg.redisInternal() {
+		sidecarEnv = append(sidecarEnv, "REDIS_URL="+cfg.internalRedisURLFace())
+	}
+
 	return []chain.Node{
 		pgNode,
 		redisNode,
 		{Name: "sidecar", Mode: chain.Managed, Child: &supervise.Child{
 			Name: "sidecar", Path: bin("cumora-sidecar"),
 			Dir:  cfg.WorkDir,
-			Env:  []string{"YJS_SIDECAR_PORT=" + strconv.Itoa(cfg.SidecarPort), "CUMORA_UPLOADS_DIR=" + uploads},
+			Env:  sidecarEnv,
 			Gate: gateSidecar, GateEvery: 500 * time.Millisecond,
 			GateTimeout: orDefault(cfg.SidecarGateTimeout, 60*time.Second),
 		}},

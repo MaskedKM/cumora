@@ -8,9 +8,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -364,6 +366,42 @@ func TestBuildNodesInternalManaged(t *testing.T) {
 	if !strings.Contains(vEnv, "REDIS_URL=unix://"+cfg.redisSocket()) {
 		t.Fatalf("server env 缺受管 REDIS_URL: %s", vEnv)
 	}
+	// #333:sidecar 与 server 同款注入 —— 缺这半边时 sidecar 捡继承的
+	// 外部 DSN/客户端默认 TCP,internal 形态启动即 fatal。DATABASE_URL
+	// 是 URL 形态(node-pg 不认 libpq 关键字串),REDIS_URL 与 server 同值;
+	// 尾部一并钉死(&sslmode=disable):继承面不可控(PGSSLMODE 等
+	// 不应影响受管连接),回归丢 sslmode 要红。
+	sEnv := strings.Join(nodes[2].Child.Env, "\n")
+	if !strings.Contains(sEnv, "YJS_SIDECAR_PORT="+strconv.Itoa(cfg.SidecarPort)) {
+		t.Fatalf("sidecar env 缺端口注入: %s", sEnv)
+	}
+	wantDSN := "DATABASE_URL=postgres://cumora@localhost/" + cfg.pgDatabase() +
+		"?host=" + url.QueryEscape(cfg.runDir()) + "&sslmode=disable"
+	if !strings.Contains(sEnv, wantDSN) {
+		t.Fatalf("sidecar env 缺受管 DATABASE_URL(URL 形态,含 sslmode): %s", sEnv)
+	}
+	if !strings.Contains(sEnv, "REDIS_URL=unix://"+cfg.redisSocket()) {
+		t.Fatalf("sidecar env 缺受管 REDIS_URL: %s", sEnv)
+	}
+}
+
+// internalDSNURL 的 query 必须编码(#334 评审 P1):runDir 源自
+// stack.toml data.home(可配路径),裸拼 &/#/+ 会碎 DSN —— host 截断、
+// sslmode 丢失、路径错解。按消费方语义(URLSearchParams 同款解码)
+// 回读断言 round-trip。
+func TestInternalDSNURLEncodesRunDir(t *testing.T) {
+	cfg := Config{RunDir: `/home/a&b/c#d/e+f`}
+	dsn := cfg.internalDSNURL()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("DSN 应可被 URL 解析: %v — %s", err, dsn)
+	}
+	if got := u.Query().Get("host"); got != cfg.RunDir {
+		t.Fatalf("host 解码回读 = %q, want %q — %s", got, cfg.RunDir, dsn)
+	}
+	if got := u.Query().Get("sslmode"); got != "disable" {
+		t.Fatalf("sslmode 被特殊字符截断 = %q — %s", got, dsn)
+	}
 }
 
 // external 装配零变:存量部署回归锁(不注入 DSN,保持探测形态)。
@@ -377,9 +415,14 @@ func TestBuildNodesExternalDoesNotInjectDSN(t *testing.T) {
 	if nodes[0].Mode != chain.External || nodes[1].Mode != chain.External {
 		t.Fatal("缺省形态应 external")
 	}
-	vEnv := strings.Join(nodes[3].Child.Env, "\n")
-	if strings.Contains(vEnv, "DATABASE_URL=") || strings.Contains(vEnv, "REDIS_URL=") {
-		t.Fatalf("external 不应注入 DSN: %s", vEnv)
+	for _, n := range []struct {
+		name string
+		idx  int
+	}{{"server", 3}, {"sidecar", 2}} {
+		env := strings.Join(nodes[n.idx].Child.Env, "\n")
+		if strings.Contains(env, "DATABASE_URL=") || strings.Contains(env, "REDIS_URL=") {
+			t.Fatalf("external 不应给 %s 注入 DSN: %s", n.name, env)
+		}
 	}
 }
 
@@ -592,6 +635,23 @@ func TestBuildNodesMixedModesNoRedisBinaryNeeded(t *testing.T) {
 	}
 	if nodes[0].Mode != chain.Managed || nodes[1].Mode != chain.External {
 		t.Fatalf("混合形态装配: pg=%s redis=%s", nodes[0].Mode, nodes[1].Mode)
+	}
+	// 注入面锁(#334 评审 P2):pg internal + redis external 时,sidecar/
+	// server 拿受管 DATABASE_URL(各按客户端形态:sidecar URL 形态,
+	// server 关键字形态);REDIS_URL 不注入 —— 继承外部活地址
+	// 是该形态的语义,注入反而会压掉它。
+	for _, n := range []struct {
+		name string
+		idx  int
+		dsn  string
+	}{{"sidecar", 2, "DATABASE_URL=postgres://cumora@localhost/"}, {"server", 3, "DATABASE_URL=host="}} {
+		env := strings.Join(nodes[n.idx].Child.Env, "\n")
+		if !strings.Contains(env, n.dsn) {
+			t.Fatalf("混合形态 %s 缺受管 DATABASE_URL: %s", n.name, env)
+		}
+		if strings.Contains(env, "REDIS_URL=") {
+			t.Fatalf("混合形态 %s 不应注入 REDIS_URL: %s", n.name, env)
+		}
 	}
 }
 
