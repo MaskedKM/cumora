@@ -114,6 +114,40 @@ func TestMaterializeTeamMountsVpsAndUnreachable(t *testing.T) {
 	}
 }
 
+func TestMaterializeTeamMountsKeepsStaleOnTransientUnreachable(t *testing.T) {
+	// 评审 P1-1:ref 仍在清单但目标瞬时不可达(盘 flake/ESTALE)时,
+	// 不得误回收在用挂点 —— 保 stamp 记录的陈旧 target,下轮可达再重建。
+	realA := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "team")
+	if err := materializeTeamMounts(dir, []workspaceMountRef{
+		{ID: "ws-a", Name: "A", FolderPath: realA},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertLink(t, dir, "ws-a", realA)
+
+	// 下轮:同 id 换到不可达路径(stat 必失败)→ 旧挂点保留。
+	if err := materializeTeamMounts(dir, []workspaceMountRef{
+		{ID: "ws-a", Name: "A", FolderPath: filepath.Join(t.TempDir(), "unreachable-now")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertLink(t, dir, "ws-a", realA)
+	stamps, err := readTeamMountStamps(dir)
+	if err != nil || stamps["ws-a"] != realA {
+		t.Fatalf("stale target must stay recorded, stamps=%v err=%v", stamps, err)
+	}
+
+	// 再下轮:目标恢复可达(真迁移到新 folder)→ 重建指向新 folder。
+	realB := t.TempDir()
+	if err := materializeTeamMounts(dir, []workspaceMountRef{
+		{ID: "ws-a", Name: "A", FolderPath: realB},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertLink(t, dir, "ws-a", realB)
+}
+
 func TestMaterializeTeamMountsDoesNotStealNames(t *testing.T) {
 	realA := t.TempDir()
 	dir := filepath.Join(t.TempDir(), "team")

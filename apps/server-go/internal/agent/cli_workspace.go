@@ -84,6 +84,33 @@ func cliRejectReserved(rel string) string {
 	return ""
 }
 
+// cliRejectRoot:rel "." = workspace 根自身(filepath.Rel(root,root))。
+// delete/mv/stat 不得作用于根(评审 #339 P2;read/write 家族会被既有
+// "path is a directory" 检查拦)。
+func cliRejectRoot(rel string) string {
+	if rel == "." {
+		return "cannot operate on the workspace root"
+	}
+	return ""
+}
+
+// cliNormalizeShortI:grep 家族的 -i 短旗归一 —— cliParseArgs 只认 --
+// 前缀,单横线会落进 positional 变死旗(help/技能目录宣传的是 -i 形)。
+// 只在 grep 分支局部调用,不做全局短旗支持:reply 等命令的正文
+// positional 可以合法地以 - 开头(评审 #339 P1)。
+func cliNormalizeShortI(p cliParsed) cliParsed {
+	out := make([]string, 0, len(p.positional))
+	for _, v := range p.positional {
+		if v == "-i" {
+			p.flags["i"] = true
+			continue
+		}
+		out = append(out, v)
+	}
+	p.positional = out
+	return p
+}
+
 // cliResolveInside:双层防逃逸(resolve 归一 + realpath 复检),错误文案
 // 对齐 core.ts assertInside/resolveInside。
 func cliResolveInside(root, raw string) (abs, rel string, errMsg string) {
@@ -368,6 +395,9 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if rel == "" {
 			return cliErr("path required")
 		}
+		if msg := cliRejectRoot(rel); msg != "" {
+			return cliErr(msg)
+		}
 		if msg := cliRejectReserved(rel); msg != "" {
 			return cliErr(msg)
 		}
@@ -410,6 +440,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		}
 		if relSrc == "" || relDst == "" {
 			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(relSrc); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectRoot(relDst); msg != "" {
+			return cliErr(msg)
 		}
 		if msg := cliRejectReserved(relSrc); msg != "" {
 			return cliErr(msg)
@@ -459,6 +495,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if rel == "" {
 			return cliErr("path required")
 		}
+		if msg := cliRejectRoot(rel); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(rel); msg != "" {
+			return cliErr(msg)
+		}
 		st, err := os.Stat(abs)
 		if err != nil {
 			return cliErr("file not found")
@@ -482,6 +524,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
 			return cliErr("usage: workspace grep <id> <pattern> [-i] [--json] [--as id]")
 		}
+		parsed = cliNormalizeShortI(parsed)
 		wsID, pattern := parsed.positional[1], parsed.positional[2]
 		folder, wsName, _, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
 		if msg != "" {
@@ -605,7 +648,7 @@ func cliGrepWorkspaceFolder(root string, re *regexp.Regexp) (hits []string, trun
 			if re.MatchString(line) {
 				if len(hits) >= cliGrepMaxHits {
 					truncated = true
-					return nil
+					return fs.SkipAll // 触帽即收束,不再白读剩余整棵树
 				}
 				hits = append(hits, "  "+rel+":"+strconv.Itoa(i+1)+": "+utf16Slice(line, 200))
 			}
@@ -798,8 +841,9 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 		return cliOK(fmt.Sprintf("edited %s (%d replacement%s)", path, occurrences, plural), effect)
 	case "grep":
 		if len(parsed.positional) < 2 || parsed.positional[1] == "" {
-			return cliErr("usage: ws grep <pattern> [--as id]")
+			return cliErr("usage: ws grep <pattern> [-i] [--as id]")
 		}
+		parsed = cliNormalizeShortI(parsed)
 		pattern := parsed.positional[1]
 		flags := ""
 		if parsed.flagTruey("i") {

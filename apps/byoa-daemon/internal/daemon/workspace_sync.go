@@ -28,8 +28,8 @@ type workspaceMountRef struct {
 	FolderPath string `json:"folderPath"`
 }
 
-// teamMountsStamp:物化状态名(点前缀,与 skills stamps 同命名族,
-// 不构成引擎可见内容)。
+// teamMountsStamp:物化状态名(点前缀,平台元数据;agent 经 ls -a 可见
+// 亦可改,被改坏时按空 stamp 处理、按清单重物化自愈)。
 const teamMountsStamp = ".cumora-team-mounts.json"
 
 // teamMountsDir:home 下挂点父目录。#265 worktree 留位:母仓即本
@@ -53,6 +53,7 @@ func listAgentWorkspaces(ctx context.Context, cfg *DaemonConfig, token string) [
 func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) {
 	token, err := r.ensureToken()
 	if err != nil {
+		slog.Warn("[computer] team workspace mounts skipped — no runtime token", "agent", r.agent.ID, "err", err)
 		return
 	}
 	refs := listAgentWorkspaces(ctx, cfg, token)
@@ -65,12 +66,13 @@ func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) {
 }
 
 // materializeTeamMounts:目录级物化(与 runner 解耦,便于单测直驱)。
-//   - FolderPath 空(vps)或目标不可达(server 迁移后)→ 不建,自然 CLI
-//     回退;stamp 中既有项随之回收。
+//   - FolderPath 空(vps)→ 不建,自然 CLI 回退;stamp 既有项回收。
+//   - 目标瞬时不可达(盘 flake/维护/ESTALE)→ 保陈旧挂点不回收
+//     (skills_sync"陈旧保命"同款);回收只由清单真消失触发。
 //   - 挂点位置已有非 symlink 对象(agent 自建文件)→ 不动不记,不与
 //     agent 抢名字空间。
-//   - 清单消失(成员移除/解绑)→ 只回收 stamp 记录且 target 未被改动
-//     的 symlink;被手改过的视为"不再归我们",保守留下。
+//   - 清单消失(成员移除/解绑/转 vps)→ 只回收 stamp 记录且 target 未被
+//     改动的 symlink;被手改过的视为"不再归我们",保守留下。
 func materializeTeamMounts(dir string, refs []workspaceMountRef) error {
 	stamps, err := readTeamMountStamps(dir)
 	if err != nil {
@@ -78,13 +80,19 @@ func materializeTeamMounts(dir string, refs []workspaceMountRef) error {
 	}
 	next := map[string]string{}
 	for _, ref := range refs {
-		if ref.FolderPath == "" || ref.ID == "" {
-			continue
-		}
-		if st, serr := os.Stat(ref.FolderPath); serr != nil || !st.IsDir() {
+		if ref.ID == "" {
 			continue
 		}
 		link := filepath.Join(dir, ref.ID)
+		if ref.FolderPath == "" {
+			continue // vps 清单行:本就不该有挂点,既有项由回收分支处理
+		}
+		if st, serr := os.Stat(ref.FolderPath); serr != nil || !st.IsDir() {
+			if cur, lerr := os.Readlink(link); lerr == nil && cur == stamps[ref.ID] {
+				next[ref.ID] = stamps[ref.ID] // 陈旧保命:不因 stat 抖动误删在用挂点
+			}
+			continue
+		}
 		if cur, lerr := os.Readlink(link); lerr == nil && cur == ref.FolderPath {
 			next[ref.ID] = ref.FolderPath // 已正确:零写盘
 			continue

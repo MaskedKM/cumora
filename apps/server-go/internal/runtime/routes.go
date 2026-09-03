@@ -724,6 +724,10 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 		   LEFT JOIN computers c ON c.id = p.computer_id
 		  WHERE p.id = $1`, agentID,
 	).Scan(&companyID, &kind); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.WriteError(w, http.StatusNotFound, "agent not found")
+			return
+		}
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
