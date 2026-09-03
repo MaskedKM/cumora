@@ -31,8 +31,11 @@ type acpSessionConfig struct {
 	ClientInfo map[string]any
 	// SteerWarnLine:非空 = 无中轮 steer,首次 Steer 留此告警。
 	SteerWarnLine string
-	// OnNotify:session/update 之外的引擎专属通知(同 handleLocked 锁内
-	// 调用;如 grok 的 _x.ai/models/update 播报在跑模型)。nil = 无。
+	// OnNotify:session/update 之外的引擎专属通知(如 grok 的
+	// _x.ai/models/update 播报在跑模型)。nil = 无。
+	// ⚠ 在 handleLocked 持 s.mu 期间同步调用:回调内严禁调用 s 的公有
+	// 方法(Send/Stop/Alive… 均取 s.mu,不可重入即自锁死)、严禁阻塞
+	// (会卡死 stdout 泵)——只做纯状态写(如 s.curModel = x)。
 	OnNotify func(s *acpSession, method string, params map[string]any)
 	// EnvKeepKey/EnvKeepValue:替换式 env 注入默认值(withEnvDefaultKeep
 	// 语义;空键 = 无)。grok:GROK_DISABLE_AUTOUPDATER=1。
@@ -404,7 +407,9 @@ func (s *acpSession) handleLocked(msg *acpMsg) []func() {
 		return effects
 	}
 	// 引擎专属通知(session/update 之外)——如 grok 的 _x.ai/models/update。
-	if msg.Method != "" && msg.Method != "session/update" && s.cfg.OnNotify != nil {
+	// 只吞通知帧(id==nil):带 id 又带 method 的畸形帧留给后续分支,
+	// 不得挡 pendingID 结算(旧实现精确匹配方法名,此处收窄为形态匹配)。
+	if msg.ID == nil && msg.Method != "" && msg.Method != "session/update" && s.cfg.OnNotify != nil {
 		s.cfg.OnNotify(s, msg.Method, msg.Params)
 		return effects
 	}
@@ -455,7 +460,7 @@ func (s *acpSession) handleLocked(msg *acpMsg) []func() {
 			hopModel = s.model
 		}
 		if hopModel == "" {
-			hopModel = s.cfg.EngineID
+			hopModel = s.cfg.logPrefix()
 		}
 		resModel := s.curModel
 		if resModel == "" {
