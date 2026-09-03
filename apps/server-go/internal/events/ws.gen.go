@@ -27,6 +27,7 @@ const (
 	EventCalendarReminder     = "calendar.reminder"
 	EventCalendarEventChanged = "calendar.changed"
 	EventHello                = "hello"
+	EventInboxNew             = "inbox.new"
 )
 
 /* ── Redis 通道常量(x-channels;名字与退役前 publish.go 手写版逐一相同,
@@ -48,13 +49,14 @@ const (
 	ChDocMention       = "cumora:doc.mention"
 	ChCalendarReminder = "cumora:calendar.reminder"
 	ChCalendarEvents   = "cumora:calendar.events"
+	ChInbox            = "cumora:inbox"
 )
 
 // CompanyChannels:公司域事件通道全集 —— wsx 聊天桥订阅清单(#221 起由契约
 // 推导:scope=company 事件的通道按首现去重;doc.update/doc.awareness 是房间
 // 域(docrelay 管),不在其列。对齐退役前 publish.go 的手写清单(顺序为推导序)。
 var CompanyChannels = []string{
-	ChMessageNew, ChMessageDelta, ChTyping, ChStatus, ChReactions, ChPolls, ChConvoUpdated, ChGroupPulled, ChConvene, ChBoards, ChDocs, ChDocMention, ChCalendarReminder, ChCalendarEvents,
+	ChMessageNew, ChMessageDelta, ChTyping, ChStatus, ChReactions, ChPolls, ChConvoUpdated, ChGroupPulled, ChConvene, ChBoards, ChDocs, ChDocMention, ChCalendarReminder, ChCalendarEvents, ChInbox,
 }
 
 // MessageNewEvent —— message.new(通道 cumora:msg.new、scope=company)。
@@ -281,4 +283,19 @@ type HelloEvent struct {
 	Type       string `json:"type"`
 	InstanceID string `json:"instanceId"`
 	Ts         int64  `json:"ts"`
+}
+
+// InboxNewEvent —— inbox.new(通道 cumora:inbox、scope=company)。
+type InboxNewEvent struct {
+	Type            string `json:"type"`
+	CompanyID       string `json:"companyId,omitempty"`
+	RecipientUserID string `json:"recipientUserId"`
+	ItemID          string `json:"itemId"`
+	Severity        string `json:"severity"`
+	ItemType        string `json:"itemType"`
+	Title           string `json:"title"`
+	Body            string `json:"body,omitempty"`
+	LinkKind        string `json:"linkKind,omitempty"`
+	LinkID          string `json:"linkId,omitempty"`
+	At              string `json:"at"`
 }

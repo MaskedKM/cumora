@@ -11,6 +11,8 @@
 package runtime
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
@@ -990,7 +993,7 @@ func (s *Service) handleRunHeartbeat(w http.ResponseWriter, r *http.Request, _ s
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ string, _ *string) {
+func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, agentID string, companyIDPtr *string) {
 	body, ok := readJSON(w, r)
 	if !ok {
 		return
@@ -1023,7 +1026,31 @@ func (s *Service) handleRunFinish(w http.ResponseWriter, r *http.Request, _ stri
 		toolCallCount, tokenCount, usageFromWire(body["usage"]), model); err != nil {
 		slog.Warn("[runtime] finishRun failed — dropping", "run", r.PathValue("runId"), "status", status, "err", err)
 	}
+	// #264 run 失败 → 人侧 inbox action_required(owner):daemon 侧重试
+	// 已尽(#262),这里是"需要人裁决"的第一信号。静音/推送纪律在 Emit。
+	if status == "failed" && companyIDPtr != nil && *companyIDPtr != "" {
+		emitRunFailedInbox(r.Context(), s.DB, *companyIDPtr, agentID, r.PathValue("runId"), errMsg, summary)
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// emitRunFailedInbox:尽力而为——标题带 agent 名,正文带失败摘要。
+func emitRunFailedInbox(ctx context.Context, db *sql.DB, companyID, agentID, runID string, errMsg, summary *string) {
+	owner := inbox.CompanyOwner(ctx, db, companyID)
+	if owner == "" {
+		return
+	}
+	name := agentID
+	_ = db.QueryRowContext(ctx,
+		`SELECT name FROM participants WHERE id = $1 LIMIT 1`, agentID).Scan(&name)
+	detail := ""
+	if errMsg != nil {
+		detail = *errMsg
+	} else if summary != nil {
+		detail = *summary
+	}
+	inbox.Emit(ctx, db, companyID, owner, "action_required", "run.failed",
+		name+" hit a failed turn", detail, "observability", runID)
 }
 
 /* ───────── steering busy 心跳 ───────── */

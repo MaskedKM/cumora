@@ -27,6 +27,7 @@ const CalendarPeekPane = lazy(() => import('./CalendarPeekPane').then((m) => ({ 
 // first rail switch and then cached; a one-time centered placeholder
 // (ViewFallback) covers the fetch.
 const WhispersView = lazy(() => import('./WhispersView').then((m) => ({ default: m.WhispersView })))
+const InboxView = lazy(() => import('./InboxView').then((m) => ({ default: m.InboxView }))) // #264 人侧 Inbox
 const ConveneView = lazy(() => import('./ConveneView').then((m) => ({ default: m.ConveneView })))
 const AgentsView = lazy(() => import('./AgentsView').then((m) => ({ default: m.AgentsView })))
 const BoardsView = lazy(() => import('./BoardsView').then((m) => ({ default: m.BoardsView })))
@@ -120,6 +121,7 @@ export function DesktopApp() {
       <div className="grid h-full min-h-0 overflow-hidden" style={{ gridTemplateColumns: '72px minmax(0, 1fr)' }}>
         <Rail />
         {view === 'conversations' && <ConversationsLayout />}
+        {view === 'inbox' && <Suspense fallback={<ViewFallback />}><InboxView /></Suspense>}
         {view === 'whispers' && <Suspense fallback={<ViewFallback />}><WhispersView /></Suspense>}
         {view === 'convene' && <Suspense fallback={<ViewFallback />}><ConveneView /></Suspense>}
         {view === 'agents' && <Suspense fallback={<ViewFallback />}><AgentsView /></Suspense>}

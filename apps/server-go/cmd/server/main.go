@@ -30,6 +30,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
+	dominbox "github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
 	domskills "github.com/MaskedKM/cumora/apps/server-go/internal/domains/skills"
@@ -217,6 +218,7 @@ func main() {
 	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
 	domskills.Mount(coreRouter, pool) // #261 公司 Skills 库
+	dominbox.Mount(coreRouter, pool)  // #264 人侧 Inbox 分级
 	email.Mount(coreRouter, pool)
 	email.MountInbound(mux, pool)
 	calendar.Mount(coreRouter, pool)

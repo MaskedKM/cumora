@@ -245,6 +245,23 @@ export interface HelloEvent {
   ts: number
 } // scope: gateway,gateway 直发(不上 Redis)
 
+export interface InboxNewEvent {
+  type: 'inbox.new'
+  companyId?: string
+  /** 收件人(users.id;human participant 同 id)。客户端按它过滤自己的条目。 */
+  recipientUserId: string
+  itemId: string
+  severity: 'action_required' | 'attention' | 'info'
+  /** 生成源类型:run.failed / card.needs-human / card.assigned / dispatch.failed / dispatch.done */
+  itemType: string
+  title: string
+  body?: string
+  /** conversation / board / calendar / observability */
+  linkKind?: string
+  linkId?: string
+  at: string
+} // scope: company,通道 cumora:inbox
+
 /** 客户端在 /ws 上可能收到的全部事件帧(含 gateway 自产的 hello/doc.sync/doc.error)。 */
 export type WsEvent =
   MessageNewEvent |
@@ -268,7 +285,8 @@ export type WsEvent =
   DocMentionEvent |
   CalendarReminderEvent |
   CalendarEventChangedEvent |
-  HelloEvent
+  HelloEvent |
+  InboxNewEvent
 
 /** Redis 总线上发布的事件(harness publish 面;gateway 自产帧不在其列)。 */
 export type WsBroadcastEvent =
@@ -290,7 +308,8 @@ export type WsBroadcastEvent =
   DocAwarenessEvent |
   DocMentionEvent |
   CalendarReminderEvent |
-  CalendarEventChangedEvent
+  CalendarEventChangedEvent |
+  InboxNewEvent
 
 /** 事件 → Redis 通道映射(多事件可共用通道:cumora:status 承载 participants.* 与 computers.*)。
  *  harness 的 CH_* 运行时常量以此 `satisfies` 钉值,防手写漂移。 */
@@ -314,5 +333,6 @@ export interface WsChannels {
   'doc.mention': 'cumora:doc.mention'
   'calendar.reminder': 'cumora:calendar.reminder'
   'calendar.changed': 'cumora:calendar.events'
+  'inbox.new': 'cumora:inbox'
 }
 

@@ -126,5 +126,5 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
 export type AgentRole = 'researcher' | 'designer' | 'engineer' | 'pm' | 'brand' | 'ops'
 
 export interface ViewKey {
-  view: 'conversations' | 'whispers' | 'convene' | 'agents' | 'boards' | 'calendar' | 'documents' | 'workspaces' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
+  view: 'conversations' | 'inbox' | 'whispers' | 'convene' | 'agents' | 'boards' | 'calendar' | 'documents' | 'workspaces' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
 }

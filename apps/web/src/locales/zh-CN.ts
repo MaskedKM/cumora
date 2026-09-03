@@ -44,6 +44,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'common.peek': '速览',
   // ─── 导航 ─────────────────────────────────────────────────────────
   'nav.conversations': '对话',
+  'nav.inbox': '收件箱',
   'nav.chats': '消息',
   'nav.whispers': '私聊',
   'nav.ship': '交付',
@@ -1875,4 +1876,16 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'skills.fileCount': '{n} 个文件',
   'skills.empty': '还没有公司技能。把团队的常用流程沉淀成技能,智能体即可按需取用。',
   'skills.deleteConfirm': '删除技能「{name}」?各端已物化的副本会在下个同步周期回收。',
+
+  // ─── 人侧 Inbox 分级(#264)──────────────────────────────────────
+  'inbox.title': '收件箱',
+  'inbox.subtitle': '只有「需要你」的事才打扰你:⚡ 需裁决才推送响铃,◎ 值得看,其余只落账。',
+  'inbox.sevAction': '⚡ 需裁决',
+  'inbox.sevAttention': '◎ 注意',
+  'inbox.sevInfo': '· 记录',
+  'inbox.readAll': '全部已读',
+  'inbox.mutes': '静音设置',
+  'inbox.mutesHint': '按类型静音:静音 = 不推送不弹条,条目仍保留在列表里。',
+  'inbox.mutesEmpty': '(还没有可静音的类型——等第一批条目进来)',
+  'inbox.empty': '空空如也。智能体汇报的阻碍、需要你拍板的事会出现在这里。',
 } as const

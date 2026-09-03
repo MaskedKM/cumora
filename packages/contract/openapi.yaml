@@ -1944,6 +1944,93 @@ paths:
                   dispatches:
                     type: array
                     items: { $ref: '#/components/schemas/CalendarDispatch' }
+  /api/inbox:
+    get:
+      tags: [inbox]
+      operationId: listInbox
+      summary: '#264 人侧 Inbox(分级条目 + 未读计数 + 静音清单)'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, counts, mutedTypes]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, severity, type, title, createdAt, read]
+                      properties:
+                        id: { type: string }
+                        severity: { type: string, enum: [action_required, attention, info] }
+                        type: { type: string }
+                        title: { type: string }
+                        body: { type: string, nullable: true }
+                        linkKind: { type: string, nullable: true }
+                        linkId: { type: string, nullable: true }
+                        read: { type: boolean }
+                        createdAt: { type: string, format: date-time }
+                  counts:
+                    type: object
+                    required: [actionRequired, attention, info]
+                    properties:
+                      actionRequired: { type: integer }
+                      attention: { type: integer }
+                      info: { type: integer }
+                  mutedTypes:
+                    type: array
+                    items: { type: string }
+  /api/inbox/{id}/read:
+    post:
+      tags: [inbox]
+      operationId: markInboxItemRead
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 单条已读
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/inbox/read-all:
+    post:
+      tags: [inbox]
+      operationId: markAllInboxRead
+      summary: 全部已读
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
+  /api/inbox/mutes:
+    get:
+      tags: [inbox]
+      operationId: getInboxMutes
+      summary: 按 type 静音清单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [types]
+                properties:
+                  types:
+                    type: array
+                    items: { type: string }
+    put:
+      tags: [inbox]
+      operationId: setInboxMutes
+      summary: 整包替换静音清单(静音 = 不推送不弹条,条目仍落账)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [types]
+              properties:
+                types:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
   /api/skills:
     get:
       tags: [skills]

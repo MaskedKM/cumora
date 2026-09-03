@@ -16,6 +16,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/boards"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
@@ -641,9 +642,10 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 	var curTitle string
 	var curDesc sql.NullString
 	var curColID string
+	var curAssignee sql.NullString
 	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT title, description, column_id FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
-		cardID, boardID).Scan(&curTitle, &curDesc, &curColID)
+		SELECT title, description, column_id, assignee_id FROM board_cards WHERE id = $1 AND board_id = $2 LIMIT 1`,
+		cardID, boardID).Scan(&curTitle, &curDesc, &curColID, &curAssignee)
 	if err != nil {
 		httpx.WriteError(w, http.StatusNotFound, "not found")
 		return
@@ -689,6 +691,7 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 		args = append(args, av)
 		sets = append(sets, fmt.Sprintf("assignee_id = $%d", len(args)))
 	}
+	newColID := ""
 	if v, has := raw["columnId"]; has {
 		var newCol string
 		_ = json.Unmarshal(v, &newCol)
@@ -703,6 +706,7 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 			}
 			args = append(args, newCol)
 			sets = append(sets, fmt.Sprintf("column_id = $%d", len(args)))
+			newColID = newCol
 			columnChanged = true
 		}
 	}
@@ -739,13 +743,20 @@ func (s *Server) UpdateCard(w http.ResponseWriter, r *http.Request, bid string, 
 	})
 	s.Wake(companyID, mentions, uid)
 	// 重指派也唤醒新 assignee(键在请求体出现才算变化路径)。
+	newAssignee := ""
 	if v, has := raw["assigneeId"]; has && string(v) != "null" {
-		var newAssignee string
 		_ = json.Unmarshal(v, &newAssignee)
 		newAssignee = strings.TrimSpace(newAssignee)
 		if newAssignee != "" && newAssignee != uid {
 			s.Wake(companyID, []string{newAssignee}, uid)
 		}
+	}
+	// #264 看板 → inbox:值变化才发(整卡 PATCH 重发同值不重复打扰)。
+	if newAssignee != curAssignee.String {
+		inbox.EmitCardAssigned(r.Context(), s.DB, companyID, uid, boardID, cardID, newAssignee)
+	}
+	if columnChanged {
+		inbox.EmitCardNeedsHuman(r.Context(), s.DB, companyID, boardID, cardID, newColID)
 	}
 	resp := map[string]any{"ok": true}
 	if mentionsOut != nil {
