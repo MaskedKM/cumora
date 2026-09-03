@@ -93,7 +93,7 @@ test('[mirror-inbox] card assigned to human → attention to the assignee', asyn
   await pool.query(`INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, 'To Do', 0)`, [colId, boardId])
   const card = (await call(`/boards/${boardId}/cards`, {
     method: 'POST', body: JSON.stringify({ title: 'Ship it', columnId: colId }),
-  })).body
+  })).json
   const moved = await call(`/boards/${boardId}/cards/${card.id}`, {
     method: 'PATCH', body: JSON.stringify({ assigneeId: human }),
   })
@@ -114,7 +114,7 @@ test('[mirror-inbox] card into a ready-for-human column → action_required to o
   await pool.query(`INSERT INTO board_columns (id, board_id, title, position) VALUES ($1, $2, 'Ready for Human', 1)`, [dst, boardId])
   const card = (await call(`/boards/${boardId}/cards`, {
     method: 'POST', body: JSON.stringify({ title: 'Decide the pricing', columnId: src1 }),
-  })).body
+  })).json
   const moved = await call(`/boards/${boardId}/cards/${card.id}`, {
     method: 'PATCH', body: JSON.stringify({ columnId: dst }),
   })
