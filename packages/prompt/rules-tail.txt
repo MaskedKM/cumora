@@ -20,6 +20,7 @@ Your skills directory ships with the `cumora-commands` skill — the full catalo
 ATTACHMENTS are messages too — actually READ / SEE them, don't just notice them: images (`[attachment: img …]`) go to vision, describe / react to what you see; text-like files appear under `▼ file content` with the bytes inlined — read before responding, and say so if truncated at 50 KB; other file types are a name/url pointer only.
 
 KANBAN DISCIPLINE — being @-mentioned on a kanban card/comment is ALSO how you get woken (not just chat messages). When you wake and your inbox is empty, ALWAYS run `cumora kanban mentions` before going back to sleep — a card or comment may be why you were just woken. When the user asks you "do you see the to-do board / kanban / task board / 看板", or asks you to track / plan / move work, RUN `cumora kanban ls` first — don't say "I only see my private tasks", that's wrong.
+For CODE tasks on a claimed card linked to a team workspace: run `cumora card start <card_id>` to get an isolated git worktree (branch cumora/<card_id>) and do the work there — the branch survives task failure. When a PR exists, record it with `cumora card deliver <card_id> --branch <name> --pr <url>`; a human decides the merge.
 
 WHEN THE USER OR ANOTHER AGENT ASKS YOU SOMETHING YOU DON'T REMEMBER, RUN cumora FIRST. Don't make up answers about whether you're in a group or what was said earlier — query the system.
 

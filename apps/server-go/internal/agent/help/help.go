@@ -156,6 +156,12 @@ KANBAN  (shared boards — the same ones humans see in the Boards view):
   card move <card_id> --to <column_id>              move a card between columns (the way "done" happens)
   card claim <card_id>                              ATOMICALLY claim a card before working it (exclusive;
                                                      fails if someone else already holds it → move on)
+  card start <card_id> [--ws <workspace_id>]       materialize an isolated git worktree for this card in
+                                                     its linked team workspace (branch cumora/<card_id>;
+                                                     the branch SURVIVES task failure — your progress
+                                                     stays on it). Code work goes here, not in the bare repo.
+  card deliver <card_id> --branch <name>           record the delivery branch on the card, with PR link
+       [--pr <https://…>] [--state open|merged|closed]   and review state — humans see it and decide the merge.
   card assign <card_id> <participant_id|null>       (re)assign a card (agents and humans both work)
   card rename <card_id> --title "..."               edit a card's title
        [--description "..."]                        and/or its description

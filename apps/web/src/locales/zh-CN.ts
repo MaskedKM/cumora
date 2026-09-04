@@ -333,6 +333,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'boards.noMatchingTeammate': '没有匹配的成员。',
   'boards.ariaColumn': '所在列',
   'boards.createdByAt': '由 {author} 创建于 {time}',
+  'boards.delivery': '交付',
   // ─── 日历 ─────────────────────────────────────────────────────────
   'cal.title': '日历',
   'cal.today': '今天',

@@ -80,6 +80,13 @@ const (
 	CalendarReminderChannelToast CalendarReminderChannel = "toast"
 )
 
+// Defines values for CardDeliveryPrState.
+const (
+	CardDeliveryPrStateClosed CardDeliveryPrState = "closed"
+	CardDeliveryPrStateMerged CardDeliveryPrState = "merged"
+	CardDeliveryPrStateOpen   CardDeliveryPrState = "open"
+)
+
 // Defines values for ComputerKind.
 const (
 	ComputerKindLocal ComputerKind = "local"
@@ -506,10 +513,10 @@ const (
 
 // Defines values for FinishRunJSONBodyStatus.
 const (
-	FinishRunJSONBodyStatusCompleted FinishRunJSONBodyStatus = "completed"
-	FinishRunJSONBodyStatusFailed    FinishRunJSONBodyStatus = "failed"
-	FinishRunJSONBodyStatusRunning   FinishRunJSONBodyStatus = "running"
-	FinishRunJSONBodyStatusSkipped   FinishRunJSONBodyStatus = "skipped"
+	Completed FinishRunJSONBodyStatus = "completed"
+	Failed    FinishRunJSONBodyStatus = "failed"
+	Running   FinishRunJSONBodyStatus = "running"
+	Skipped   FinishRunJSONBodyStatus = "skipped"
 )
 
 // Defines values for StatusHeartbeatJSONBodyStatus.
@@ -725,12 +732,15 @@ type BoardCard struct {
 	CommentCount int       `json:"commentCount"`
 	CreatedAt    time.Time `json:"createdAt"`
 	CreatedBy    string    `json:"createdBy"`
-	Description  *string   `json:"description"`
-	Id           string    `json:"id"`
-	Mentions     []string  `json:"mentions"`
-	Position     float32   `json:"position"`
-	Title        string    `json:"title"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+
+	// Deliveries #265 交付台账(worktree 分支/PR,空数组 = 无交付)。
+	Deliveries  []CardDelivery `json:"deliveries"`
+	Description *string        `json:"description"`
+	Id          string         `json:"id"`
+	Mentions    []string       `json:"mentions"`
+	Position    float32        `json:"position"`
+	Title       string         `json:"title"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
 }
 
 // BoardCardComment defines model for BoardCardComment.
@@ -841,6 +851,21 @@ type CalendarEventStatus string
 
 // CalendarReminderChannel defines model for CalendarReminderChannel.
 type CalendarReminderChannel string
+
+// CardDelivery #265 卡片交付行 —— `cumora card start` 物化 worktree 时落行(失败保分支的可见性),`card deliver` 补 PR 链接与审查状态。
+type CardDelivery struct {
+	Branch      string               `json:"branch"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	CreatedBy   string               `json:"createdBy"`
+	Id          string               `json:"id"`
+	PrState     *CardDeliveryPrState `json:"prState"`
+	PrUrl       *string              `json:"prUrl"`
+	UpdatedAt   time.Time            `json:"updatedAt"`
+	WorkspaceId string               `json:"workspaceId"`
+}
+
+// CardDeliveryPrState defines model for CardDelivery.PrState.
+type CardDeliveryPrState string
 
 // CompanySummary defines model for CompanySummary.
 type CompanySummary struct {

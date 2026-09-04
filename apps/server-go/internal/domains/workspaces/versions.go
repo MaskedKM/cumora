@@ -30,8 +30,11 @@ func versionsRoot(folder string) string { return filepath.Join(folder, ".cumora"
 // ADR 0006 信任域内,Linux 生产无虞,防御纵深)。
 const reservedPrefix = ".cumora"
 
-// RejectReserved:rel 命中平台内部目录(.cumora,大小写不敏感)时返回
-// 拒绝文案。CLI 面(agent 包 cliRejectReserved)与 HTTP 面共用语义。
+// RejectReserved:rel 首段命中平台内部目录(.cumora)或 git 内部(.git)
+// 时返回拒绝文案。CLI 面(agent 包 cliRejectReserved)与 HTTP 面共用语义。
+// .git 在 #265 前不拒 —— watcher 会把 git 元数据变化(worktree add 写
+// .git/worktrees/*、任何 git 操作改 index)上报进文件索引;仓库内部元
+// 数据本就不属协作文件面。
 func RejectReserved(rel string) string {
 	first := rel
 	if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
@@ -39,6 +42,9 @@ func RejectReserved(rel string) string {
 	}
 	if strings.EqualFold(first, reservedPrefix) {
 		return "reserved path (.cumora is platform-internal)"
+	}
+	if strings.EqualFold(first, ".git") {
+		return "reserved path (.git is repository-internal)"
 	}
 	return ""
 }

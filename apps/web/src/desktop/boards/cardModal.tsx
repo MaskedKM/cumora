@@ -160,6 +160,38 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
             </div>
           </section>
 
+          {(card.deliveries?.length ?? 0) > 0 && (
+            <section>
+              <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1.5">
+                {t('boards.delivery')}<span className="text-ink-500">· {card.deliveries!.length}</span>
+              </div>
+              <ul className="space-y-1.5">
+                {card.deliveries!.map((d) => (
+                  <li key={d.id} className="flex flex-wrap items-center gap-2 rounded-[10px] border border-ink-100 bg-white/70 px-3 py-2">
+                    <code className="min-w-0 truncate text-[12.5px] font-semibold text-ink-800">{d.branch}</code>
+                    {d.prState && (
+                      <span className={cn(
+                        'shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide',
+                        d.prState === 'open' && 'border-sky2-200 bg-sky2-50 text-skype-deep',
+                        d.prState === 'merged' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
+                        d.prState === 'closed' && 'border-ink-200 bg-ink-50 text-ink-500',
+                      )}>{d.prState}</span>
+                    )}
+                    {d.prUrl && (
+                      <a
+                        href={d.prUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 text-xs font-semibold text-skype hover:underline"
+                      >PR ↗</a>
+                    )}
+                    <span className="ml-auto shrink-0 text-[11px] text-ink-400">{formatTime(d.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           <section>
             <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1">
               {t('boards.comments')}{comments.length > 0 && <span className="text-ink-500">· {comments.length}</span>}

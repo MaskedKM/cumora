@@ -331,6 +331,7 @@ export const en = {
   'boards.noMatchingTeammate': 'No matching teammate.',
   'boards.ariaColumn': 'Column',
   'boards.createdByAt': 'Created {time} · by {author}',
+  'boards.delivery': 'Delivery',
   // ─── calendar view ────────────────────────────────────────────────
   'cal.title': 'Calendar',
   'cal.today': 'Today',

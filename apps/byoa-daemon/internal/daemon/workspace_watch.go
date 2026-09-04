@@ -133,16 +133,28 @@ func (t *teamWatcher) syncMounts(mounts map[string]string) {
 }
 
 // watchTree:递归 watch(target + 全部子目录;新建目录由事件路径补)。
+// 平台/仓库内部目录(.cumora 含 worktree checkout、.git 元数据)不 watch:
+// 单任务 worktree 是全量 checkout,目录数随活跃卡数放大,watch 进去只会
+// 打爆 inotify 上限(#343 评审 P1);其变更也不属感知面(handle 已过滤)。
+// 单目录 Add 失败只 Warn 不中止 —— 中止会让 syncMounts 丢弃整个 target
+// (整区静默退化为兜底扫描),比缺一个子目录的代价大得多。
 func (t *teamWatcher) watchTree(root string) error {
-	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // 单点失败跳过
 		}
 		if d.IsDir() {
-			return t.fw.Add(p)
+			if p != root && (strings.EqualFold(d.Name(), ".cumora") || strings.EqualFold(d.Name(), ".git")) {
+				return filepath.SkipDir
+			}
+			if err := t.fw.Add(p); err != nil {
+				slog.Warn("[computer] workspace watch add failed for subdir (continuing)", "dir", p, "err", err)
+			}
+			return nil
 		}
 		return nil
 	})
+	return t.fw.Add(root)
 }
 
 func (t *teamWatcher) handle(ev fsnotify.Event) {
@@ -163,6 +175,12 @@ func (t *teamWatcher) handle(ev fsnotify.Event) {
 		}
 	}
 	if wsID == "" || rel == "" || rel == "." {
+		return
+	}
+	// 平台/仓库内部目录不上报(#265):.cumora(worktree checkout 单窗可
+	// 达数千文件)与 .git(git worktree add 等元数据写)。server 侧
+	// RejectReserved 也会拒,这里前置过滤省上报流量。
+	if first, _, _ := strings.Cut(rel, "/"); strings.EqualFold(first, ".cumora") || strings.EqualFold(first, ".git") {
 		return
 	}
 	// 新建目录 → 补 watch(递归覆盖)。

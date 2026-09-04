@@ -3710,6 +3710,22 @@ export interface components {
             assigneeId: string | null;
             mentions: string[];
             commentCount: number;
+            /** @description #265 交付台账(worktree 分支/PR,空数组 = 无交付)。 */
+            deliveries: components["schemas"]["CardDelivery"][];
+            createdBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description #265 卡片交付行 —— `cumora card start` 物化 worktree 时落行(失败保分支的可见性),`card deliver` 补 PR 链接与审查状态。 */
+        CardDelivery: {
+            id: string;
+            branch: string;
+            workspaceId: string;
+            prUrl: string | null;
+            /** @enum {string|null} */
+            prState: "open" | "merged" | "closed" | null;
             createdBy: string;
             /** Format: date-time */
             createdAt: string;
