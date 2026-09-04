@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -60,10 +62,19 @@ func worktreeReady(abs string) bool {
 	return err == nil && !st.IsDir()
 }
 
+// worktreeCardIDRe:cardID 的纵深校验(平台 id 形如 card-<hex>;拒路径
+// 分隔符/点段/空白,防未来新调用方把任意串拼进分支名与路径 —— 唯一现
+// 调用方 cliCardStart 已被 resolveCardBoard 钉死为平台生成 id,#343 评审
+// P2)。
+var worktreeCardIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,127}$`)
+
 // MaterializeWorktree:为 cardID 幂等物化任务 worktree。返回 (分支名,
 // folder 相对路径 slash 形态, 是否已存在)。errMsg 非空 = 不可物化
 // (宿主无 git / folder 非 git repo / git 报错),文案面向 agent。
 func MaterializeWorktree(ctx context.Context, folder, cardID string) (branch, relDir string, already bool, errMsg string) {
+	if !worktreeCardIDRe.MatchString(cardID) || strings.Contains(cardID, "--") {
+		return "", "", false, "invalid card id"
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", "", false, "git is not available on the server host — worktree isolation unavailable"
 	}
@@ -93,6 +104,13 @@ func MaterializeWorktree(ctx context.Context, folder, cardID string) (branch, re
 	if err != nil {
 		if worktreeReady(abs) {
 			return branch, relDir, true, ""
+		}
+		// add 中途被超时/中断杀掉会留下非空目录:prune 只清"目录已不在"
+		// 的注册,救不了这种半成品,后续 start 都会在此失败 —— 给 operator
+		// 明确处置指引(分支本身完好,失败保分支的承诺不受影响;#343 评审 P2)。
+		if _, serr := os.Lstat(abs); serr == nil {
+			return "", "", false, "worktree creation failed and a partial checkout exists at " + relDir +
+				" — ask the operator to remove it (git worktree remove --force, or rm -rf) and retry; the branch itself is intact"
 		}
 		return "", "", false, "worktree creation failed: " + err.Error()
 	}

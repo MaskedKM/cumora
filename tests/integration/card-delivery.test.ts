@@ -255,3 +255,38 @@ test('worktree survives: branch keeps agent progress after the task "fails"', as
   const log = git(repoDir, 'log', `cumora/${cardId}`, '--oneline')
   assert.match(log, /wip/)
 })
+
+test('deliver without start: fresh INSERT on a self-built branch, --ws routing, single-card lookup', async () => {
+  const { cardId, boardId } = await seedBoardCardWithWorkspace()
+  await cli(token, ['card', 'claim', cardId])
+
+  // Self-built branch (no `card start`): deliver takes the fresh-INSERT
+  // path and records the workspace of the card's association.
+  const d = await cli(token, ['card', 'deliver', cardId, '--branch', 'feature/self-1', '--pr', 'https://github.com/x/y/pull/9'])
+  assert.equal(d.ok, true)
+  const wsRows = await pool.query<{ workspace_id: string }>(
+    `SELECT workspace_id FROM card_deliveries WHERE card_id = $1 AND branch = 'feature/self-1'`,
+    [cardId],
+  )
+  assert.equal(wsRows.rowCount, 1)
+  const wsId = wsRows.rows[0].workspace_id
+  const cards = await boardCards(boardId)
+  assert.equal(cards[0].deliveries[0].branch, 'feature/self-1')
+  assert.equal(cards[0].deliveries[0].prState, 'open')
+
+  // --ws pointing at a workspace NOT linked to the card is refused.
+  const badWs = await cli(token, ['card', 'deliver', cardId, '--branch', 'feature/self-2', '--ws', 'ws-nope'])
+  assert.equal(badWs.ok, false)
+  assert.match(badWs.text, /not linked to card/)
+
+  // Single-card lookup (GET /api/cards/{id}) carries the delivery too.
+  const res = await fetchAs(OWNER, `${MIRROR_BASE}/api/cards/${cardId}`, {
+    headers: { 'x-company-id': COMPANY },
+  })
+  assert.equal(res.status, 200)
+  const lookup = (await res.json()) as { card: { deliveries: { branch: string; prUrl: string | null }[] } }
+  assert.equal(lookup.card.deliveries.length, 1)
+  assert.equal(lookup.card.deliveries[0].branch, 'feature/self-1')
+  assert.equal(lookup.card.deliveries[0].prUrl, 'https://github.com/x/y/pull/9')
+  assert.equal(wsId.length > 0, true)
+})

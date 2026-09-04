@@ -1464,7 +1464,7 @@ func deliveryBranchOK(b string) bool {
 // 与 PR 落卡、人决定合并;平台不 block 列移动)。已存在的 (card, branch)
 // 行增量更新:不给的字段保旧。
 func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, companyID string, resolveCardBoard cardBoardResolver) agent.Result {
-	usage := "usage: card deliver <card_id> --branch <name> [--pr <https://…>] [--state open|merged|closed]"
+	usage := "usage: card deliver <card_id> --branch <name> [--pr <https://…>] [--state open|merged|closed] [--ws <workspace_id>]"
 	cardID := ""
 	if len(parsed.Positional()) > 1 {
 		cardID = strings.TrimSpace(parsed.Positional()[1])
@@ -1477,6 +1477,14 @@ func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, co
 		return agent.Err(usage + `  (branch: letters/digits/._-/ , no "..", ≤200 chars)`)
 	}
 	pr := strings.TrimSpace(parsed.FlagStrOr("pr", ""))
+	// 控制字符剔除:URL 会进 card show 纯文本(下一个读卡的 agent 的 LLM
+	// 上下文),换行/ESC 可伪造多行混淆 delivery 清单(#343 评审 P2)。
+	pr = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, pr)
 	if pr != "" && !strings.HasPrefix(pr, "http://") && !strings.HasPrefix(pr, "https://") {
 		return agent.Err("--pr must be an http(s) URL")
 	}
@@ -1502,14 +1510,17 @@ func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, co
 	if msg := s.requireCardAssignee(ctx, cardID, me); msg != "" {
 		return agent.Err(msg)
 	}
-	// 行不存在时需要 ws 关联定位落区(与 start 同引导);行已存在(start
-	// 物化过/自建分支登记过)则允许无关联补记 —— 区可能刚被解绑,历史
-	// 交付仍要能更新 PR 状态。
+	// 行不存在时需要 ws 关联定位落区(与 start 同引导,--ws 可指定);行已
+	// 存在(start 物化过/自建分支登记过)则允许无关联补记 —— 区可能刚被
+	// 解绑,历史交付仍要能更新 PR 状态。INSERT 带 ON CONFLICT DO UPDATE
+	// 的 COALESCE 增量语义:与 SELECT 的窗口竞态(并发 deliver 同 card+
+	// branch 双方都走 ErrNoRows 分支)收敛成幂等 upsert,后到者不再吃
+	// unique violation(#343 评审 P2)。
 	var exists int
 	err = s.DB.QueryRowContext(ctx,
 		`SELECT 1 FROM card_deliveries WHERE card_id = $1 AND branch = $2`, cardID, branch).Scan(&exists)
 	if err == sql.ErrNoRows {
-		_, wsRef, msg := s.cardWorkspaceFolder(ctx, companyID, cardID, "")
+		_, wsRef, msg := s.cardWorkspaceFolder(ctx, companyID, cardID, strings.TrimSpace(parsed.FlagStrOr("ws", "")))
 		if msg != "" {
 			return agent.Err(msg)
 		}
@@ -1522,7 +1533,11 @@ func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, co
 		}
 		if _, err := s.DB.ExecContext(ctx,
 			`INSERT INTO card_deliveries (id, card_id, workspace_id, branch, pr_url, pr_state, created_by)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 ON CONFLICT (card_id, branch) DO UPDATE SET
+			   pr_url = COALESCE(EXCLUDED.pr_url, card_deliveries.pr_url),
+			   pr_state = COALESCE(EXCLUDED.pr_state, card_deliveries.pr_state),
+			   updated_at = NOW()`,
 			"dlv-"+agent.UUIDHex()[:12], cardID, wsRef, branch, prV, stV, me); err != nil {
 			return agent.ErrThrow(err)
 		}

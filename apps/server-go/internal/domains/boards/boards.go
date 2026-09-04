@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sort"
@@ -479,6 +480,9 @@ func (s *Server) boardDeliveries(ctx context.Context, boardID string) map[string
 		  FROM card_deliveries d JOIN board_cards c ON c.id = d.card_id
 		 WHERE c.board_id = $1 ORDER BY d.created_at ASC`, boardID)
 	if err != nil {
+		// 台账查询失败不能 500 掉整板视图,但也绝不静默 —— 交付可见性
+		// 即是本功能的门禁面(#343 评审 P2)。
+		slog.Warn("[boards] card deliveries query failed — board view ships without them", "board", boardID, "err", err)
 		return out
 	}
 	defer rows.Close()

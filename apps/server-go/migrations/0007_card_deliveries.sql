@@ -27,4 +27,5 @@ CREATE TABLE public.card_deliveries (
     CONSTRAINT card_deliveries_unique UNIQUE (card_id, branch)
 );
 
-CREATE INDEX idx_card_deliveries_card ON public.card_deliveries (card_id);
+-- (无独立 card_id 索引:UNIQUE (card_id, branch) 的隐式索引已覆盖其
+-- 前缀,再建是纯写放大 —— #343 评审 P2。)
