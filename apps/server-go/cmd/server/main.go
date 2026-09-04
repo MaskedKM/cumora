@@ -30,6 +30,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/devtools"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/documents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
+	domhr "github.com/MaskedKM/cumora/apps/server-go/internal/domains/hr"
 	dominbox "github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
@@ -232,6 +233,7 @@ func main() {
 	domagents.Mount(coreRouter, pool,
 		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
 		runtimeSvc.GenerateAgentAvatar)
+	domhr.Mount(coreRouter, pool) // #345 HR Agent 配置面(编外隐形实体,ADR 0007)
 	devtools.Mount(coreRouter, pool)
 	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
 	// users/waitlist/stats/observability-llm 子面留待完整化票。

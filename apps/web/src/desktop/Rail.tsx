@@ -28,6 +28,7 @@ const baseItems: Array<{ key: ViewKey['view']; Icon: typeof IChat; label: Messag
   { key: 'workspaces', Icon: IFolder, label: 'nav.workspaces' },
   { key: 'skills', Icon: IFile, label: 'nav.skills' },
   { key: 'agents', Icon: IAgent, label: 'nav.agents' },
+  { key: 'hr', Icon: IAgent, label: 'nav.hr' },
   { key: 'me', Icon: IAgents, label: 'nav.me' },
 ]
 
@@ -55,6 +56,12 @@ export function Rail() {
   // /peek/agent-chats to the company owner). Hide the rail item for non-owners
   // so they never click into a 403/empty view.
   const isOwner = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.role === 'owner')
+  // #345 HR 配置面是 owner/admin 专属(服务端同闸):member 不见入口,
+  // 免点进一个 403 视图(与 whispers 的隐藏同款理由)。
+  const canManage = useAuth((s) => {
+    const r = s.companies.find((c) => c.id === s.activeCompanyId)?.role
+    return r === 'owner' || r === 'admin'
+  })
   const assembled = devtoolsEnabled
     ? [
         ...baseItems.slice(0, 3),
@@ -62,7 +69,8 @@ export function Rail() {
         ...baseItems.slice(3),
       ]
     : baseItems
-  const items = isOwner ? assembled : assembled.filter((i) => i.key !== 'whispers')
+  let items = isOwner ? assembled : assembled.filter((i) => i.key !== 'whispers')
+  if (!canManage) items = items.filter((i) => i.key !== 'hr')
   // The Rail's top avatar is the SIGNED-IN user, not a mock. Resolve the
   // current user's participant record so the Gravatar (set during signup
   // / backfilled at boot) shows up properly. Fall back to a minimal
