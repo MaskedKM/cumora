@@ -2465,6 +2465,7 @@ paths:
                   body: { type: string }
                   size: { type: integer }
                   modifiedAt: { type: string, format: date-time }
+                  mtimeNanos: { type: string, description: '#337 纳秒 mtime(十进制字符串,CAS expected 用)' }
     put:
       tags: [workspaces]
       operationId: writeWorkspaceFile
@@ -2472,7 +2473,10 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
         # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
         - { name: path, in: query, schema: { type: string } }
-      summary: 写文件
+        # #337 CAS:可选乐观并发(纳秒 mtime,十进制字符串 —— int64 超 JS
+        # 安全整数)。失配 412 + 挑战者内容留 .conflict 副本。
+        - { name: expectedMtimeNanos, in: query, schema: { type: string } }
+      summary: 写文件(#337 起支持 CAS)
       requestBody:
         content:
           application/json:
@@ -2491,6 +2495,17 @@ paths:
                 properties:
                   ok: { type: boolean }
                   path: { type: string }
+                  mtimeNanos: { type: string, description: 写后 mtime(下一轮 CAS 的 expected 用) }
+        '412':
+          description: CAS 失配(盘上 mtime 与 expected 不符;挑战者内容已留 .conflict 副本)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  currentMtimeNanos: { type: string }
+                  conflictPath: { type: string }
   /api/workspaces/{id}/unbind:
     post:
       tags: [workspaces]

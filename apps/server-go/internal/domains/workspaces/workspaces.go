@@ -739,6 +739,10 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, code, msg)
 		return
 	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
 	st, err := os.Stat(abs)
 	if err != nil || !st.IsDir() {
 		httpx.WriteError(w, http.StatusBadRequest, "path is not a directory inside the workspace folder")

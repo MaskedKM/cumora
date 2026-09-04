@@ -33,7 +33,7 @@ type ServerInterface interface {
 	// 读文件
 	// (GET /api/workspaces/{id}/file)
 	ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params ReadWorkspaceFileParams)
-	// 写文件
+	// 写文件(#337 起支持 CAS)
 	// (PUT /api/workspaces/{id}/file)
 	WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params WriteWorkspaceFileParams)
 	// 范围制列目录
@@ -280,6 +280,14 @@ func (siw *ServerInterfaceWrapper) WriteWorkspaceFile(w http.ResponseWriter, r *
 	err = runtime.BindQueryParameter("form", true, false, "path", r.URL.Query(), &params.Path)
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "expectedMtimeNanos" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "expectedMtimeNanos", r.URL.Query(), &params.ExpectedMtimeNanos)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "expectedMtimeNanos", Err: err})
 		return
 	}
 

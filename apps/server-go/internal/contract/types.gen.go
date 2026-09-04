@@ -2279,7 +2279,8 @@ type WriteWorkspaceFileJSONBody struct {
 
 // WriteWorkspaceFileParams defines parameters for WriteWorkspaceFile.
 type WriteWorkspaceFileParams struct {
-	Path *string `form:"path,omitempty" json:"path,omitempty"`
+	Path               *string `form:"path,omitempty" json:"path,omitempty"`
+	ExpectedMtimeNanos *string `form:"expectedMtimeNanos,omitempty" json:"expectedMtimeNanos,omitempty"`
 }
 
 // ListWorkspaceFilesParams defines parameters for ListWorkspaceFiles.

@@ -51,8 +51,10 @@ func parseKnown(v string) (int64, int64) {
 // 10 版帽兜底),不因缓存故障丢感知。
 func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string, paths []string, rdb redis.UniversalClient) []WSFileChange {
 	key := wsIdxKey(wsID)
+	paths0 := paths
 	if paths == nil {
 		paths = walkWorkspaceFiles(folder)
+		paths0 = paths
 	}
 	var changes []WSFileChange
 	hset := map[string]interface{}{}
@@ -63,8 +65,10 @@ func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string,
 		}
 		abs := filepath.Join(folder, filepath.FromSlash(rel))
 		st, err := os.Stat(abs)
-		if err != nil || st.IsDir() {
-			// 不存在/是目录:已知态里有 → removed;没有 → 忽略(上报噪音)。
+		if err != nil || !st.Mode().IsRegular() {
+			// 不存在/非普通文件(目录、FIFO、socket、symlink —— FIFO 的
+			// ReadFile 会永久阻塞挂死 worker,#341 评审 P1):已知态里有
+			// → removed;没有 → 忽略(上报噪音)。
 			if rdb != nil {
 				if cmd := rdb.HGet(ctx, key, rel); cmd.Err() == nil && cmd.Val() != "" {
 					changes = append(changes, WSFileChange{Path: rel, Removed: true})
@@ -92,6 +96,32 @@ func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string,
 		if len(hdel) > 0 {
 			_ = rdb.HDel(ctx, key, hdel...)
 		}
+	}
+	// 兜底扫描的删除对账(#341 评审 P1):walk 只列现存文件,watcher
+	// 丢失的删除(daemon 离线期删除/上报批被丢)由"已知态有、盘上无"
+	// 差集检出 —— 否则兜底扫描永远检不出删除,已知态残留死键。
+	if rdb != nil && paths == nil {
+		if keysCmd := rdb.HKeys(ctx, key); keysCmd.Err() == nil {
+			live := map[string]struct{}{}
+			for _, p := range paths0 {
+				live[p] = struct{}{}
+			}
+			for _, k := range keysCmd.Val() {
+				if _, ok := live[k]; ok {
+					continue
+				}
+				changes = append(changes, WSFileChange{Path: k, Removed: true})
+				hdel = append(hdel, k)
+			}
+			if len(hdel) > 0 {
+				_ = rdb.HDel(ctx, key, hdel...)
+			}
+		}
+	}
+	if rdb == nil && paths0 == nil {
+		// 无已知态的 walk(降级形态):快照仍有留档价值,但全量清单广播
+		// 只会制造每小时一帧的噪音 —— 跳过 publish(#341 评审 P2)。
+		return changes
 	}
 	if len(changes) > 0 {
 		mapped := make([]map[string]any, 0, len(changes))
@@ -124,6 +154,9 @@ func walkWorkspaceFiles(folder string) []string {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil // FIFO/symlink 等:快照面会挂死/越界,不进感知清单
 		}
 		rel, rerr := filepath.Rel(folder, p)
 		if rerr != nil {

@@ -1,10 +1,10 @@
 // workspaces 域 versions —— #337 写前快照与冲突副本(刀 2 防护三件套
 // 的落盘半边)。
 //
-//   - Versions(写前快照):server 侧一切破坏性写(write 覆盖/append/
-//     edit/delete/mv)与挂载写感知(watcher 上报的 mtime 变化)都先把
-//     旧内容留档进 <folder>/.cumora/versions/<rel>/<unixnano>,每文件
-//     保留最近 10 版 —— 与文件夹同生命周期,不进 DB(ADR 0006)。
+//   - Versions(版本史):server 侧破坏性写(write 覆盖/append/edit/
+//     delete/mv)在落盘前留档旧内容;挂载写感知(watcher 上报的 mtime
+//     变化)留档的是观察到的当时内容 —— 去抖窗内的中间态只留末态。
+//     每文件保留最近 10 版,与文件夹同生命周期,不进 DB(ADR 0006)。
 //   - Conflicted copy(CAS 挑战者留底):expected-mtime 失配时挑战者的
 //     新内容不丢弃,写成 <abs>.conflict-<principal>-<unixts> 与原文件
 //     同目录双份并存;挑战者重读最新内容后自行合并 —— symlink 挂载是
@@ -88,9 +88,19 @@ func trimVersions(dir string) {
 			names = append(names, e.Name())
 		}
 	}
-	sort.Strings(names)
-	for _, n := range names[:len(names)-maxFileVersions] {
-		_ = os.Remove(filepath.Join(dir, n))
+	// 数值序(非字典序):unixnano 定长 19 位时两者等价,但时钟回拨产生
+	// 短名(18 位及以下)会按字典序错排成"最新"(#341 评审 P2)。
+	nums := make([]int64, 0, len(names))
+	byNum := map[int64]string{}
+	for _, n := range names {
+		if v, err := strconv.ParseInt(n, 10, 64); err == nil {
+			nums = append(nums, v)
+			byNum[v] = n
+		}
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	for _, v := range nums[:len(nums)-maxFileVersions] {
+		_ = os.Remove(filepath.Join(dir, byNum[v]))
 	}
 }
 
@@ -126,8 +136,10 @@ func SaveConflictCopy(folder, rel, principal, content string) string {
 	}
 	ext := filepath.Ext(rel)
 	stem := strings.TrimSuffix(filepath.Base(rel), ext)
+	// 纳秒后缀:同 principal 同文件同秒的第二个挑战者不会静默覆盖
+	// 第一个(#341 评审 P2 —— "永不静默丢"在重试循环下可命中同秒)。
 	name := stem + ".conflict-" + sanitizePrincipal(principal) + "-" +
-		strconv.FormatInt(time.Now().Unix(), 10) + ext
+		strconv.FormatInt(time.Now().UnixNano(), 10) + ext
 	abs := filepath.Join(dir, name)
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		slog.Warn("[workspaces] conflict copy failed", "rel", rel, "err", err)

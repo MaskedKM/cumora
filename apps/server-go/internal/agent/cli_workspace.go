@@ -290,6 +290,22 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if msg != "" {
 			return cliErr(msg)
 		}
+		// 评审 #341 P0:逃逸/保留路径校验必须先于 CAS 与快照 —— 否则
+		// --expected 路径的 SaveConflictCopy 会在校验前把挑战者内容写
+		// 到 Join(folder, 原始path) 的越界位置(照抄 append 的次序)。
+		_, relW, errMsgW := cliResolveInside(folder, path)
+		if errMsgW != "" {
+			return cliErr(errMsgW)
+		}
+		if relW == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(relW); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(relW); msg != "" {
+			return cliErr(msg)
+		}
 		if exp, has := parsed.flagStr("expected"); has {
 			if fail := cliCASCheck(folder, path, exp, me, body); fail != "" {
 				return cliErr(fail)

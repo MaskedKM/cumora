@@ -262,12 +262,21 @@ test('[mirror] workspace-report: dedup, snapshot, files_changed frame', async ()
   assert.equal((await res.json() as { changed: number }).changed, 0, 'unchanged re-report deduped')
   assert.ok((await readdir(vdir)).length >= 2, 'each observed change leaves a version')
 
+  // 删除对账(#341 评审 P2-8):已知态有、盘上无 → removed 条目 + 帧含 removed。
+  const { rm } = await import('node:fs/promises')
+  await rm(join(folder, 'note.md'))
+  res = await post([{ workspaceId: wsId, path: 'note.md' }])
+  assert.equal((await res.json() as { changed: number }).changed, 1, 'removal must be detected via known-state diff')
+
   // 广播帧:workspace.files_changed,清单含 note.md。
   await new Promise((r) => setTimeout(r, 300))
   const evt = frames.find((f) => f.type === 'workspace.files_changed' && f.workspaceId === wsId)
   assert.ok(evt, `files_changed frame expected, got ${JSON.stringify(frames.map((f) => f.type))}`)
   assert.equal(evt.companyId, COMPANY)
   assert.ok(evt.changes.some((c: any) => c.path === 'note.md'))
+  assert.ok(frames.some((f: any) => f.type === 'workspace.files_changed' &&
+    f.workspaceId === wsId && f.changes.some((c: any) => c.path === 'note.md' && c.removed === true)),
+    'a frame must carry the removed entry')
 
   // 跨租户区:静默跳过(不确认存在性)。
   const otherCo = `c-other-${Math.random().toString(36).slice(2, 8)}`

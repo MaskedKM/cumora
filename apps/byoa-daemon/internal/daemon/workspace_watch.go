@@ -201,10 +201,19 @@ func (t *teamWatcher) flush(wsID string) {
 	for rel := range rels {
 		items = append(items, reportItem{WorkspaceID: wsID, Path: rel})
 	}
-	if err := apiCall(t.ctx, t.cfg.ServerURL, http.MethodPost,
-		"/api/computers/me/workspace-report", t.cfg.DeviceToken,
-		map[string]any{"items": items}, nil); err != nil {
-		slog.Warn("[computer] workspace report failed — batch dropped (server scan will catch up)",
-			"ws", wsID, "items", len(items), "err", err)
+	// 分片 ≤500(服务端契约硬帽):git checkout/unzip 类单窗巨量变更恰是
+	// watcher 核心场景,不分片会被整批 400(#341 评审 P1)。
+	const maxItems = 500
+	for start := 0; start < len(items); start += maxItems {
+		end := start + maxItems
+		if end > len(items) {
+			end = len(items)
+		}
+		if err := apiCall(t.ctx, t.cfg.ServerURL, http.MethodPost,
+			"/api/computers/me/workspace-report", t.cfg.DeviceToken,
+			map[string]any{"items": items[start:end]}, nil); err != nil {
+			slog.Warn("[computer] workspace report failed — batch dropped (server scan will catch up)",
+				"ws", wsID, "items", end-start, "err", err)
+		}
 	}
 }

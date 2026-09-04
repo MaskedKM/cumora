@@ -323,9 +323,13 @@ func (s *Server) ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request) 
 			`SELECT folder_path FROM workspaces
 			  WHERE id = $1 AND company_id = $2 AND unbound_at IS NULL`, wsID, companyID,
 		).Scan(&folder)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			// 不属于本公司的区:静默跳过(不确认存在性,也不计变更)。
 			continue
+		}
+		if err != nil {
+			httpx.WriteInternalError(w, r, err)
+			return
 		}
 		changed += len(sched.SyncWorkspaceFileState(r.Context(), wsID, companyID, folder, paths, s.RDB))
 	}
