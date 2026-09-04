@@ -887,6 +887,13 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
 		return
 	}
+	// 悬空 symlink 写穿(#342 评审 P2,纵深):EvalSymlinks 对悬空链接
+	// 回退父目录而 Stat 跟随失败,WriteFile 会沿链接写到根外 —— 落盘
+	// 前拒一切非常规文件(不存在 = 新建,放行)。
+	if fi, err := os.Lstat(abs); err == nil && !fi.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is not a regular file")
+		return
+	}
 	// CAS 检查(在 body 解码后、落盘前):失配 → 挑战者内容留副本 + 412。
 	if expected != nil {
 		cur := int64(0)
@@ -956,4 +963,166 @@ func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
+}
+
+// maxBinaryBytes:#338 multipart 二进制帽(对齐 uploads 域 25MB;文本面
+// 维持 maxFileBytes 2MB 不变)。
+const maxBinaryBytes = 25 * 1024 * 1024
+
+// UploadWorkspaceFile:#338 multipart 上传 —— 人侧 UI 通道(agent 走挂载
+// 盘原生写入)。流式读 file part(LimitReader 25MB+1),复用全套写路径
+// 防护:requireMember → resolveInside 防逃逸 → RejectReserved/RejectRoot
+// → 写前快照 → 落盘。字段序宽容:path 与 file 任意先后。
+func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	// 总请求体帽(#342 评审 P1):NextPart/Close 会排空剩余 part 字节,
+	// 只限单 file part 时带宽/CPU 无界 —— 对齐文本面 34MB 姿态,
+	// 25MB 文件 + path part + 边界开销取 26MB 总帽。
+	r.Body = http.MaxBytesReader(w, r.Body, maxBinaryBytes+(1<<20))
+	reader, err := r.MultipartReader()
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "multipart form required")
+		return
+	}
+	var rel, abs string
+	var havePath bool
+	var content []byte
+	var haveFile bool
+	parts := 0
+	for {
+		part, perr := reader.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid multipart body")
+			return
+		}
+		parts++
+		if parts > 8 {
+			httpx.WriteError(w, http.StatusBadRequest, "too many parts")
+			return
+		}
+		switch part.FormName() {
+		case "path":
+			if !havePath {
+				b, perr2 := io.ReadAll(io.LimitReader(part, 4097))
+				if perr2 != nil || len(b) > 4096 {
+					httpx.WriteError(w, http.StatusBadRequest, "path too long")
+					return
+				}
+				rel = strings.TrimSpace(string(b))
+				havePath = true
+			}
+		case "file":
+			if !haveFile {
+				b, ferr := io.ReadAll(io.LimitReader(part, maxBinaryBytes+1))
+				if ferr != nil {
+					httpx.WriteError(w, http.StatusBadRequest, "invalid file part")
+					return
+				}
+				if len(b) > maxBinaryBytes {
+					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large (25MB limit)")
+					return
+				}
+				content = b
+				haveFile = true
+			}
+		}
+		_ = part.Close()
+	}
+	if !havePath || !haveFile || rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path and file required")
+		return
+	}
+	abs, relResolved, code, msg := resolveInside(ws.folderPath, rel)
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if relResolved == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if msg := RejectReserved(relResolved); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if fi, err := os.Lstat(abs); err == nil && !fi.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is not a regular file")
+		return
+	}
+	SnapshotVersion(ws.folderPath, relResolved)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if err := os.WriteFile(abs, content, 0o644); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "path": relResolved, "size": len(content),
+		"mtimeNanos": strconv.FormatInt(fileMtimeNanos(abs), 10),
+	})
+}
+
+// rawContentTypes:图片扩展名 → Content-Type(预览需要;其余一律
+// application/octet-stream —— 不猜更多,浏览器按下载处理)。
+var rawContentTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+	".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+}
+
+// ReadWorkspaceFileRaw:#338 原始字节读 —— 图片预览/下载通道。二进制读
+// 帽 25MB(与上传面对齐;文本 JSON 面维持 2MB)。
+func (s *Server) ReadWorkspaceFileRaw(w http.ResponseWriter, r *http.Request, id string, params contract.ReadWorkspaceFileRawParams) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
+	st, err := os.Stat(abs)
+	if err != nil || st.IsDir() || !st.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if st.Size() > maxBinaryBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large (25MB limit)")
+		return
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer f.Close()
+	ct := rawContentTypes[strings.ToLower(filepath.Ext(rel))]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
 }

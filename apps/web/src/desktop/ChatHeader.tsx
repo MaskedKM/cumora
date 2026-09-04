@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { useConversations } from '@/stores/conversations'
-import { useParticipants } from '@/stores/participants'
 import { api } from '@/api/client'
 import { AvatarStack } from '@/components/Avatar'
+import { IConvene, IPin, ISearch } from '@/components/icons'
 import { MembersPopover } from '@/components/MembersPopover'
-import { cn } from '@/lib/utils'
-import { ISearch, IPin, IConvene } from '@/components/icons'
-import type { Participant } from '@/types'
+import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
 import { useT } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
+import { useAuth } from '@/stores/auth'
+import { useConversations } from '@/stores/conversations'
+import { useParticipants } from '@/stores/participants'
+import type { Participant } from '@/types'
 
 /** Soft "Coming soon" popover anchored beneath the trigger. Auto-dismisses
  *  after a beat; also closes on outside-click or Escape. The sparkle
@@ -93,6 +95,10 @@ export function ChatHeader({
   void onConvene
   const c = useConversations((s) => s.list.find((x) => x.id === convoId))
   const byId = useParticipants((s) => s.byId)
+  // #338 双向入口:项目会话可挂工作区(project 关联服务端要求 owner/admin)
+  const wsRole = useAuth((st) => st.companies.find((x) => x.id === st.activeCompanyId)?.role)
+  const canManageWsLink = wsRole === 'owner' || wsRole === 'admin'
+  const [linkingWs, setLinkingWs] = useState(false)
   const [editingTopic, setEditingTopic] = useState(false)
   const [topicDraft, setTopicDraft] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)
@@ -201,6 +207,9 @@ export function ChatHeader({
               onClick={canRename ? startEditTitle : undefined}
             >{c.title}</span>
           )}
+          {canManageWsLink && c.projectId && linkingWs && (
+            <WorkspaceLinkModal kind="project" targetId={c.projectId} onClose={() => setLinkingWs(false)} />
+          )}
           {c.projectName && (
             <span
               className="ml-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded shrink-0"
@@ -292,6 +301,14 @@ export function ChatHeader({
           + Pin drop off but Convene stays full-text — it's the primary
           action in this header. */}
       <div className="flex gap-1 text-ink-500 shrink-0">
+        {canManageWsLink && c?.projectId && (
+          <button
+            onClick={() => setLinkingWs(true)}
+            title={t('wsLink.title')}
+            aria-label={t('wsLink.title')}
+            className="w-9 h-9 rounded-[9px] hidden md:grid place-items-center transition hover:bg-sky2-50 hover:text-skype-deep"
+          >⌗</button>
+        )}
         <button
           onClick={onToggleSearch}
           title={t('chat.search')}

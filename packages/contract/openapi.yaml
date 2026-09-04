@@ -2506,6 +2506,66 @@ paths:
                   error: { type: string }
                   currentMtimeNanos: { type: string }
                   conflictPath: { type: string }
+  /api/workspaces/{id}/upload:
+    post:
+      tags: [workspaces]
+      operationId: uploadWorkspaceFile
+      summary: '#338 multipart 上传二进制(单文件 25MB 帽;复用防逃逸/保留路径/写前快照)'
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [path, file]
+              properties:
+                path: { type: string, description: 工作区内相对路径 }
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  path: { type: string }
+                  size: { type: integer }
+                  mtimeNanos: { type: string }
+        '413':
+          description: 超过 25MB 二进制帽
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+  /api/workspaces/{id}/raw:
+    get:
+      tags: [workspaces]
+      operationId: readWorkspaceFileRaw
+      summary: '#338 原始字节读(图片预览/下载;Content-Type 按扩展名猜)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 原始文件字节(图片扩展名回对应 image/*,其余 octet-stream)
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/gif:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            image/svg+xml:
+              schema: { type: string, format: binary }
   /api/workspaces/{id}/unbind:
     post:
       tags: [workspaces]

@@ -1,28 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { EditorContent, useEditor, type Editor } from '@tiptap/react'
-import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 // In TipTap v3, CollaborationCursor was renamed to CollaborationCaret and
 // repointed at the new @tiptap/y-tiptap binding. The legacy
 // extension-collaboration-cursor@3 is a shim still wired to y-prosemirror
 // and crashes against v3's sync plugin (ySyncPluginKey mismatch).
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
-import Placeholder from '@tiptap/extension-placeholder'
-import Link from '@tiptap/extension-link'
 import ImageExtension from '@tiptap/extension-image'
+import Link from '@tiptap/extension-link'
+import Placeholder from '@tiptap/extension-placeholder'
 import { TableKit } from '@tiptap/extension-table'
+import { type Editor, EditorContent, useEditor } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Y from 'yjs'
-import { openDocument, type YDocSession } from '@/lib/yjsClient'
-import { buildMentionExtension } from '@/lib/mentionExtension'
-import { useDocuments } from '@/stores/documents'
-import { useAuth } from '@/stores/auth'
 import { api, ws } from '@/api/client'
-import { cn } from '@/lib/utils'
-import { useT } from '@/lib/i18n'
 import {
-  IBold, IItalic, IStrike, IH1, IH2, IH3,
-  IList, IListOrdered, IQuote, ICode, ICodeBlock, ILink, IImage, IUndo, IRedo,
+  IBold, ICode, ICodeBlock, IH1, IH2, IH3,IImage, IItalic, ILink, 
+  IList, IListOrdered, IQuote, IRedo,IStrike, IUndo, 
 } from '@/components/EditorIcons'
+import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
+import { useT } from '@/lib/i18n'
+import { buildMentionExtension } from '@/lib/mentionExtension'
+import { cn } from '@/lib/utils'
+import { openDocument, type YDocSession } from '@/lib/yjsClient'
+import { useAuth } from '@/stores/auth'
+import { useDocuments } from '@/stores/documents'
 
 /** Walk every `mention` node currently in the editor's doc and return
  *  the set of mentioned participant ids (deduped, order-preserving).
@@ -121,6 +122,8 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
   const doc = useDocuments((s) => s.list.find((d) => d.id === documentId) ?? null)
   const rename = useDocuments((s) => s.rename)
   const remove = useDocuments((s) => s.remove)
+  // #338 双向入口:document 关联任意成员可建(AddWorkspaceAssociation 分层)
+  const [linkingWs, setLinkingWs] = useState(false)
 
   // The Yjs session owns the Y.Doc + Awareness; TipTap binds to them via
   // the Collaboration / CollaborationCursor extensions.
@@ -194,6 +197,16 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
         <div className="shrink-0">
           <PresenceStrip session={session} synced={synced} />
         </div>
+        <button
+          type="button"
+          onClick={() => setLinkingWs(true)}
+          title={t('wsLink.title')}
+          aria-label={t('wsLink.title')}
+          className="shrink-0 text-sm leading-none text-stone-500 hover:text-skype-deep transition-colors"
+        >⌗</button>
+        {linkingWs && doc && (
+          <WorkspaceLinkModal kind="document" targetId={doc.id} onClose={() => setLinkingWs(false)} />
+        )}
         {isPeek && onOpenFull ? (
           <button
             type="button"

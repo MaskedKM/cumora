@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   type ApiWorkspaceDetail,
   type ApiWorkspaceFileEntry,
   type ApiWorkspaceSummary,
-  api,ws 
+  api,ws
 } from '../api/client'
 import { Input } from '../components/Input'
 import { CodeBlock, RichBody } from '../components/Message'
@@ -12,6 +12,7 @@ import { ResizeHandle } from '../components/ResizeHandle'
 import { TextArea } from '../components/TextArea'
 import { useT } from '../lib/i18n'
 import { useResizableWidth } from '../lib/useResizableWidth'
+import { useAuth } from '../stores/auth'
 import { useDocuments } from '../stores/documents'
 
 const CODE_LANGS: Record<string, string> = {
@@ -24,6 +25,12 @@ const CODE_LANGS: Record<string, string> = {
 function extOf(path: string): string {
   const dot = path.lastIndexOf('.')
   return dot === -1 ? '' : path.slice(dot + 1).toLowerCase()
+}
+
+const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
+
+function isImagePath(path: string): boolean {
+  return IMG_EXTS.has(extOf(path))
 }
 
 function joinPath(dir: string, name: string): string {
@@ -80,6 +87,22 @@ export function WorkspacesView() {
   const [savedTick, setSavedTick] = useState(0)
   const [creating, setCreating] = useState(false)
   const [newPath, setNewPath] = useState('')
+  // #338 管理面与传输
+  const role = useAuth((st) => st.companies.find((c) => c.id === st.activeCompanyId)?.role)
+  const canManage = role === 'owner' || role === 'admin'
+  const [nameFilter, setNameFilter] = useState('')
+  const [openImage, setOpenImage] = useState<{ wsId: string; path: string; url: string; size: number } | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const uploadRef = useRef<HTMLInputElement | null>(null)
+  const [creatingWs, setCreatingWs] = useState(false)
+  const [newWsName, setNewWsName] = useState('')
+  const [newWsFolder, setNewWsFolder] = useState('')
+  const [addingMember, setAddingMember] = useState(false)
+  const [memberId, setMemberId] = useState('')
+  const [addingLink, setAddingLink] = useState(false)
+  const [linkKind, setLinkKind] = useState<'project' | 'board_card' | 'document'>('project')
+  const [linkTarget, setLinkTarget] = useState('')
+  const [manageError, setManageError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -112,6 +135,12 @@ export function WorkspacesView() {
     setCreating(false)
     setNewPath('')
     setSavedTick(0)
+    setManageError(null)
+    setAddingMember(false)
+    setAddingLink(false)
+    setMemberId('')
+    setLinkTarget('')
+    if (openImage) { URL.revokeObjectURL(openImage.url); setOpenImage(null) }
     api.getWorkspace(selectedId)
       .then((d) => { if (!cancelled) setDetail(d) })
       .catch((e) => { if (!cancelled) setDetailError(e instanceof Error ? e.message : String(e)) })
@@ -150,6 +179,29 @@ export function WorkspacesView() {
 
   useEffect(() => { reloadDir() }, [reloadDir])
 
+  // blob URL 生命周期:组件卸载即撤销(openImage 切换处已即时撤销)。
+  useEffect(() => () => { if (openImage) URL.revokeObjectURL(openImage.url) }, [openImage])
+
+  // 迟到响应守卫(#342 评审 P2):mutation 后立即切区时,旧区的 detail/
+  // 图片响应晚到不得回写 —— selectedIdRef 比对后再 set。
+  const selectedIdRef = useRef<string | null>(null)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
+
+  const reloadDetail = useCallback(() => {
+    if (!selectedId) return
+    const wsAtStart = selectedId
+    api.getWorkspace(selectedId)
+      .then((d) => { if (selectedIdRef.current === wsAtStart) setDetail(d) })
+      .catch(() => { /* 详情拉取失败保留旧态,下次切换重试 */ })
+  }, [selectedId])
+
+  const filteredEntries = useMemo(() => {
+    if (!entries) return null
+    const q = nameFilter.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter((e) => e.name.toLowerCase().includes(q))
+  }, [entries, nameFilter])
+
   const dirty = editing && openFile !== null && openFile.wsId === selectedId && draft !== openFile.body
   const guardDirty = () => !dirty || confirm(t('ws.dirtyConfirm'))
   // Switching views via the Rail can't be intercepted from here — unsaved
@@ -158,6 +210,7 @@ export function WorkspacesView() {
     setOpenFile(null)
     setEditing(false)
     setSavedTick(0)
+    if (openImage) { URL.revokeObjectURL(openImage.url); setOpenImage(null) }
   }
 
   const openEntry = async (entry: ApiWorkspaceFileEntry) => {
@@ -170,12 +223,28 @@ export function WorkspacesView() {
       setDirPath(path)
       return
     }
+    // #338 图片(不限 2MB 文本帽):原始字节读 → blob 预览。
+    if (isImagePath(path)) {
+      try {
+        const blob = await api.fetchWorkspaceRaw(selectedId, path)
+        if (selectedIdRef.current !== selectedId) { return } // 切区后迟到,弃
+        if (openImage) URL.revokeObjectURL(openImage.url)
+        setOpenFile(null)
+        setEditing(false)
+        setOpenImage({ wsId: selectedId, path, url: URL.createObjectURL(blob), size: blob.size })
+      } catch (e) {
+        setFileError(e instanceof Error ? e.message : String(e))
+      }
+      return
+    }
     try {
       const f = await api.readWorkspaceFile(selectedId, path)
       if (openFile !== null || editing) {
         // a previous file was open — reset the saved flash for the new one
         setSavedTick(0)
       }
+      if (openImage) URL.revokeObjectURL(openImage.url)
+      setOpenImage(null)
       setOpenFile({ wsId: selectedId, path, body: f.body })
       setEditing(false)
     } catch (e) {
@@ -219,6 +288,86 @@ export function WorkspacesView() {
     }
   }
 
+  const resetCreateWs = () => { setCreatingWs(false); setNewWsName(''); setNewWsFolder('') }
+
+  const addMember = async () => {
+    if (!selectedId || !memberId.trim()) return
+    setManageError(null)
+    try {
+      await api.addWorkspaceMember(selectedId, memberId.trim())
+      setAddingMember(false); setMemberId('')
+      reloadDetail()
+    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  const removeMember = async (pid: string) => {
+    if (!selectedId) return
+    setManageError(null)
+    try {
+      await api.removeWorkspaceMember(selectedId, pid)
+      reloadDetail()
+    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  const addLink = async () => {
+    if (!selectedId || !linkTarget.trim()) return
+    setManageError(null)
+    try {
+      await api.addWorkspaceAssociation(selectedId, linkKind, linkTarget.trim())
+      setAddingLink(false); setLinkTarget('')
+      reloadDetail()
+    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  const removeLink = async (kind: 'project' | 'board_card' | 'document', targetId: string) => {
+    if (!selectedId) return
+    setManageError(null)
+    try {
+      await api.removeWorkspaceAssociation(selectedId, kind, targetId)
+      reloadDetail()
+    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  const unbind = async () => {
+    if (!selectedId) return
+    if (!confirm(t('ws.unbindConfirm'))) return
+    setManageError(null)
+    try {
+      await api.unbindWorkspace(selectedId)
+      reloadDetail()
+    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  const upload = async (file: File) => {
+    if (!selectedId || detail?.unboundAt) return
+    setUploading(true)
+    setFileError(null)
+    try {
+      const target = joinPath(dirPath, file.name)
+      await api.uploadWorkspaceFile(selectedId, target, file)
+      void reloadDir()
+    } catch (e) {
+      setFileError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
+      if (uploadRef.current) uploadRef.current.value = ''
+    }
+  }
+
+  const createWs = async () => {
+    if (!newWsName.trim() || !newWsFolder.trim()) return
+    setManageError(null)
+    try {
+      const ws = await api.createWorkspace(newWsName.trim(), newWsFolder.trim())
+      resetCreateWs()
+      // POST 201 响应不含 explicitMemberCount(契约内联对象),追加行补 0。
+      setList((rows) => [...rows, { ...ws, explicitMemberCount: 0 }])
+      setSelectedId(ws.id)
+    } catch (e) {
+      setManageError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const breadcrumb = dirPath ? dirPath.split('/') : []
   const docTitles = new Map(docList.map((d) => [d.id, d.title]))
   const activeFile = openFile && openFile.wsId === selectedId ? openFile : null
@@ -246,6 +395,49 @@ export function WorkspacesView() {
             </button>
           ))}
         </div>
+        {canManage && (creatingWs ? (
+          <div className="flex flex-col gap-1.5 border-t border-ink-100 px-3 py-2.5">
+            <Input
+              autoFocus
+              value={newWsName}
+              onChange={(e) => setNewWsName(e.target.value)}
+              placeholder={t('ws.newWsNamePh')}
+              className="text-[12.5px]"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createWs()
+                if (e.key === 'Escape') resetCreateWs()
+              } }
+            />
+            <Input
+              value={newWsFolder}
+              onChange={(e) => setNewWsFolder(e.target.value)}
+              placeholder={t('ws.newWsFolderPh')}
+              className="font-mono text-[12px]"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createWs()
+                if (e.key === 'Escape') resetCreateWs()
+              } }
+            />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => void createWs()} className="rounded-lg bg-skype px-2.5 py-1 text-[12px] font-medium text-white">
+                {t('ws.create')}
+              </button>
+              <button type="button" onClick={resetCreateWs} className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud">
+                {t('ws.cancel')}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="border-t border-ink-100 px-3 py-2">
+            <button
+              type="button"
+              onClick={() => setCreatingWs(true)}
+              className="w-full rounded-lg px-2 py-1 text-left text-[12px] text-skype-deep hover:bg-cloud"
+            >
+              + {t('ws.newWs')}
+            </button>
+          </div>
+        ))}
         <ResizeHandle onMouseDown={onResizeStart} />
       </aside>
 
@@ -296,10 +488,31 @@ export function WorkspacesView() {
                         {t('ws.up')}
                       </button>
                       <span className="truncate font-mono text-ink-400">/{breadcrumb.join('/')}</span>
+                      <input
+                        value={nameFilter}
+                        onChange={(e) => setNameFilter(e.target.value)}
+                        placeholder={t('ws.filterPh')}
+                        className="ml-auto w-28 rounded-md border border-ink-100 px-1.5 py-0.5 text-[11.5px] text-stone-700 outline-none focus:border-skype/50"
+                      />
+                      <input
+                        ref={uploadRef}
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f) }}
+                      />
+                      <button
+                        type="button"
+                        disabled={uploading}
+                        onClick={() => uploadRef.current?.click()}
+                        className="rounded-lg px-2 py-0.5 text-skype-deep hover:bg-cloud disabled:opacity-40"
+                        title={t('ws.upload')}
+                      >
+                        {uploading ? t('common.loading') : '↑'}
+                      </button>
                       <button
                         type="button"
                         onClick={() => { if (guardDirty()) { closeFile(); setCreating(true) } }}
-                        className="ml-auto rounded-lg px-2 py-0.5 text-skype-deep hover:bg-cloud"
+                        className="rounded-lg px-2 py-0.5 text-skype-deep hover:bg-cloud"
                       >
                         {t('ws.newFile')}
                       </button>
@@ -328,6 +541,23 @@ export function WorkspacesView() {
                         <button type="button" onClick={() => { setCreating(false); setNewPath('') }} className="rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud">
                           {t('ws.cancel')}
                         </button>
+                      </div>
+                    ) : openImage && openImage.wsId === selectedId ? (
+                      <div className="flex-1 min-h-0 flex flex-col">
+                        <div className="flex items-center gap-2 border-b border-ink-100 px-4 py-1.5">
+                          <span className="truncate font-mono text-[11.5px] text-ink-500" title={openImage.path}>{openImage.path}</span>
+                          <span className="text-[11px] text-ink-400">{bytes(openImage.size)}</span>
+                          <button
+                            type="button"
+                            onClick={closeFile}
+                            className="ml-auto rounded-lg px-2 py-1 text-[12px] text-ink-500 hover:bg-cloud"
+                          >
+                            {t('ws.close')}
+                          </button>
+                        </div>
+                        <div className="flex-1 min-h-0 overflow-auto grid place-items-center p-4">
+                          <img src={openImage.url} alt={openImage.path} className="max-h-full max-w-full object-contain" />
+                        </div>
                       </div>
                     ) : activeFile ? (
                       <div className="flex-1 min-h-0 flex flex-col">
@@ -379,10 +609,10 @@ export function WorkspacesView() {
                       </div>
                     ) : (
                       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
-                        {entries === null ? null : entries.length === 0 ? (
+                        {filteredEntries === null ? null : filteredEntries.length === 0 ? (
                           <div className="px-2 py-2 text-[12.5px] text-ink-400">{t('ws.emptyDir')}</div>
                         ) : (
-                          entries.map((e) => (
+                          filteredEntries.map((e) => (
                             <button
                               key={e.name}
                               type="button"
@@ -404,6 +634,7 @@ export function WorkspacesView() {
 
               {/* Member scope + associations */}
               <aside className="min-w-0 h-full overflow-y-auto px-4 py-3">
+                {manageError && <div className="mb-2 rounded-md bg-coral-soft px-2 py-1 text-[11.5px] text-coral-deep">{manageError}</div>}
                 <div className="text-[12px] font-semibold text-stone-800">{t('ws.members')}</div>
                 <div className="mt-2 flex flex-col gap-1.5">
                   {detail.members.map((m) => (
@@ -413,7 +644,38 @@ export function WorkspacesView() {
                       <span className={cnPill(m.source)} title={m.source === 'explicit' ? t('ws.explicit') : t('ws.implicit')}>
                         {m.source === 'explicit' ? t('ws.explicit') : t('ws.implicit')}
                       </span>
+                      {canManage && m.source === 'explicit' && (
+                        <button
+                          type="button"
+                          onClick={() => void removeMember(m.participantId)}
+                          className="shrink-0 rounded px-1 text-[11px] text-ink-400 hover:text-coral-deep"
+                          title={t('ws.removeMember')}
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
+                  ))}
+                  {canManage && !detail.unboundAt && (addingMember ? (
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        autoFocus
+                        value={memberId}
+                        onChange={(e) => setMemberId(e.target.value)}
+                        placeholder={t('ws.memberIdPh')}
+                        className="flex-1 text-[12px]"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.nativeEvent.isComposing) void addMember()
+                          if (e.key === 'Escape') { setAddingMember(false); setMemberId('') }
+                        } }
+                      />
+                      <button type="button" onClick={() => void addMember()} className="rounded-lg bg-skype px-2 py-0.5 text-[11.5px] font-medium text-white">{t('ws.add')}</button>
+                      <button type="button" onClick={() => { setAddingMember(false); setMemberId('') }} className="rounded-lg px-1.5 py-0.5 text-[11.5px] text-ink-500 hover:bg-cloud">{t('ws.cancel')}</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setAddingMember(true)} className="self-start rounded-lg px-1.5 py-0.5 text-[11.5px] text-skype-deep hover:bg-cloud">
+                      + {t('ws.addMember')}
+                    </button>
                   ))}
                 </div>
                 <div className="mt-5 text-[12px] font-semibold text-stone-800">{t('ws.associations')}</div>
@@ -429,10 +691,63 @@ export function WorkspacesView() {
                         <span className="truncate">
                           {a.kind === 'document' ? (docTitles.get(a.targetId) ?? a.targetId) : a.targetId}
                         </span>
+                        {canManage && !detail.unboundAt && (
+                          <button
+                            type="button"
+                            onClick={() => void removeLink(a.kind, a.targetId)}
+                            className="shrink-0 rounded px-1 text-[11px] text-ink-400 hover:text-coral-deep"
+                            title={t('ws.removeLink')}
+                          >
+                            ✕
+                          </button>
+                        )}
                       </div>
                     ))
                   )}
+                  {canManage && !detail.unboundAt && (addingLink ? (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={linkKind}
+                          onChange={(e) => setLinkKind(e.target.value as 'project' | 'board_card' | 'document')}
+                          className="rounded-md border border-ink-100 px-1.5 py-1 text-[11.5px] text-stone-700 outline-none"
+                        >
+                          <option value="project">{t('ws.kindProject')}</option>
+                          <option value="board_card">{t('ws.kindBoardCard')}</option>
+                          <option value="document">{t('ws.kindDocument')}</option>
+                        </select>
+                        <Input
+                          autoFocus
+                          value={linkTarget}
+                          onChange={(e) => setLinkTarget(e.target.value)}
+                          placeholder={t('ws.targetIdPh')}
+                          className="flex-1 font-mono text-[11.5px]"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.nativeEvent.isComposing) void addLink()
+                            if (e.key === 'Escape') { setAddingLink(false); setLinkTarget('') }
+                          } }
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button type="button" onClick={() => void addLink()} className="rounded-lg bg-skype px-2 py-0.5 text-[11.5px] font-medium text-white">{t('ws.add')}</button>
+                        <button type="button" onClick={() => { setAddingLink(false); setLinkTarget('') }} className="rounded-lg px-1.5 py-0.5 text-[11.5px] text-ink-500 hover:bg-cloud">{t('ws.cancel')}</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setAddingLink(true)} className="self-start rounded-lg px-1.5 py-0.5 text-[11.5px] text-skype-deep hover:bg-cloud">
+                      + {t('ws.addLink')}
+                    </button>
+                  ))}
                 </div>
+                {canManage && !detail.isDefault && !detail.unboundAt && (
+                  <button
+                    type="button"
+                    onClick={() => void unbind()}
+                    className="mt-6 w-full rounded-lg border border-coral-deep/30 px-2 py-1.5 text-[12px] text-coral-deep hover:bg-coral-soft"
+                  >
+                    {t('ws.unbind')}
+                  </button>
+                )}
               </aside>
             </div>
           </>

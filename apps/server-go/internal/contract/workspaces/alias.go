@@ -7,6 +7,7 @@ import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 
 type ListWorkspaceFilesParams = contract.ListWorkspaceFilesParams
 type ReadWorkspaceFileParams = contract.ReadWorkspaceFileParams
+type ReadWorkspaceFileRawParams = contract.ReadWorkspaceFileRawParams
 type WriteWorkspaceFileParams = contract.WriteWorkspaceFileParams
 
 const SessionBearerScopes = contract.SessionBearerScopes
