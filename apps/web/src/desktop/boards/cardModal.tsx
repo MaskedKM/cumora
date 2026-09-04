@@ -6,7 +6,8 @@ import { AvatarMini } from '@/components/Avatar'
 import { Select } from '@/components/Select'
 import { useT } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { useMe } from '@/stores/auth'
+import { useAuth, useMe } from '@/stores/auth'
+import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
 import { useBoards } from '@/stores/boards'
 import { useParticipants } from '@/stores/participants'
 import type { BoardCard, BoardCardComment, BoardColumn, Participant } from '@/types'
@@ -22,6 +23,10 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
   const t = useT()
   const byId = useParticipants((s) => s.byId)
   const meId = useMe()
+  // board_card 关联服务端要求 owner/admin(AddWorkspaceAssociation 分层),
+  // 前端同门(#338)。
+  const role = useAuth((st) => st.companies.find((c) => c.id === st.activeCompanyId)?.role)
+  const canManage = role === 'owner' || role === 'admin'
   const patchCard = useBoards((s) => s.patchCard)
   const deleteCard = useBoards((s) => s.deleteCard)
   const loadComments = useBoards((s) => s.loadComments)
@@ -35,6 +40,7 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
   const [description, setDescription] = useState(card.description ?? '')
   const [draftComment, setDraftComment] = useState('')
   const [posting, setPosting] = useState(false)
+  const [linkingWs, setLinkingWs] = useState(false)
 
   useEffect(() => {
     setTitle(card.title)
@@ -92,12 +98,23 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
               className="-ml-2 w-full border-transparent bg-transparent px-2 py-1.5 text-[19px] font-semibold leading-7 text-ink-900 placeholder:text-ink-300 focus:border-skype/30 focus:bg-white focus:ring-2 focus:ring-skype/15"
             />
           </div>
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => setLinkingWs(true)}
+              className="shrink-0 rounded-md px-2.5 py-1.5 text-sm text-ink-500 hover:bg-sky2-50 hover:text-skype-deep"
+              title={t('wsLink.title')}
+            >⌗</button>
+          )}
           <button
             type="button"
             onClick={() => { void saveTitle().then(onClose) }}
             className="shrink-0 rounded-md px-2.5 py-1.5 text-sm text-ink-500 hover:bg-sky2-50 hover:text-skype-deep"
           >{t('common.close')}</button>
         </header>
+        {linkingWs && (
+          <WorkspaceLinkModal kind="board_card" targetId={card.id} onClose={() => setLinkingWs(false)} />
+        )}
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
           <section className="grid grid-cols-2 gap-4">

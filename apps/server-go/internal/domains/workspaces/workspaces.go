@@ -957,3 +957,147 @@ func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id stri
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
 }
+
+// maxBinaryBytes:#338 multipart 二进制帽(对齐 uploads 域 25MB;文本面
+// 维持 maxFileBytes 2MB 不变)。
+const maxBinaryBytes = 25 * 1024 * 1024
+
+// UploadWorkspaceFile:#338 multipart 上传 —— 人侧 UI 通道(agent 走挂载
+// 盘原生写入)。流式读 file part(LimitReader 25MB+1),复用全套写路径
+// 防护:requireMember → resolveInside 防逃逸 → RejectReserved/RejectRoot
+// → 写前快照 → 落盘。字段序宽容:path 与 file 任意先后。
+func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	reader, err := r.MultipartReader()
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "multipart form required")
+		return
+	}
+	var rel, abs string
+	var havePath bool
+	var content []byte
+	var haveFile bool
+	for {
+		part, perr := reader.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid multipart body")
+			return
+		}
+		switch part.FormName() {
+		case "path":
+			if !havePath {
+				b, _ := io.ReadAll(io.LimitReader(part, 4096))
+				rel = strings.TrimSpace(string(b))
+				havePath = true
+			}
+		case "file":
+			if !haveFile {
+				b, ferr := io.ReadAll(io.LimitReader(part, maxBinaryBytes+1))
+				if ferr != nil {
+					httpx.WriteError(w, http.StatusBadRequest, "invalid file part")
+					return
+				}
+				if len(b) > maxBinaryBytes {
+					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large (25MB limit)")
+					return
+				}
+				content = b
+				haveFile = true
+			}
+		}
+		_ = part.Close()
+	}
+	if !havePath || !haveFile || rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path and file required")
+		return
+	}
+	abs, relResolved, code, msg := resolveInside(ws.folderPath, rel)
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if relResolved == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if msg := RejectReserved(relResolved); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	SnapshotVersion(ws.folderPath, relResolved)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if err := os.WriteFile(abs, content, 0o644); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "path": relResolved, "size": len(content),
+		"mtimeNanos": strconv.FormatInt(fileMtimeNanos(abs), 10),
+	})
+}
+
+// rawContentTypes:图片扩展名 → Content-Type(预览需要;其余一律
+// application/octet-stream —— 不猜更多,浏览器按下载处理)。
+var rawContentTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+	".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+}
+
+// ReadWorkspaceFileRaw:#338 原始字节读 —— 图片预览/下载通道。二进制读
+// 帽 25MB(与上传面对齐;文本 JSON 面维持 2MB)。
+func (s *Server) ReadWorkspaceFileRaw(w http.ResponseWriter, r *http.Request, id string, params contract.ReadWorkspaceFileRawParams) {
+	ws, ok := requireMember(w, r, s.DB)
+	if !ok {
+		return
+	}
+	abs, rel, code, msg := resolveInside(ws.folderPath, r.URL.Query().Get("path"))
+	if code != 0 {
+		httpx.WriteError(w, code, msg)
+		return
+	}
+	if rel == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
+	st, err := os.Stat(abs)
+	if err != nil || st.IsDir() || !st.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if st.Size() > maxBinaryBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file too large (25MB limit)")
+		return
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer f.Close()
+	ct := rawContentTypes[strings.ToLower(filepath.Ext(rel))]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
+}

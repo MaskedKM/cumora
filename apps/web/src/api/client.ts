@@ -92,20 +92,20 @@ export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
 export type MeResponse = Schemas['MeResponse']
 
+import { getActiveCompanyId, getAuthToken } from '@/stores/auth'
 /* #221:Status/CalendarEventKind/ComputerStatus 原只被手写 WsEvent union 引用,
  * 契约化后随之退役(事件载荷里的枚举由生成物直接引用契约 schema)。 */
-import type {
-  BoardSummary, BoardSnapshot, BoardCardComment, BoardCardLookup,
-  CalendarEvent, CalendarEventStatus, CalendarDispatch, ComputerKind, EngineId,
+import type {BoardCardComment, BoardCardLookup,BoardSnapshot, 
+  BoardSummary, CalendarDispatch, 
+  CalendarEvent, CalendarEventStatus, ComputerKind, EngineId,
 } from '@/types'
-import { getAuthToken, getActiveCompanyId } from '@/stores/auth'
-import { SERVER_ORIGIN, fetchJson, getDevModeEnabled } from './core'
+import { ApiError, fetchJson, getDevModeEnabled, SERVER_ORIGIN } from './core'
 
 // 共享骨架(#147 ①)挪到 ./core —— origin 三层解析/Bearer/401 清 session/
 // 错误 detail 解析与 admin 面合一;此处 re-export 维持既有导入方不变。
 export {
-  getServerOrigin, setServerOrigin, getDevModeEnabled, setDevModeEnabled,
-  ApiError,
+  ApiError,getDevModeEnabled, 
+  getServerOrigin, setDevModeEnabled,setServerOrigin, 
 } from './core'
 
 const DEV_API_TARGET = import.meta.env.DEV
@@ -853,6 +853,64 @@ export const api = {
       `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
       { method: 'PUT', body: JSON.stringify({ body }) },
     ),
+
+  /* #338 管理面 mutation(服务端/契约已就绪,补齐前端封装) */
+  createWorkspace: (name: string, folderPath: string) =>
+    http<ApiWorkspaceSummary>('/workspaces', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
+  addWorkspaceMember: (id: string, participantId: string) =>
+    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/members`, {
+      method: 'POST', body: JSON.stringify({ participantId }),
+    }),
+  removeWorkspaceMember: (id: string, participantId: string) =>
+    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/members/${encodeURIComponent(participantId)}`, {
+      method: 'DELETE',
+    }),
+  addWorkspaceAssociation: (id: string, kind: 'project' | 'board_card' | 'document', targetId: string) =>
+    http<{ ok: boolean; kind: string; targetId: string }>(`/workspaces/${encodeURIComponent(id)}/associations`, {
+      method: 'POST', body: JSON.stringify({ kind, targetId }),
+    }),
+  removeWorkspaceAssociation: (id: string, kind: 'project' | 'board_card' | 'document', targetId: string) =>
+    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/associations/${kind}/${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+    }),
+  unbindWorkspace: (id: string) =>
+    http<{ ok: boolean; unboundAt: string }>(`/workspaces/${encodeURIComponent(id)}/unbind`, { method: 'POST' }),
+
+  /* #338 multipart 上传 / 原始字节读:fetchJson 恒 JSON(core.ts),此二
+  面必须裸 fetch(带 Bearer + x-company-id;FormData 不设 content-type,
+  让浏览器填 multipart boundary)。错误形状对齐 ApiError。 */
+  uploadWorkspaceFile: async (id: string, path: string, file: File) => {
+    const form = new FormData()
+    form.append('path', path)
+    form.append('file', file)
+    const headers: Record<string, string> = {}
+    const token = getAuthToken()
+    if (token) headers.authorization = `Bearer ${token}`
+    const company = getActiveCompanyId()
+    if (company) headers['x-company-id'] = company
+    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/upload`, {
+      method: 'POST', headers, body: form,
+    })
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`
+      try {
+        const j = (await res.json()) as { error?: string }
+        if (j.error) detail = `${j.error} (${res.status})`
+      } catch { /* keep status text */ }
+      throw new ApiError(detail, res.status)
+    }
+    return (await res.json()) as { ok: boolean; path: string; size: number; mtimeNanos: string }
+  },
+  fetchWorkspaceRaw: async (id: string, path: string): Promise<Blob> => {
+    const headers: Record<string, string> = {}
+    const token = getAuthToken()
+    if (token) headers.authorization = `Bearer ${token}`
+    const company = getActiveCompanyId()
+    if (company) headers['x-company-id'] = company
+    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/raw?path=${encodeURIComponent(path)}`, { headers })
+    if (!res.ok) throw new ApiError(`${res.status} ${res.statusText}`, res.status)
+    return await res.blob()
+  },
 }
 
 

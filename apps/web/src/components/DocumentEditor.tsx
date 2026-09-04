@@ -13,6 +13,7 @@ import ImageExtension from '@tiptap/extension-image'
 import { TableKit } from '@tiptap/extension-table'
 import * as Y from 'yjs'
 import { openDocument, type YDocSession } from '@/lib/yjsClient'
+import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
 import { buildMentionExtension } from '@/lib/mentionExtension'
 import { useDocuments } from '@/stores/documents'
 import { useAuth } from '@/stores/auth'
@@ -121,6 +122,8 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
   const doc = useDocuments((s) => s.list.find((d) => d.id === documentId) ?? null)
   const rename = useDocuments((s) => s.rename)
   const remove = useDocuments((s) => s.remove)
+  // #338 双向入口:document 关联任意成员可建(AddWorkspaceAssociation 分层)
+  const [linkingWs, setLinkingWs] = useState(false)
 
   // The Yjs session owns the Y.Doc + Awareness; TipTap binds to them via
   // the Collaboration / CollaborationCursor extensions.
@@ -194,6 +197,16 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
         <div className="shrink-0">
           <PresenceStrip session={session} synced={synced} />
         </div>
+        <button
+          type="button"
+          onClick={() => setLinkingWs(true)}
+          title={t('wsLink.title')}
+          aria-label={t('wsLink.title')}
+          className="shrink-0 text-sm leading-none text-stone-500 hover:text-skype-deep transition-colors"
+        >⌗</button>
+        {linkingWs && doc && (
+          <WorkspaceLinkModal kind="document" targetId={doc.id} onClose={() => setLinkingWs(false)} />
+        )}
         {isPeek && onOpenFull ? (
           <button
             type="button"

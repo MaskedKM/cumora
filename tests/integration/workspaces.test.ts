@@ -9,7 +9,7 @@
  */
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, MIRROR_BASE } from './_helpers.js'
@@ -689,4 +689,69 @@ test('implicit access via associations ends at unbind; association create is 410
 test('only owner/admin can unbind', async () => {
   const { id } = await createWorkspaceJson()
   assert.equal((await unbind(id, MEMBER)).status, 403)
+})
+
+// #338 multipart 上传 + 原始字节读:round-trip 字节一致 / 25MB 帽 / 防
+// 逃逸与保留路径 / 图片 Content-Type(mutation 管理面 API 由上方 28 个
+// 既有用例覆盖,此处不重复)。
+test('[mirror-workspaces] upload → raw round-trip + guards', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'ws-up-'))
+  const wsRes = await createWorkspace({ name: 'UploadRT', folderPath: folder })
+  const ws = (await wsRes.json()) as { id: string }
+  const post = (body: FormData) =>
+    fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces/${ws.id}/upload`, { method: 'POST', body })
+
+  // 小 PNG 头(字节级 round-trip 的最小非文本样本)。
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 250, 255, 0, 128])
+  const form = new FormData()
+  form.append('path', 'pics/logo.png')
+  form.append('file', new Blob([png]), 'logo.png')
+  let res = await post(form)
+  assert.equal(res.status, 200)
+  const up = (await res.json()) as { ok: boolean; path: string; size: number; mtimeNanos: string }
+  assert.ok(up.ok)
+  assert.equal(up.size, png.byteLength)
+  assert.ok(/^\d+$/.test(up.mtimeNanos), 'mtimeNanos is a decimal string (JS-safe)')
+
+  // raw 读:字节一致 + 图片 Content-Type。
+  const raw = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces/${ws.id}/raw?path=${encodeURIComponent('pics/logo.png')}`)
+  assert.equal(raw.status, 200)
+  assert.equal(raw.headers.get('content-type'), 'image/png')
+  const back = new Uint8Array(await raw.arrayBuffer())
+  assert.deepEqual(Array.from(back), Array.from(png), 'binary round-trip must be byte-exact')
+
+  // 非图片 → octet-stream。
+  await writeFile(join(folder, 'data.bin'), Buffer.from([0, 255, 1, 254]))
+  const bin = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces/${ws.id}/raw?path=data.bin`)
+  assert.equal(bin.headers.get('content-type'), 'application/octet-stream')
+
+  // 保留路径 / 逃逸路径拒。
+  const bad = new FormData()
+  bad.append('path', '.cumora/evil')
+  bad.append('file', new Blob(['x']), 'evil')
+  res = await post(bad)
+  assert.equal(res.status, 400)
+  const esc = new FormData()
+  esc.append('path', '../escape')
+  esc.append('file', new Blob(['x']), 'esc')
+  res = await post(esc)
+  assert.equal(res.status, 400)
+
+  // 25MB 帽:25MB+1 → 413(灌一个超限 buffer,只填首尾)。
+  const huge = new Uint8Array(25 * 1024 * 1024 + 1)
+  huge[0] = 1; huge[huge.length - 1] = 2
+  const over = new FormData()
+  over.append('path', 'big.bin')
+  over.append('file', new Blob([huge]), 'big.bin')
+  res = await post(over)
+  assert.equal(res.status, 413)
+
+  // 写前快照:再传同 path → 旧版留档 .cumora/versions/。
+  const again = new FormData()
+  again.append('path', 'pics/logo.png')
+  again.append('file', new Blob([new Uint8Array([9, 9, 9])]), 'logo.png')
+  res = await post(again)
+  assert.equal(res.status, 200)
+  const versions = await readdir(join(folder, '.cumora', 'versions', 'pics', 'logo.png'))
+  assert.ok(versions.length >= 1, 'overwrite upload leaves a version snapshot')
 })

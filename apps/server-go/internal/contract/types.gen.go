@@ -5,6 +5,8 @@ package contract
 
 import (
 	"time"
+
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 const (
@@ -2293,6 +2295,19 @@ type AddWorkspaceMemberJSONBody struct {
 	ParticipantId string `json:"participantId"`
 }
 
+// ReadWorkspaceFileRawParams defines parameters for ReadWorkspaceFileRaw.
+type ReadWorkspaceFileRawParams struct {
+	Path string `form:"path" json:"path"`
+}
+
+// UploadWorkspaceFileMultipartBody defines parameters for UploadWorkspaceFile.
+type UploadWorkspaceFileMultipartBody struct {
+	File openapi_types.File `json:"file"`
+
+	// Path 工作区内相对路径
+	Path string `json:"path"`
+}
+
 // AgendaVerdictJSONBody defines parameters for AgendaVerdict.
 type AgendaVerdictJSONBody struct {
 	Actionable *bool   `json:"actionable,omitempty"`
@@ -2691,6 +2706,9 @@ type WriteWorkspaceFileJSONRequestBody WriteWorkspaceFileJSONBody
 
 // AddWorkspaceMemberJSONRequestBody defines body for AddWorkspaceMember for application/json ContentType.
 type AddWorkspaceMemberJSONRequestBody AddWorkspaceMemberJSONBody
+
+// UploadWorkspaceFileMultipartRequestBody defines body for UploadWorkspaceFile for multipart/form-data ContentType.
+type UploadWorkspaceFileMultipartRequestBody UploadWorkspaceFileMultipartBody
 
 // AgendaVerdictJSONRequestBody defines body for AgendaVerdict for application/json ContentType.
 type AgendaVerdictJSONRequestBody AgendaVerdictJSONBody

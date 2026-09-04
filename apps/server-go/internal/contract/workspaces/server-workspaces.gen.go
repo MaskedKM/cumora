@@ -45,9 +45,15 @@ type ServerInterface interface {
 	// 移除显式成员
 	// (DELETE /api/workspaces/{id}/members/{participantId})
 	RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, id string, participantId string)
+	// #338 原始字节读(图片预览/下载;Content-Type 按扩展名猜)
+	// (GET /api/workspaces/{id}/raw)
+	ReadWorkspaceFileRaw(w http.ResponseWriter, r *http.Request, id string, params ReadWorkspaceFileRawParams)
 	// 安全解绑(不动文件)
 	// (POST /api/workspaces/{id}/unbind)
 	UnbindWorkspace(w http.ResponseWriter, r *http.Request, id string)
+	// #338 multipart 上传二进制(单文件 25MB 帽;复用防逃逸/保留路径/写前快照)
+	// (POST /api/workspaces/{id}/upload)
+	UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -415,6 +421,55 @@ func (siw *ServerInterfaceWrapper) RemoveWorkspaceMember(w http.ResponseWriter, 
 	handler.ServeHTTP(w, r)
 }
 
+// ReadWorkspaceFileRaw operation middleware
+func (siw *ServerInterfaceWrapper) ReadWorkspaceFileRaw(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReadWorkspaceFileRawParams
+
+	// ------------- Required query parameter "path" -------------
+
+	if paramValue := r.URL.Query().Get("path"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "path"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReadWorkspaceFileRaw(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UnbindWorkspace operation middleware
 func (siw *ServerInterfaceWrapper) UnbindWorkspace(w http.ResponseWriter, r *http.Request) {
 
@@ -437,6 +492,37 @@ func (siw *ServerInterfaceWrapper) UnbindWorkspace(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UnbindWorkspace(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadWorkspaceFile operation middleware
+func (siw *ServerInterfaceWrapper) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadWorkspaceFile(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -576,7 +662,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/workspaces/{id}/files", wrapper.ListWorkspaceFiles)
 	m.HandleFunc("POST "+options.BaseURL+"/api/workspaces/{id}/members", wrapper.AddWorkspaceMember)
 	m.HandleFunc("DELETE "+options.BaseURL+"/api/workspaces/{id}/members/{participantId}", wrapper.RemoveWorkspaceMember)
+	m.HandleFunc("GET "+options.BaseURL+"/api/workspaces/{id}/raw", wrapper.ReadWorkspaceFileRaw)
 	m.HandleFunc("POST "+options.BaseURL+"/api/workspaces/{id}/unbind", wrapper.UnbindWorkspace)
+	m.HandleFunc("POST "+options.BaseURL+"/api/workspaces/{id}/upload", wrapper.UploadWorkspaceFile)
 
 	return m
 }
