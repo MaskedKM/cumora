@@ -33,23 +33,13 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 	_ = hrcontract.HandlerFromMux(&Server{DB: db}, mux)
 }
 
-// requireRole:各域私有拷贝(owner/admin 闸;agents.go 同款)。
+// requireRole:owner/admin 闸(httpx.ResolveCompanyRole 薄包装,computers 域同款)。
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
-	uid, companyID, ok := httpx.RequireCompany(w, r, db)
+	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
 		return "", false
 	}
-	var role string
-	if err := db.QueryRowContext(r.Context(),
-		`SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2 LIMIT 1`,
-		companyID, uid).Scan(&role); err != nil {
-		role = "member"
-	}
-	if role != "owner" && role != "admin" {
-		httpx.WriteError(w, http.StatusForbidden, "this action requires an owner or admin of the team")
-		return "", false
-	}
-	return companyID, true
+	return httpx.ResolveCompanyRole(w, r, db, uid)
 }
 
 // EnsureProvisioned:幂等置备 —— CreateCompany 钩子与 GET 兜底共用;
@@ -76,6 +66,17 @@ func loadHrAgent(ctx context.Context, db *sql.DB, companyID string) (hrRow, bool
 	return row, err == nil
 }
 
+// loadOrProvision:读为主,缺失才置备(迁移回填 + CreateCompany 钩子两路
+// 常态已覆盖;此处兜底早于它们的路径,幂等)。置备后仍缺 = 内部错。
+func loadOrProvision(ctx context.Context, db *sql.DB, companyID string) (hrRow, bool) {
+	if row, ok := loadHrAgent(ctx, db, companyID); ok {
+		return row, true
+	}
+	EnsureProvisioned(ctx, db, companyID)
+	row, ok := loadHrAgent(ctx, db, companyID)
+	return row, ok
+}
+
 // payload:HrAgent 契约形。agentId 是观测归因键(runs/llm-spend 按它落账)。
 func (row hrRow) payload(companyID string) map[string]any {
 	return map[string]any{
@@ -100,8 +101,7 @@ func (s *Server) GetHrAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 兜底:早于钩子/迁移路径存在的公司(幂等,行缺失即补)
-	EnsureProvisioned(r.Context(), s.DB, companyID)
-	row, ok := loadHrAgent(r.Context(), s.DB, companyID)
+	row, ok := loadOrProvision(r.Context(), s.DB, companyID)
 	if !ok {
 		httpx.WriteInternalError(w, r, fmt.Errorf("hr_agents row missing for company %s", companyID))
 		return
@@ -114,7 +114,10 @@ func (s *Server) PutHrAgentConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	EnsureProvisioned(r.Context(), s.DB, companyID)
+	if _, ok := loadOrProvision(r.Context(), s.DB, companyID); !ok {
+		httpx.WriteInternalError(w, r, fmt.Errorf("hr_agents row missing for company %s", companyID))
+		return
+	}
 	var body contract.HrAgentConfigInput
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
@@ -125,6 +128,7 @@ func (s *Server) PutHrAgentConfig(w http.ResponseWriter, r *http.Request) {
 	// 清空指派(computer+engine 一并清),非空则校验属本司并解析引擎。
 	var sets []string
 	var args []any
+	engineOnly := false
 	if body.SystemPrompt != nil {
 		p := strings.TrimSpace(*body.SystemPrompt)
 		if p == "" {
@@ -154,7 +158,8 @@ func (s *Server) PutHrAgentConfig(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("engine = $%d", len(args)))
 		}
 	} else if body.Engine != nil && strings.TrimSpace(*body.Engine) != "" {
-		// 只换引擎:对现行 computer 校验解析
+		// 只换引擎:对现行 computer 校验解析。WHERE 带 computer_id 非空守卫
+		// ——并发"清空指派"交错时不复活孤儿 engine(0 行 = 竞态败者,400)。
 		row, ok := loadHrAgent(r.Context(), s.DB, companyID)
 		if !ok || !row.computerID.Valid {
 			httpx.WriteError(w, http.StatusBadRequest, "assign a computer before choosing an engine")
@@ -167,19 +172,32 @@ func (s *Server) PutHrAgentConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		args = append(args, pick)
 		sets = append(sets, fmt.Sprintf("engine = $%d", len(args)))
+		engineOnly = true
 	}
 	if len(sets) == 0 {
 		httpx.WriteError(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
 	args = append(args, companyID)
-	if _, err := s.DB.ExecContext(r.Context(),
-		`UPDATE hr_agents SET `+strings.Join(sets, ", ")+`, updated_at = NOW() WHERE company_id = $`+fmt.Sprint(len(args)),
-		args...); err != nil {
+	where := fmt.Sprintf(` WHERE company_id = $%d`, len(args))
+	if engineOnly {
+		where += ` AND computer_id IS NOT NULL`
+	}
+	res, err := s.DB.ExecContext(r.Context(),
+		`UPDATE hr_agents SET `+strings.Join(sets, ", ")+`, updated_at = NOW()`+where, args...)
+	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
-	row, _ := loadHrAgent(r.Context(), s.DB, companyID)
+	if n, _ := res.RowsAffected(); n == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "assign a computer before choosing an engine")
+		return
+	}
+	row, ok := loadHrAgent(r.Context(), s.DB, companyID)
+	if !ok {
+		httpx.WriteInternalError(w, r, fmt.Errorf("hr_agents row missing for company %s after update", companyID))
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, row.payload(companyID))
 }
 

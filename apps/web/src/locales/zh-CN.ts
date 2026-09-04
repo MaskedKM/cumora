@@ -1921,6 +1921,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'hr.computerLabel': '运行于',
   'hr.updatedAt': '更新于',
   'hr.unassigned': '未指派',
+  'hr.computerRemoved': '(已移除)',
   'hr.promptLabel': 'HR 提示词',
   'hr.promptHint': '它的评判标准。仅 owner/admin 可改;智能体永远看不到。',
   'hr.runsOnHint': '评估在哪里执行。想让它先跑起来之前可以保持未指派。',

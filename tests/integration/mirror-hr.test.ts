@@ -120,6 +120,23 @@ test('[mirror] hr: 指派 — 合法 computer+engine 落库 / 未 advertised 引
   const bad = await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-nope' }) })
   assert.equal(bad.status, 400)
 
+  // 谓词排列:他司机器 / 已吊销 / cloud 形态,一律拒收
+  await pool.query(
+    `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ('c-hr-other', 'Other Co', 'c-hr-other', $1)`, [USER],
+  )
+  await pool.query(
+    `INSERT INTO computers (id, company_id, name, kind, available_engines, status)
+     VALUES ('cpu-hr-foreign', 'c-hr-other', 'foreign box', 'local', '["claude"]'::jsonb, 'online'),
+            ('cpu-hr-revoked', $1, 'revoked box', 'local', '["claude"]'::jsonb, 'online'),
+            ('cpu-hr-cloud', $1, 'cloud box', 'cloud', '["claude"]'::jsonb, 'online')`,
+    [COMPANY],
+  )
+  await pool.query(`UPDATE computers SET revoked_at = NOW() WHERE id = 'cpu-hr-revoked'`)
+  for (const cid of ['cpu-hr-foreign', 'cpu-hr-revoked', 'cpu-hr-cloud']) {
+    const res = await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: cid }) })
+    assert.equal(res.status, 400, `${cid} must be rejected`)
+  }
+
   // 空串 = 清空指派(computer+engine 一并)
   const clear = await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: '' }) })
   assert.equal(clear.status, 200)
@@ -177,4 +194,23 @@ test('[mirror] hr: CreateCompany 钩子 — 新公司建即置备(不经 GET 兜
   assert.equal(got.status, 200)
   assert.equal(got.json.agentId, `hr-${newCo}`)
   await m2.close()
+})
+
+test('[mirror] hr: 归因键防撞 — 取名撞 hr-<companyId> 的 agent 改用后缀 id', async () => {
+  // COMPANY=c-mirror-hr ⇒ 归因键 hr-c-mirror-hr;slug("hr c-mirror-hr") 恰等于它
+  const created = await call('/agents', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'hr c-mirror-hr', systemPrompt: 'must not steal the attribution key' }),
+  })
+  assert.equal(created.status, 201)
+  // 精确撞形被跳过 → 落到带后缀的候选(仍带 hr- 前缀,但不再等于任何归因键)
+  assert.notEqual(created.json.id, `hr-${COMPANY}`)
+  assert.match(created.json.id as string, /^hr-c-mirror-hr-/)
+  // 普通带 hr 前缀的名字不受影响("HR Assistant" → hr-assistant 是合法 id)
+  const normal = await call('/agents', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'HR Assistant', systemPrompt: 'plain hire' }),
+  })
+  assert.equal(normal.status, 201)
+  assert.equal(normal.json.id, 'hr-assistant')
 })

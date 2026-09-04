@@ -270,6 +270,18 @@ func pickUniqueAgentID(ctx context.Context, db *sql.DB, baseName string) (string
 	}
 	for _, c := range candidates {
 		var exists bool
+		// #345:候选恰撞某公司 HR 实体的观测归因键(hr-<companyId>)时跳过
+		// —— 否则 observability 按 agent_id 归因时与编外 HR 合流。(只拦
+		// 精确撞形:全量 hr- 前缀拒收会误杀 "HR Assistant" 一类名字——
+		// 候选共享前缀,会把合法创建打成 no unique id。)
+		var hrCollision bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM companies WHERE $1 = 'hr-' || id)`, c).Scan(&hrCollision); err != nil {
+			return "", err
+		}
+		if hrCollision {
+			continue
+		}
 		if err := db.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM participants WHERE id = $1)`, c).Scan(&exists); err != nil {
 			return "", err

@@ -1918,6 +1918,7 @@ export const en = {
   'hr.computerLabel': 'Runs on',
   'hr.updatedAt': 'Updated',
   'hr.unassigned': 'Not assigned',
+  'hr.computerRemoved': '(removed)',
   'hr.promptLabel': 'HR prompt',
   'hr.promptHint': 'Its judgment criteria. Only owners and admins can edit this; agents never see it.',
   'hr.runsOnHint': 'Where its evaluations execute. Leave unassigned until you want them running.',

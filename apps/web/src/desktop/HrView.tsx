@@ -140,7 +140,9 @@ export function HrView() {
                 <dd className="font-mono break-all">{hr.agentId}</dd>
                 <dt className="opacity-55">{t('hr.computerLabel')}</dt>
                 <dd>{hr.computerId
-                  ? `${computersById[hr.computerId]?.name ?? hr.computerId} · ${engineLabel(t, hr.engine ?? '')}`
+                  ? (computersById[hr.computerId]
+                      ? `${computersById[hr.computerId].name} · ${engineLabel(t, hr.engine ?? '')}`
+                      : t('hr.computerRemoved'))
                   : t('hr.unassigned')}</dd>
                 <dt className="opacity-55">{t('hr.updatedAt')}</dt>
                 <dd>{new Date(hr.updatedAt).toLocaleString()}</dd>
@@ -171,6 +173,10 @@ export function HrView() {
                 onValueChange={changeComputer}
                 options={[
                   { value: '', label: t('hr.unassigned') },
+                  // 陈旧指派(机器已吊销/消失)保持选中值可见,不静默漂到"未指派"
+                  ...(computerId && !computersById[computerId]
+                    ? [{ value: computerId, label: `${computerId} ${t('hr.computerRemoved')}` }]
+                    : []),
                   ...computers.map((c) => ({
                     value: c.id,
                     label: `${c.kind === 'vps' ? '🖥' : '💻'} ${c.name}`
