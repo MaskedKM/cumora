@@ -1,5 +1,6 @@
 // /runtime/cli 看板组(#89):kanban(板/列 CRUD+mentions 游标)、card
-// (卡 CRUD+原子 claim)、claim/unclaim(泛化声明已废,提示语平价)。
+// (卡 CRUD+原子 claim+#265 交付面 start/deliver)、claim/unclaim(泛化
+// 声明已废,提示语平价)。
 package boards
 
 import (
@@ -7,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	inbox "github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"regexp"
 	"sort"
 	"strings"
@@ -993,8 +995,12 @@ func (s *Domain) CmdCard(ctx context.Context, parsed agent.Parsed) agent.Result 
 		if err := rows.Err(); err != nil {
 			return agent.ErrThrow(err)
 		}
+		deliveries, err := s.cardDeliveries(ctx, cardID)
+		if err != nil {
+			return agent.ErrThrow(err)
+		}
 		if parsed.FlagTruey("json") {
-			js, e := agent.JSONStringify(map[string]any{"card": c, "comments": comments})
+			js, e := agent.JSONStringify(map[string]any{"card": c, "comments": comments, "deliveries": deliveries})
 			if e != nil {
 				return agent.ErrThrow(e)
 			}
@@ -1021,6 +1027,19 @@ func (s *Domain) CmdCard(ctx context.Context, parsed agent.Parsed) agent.Result 
 		if c.Description != nil {
 			lines = append(lines, "", *c.Description)
 		}
+		if len(deliveries) > 0 {
+			lines = append(lines, "", "--- delivery ---")
+			for _, d := range deliveries {
+				pr := "(no PR yet)"
+				if d.PrURL != "" {
+					pr = d.PrURL
+					if d.PrState != "" {
+						pr += " [" + d.PrState + "]"
+					}
+				}
+				lines = append(lines, "  "+d.Branch+"  "+pr)
+			}
+		}
 		if len(comments) > 0 {
 			lines = append(lines, "", fmt.Sprintf("--- %d comment(s) ---", len(comments)))
 			for _, cm := range comments {
@@ -1036,6 +1055,10 @@ func (s *Domain) CmdCard(ctx context.Context, parsed agent.Parsed) agent.Result 
 		return s.cliCardAssign(ctx, parsed, me, companyID, resolveCardBoard)
 	case "claim":
 		return s.cliCardClaim(ctx, parsed, me, companyID, resolveCardBoard)
+	case "start":
+		return s.cliCardStart(ctx, parsed, me, companyID, resolveCardBoard)
+	case "deliver":
+		return s.cliCardDeliver(ctx, parsed, me, companyID, resolveCardBoard)
 	case "rename", "edit":
 		return s.cliCardRename(ctx, parsed, op, me, companyID, resolveCardBoard)
 	case "comment":
@@ -1045,7 +1068,7 @@ func (s *Domain) CmdCard(ctx context.Context, parsed agent.Parsed) agent.Result 
 	case "delete", "rm":
 		return s.cliCardDelete(ctx, parsed, me, companyID, resolveCardBoard)
 	}
-	return agent.Err("usage: card <ls|show|add|move|assign|rename|comment|delete-comment|delete> [...]")
+	return agent.Err("usage: card <ls|show|add|move|assign|claim|start|deliver|rename|comment|delete-comment|delete> [...]")
 }
 
 func mentionsNote(mentions []string) string {
@@ -1315,6 +1338,263 @@ func (s *Domain) cliCardClaim(ctx context.Context, parsed agent.Parsed, me, comp
 		"assigneeId":    me,
 		"visibleToUser": true,
 	})
+}
+
+/* ───────── #265 交付面:worktree 物化 + 分支/PR 台账 ───────── */
+
+// requireCardAssignee:start/deliver 的门:只有当前 assignee 能为自己的
+// 任务物化/登记交付(claim 独占声明的另一半 —— 交付记录跟着领卡人走)。
+func (s *Domain) requireCardAssignee(ctx context.Context, cardID, me string) string {
+	var assignee sql.NullString
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT assignee_id FROM board_cards WHERE id = $1 LIMIT 1`, cardID).Scan(&assignee); err != nil {
+		return "card " + cardID + " not found"
+	}
+	if !assignee.Valid || assignee.String != me {
+		return "only the assignee can do this — claim the card first (`cumora card claim " + cardID + "`)"
+	}
+	return ""
+}
+
+// cardWorkspaceFolder:卡的 workspace 关联 → (folder, wsId)。--ws 指定时
+// 校验该区确实关联了这张卡;不指定取最早关联。无关联 → 引导文案(关联
+// 入口 = 卡片面板的 ⌗ 按钮,#338)。
+func (s *Domain) cardWorkspaceFolder(ctx context.Context, companyID, cardID, wsID string) (folder, ref, errMsg string) {
+	q := `SELECT ws.id, ws.folder_path
+	        FROM workspace_associations a JOIN workspaces ws ON ws.id = a.workspace_id
+	       WHERE a.target_kind = 'board_card' AND a.target_id = $1
+	         AND ws.company_id = $2 AND ws.unbound_at IS NULL`
+	args := []any{cardID, companyID}
+	if wsID != "" {
+		q += ` AND ws.id = $3`
+		args = append(args, wsID)
+	}
+	q += ` ORDER BY a.created_at LIMIT 1`
+	var id, fp string
+	err := s.DB.QueryRowContext(ctx, q, args...).Scan(&id, &fp)
+	if err == sql.ErrNoRows {
+		if wsID != "" {
+			return "", "", "workspace " + wsID + " is not linked to card " + cardID
+		}
+		return "", "", "card " + cardID + " is not linked to a team workspace — ask an operator to link one (⌗ button in the card panel), then retry"
+	}
+	if err != nil {
+		return "", "", "workspace lookup failed"
+	}
+	return fp, id, ""
+}
+
+// cliCardStart:#265 worktree-per-task —— 领卡后物化隔离工作区。母仓 = 卡
+// 片关联的 workspace folder;分支 cumora/<cardId> 从母仓 HEAD 切出,
+// worktree 落 .cumora/worktrees/<cardId>/(平台内部,文件面全排除)。幂
+// 等:已物化直接返回。start 即落交付行(branch 可见、PR 位空)—— 失败
+// 保分支的可见性:任务失败时人打开卡片就能看到 agent 的进度分支;平台
+// 不提供删除路径,清理由 operator 以 git 语义人工处理。
+func (s *Domain) cliCardStart(ctx context.Context, parsed agent.Parsed, me, companyID string, resolveCardBoard cardBoardResolver) agent.Result {
+	cardID := ""
+	if len(parsed.Positional()) > 1 {
+		cardID = strings.TrimSpace(parsed.Positional()[1])
+	}
+	if cardID == "" {
+		return agent.Err("usage: card start <card_id> [--ws <workspace_id>]")
+	}
+	home, err := resolveCardBoard(cardID)
+	if err != nil {
+		return agent.ErrThrow(err)
+	}
+	if home == nil {
+		return agent.Err("card " + cardID + " not found")
+	}
+	if msg := s.requireCardAssignee(ctx, cardID, me); msg != "" {
+		return agent.Err(msg)
+	}
+	folder, wsRef, msg := s.cardWorkspaceFolder(ctx, companyID, cardID, strings.TrimSpace(parsed.FlagStrOr("ws", "")))
+	if msg != "" {
+		return agent.Err(msg)
+	}
+	branch, relDir, already, werr := workspaces.MaterializeWorktree(ctx, folder, cardID)
+	if werr != "" {
+		return agent.Err("card start failed — " + werr)
+	}
+	id := "dlv-" + agent.UUIDHex()[:12]
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO card_deliveries (id, card_id, workspace_id, branch, created_by)
+		 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (card_id, branch) DO NOTHING`,
+		id, cardID, wsRef, branch, me); err != nil {
+		return agent.ErrThrow(err)
+	}
+	s.publishBoardCli(companyID, "card.updated", home.boardID, &cardID, nil, nil, nil, me)
+	head := "worktree ready for " + cardID + ":"
+	if already {
+		head = "worktree already exists for " + cardID + ":"
+	}
+	return agent.OK(strings.Join([]string{
+		head,
+		"  branch: " + branch,
+		"  path:   team/" + wsRef + "/" + relDir + "/  (your mounted workspace)",
+		"Work directly there with native git/build/test. The branch SURVIVES task",
+		"failure — your progress stays on it. Record a PR with `cumora card",
+		"deliver " + cardID + " --branch " + branch + " --pr <url>` when one exists.",
+	}, "\n"), agent.CliSideEffect{
+		"event":       "kanban.card_worktree",
+		"command":     "card start",
+		"boardId":     home.boardID,
+		"cardId":      cardID,
+		"actorId":     me,
+		"companyId":   companyID,
+		"branch":      branch,
+		"workspaceId": wsRef,
+	})
+}
+
+// deliveryBranchOK:交付分支名的白名单(git refname 的安全子集:拒空格/
+// 控制字符/`..`/`.lock` 后缀等,长度帽 200)。
+var deliveryBranchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+
+func deliveryBranchOK(b string) bool {
+	return deliveryBranchRe.MatchString(b) &&
+		!strings.Contains(b, "..") &&
+		!strings.HasSuffix(b, ".lock") &&
+		!strings.HasSuffix(b, "/") &&
+		!strings.HasSuffix(b, ".")
+}
+
+// cliCardDeliver:#265 交付登记 —— 把分支的 PR 链接与审查状态
+// (open|merged|closed)记到卡片台账,看板卡片实时可见(门禁语义 = 分支
+// 与 PR 落卡、人决定合并;平台不 block 列移动)。已存在的 (card, branch)
+// 行增量更新:不给的字段保旧。
+func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, companyID string, resolveCardBoard cardBoardResolver) agent.Result {
+	usage := "usage: card deliver <card_id> --branch <name> [--pr <https://…>] [--state open|merged|closed]"
+	cardID := ""
+	if len(parsed.Positional()) > 1 {
+		cardID = strings.TrimSpace(parsed.Positional()[1])
+	}
+	if cardID == "" {
+		return agent.Err(usage)
+	}
+	branch := strings.TrimSpace(parsed.FlagStrOr("branch", ""))
+	if branch == "" || !deliveryBranchOK(branch) {
+		return agent.Err(usage + `  (branch: letters/digits/._-/ , no "..", ≤200 chars)`)
+	}
+	pr := strings.TrimSpace(parsed.FlagStrOr("pr", ""))
+	if pr != "" && !strings.HasPrefix(pr, "http://") && !strings.HasPrefix(pr, "https://") {
+		return agent.Err("--pr must be an http(s) URL")
+	}
+	if len(pr) > 2000 {
+		return agent.Err("--pr too long (≤2000 chars)")
+	}
+	state := strings.TrimSpace(parsed.FlagStrOr("state", ""))
+	if state == "" && pr != "" {
+		state = "open"
+	}
+	switch state {
+	case "", "open", "merged", "closed":
+	default:
+		return agent.Err("--state must be open, merged or closed")
+	}
+	home, err := resolveCardBoard(cardID)
+	if err != nil {
+		return agent.ErrThrow(err)
+	}
+	if home == nil {
+		return agent.Err("card " + cardID + " not found")
+	}
+	if msg := s.requireCardAssignee(ctx, cardID, me); msg != "" {
+		return agent.Err(msg)
+	}
+	// 行不存在时需要 ws 关联定位落区(与 start 同引导);行已存在(start
+	// 物化过/自建分支登记过)则允许无关联补记 —— 区可能刚被解绑,历史
+	// 交付仍要能更新 PR 状态。
+	var exists int
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM card_deliveries WHERE card_id = $1 AND branch = $2`, cardID, branch).Scan(&exists)
+	if err == sql.ErrNoRows {
+		_, wsRef, msg := s.cardWorkspaceFolder(ctx, companyID, cardID, "")
+		if msg != "" {
+			return agent.Err(msg)
+		}
+		var prV, stV any
+		if pr != "" {
+			prV = pr
+		}
+		if state != "" {
+			stV = state
+		}
+		if _, err := s.DB.ExecContext(ctx,
+			`INSERT INTO card_deliveries (id, card_id, workspace_id, branch, pr_url, pr_state, created_by)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			"dlv-"+agent.UUIDHex()[:12], cardID, wsRef, branch, prV, stV, me); err != nil {
+			return agent.ErrThrow(err)
+		}
+	} else if err != nil {
+		return agent.ErrThrow(err)
+	} else {
+		var prV, stV any
+		if pr != "" {
+			prV = pr
+		}
+		if state != "" {
+			stV = state
+		}
+		if _, err := s.DB.ExecContext(ctx,
+			`UPDATE card_deliveries
+			    SET pr_url = COALESCE($1, pr_url), pr_state = COALESCE($2, pr_state), updated_at = NOW()
+			  WHERE card_id = $3 AND branch = $4`, prV, stV, cardID, branch); err != nil {
+			return agent.ErrThrow(err)
+		}
+	}
+	s.publishBoardCli(companyID, "card.updated", home.boardID, &cardID, nil, nil, nil, me)
+	out := "delivery recorded: " + branch
+	if pr != "" {
+		out += " → " + pr + " [" + state + "]"
+	}
+	out += " — visible on the card; merging is a human call"
+	return agent.OK(out, agent.CliSideEffect{
+		"event":         "kanban.card_delivered",
+		"command":       "card deliver",
+		"boardId":       home.boardID,
+		"cardId":        cardID,
+		"actorId":       me,
+		"companyId":     companyID,
+		"branch":        branch,
+		"prUrl":         pr,
+		"prState":       state,
+		"visibleToUser": true,
+	})
+}
+
+// CardDeliveryRow / cardDeliveries:交付台账读取(card show 的 JSON 面;
+// REST 聚合在 domains/boards,同表不同形状)。
+type CardDeliveryRow struct {
+	ID          string        `json:"id"`
+	Branch      string        `json:"branch"`
+	WorkspaceID string        `json:"workspace_id"`
+	PrURL       string        `json:"pr_url"`
+	PrState     string        `json:"pr_state"`
+	CreatedBy   string        `json:"created_by"`
+	CreatedAt   agent.ISOTime `json:"created_at"`
+	UpdatedAt   agent.ISOTime `json:"updated_at"`
+}
+
+func (s *Domain) cardDeliveries(ctx context.Context, cardID string) ([]CardDeliveryRow, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, branch, workspace_id, COALESCE(pr_url, ''), COALESCE(pr_state, ''),
+		        created_by, created_at, updated_at
+		   FROM card_deliveries WHERE card_id = $1 ORDER BY created_at ASC`, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CardDeliveryRow{}
+	for rows.Next() {
+		var d CardDeliveryRow
+		if err := rows.Scan(&d.ID, &d.Branch, &d.WorkspaceID, &d.PrURL, &d.PrState,
+			&d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 func (s *Domain) cliCardRename(ctx context.Context, parsed agent.Parsed, op, me, companyID string, resolveCardBoard cardBoardResolver) agent.Result {

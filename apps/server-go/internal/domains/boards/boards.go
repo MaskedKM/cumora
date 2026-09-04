@@ -297,6 +297,7 @@ func (s *Server) GetBoard(w http.ResponseWriter, r *http.Request, id string) {
 		  FROM board_cards c WHERE c.board_id = $1
 		 ORDER BY c.column_id, c.position ASC`, boardID)
 	cards := []map[string]any{}
+	delivs := s.boardDeliveries(r.Context(), boardID)
 	if cardRows != nil {
 		defer cardRows.Close()
 		for cardRows.Next() {
@@ -312,12 +313,17 @@ func (s *Server) GetBoard(w http.ResponseWriter, r *http.Request, id string) {
 				if mentions == nil {
 					mentions = []string{}
 				}
+				cardDelivs := delivs[cid]
+				if cardDelivs == nil {
+					cardDelivs = []map[string]any{}
+				}
 				cards = append(cards, map[string]any{
 					"id": cid, "boardId": boardID, "columnId": colID,
 					"title": ctitle, "description": nullOr(cdesc),
 					"position": cpos, "assigneeId": nullOr(cassignee),
 					"mentions": mentions, "commentCount": ccount,
-					"createdBy": ccreatedBy, "createdAt": cca.Time.UTC(), "updatedAt": ccu.Time.UTC(),
+					"deliveries": cardDelivs,
+					"createdBy":  ccreatedBy, "createdAt": cca.Time.UTC(), "updatedAt": ccu.Time.UTC(),
 				})
 			}
 		}
@@ -439,6 +445,10 @@ func (s *Server) GetBoardCard(w http.ResponseWriter, r *http.Request, id string)
 	if mentions == nil {
 		mentions = []string{}
 	}
+	cardDelivs := s.boardDeliveries(r.Context(), bid)[cid]
+	if cardDelivs == nil {
+		cardDelivs = []map[string]any{}
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"board": map[string]any{
 			"id": bid, "title": bTitle, "description": nullOr(bDesc),
@@ -452,9 +462,40 @@ func (s *Server) GetBoardCard(w http.ResponseWriter, r *http.Request, id string)
 			"title": cTitle, "description": nullOr(cDesc),
 			"position": cPos, "assigneeId": nullOr(cAssignee),
 			"mentions": mentions, "commentCount": cCount,
-			"createdBy": cCreatedBy, "createdAt": cCa.Time.UTC(), "updatedAt": cCu.Time.UTC(),
+			"deliveries": cardDelivs,
+			"createdBy":  cCreatedBy, "createdAt": cCa.Time.UTC(), "updatedAt": cCu.Time.UTC(),
 		},
 	})
+}
+
+// boardDeliveries:#265 交付台账按板聚合一次(避免逐卡子查询)。key =
+// card_id,value = 该卡的交付行数组(BoardCard.deliveries 契约形状);无
+// 交付的卡由调用方落空数组。
+func (s *Server) boardDeliveries(ctx context.Context, boardID string) map[string][]map[string]any {
+	out := map[string][]map[string]any{}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT d.card_id, d.id, d.branch, d.workspace_id, d.pr_url, d.pr_state,
+		       d.created_by, d.created_at, d.updated_at
+		  FROM card_deliveries d JOIN board_cards c ON c.id = d.card_id
+		 WHERE c.board_id = $1 ORDER BY d.created_at ASC`, boardID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cardID, id, branch, wsID, createdBy string
+		var prURL, prState sql.NullString
+		var ca, ua sql.NullTime
+		if rows.Scan(&cardID, &id, &branch, &wsID, &prURL, &prState, &createdBy, &ca, &ua) != nil {
+			continue
+		}
+		out[cardID] = append(out[cardID], map[string]any{
+			"id": id, "branch": branch, "workspaceId": wsID,
+			"prUrl": nullOr(prURL), "prState": nullOr(prState),
+			"createdBy": createdBy, "createdAt": ca.Time.UTC(), "updatedAt": ua.Time.UTC(),
+		})
+	}
+	return out
 }
 
 func (s *Server) AddBoardColumn(w http.ResponseWriter, r *http.Request, bid string) {

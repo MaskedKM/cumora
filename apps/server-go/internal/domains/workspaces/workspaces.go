@@ -758,8 +758,9 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 	}
 	out := []map[string]any{}
 	for _, e := range entries {
-		// .cumora 平台内部(版本快照/冲突副本):文件树不展示。
-		if rel == "" && strings.EqualFold(e.Name(), reservedPrefix) {
+		// .cumora 平台内部(版本快照/冲突副本)与 .git 仓库内部:文件树
+		// 不展示(.git 同 RejectReserved 的排除语义,#265)。
+		if rel == "" && (strings.EqualFold(e.Name(), reservedPrefix) || strings.EqualFold(e.Name(), ".git")) {
 			continue
 		}
 		var size any

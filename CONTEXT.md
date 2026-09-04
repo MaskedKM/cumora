@@ -38,6 +38,12 @@ _Avoid_: treating it as an error state, or conflating it with Versions (snapshot
 **Versions** — the write-before-overwrite snapshots of a workspace file, kept inside the workspace folder itself (`.cumora/versions/`), bounded to the most recent 10, written only by the server/daemon, living and dying with the folder.
 _Avoid_: storing them in the database; or confusing them with document snapshots (yjs, `document_snapshots`).
 
+**Worktree** — the per-task git worktree materialized for a claimed board card inside its linked workspace's folder (`.cumora/worktrees/<cardId>/`, branch `cumora/<cardId>`), where the assignee agent does code work with native git/build/test instead of on the bare shared checkout. Platform-internal from the file surface's point of view (not listed, not indexed, not reported by the watcher); git semantics govern it.
+_Avoid_: treating it as another mountpoint (it is a git checkout inside the folder, not a symlink in the home), or expecting the platform to prune it — branches and worktrees survive task failure by design; cleanup is an operator's git call.
+
+**Delivery** — the recorded link between a board card and the git branch (and optional PR, with review state) an agent delivered on: one row per (card, branch), written by `cumora card start` (branch visible from the moment work begins — a failing task's progress stays findable) and extended by `cumora card deliver` (PR URL, open/merged/closed). Merging stays a human call; the platform's gate is visibility, not blocking.
+_Avoid_: mixing it up with shipping (the feature-lifecycle domain) or with associations (a card is linked to a workspace; a delivery says which branch carried the card's work).
+
 **Convene** — a live work session (现场合议) held inside a conversation: members convene on a topic with a running transcript (`convene_sessions` / `convene_transcript`); starting a new session supersedes the conversation's previous live one. A server-side first-class concept (three routes under the conversations tag).
 _Avoid_: conflating with Whisper — Convene is a group huddle mechanism, not a private-chat view.
 

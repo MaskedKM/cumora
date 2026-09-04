@@ -72,6 +72,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'document_updates',
   'documents',
   'board_mention_reads',
+  'card_deliveries',
   'board_card_comments',
   'board_cards',
   'board_columns',

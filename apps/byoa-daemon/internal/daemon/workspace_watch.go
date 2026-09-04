@@ -165,6 +165,12 @@ func (t *teamWatcher) handle(ev fsnotify.Event) {
 	if wsID == "" || rel == "" || rel == "." {
 		return
 	}
+	// 平台/仓库内部目录不上报(#265):.cumora(worktree checkout 单窗可
+	// 达数千文件)与 .git(git worktree add 等元数据写)。server 侧
+	// RejectReserved 也会拒,这里前置过滤省上报流量。
+	if first, _, _ := strings.Cut(rel, "/"); strings.EqualFold(first, ".cumora") || strings.EqualFold(first, ".git") {
+		return
+	}
 	// 新建目录 → 补 watch(递归覆盖)。
 	if ev.Op&fsnotify.Create != 0 {
 		if st, err := os.Stat(ev.Name); err == nil && st.IsDir() {
