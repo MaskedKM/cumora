@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  api,
   ApiError,
   type ApiWorkspaceDetail,
   type ApiWorkspaceFileEntry,
   type ApiWorkspaceSummary,
+  api,ws 
 } from '../api/client'
-import { useT } from '../lib/i18n'
-import { useResizableWidth } from '../lib/useResizableWidth'
-import { ResizeHandle } from '../components/ResizeHandle'
-import { TextArea } from '../components/TextArea'
 import { Input } from '../components/Input'
 import { CodeBlock, RichBody } from '../components/Message'
+import { ResizeHandle } from '../components/ResizeHandle'
+import { TextArea } from '../components/TextArea'
+import { useT } from '../lib/i18n'
+import { useResizableWidth } from '../lib/useResizableWidth'
 import { useDocuments } from '../stores/documents'
 
 const CODE_LANGS: Record<string, string> = {
@@ -135,6 +135,18 @@ export function WorkspacesView() {
       })
     return () => { cancelled = true }
   }, [selectedId, dirPath, detail?.unboundAt, t])
+
+  // #337 实时刷新:订阅 workspace.files_changed(区级),当前打开的区
+  // 变了就重拉目录;正在编辑时不覆盖草稿(保存后 reloadDir 自会追平)。
+  // ws.on 幂等订阅,reloadDir deps 变化重挂无妨。
+  useEffect(() => {
+    const off = ws.on((e) => {
+      if (e.type !== 'workspace.files_changed' || e.workspaceId !== selectedId) return
+      if (editing) return
+      reloadDir()
+    })
+    return off
+  }, [selectedId, editing, reloadDir])
 
   useEffect(() => { reloadDir() }, [reloadDir])
 

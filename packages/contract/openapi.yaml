@@ -617,6 +617,38 @@ paths:
                     name: { type: string }
                     description: { type: string }
                     bundleHash: { type: string }
+  /api/computers/me/workspace-report:
+    post:
+      tags: [computers]
+      operationId: reportWorkspaceChanges
+      security: [{ deviceToken: [] }]
+      summary: '#337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播)'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [workspaceId, path]
+                    properties:
+                      workspaceId: { type: string }
+                      path: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changed: { type: integer }
   /api/computers/me/skills/{hash}:
     get:
       tags: [computers]

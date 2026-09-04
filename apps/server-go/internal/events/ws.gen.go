@@ -5,29 +5,30 @@ package events
 
 /* ── 事件名常量(载荷 type 判别值;发布方组帧时填入 Type 字段)── */
 const (
-	EventMessageNew           = "message.new"
-	EventMessageDelta         = "message.delta"
-	EventTyping               = "typing"
-	EventStatus               = "participants.status"
-	EventAvatar               = "participants.avatar"
-	EventParticipantAdded     = "participants.added"
-	EventComputerStatus       = "computers.status"
-	EventReactions            = "message.reactions"
-	EventPollUpdated          = "poll.updated"
-	EventConversationUpdated  = "conversation.updated"
-	EventGroupPulled          = "group.pulled"
-	EventConvene              = "convene"
-	EventBoard                = "board.changed"
-	EventDocIndex             = "doc.changed"
-	EventDocUpdate            = "doc.update"
-	EventDocAwareness         = "doc.awareness"
-	EventDocSync              = "doc.sync"
-	EventDocError             = "doc.error"
-	EventDocMention           = "doc.mention"
-	EventCalendarReminder     = "calendar.reminder"
-	EventCalendarEventChanged = "calendar.changed"
-	EventHello                = "hello"
-	EventInboxNew             = "inbox.new"
+	EventMessageNew            = "message.new"
+	EventMessageDelta          = "message.delta"
+	EventTyping                = "typing"
+	EventStatus                = "participants.status"
+	EventAvatar                = "participants.avatar"
+	EventParticipantAdded      = "participants.added"
+	EventComputerStatus        = "computers.status"
+	EventReactions             = "message.reactions"
+	EventPollUpdated           = "poll.updated"
+	EventConversationUpdated   = "conversation.updated"
+	EventGroupPulled           = "group.pulled"
+	EventConvene               = "convene"
+	EventBoard                 = "board.changed"
+	EventDocIndex              = "doc.changed"
+	EventDocUpdate             = "doc.update"
+	EventDocAwareness          = "doc.awareness"
+	EventDocSync               = "doc.sync"
+	EventDocError              = "doc.error"
+	EventDocMention            = "doc.mention"
+	EventCalendarReminder      = "calendar.reminder"
+	EventCalendarEventChanged  = "calendar.changed"
+	EventHello                 = "hello"
+	EventInboxNew              = "inbox.new"
+	EventWorkspaceFilesChanged = "workspace.files_changed"
 )
 
 /* ── Redis 通道常量(x-channels;名字与退役前 publish.go 手写版逐一相同,
@@ -50,13 +51,14 @@ const (
 	ChCalendarReminder = "cumora:calendar.reminder"
 	ChCalendarEvents   = "cumora:calendar.events"
 	ChInbox            = "cumora:inbox"
+	ChWorkspace        = "cumora:workspace"
 )
 
 // CompanyChannels:公司域事件通道全集 —— wsx 聊天桥订阅清单(#221 起由契约
 // 推导:scope=company 事件的通道按首现去重;doc.update/doc.awareness 是房间
 // 域(docrelay 管),不在其列。对齐退役前 publish.go 的手写清单(顺序为推导序)。
 var CompanyChannels = []string{
-	ChMessageNew, ChMessageDelta, ChTyping, ChStatus, ChReactions, ChPolls, ChConvoUpdated, ChGroupPulled, ChConvene, ChBoards, ChDocs, ChDocMention, ChCalendarReminder, ChCalendarEvents, ChInbox,
+	ChMessageNew, ChMessageDelta, ChTyping, ChStatus, ChReactions, ChPolls, ChConvoUpdated, ChGroupPulled, ChConvene, ChBoards, ChDocs, ChDocMention, ChCalendarReminder, ChCalendarEvents, ChInbox, ChWorkspace,
 }
 
 // MessageNewEvent —— message.new(通道 cumora:msg.new、scope=company)。
@@ -298,4 +300,14 @@ type InboxNewEvent struct {
 	LinkKind        string `json:"linkKind,omitempty"`
 	LinkID          string `json:"linkId,omitempty"`
 	At              string `json:"at"`
+}
+
+// WorkspaceFilesChangedEvent —— workspace.files_changed(通道 cumora:workspace、scope=company)。
+// 团队工作区文件变更广播(#337,区级粒度,带文件清单不含内容)。发布方:server(挂载 watcher 上报处理 / 兜底扫描);帧路径对同租户成员可见,内容不随帧下发。
+type WorkspaceFilesChangedEvent struct {
+	Type        string           `json:"type"`
+	CompanyID   string           `json:"companyId"`
+	WorkspaceID string           `json:"workspaceId"`
+	Changes     []map[string]any `json:"changes"`
+	At          string           `json:"at,omitempty"`
 }

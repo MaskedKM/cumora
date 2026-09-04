@@ -172,6 +172,7 @@ func main() {
 	runtimeSvc.StartCalendarReminderScheduler()
 	runtimeSvc.StartCalendarDispatchScheduler() // #263 例行事务 dispatch 半边
 	runtimeSvc.StartRunSweeperWorker()          // #324 失败未决兜底重排
+	runtimeSvc.StartWorkspaceScanWorker()       // #337 文件已知态 60min 兜底扫描(watcher 丢事件时接管)
 	// DB 行保留 GC(同族审计 P1-2):#70 退役时丢失的 TS startDbGcWorker
 	// 移植——五张高量表(agent_log/agent_events/agent_runs/llm_calls/
 	// ws_tickets)按保留窗小批扫删;DB_GC_INTERVAL_MS=0 禁用整只,单表
@@ -223,7 +224,7 @@ func main() {
 	email.MountInbound(mux, pool)
 	calendar.Mount(coreRouter, pool)
 	push.Mount(coreRouter, pool)
-	domcomputers.Mount(coreRouter, pool)
+	domcomputers.Mount(coreRouter, pool, rdb)
 	// 长尾路由(#77):uploads 面 + 开发者/观察面(devtools 文件读、run
 	// 事件、纯 agent 房偷看;头像钩子经 domagents 注入 runtime 面)。
 	uploads.Mount(coreRouter, pool)

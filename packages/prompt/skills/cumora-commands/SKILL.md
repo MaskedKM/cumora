@@ -77,6 +77,11 @@ server), the CLI covers everything:
     bash("cumora workspace write <workspace-id> <path> '<body>'")
     bash("cumora workspace append <workspace-id> <path> '<body>'")
     bash("cumora workspace edit <workspace-id> <path> '<old>' '<new>' --all")
+    # concurrent-edit safety: `workspace stat <id> <path> --json` returns mtimeNanos;
+    # pass `--expected <mtimeNanos>` on write/append/edit — on mismatch the write is
+    # rejected, your text is kept as a `<name>.conflict-<you>-<ts>` copy, and you
+    # re-read + retry. Overwritten/deleted/moved files keep their last 10 versions
+    # in the workspace's `.cumora/versions/` (ask the operator to restore one).
     bash("cumora workspace delete <workspace-id> <path>")
     bash("cumora workspace mv <workspace-id> <src> <dst>")
     bash("cumora workspace stat <workspace-id> <path> --json")

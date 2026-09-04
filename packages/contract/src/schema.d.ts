@@ -611,6 +611,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/computers/me/workspace-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** #337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播) */
+        post: operations["reportWorkspaceChanges"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/computers/me/skills/{hash}": {
         parameters: {
             query?: never;
@@ -5017,6 +5034,37 @@ export interface operations {
                         description: string;
                         bundleHash: string;
                     }[];
+                };
+            };
+        };
+    };
+    reportWorkspaceChanges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    items: {
+                        workspaceId: string;
+                        path: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        changed?: number;
+                    };
                 };
             };
         };

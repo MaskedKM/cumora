@@ -6,24 +6,32 @@ package computers
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
+
+	"github.com/redis/go-redis/v9"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/computers"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/onboard"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
-// Server:computers tag 的域实现(#187;方法体原样搬运)。
-type Server struct{ DB *sql.DB }
+// Server:computers tag 的域实现(#187;方法体原样搬运)。RDB:#337
+// workspace-report 对账文件已知态用(nil = 无缓存降级:只快照不判重)。
+type Server struct {
+	DB  *sql.DB
+	RDB redis.UniversalClient
+}
 
 var _ contract.ServerInterface = (*Server)(nil)
 
 // Mount:computers tag 7 路由走契约生成物;agents tag 的 assign/
 // runtimeToken 已由 agents 域经 Server 方法委托收编(#187 批次 5)。
-func Mount(mux *http.ServeMux, db *sql.DB) {
-	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
+func Mount(mux *http.ServeMux, db *sql.DB, rdb redis.UniversalClient) {
+	_ = contract.HandlerFromMux(&Server{DB: db, RDB: rdb}, mux)
 }
 
 func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
@@ -271,4 +279,55 @@ func (s *Server) GetComputerSkillBundle(w http.ResponseWriter, r *http.Request, 
 	}
 	_ = json.Unmarshal(filesRaw, &files)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"name": name, "files": files})
+}
+
+// ReportWorkspaceChanges:#337 daemon watcher 上报面 —— 挂载工作区文件
+// 变更(去抖批量)。device token 即凭据;工作区必须属于本机同公司
+// (跨租户上报 404)。处理走 sched.SyncWorkspaceFileState:对账已知态 →
+// 变化项快照 → 广播 workspace.files_changed。
+func (s *Server) ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request) {
+	_, companyID, ok := requireDevice(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var payload struct {
+		Items []struct {
+			WorkspaceID string `json:"workspaceId"`
+			Path        string `json:"path"`
+		} `json:"items"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Items) == 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "items required")
+		return
+	}
+	if len(payload.Items) > 500 {
+		httpx.WriteError(w, http.StatusBadRequest, "too many items (max 500)")
+		return
+	}
+	// 按 workspace 聚合(清单行可能跨区),区信息一次查全。
+	grouped := map[string][]string{}
+	for _, it := range payload.Items {
+		if it.WorkspaceID != "" && it.Path != "" {
+			grouped[it.WorkspaceID] = append(grouped[it.WorkspaceID], it.Path)
+		}
+	}
+	changed := 0
+	for wsID, paths := range grouped {
+		var folder string
+		err := s.DB.QueryRowContext(r.Context(),
+			`SELECT folder_path FROM workspaces
+			  WHERE id = $1 AND company_id = $2 AND unbound_at IS NULL`, wsID, companyID,
+		).Scan(&folder)
+		if err != nil {
+			// 不属于本公司的区:静默跳过(不确认存在性,也不计变更)。
+			continue
+		}
+		changed += len(sched.SyncWorkspaceFileState(r.Context(), wsID, companyID, folder, paths, s.RDB))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"changed": changed})
 }

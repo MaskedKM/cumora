@@ -48,21 +48,24 @@ func listAgentWorkspaces(ctx context.Context, cfg *DaemonConfig, token string) [
 }
 
 // syncTeamMounts:一个 runner 的挂点同步(sync 周期逐 runner 调用)。
+// 返回本轮实际在挂的 wsId→target(供进程级 watcher 增删 watch,#337)。
 // 失败只记日志——挂点缺失时 persona 的双态文案自然引导 CLI 回退,
 // 不许影响唤醒主路径。
-func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) {
+func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) map[string]string {
 	token, err := r.ensureToken()
 	if err != nil {
 		slog.Warn("[computer] team workspace mounts skipped — no runtime token", "agent", r.agent.ID, "err", err)
-		return
+		return nil
 	}
 	refs := listAgentWorkspaces(ctx, cfg, token)
 	if refs == nil {
-		return
+		return nil
 	}
-	if err := materializeTeamMounts(teamMountsDir(r.home), refs); err != nil {
+	mounts, err := materializeTeamMounts(teamMountsDir(r.home), refs)
+	if err != nil {
 		slog.Warn("[computer] team workspace mounts sync failed", "agent", r.agent.ID, "err", err)
 	}
+	return mounts
 }
 
 // materializeTeamMounts:目录级物化(与 runner 解耦,便于单测直驱)。
@@ -73,10 +76,10 @@ func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) {
 //     agent 抢名字空间。
 //   - 清单消失(成员移除/解绑/转 vps)→ 只回收 stamp 记录且 target 未被
 //     改动的 symlink;被手改过的视为"不再归我们",保守留下。
-func materializeTeamMounts(dir string, refs []workspaceMountRef) error {
+func materializeTeamMounts(dir string, refs []workspaceMountRef) (map[string]string, error) {
 	stamps, err := readTeamMountStamps(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	next := map[string]string{}
 	for _, ref := range refs {
@@ -101,7 +104,7 @@ func materializeTeamMounts(dir string, refs []workspaceMountRef) error {
 			continue // agent 自建同名对象:不抢
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+			return nil, err
 		}
 		_ = os.Remove(link)
 		if err := os.Symlink(ref.FolderPath, link); err != nil {
@@ -117,17 +120,17 @@ func materializeTeamMounts(dir string, refs []workspaceMountRef) error {
 		}
 	}
 	if stampsEqual(stamps, next) {
-		return nil
+		return next, nil
 	}
 	if len(next) == 0 {
 		// 无挂点:stamp 清掉(team/ 目录保留——agent 可能自建了东西;
 		// 空目录对 persona 双态文案同样可判)。
-		return os.Remove(filepath.Join(dir, teamMountsStamp))
+		return next, os.Remove(filepath.Join(dir, teamMountsStamp))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return next, err
 	}
-	return writeTeamMountStamps(dir, next)
+	return next, writeTeamMountStamps(dir, next)
 }
 
 func readTeamMountStamps(dir string) (map[string]string, error) {

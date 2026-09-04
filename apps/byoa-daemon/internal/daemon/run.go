@@ -314,6 +314,11 @@ func doRun(ctx context.Context, serverOverride string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	runners := map[string]*AgentRunner{}
+	// #337 挂载文件感知:进程级 watcher(与 runner 生命周期解耦——
+	// watch 的是挂点指向的真实文件夹,同 ws 多 agent 同 inode 只 watch
+	// 一处;nil = fsnotify 不可用,退化为 server 60min 兜底扫描)。
+	watcher := startTeamWatcher(ctx, cfg)
+	defer watcher.stop()
 
 	sync := func() {
 		var agents []AgentInfo
@@ -374,9 +379,14 @@ func doRun(ctx context.Context, serverOverride string) error {
 		// #336 团队工作区挂点:逐 runner 拉可达清单物化 symlink(local
 		// computer 直连文件夹;vps 回清单不带 folderPath → 不建,persona
 		// 双态文案自然引导 CLI)。拉取失败整轮跳过,保陈旧挂点。
+		// #337 感知:本轮在挂集合喂给进程级 watcher(fsnotify → 去抖上报)。
+		mounts := map[string]string{}
 		for _, runner := range runners {
-			syncTeamMounts(ctx, cfg, runner)
+			for wsID, target := range syncTeamMounts(ctx, cfg, runner) {
+				mounts[wsID] = target
+			}
 		}
+		watcher.syncMounts(mounts)
 	}
 
 	heartbeat := func() {

@@ -89,6 +89,11 @@
       "go": "ChInbox",
       "ts": "CH_INBOX",
       "description": "人侧 Inbox 分级(#264):inbox.new 按严重度打扰。"
+    },
+    "cumora:workspace": {
+      "go": "ChWorkspace",
+      "ts": "CH_WORKSPACE",
+      "description": "工作区文件面(#337):workspace.files_changed(区级变更清单,watcher 上报与兜底扫描聚合)。订阅方:wsx 聊天桥(按租户成员资格扇出)。"
     }
   },
   "$defs": {
@@ -1015,6 +1020,65 @@
         }
       },
       "required": ["type", "recipientUserId", "itemId", "severity", "itemType", "title", "at"]
+    },
+    "WorkspaceFilesChangedEvent": {
+      "type": "object",
+      "description": "团队工作区文件变更广播(#337,区级粒度,带文件清单不含内容)。发布方:server(挂载 watcher 上报处理 / 兜底扫描);帧路径对同租户成员可见,内容不随帧下发。",
+      "x-event": {
+        "type": "workspace.files_changed",
+        "channel": "cumora:workspace",
+        "scope": "company"
+      },
+      "properties": {
+        "type": {
+          "const": "workspace.files_changed"
+        },
+        "companyId": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string",
+          "description": "变更所属工作区 id"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "mtimeNanos": {
+                "type": "string",
+                "format": "int64",
+                "description": "盘上当前 mtime(纳秒,十进制字符串 —— int64 超 JS 安全整数,数值化会丢精度);removed=true 时为 \"0\""
+              },
+              "size": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "removed": {
+                "type": "boolean",
+                "description": "文件已不存在(挂载侧删除)"
+              }
+            },
+            "required": [
+              "path",
+              "removed"
+            ]
+          }
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO 毫秒(httpx.ISOms 同形)"
+        }
+      },
+      "required": [
+        "type",
+        "companyId",
+        "workspaceId",
+        "changes"
+      ]
     }
   }
 }

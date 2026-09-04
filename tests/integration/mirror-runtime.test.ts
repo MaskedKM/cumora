@@ -1240,3 +1240,50 @@ test('[mirror-runtime] workspace CLI: grep matches, -i short flag, skips .cumora
   r = await run('grep', wsId, 'needle')
   assert.ok(r.text.includes('truncated'), r.text)
 })
+
+// #337 CAS + 写前快照(经 /runtime/cli):--expected 失配拒写 + 挑战者
+// .conflict 副本留底;成功覆盖留版本;重试闭环(stat 拿新 mtimeNanos)。
+test('[mirror-runtime] workspace CLI: CAS --expected (stale reject + conflict copy + retry loop) + versions', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
+  const run = async (...argv: string[]) => {
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    assert.equal(res.status, 200)
+    return { ok: res.body.ok, text: String(res.body.text ?? '') }
+  }
+
+  await run('write', wsId, 'doc.md', 'base')
+
+  // stat 拿 mtimeNanos;挂载侧(模拟另一写者)直改盘上文件。
+  let r = await run('stat', wsId, 'doc.md', '--json')
+  const before = JSON.parse(r.text).mtimeNanos as string
+  const { writeFile: fsWrite, readdir: fsReaddir, readFile: fsReadFile } = await import('node:fs/promises')
+  await fsWrite(join(folder, 'doc.md'), 'concurrent edit')
+
+  // CAS 失配:拒写 + 挑战者内容进 .conflict 副本。
+  r = await run('write', wsId, 'doc.md', 'my new content', '--expected', String(before))
+  assert.ok(!r.ok, 'stale write must be rejected')
+  assert.ok(r.text.includes('stale write'), r.text)
+  assert.ok(r.text.includes('.conflict-'), r.text)
+  const conflictFile = (await fsReaddirCompat(fsReaddir, folder)).find((f: string) => f.startsWith('doc.conflict-') && f.endsWith('.md'))
+  assert.ok(conflictFile, `conflict copy must exist, dir=${(await fsReaddirCompat(fsReaddir, folder)).join(',')}`)
+  const conflictBody = await fsReadFile(join(folder, conflictFile), 'utf8')
+  assert.ok(conflictBody.includes('my new content'), 'challenger content preserved in conflict copy')
+
+  // 重试闭环:重读最新 mtimeNanos → CAS 通过 → 覆盖成功 + 旧版留档。
+  r = await run('stat', wsId, 'doc.md', '--json')
+  const now = JSON.parse(r.text).mtimeNanos as string
+  r = await run('write', wsId, 'doc.md', 'merged content', '--expected', String(now))
+  assert.ok(r.ok, r.text)
+  const vdir = join(folder, '.cumora', 'versions', 'doc.md')
+  const versions = await fsReaddirCompat(fsReaddir, vdir)
+  assert.ok(versions.length >= 1, 'overwrite must leave a version snapshot')
+  const snap = await fsReadFile(join(vdir, versions[0]), 'utf8')
+  assert.ok(snap.includes('concurrent edit') || snap.includes('base'), 'snapshot holds prior content')
+  void folder
+})
+
+// helper 薄壳(node:fs/promises 的动态导入类型收敛)
+async function fsReaddirCompat(
+  readdir: (p: string) => Promise<string[]>, p: string,
+): Promise<string[]> { return await readdir(p) }

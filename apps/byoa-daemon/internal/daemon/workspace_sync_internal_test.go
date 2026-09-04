@@ -38,7 +38,7 @@ func TestMaterializeTeamMountsLifecycle(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "team")
 
 	// 初次物化:两个挂点,stamp 两键。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", IsDefault: true, FolderPath: realA},
 		{ID: "ws-b", Name: "B", FolderPath: realB},
 	}); err != nil {
@@ -53,7 +53,7 @@ func TestMaterializeTeamMountsLifecycle(t *testing.T) {
 
 	// ws-a 服务器迁移(同 id 换 folder)→ 重建指向新 folder;ws-b 成员
 	// 移除 → 回收;ws-c 新入区 → 新建。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realC},
 		{ID: "ws-c", Name: "C", FolderPath: realC},
 	}); err != nil {
@@ -67,7 +67,7 @@ func TestMaterializeTeamMountsLifecycle(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "ws-c")); err != nil {
 		t.Fatal(err)
 	}
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realC},
 		{ID: "ws-c", Name: "C", FolderPath: realC},
 	}); err != nil {
@@ -81,7 +81,7 @@ func TestMaterializeTeamMountsVpsAndUnreachable(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "team")
 
 	// FolderPath 空(vps computer 的清单行)→ 不建。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A"}, // 无 folderPath
 	}); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestMaterializeTeamMountsVpsAndUnreachable(t *testing.T) {
 	assertNoLink(t, dir, "ws-a")
 
 	// FolderPath 不可达(server 迁移后旧路径)→ 不建,自然 CLI 回退。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: filepath.Join(t.TempDir(), "gone")},
 	}); err != nil {
 		t.Fatal(err)
@@ -97,13 +97,13 @@ func TestMaterializeTeamMountsVpsAndUnreachable(t *testing.T) {
 	assertNoLink(t, dir, "ws-a")
 
 	// 已有挂点后清单转 vps(全空 folderPath)→ 既有回收 + stamp 清除。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realA},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	assertLink(t, dir, "ws-a", realA)
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A"},
 	}); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestMaterializeTeamMountsKeepsStaleOnTransientUnreachable(t *testing.T) {
 	// 不得误回收在用挂点 —— 保 stamp 记录的陈旧 target,下轮可达再重建。
 	realA := t.TempDir()
 	dir := filepath.Join(t.TempDir(), "team")
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realA},
 	}); err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestMaterializeTeamMountsKeepsStaleOnTransientUnreachable(t *testing.T) {
 	assertLink(t, dir, "ws-a", realA)
 
 	// 下轮:同 id 换到不可达路径(stat 必失败)→ 旧挂点保留。
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: filepath.Join(t.TempDir(), "unreachable-now")},
 	}); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestMaterializeTeamMountsKeepsStaleOnTransientUnreachable(t *testing.T) {
 
 	// 再下轮:目标恢复可达(真迁移到新 folder)→ 重建指向新 folder。
 	realB := t.TempDir()
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realB},
 	}); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestMaterializeTeamMountsDoesNotStealNames(t *testing.T) {
 	if err := os.WriteFile(own, []byte("mine"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := materializeTeamMounts(dir, []workspaceMountRef{
+	if _, err := materializeTeamMounts(dir, []workspaceMountRef{
 		{ID: "ws-a", Name: "A", FolderPath: realA},
 	}); err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestMaterializeTeamMountsDoesNotStealNames(t *testing.T) {
 	if err := os.Symlink(other, link); err != nil { // 手改成别的目标
 		t.Fatal(err)
 	}
-	if err := materializeTeamMounts(dir, nil); err != nil {
+	if _, err := materializeTeamMounts(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	if target := readLink(t, link); target != other {
