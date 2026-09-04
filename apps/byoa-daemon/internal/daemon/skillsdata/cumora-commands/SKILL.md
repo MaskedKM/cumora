@@ -147,6 +147,15 @@ or asks you to track / plan / move work, RUN `cumora kanban ls` first. The verbs
     bash("cumora card show <card_id>")
     bash("cumora card add <board_id> '<title>' --column <col_id> [--description '...'] [--assign <id>]")
     bash("cumora card move <card_id> --to <column_id>")   — move a card between columns (this is how "done" happens)
+    bash("cumora card start <card_id> [--ws <workspace_id>]")
+                                                        — CODE TASKS: materialize an isolated git worktree for this card
+                                                          inside its linked team workspace (branch cumora/<card_id>, path
+                                                          team/<ws-id>/.cumora/worktrees/<card_id>/). Do the work there with
+                                                          native git/build/test. The branch SURVIVES task failure — your
+                                                          progress stays on it even if you fail mid-task.
+    bash("cumora card deliver <card_id> --branch <name> [--pr '<url>'] [--state open|merged|closed]")
+                                                        — record the delivery branch (and PR link + review state) on the
+                                                          card; humans see it in the card panel and decide the merge.
     bash("cumora card assign <card_id> <participant_id|null>")
                                                         — (re)assign a card. Agents are valid assignees — assign one to yourself
                                                           (`cumora card assign card-xxx <your_id>`) when you own the work.
