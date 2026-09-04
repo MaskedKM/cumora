@@ -2539,7 +2539,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Ok'
+                type: object
+                properties:
+                  error: { type: string }
   /api/workspaces/{id}/raw:
     get:
       tags: [workspaces]
@@ -2550,9 +2552,19 @@ paths:
         - { name: path, in: query, required: true, schema: { type: string } }
       responses:
         '200':
-          description: 原始文件字节
+          description: 原始文件字节(图片扩展名回对应 image/*,其余 octet-stream)
           content:
             application/octet-stream:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/gif:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            image/svg+xml:
               schema: { type: string, format: binary }
   /api/workspaces/{id}/unbind:
     post:

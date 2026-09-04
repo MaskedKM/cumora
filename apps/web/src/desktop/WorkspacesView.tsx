@@ -182,10 +182,16 @@ export function WorkspacesView() {
   // blob URL 生命周期:组件卸载即撤销(openImage 切换处已即时撤销)。
   useEffect(() => () => { if (openImage) URL.revokeObjectURL(openImage.url) }, [openImage])
 
+  // 迟到响应守卫(#342 评审 P2):mutation 后立即切区时,旧区的 detail/
+  // 图片响应晚到不得回写 —— selectedIdRef 比对后再 set。
+  const selectedIdRef = useRef<string | null>(null)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
+
   const reloadDetail = useCallback(() => {
     if (!selectedId) return
+    const wsAtStart = selectedId
     api.getWorkspace(selectedId)
-      .then((d) => setDetail(d))
+      .then((d) => { if (selectedIdRef.current === wsAtStart) setDetail(d) })
       .catch(() => { /* 详情拉取失败保留旧态,下次切换重试 */ })
   }, [selectedId])
 
@@ -221,6 +227,7 @@ export function WorkspacesView() {
     if (isImagePath(path)) {
       try {
         const blob = await api.fetchWorkspaceRaw(selectedId, path)
+        if (selectedIdRef.current !== selectedId) { return } // 切区后迟到,弃
         if (openImage) URL.revokeObjectURL(openImage.url)
         setOpenFile(null)
         setEditing(false)
@@ -353,7 +360,8 @@ export function WorkspacesView() {
     try {
       const ws = await api.createWorkspace(newWsName.trim(), newWsFolder.trim())
       resetCreateWs()
-      setList((rows) => [...rows, ws])
+      // POST 201 响应不含 explicitMemberCount(契约内联对象),追加行补 0。
+      setList((rows) => [...rows, { ...ws, explicitMemberCount: 0 }])
       setSelectedId(ws.id)
     } catch (e) {
       setManageError(e instanceof Error ? e.message : String(e))

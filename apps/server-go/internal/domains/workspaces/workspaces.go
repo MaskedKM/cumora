@@ -887,6 +887,13 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
 		return
 	}
+	// 悬空 symlink 写穿(#342 评审 P2,纵深):EvalSymlinks 对悬空链接
+	// 回退父目录而 Stat 跟随失败,WriteFile 会沿链接写到根外 —— 落盘
+	// 前拒一切非常规文件(不存在 = 新建,放行)。
+	if fi, err := os.Lstat(abs); err == nil && !fi.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is not a regular file")
+		return
+	}
 	// CAS 检查(在 body 解码后、落盘前):失配 → 挑战者内容留副本 + 412。
 	if expected != nil {
 		cur := int64(0)
@@ -971,6 +978,10 @@ func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id 
 	if !ok {
 		return
 	}
+	// 总请求体帽(#342 评审 P1):NextPart/Close 会排空剩余 part 字节,
+	// 只限单 file part 时带宽/CPU 无界 —— 对齐文本面 34MB 姿态,
+	// 25MB 文件 + path part + 边界开销取 26MB 总帽。
+	r.Body = http.MaxBytesReader(w, r.Body, maxBinaryBytes+(1<<20))
 	reader, err := r.MultipartReader()
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "multipart form required")
@@ -980,6 +991,7 @@ func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id 
 	var havePath bool
 	var content []byte
 	var haveFile bool
+	parts := 0
 	for {
 		part, perr := reader.NextPart()
 		if perr == io.EOF {
@@ -989,10 +1001,19 @@ func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id 
 			httpx.WriteError(w, http.StatusBadRequest, "invalid multipart body")
 			return
 		}
+		parts++
+		if parts > 8 {
+			httpx.WriteError(w, http.StatusBadRequest, "too many parts")
+			return
+		}
 		switch part.FormName() {
 		case "path":
 			if !havePath {
-				b, _ := io.ReadAll(io.LimitReader(part, 4096))
+				b, perr2 := io.ReadAll(io.LimitReader(part, 4097))
+				if perr2 != nil || len(b) > 4096 {
+					httpx.WriteError(w, http.StatusBadRequest, "path too long")
+					return
+				}
 				rel = strings.TrimSpace(string(b))
 				havePath = true
 			}
@@ -1032,6 +1053,10 @@ func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id 
 	}
 	if st, err := os.Stat(abs); err == nil && st.IsDir() {
 		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if fi, err := os.Lstat(abs); err == nil && !fi.Mode().IsRegular() {
+		httpx.WriteError(w, http.StatusBadRequest, "path is not a regular file")
 		return
 	}
 	SnapshotVersion(ws.folderPath, relResolved)

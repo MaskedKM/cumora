@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '../api/client'
+import { ApiError, api } from '../api/client'
 import { useT } from '../lib/i18n'
 
 export type WorkspaceLinkKind = 'project' | 'board_card' | 'document'

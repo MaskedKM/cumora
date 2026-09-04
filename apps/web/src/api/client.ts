@@ -92,7 +92,7 @@ export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
 export type MeResponse = Schemas['MeResponse']
 
-import { getActiveCompanyId, getAuthToken } from '@/stores/auth'
+import { getActiveCompanyId, getAuthToken, useAuth } from '@/stores/auth'
 /* #221:Status/CalendarEventKind/ComputerStatus 原只被手写 WsEvent union 引用,
  * 契约化后随之退役(事件载荷里的枚举由生成物直接引用契约 schema)。 */
 import type {BoardCardComment, BoardCardLookup,BoardSnapshot, 
@@ -128,6 +128,30 @@ export function getPairingServerOrigin(): string {
 function wsOrigin(): string {
   if (SERVER_ORIGIN) return SERVER_ORIGIN.replace(/^http/, 'ws')
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
+}
+
+/** #338 二进制面的鉴权头(fetchJson 的 JSON 头不适用;FormData 不能带
+ * content-type —— 浏览器自填 multipart boundary)。 */
+function wsBinaryHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  const token = getAuthToken()
+  if (token) headers.authorization = `Bearer ${token}`
+  const company = getActiveCompanyId()
+  if (company) headers['x-company-id'] = company
+  return headers
+}
+
+/** #338 裸 fetch 的错误收口:401 清 session(与 fetchJson 同源)、
+ * 错误体 {error} 解析(如 413 的 "file too large (25MB limit)")。 */
+async function throwUnlessOk(res: Response): Promise<void> {
+  if (res.ok) return
+  if (res.status === 401) useAuth.getState().clear()
+  let detail = `${res.status} ${res.statusText}`
+  try {
+    const j = (await res.json()) as { error?: string }
+    if (j.error) detail = `${j.error} (${res.status})`
+  } catch { /* keep status text */ }
+  throw new ApiError(detail, res.status)
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -857,6 +881,8 @@ export const api = {
   /* #338 管理面 mutation(服务端/契约已就绪,补齐前端封装) */
   createWorkspace: (name: string, folderPath: string) =>
     http<ApiWorkspaceSummary>('/workspaces', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
+  // 注:POST 201 响应不含 explicitMemberCount(契约内联对象);调用方
+  // 以此修正追加行(#342 评审 P2)。
   addWorkspaceMember: (id: string, participantId: string) =>
     http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/members`, {
       method: 'POST', body: JSON.stringify({ participantId }),
@@ -878,37 +904,21 @@ export const api = {
 
   /* #338 multipart 上传 / 原始字节读:fetchJson 恒 JSON(core.ts),此二
   面必须裸 fetch(带 Bearer + x-company-id;FormData 不设 content-type,
-  让浏览器填 multipart boundary)。错误形状对齐 ApiError。 */
+  让浏览器填 multipart boundary)。错误形状对齐 ApiError,含 401 清
+  session —— 与 fetchJson 语义同源(#342 评审 P1)。 */
   uploadWorkspaceFile: async (id: string, path: string, file: File) => {
     const form = new FormData()
     form.append('path', path)
     form.append('file', file)
-    const headers: Record<string, string> = {}
-    const token = getAuthToken()
-    if (token) headers.authorization = `Bearer ${token}`
-    const company = getActiveCompanyId()
-    if (company) headers['x-company-id'] = company
     const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/upload`, {
-      method: 'POST', headers, body: form,
+      method: 'POST', headers: wsBinaryHeaders(), body: form,
     })
-    if (!res.ok) {
-      let detail = `${res.status} ${res.statusText}`
-      try {
-        const j = (await res.json()) as { error?: string }
-        if (j.error) detail = `${j.error} (${res.status})`
-      } catch { /* keep status text */ }
-      throw new ApiError(detail, res.status)
-    }
+    throwUnlessOk(res)
     return (await res.json()) as { ok: boolean; path: string; size: number; mtimeNanos: string }
   },
   fetchWorkspaceRaw: async (id: string, path: string): Promise<Blob> => {
-    const headers: Record<string, string> = {}
-    const token = getAuthToken()
-    if (token) headers.authorization = `Bearer ${token}`
-    const company = getActiveCompanyId()
-    if (company) headers['x-company-id'] = company
-    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/raw?path=${encodeURIComponent(path)}`, { headers })
-    if (!res.ok) throw new ApiError(`${res.status} ${res.statusText}`, res.status)
+    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/raw?path=${encodeURIComponent(path)}`, { headers: wsBinaryHeaders() })
+    throwUnlessOk(res)
     return await res.blob()
   },
 }

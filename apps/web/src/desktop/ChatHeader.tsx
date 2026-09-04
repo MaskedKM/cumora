@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { useConversations } from '@/stores/conversations'
-import { useAuth } from '@/stores/auth'
-import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
-import { useParticipants } from '@/stores/participants'
 import { api } from '@/api/client'
 import { AvatarStack } from '@/components/Avatar'
+import { IConvene, IPin, ISearch } from '@/components/icons'
 import { MembersPopover } from '@/components/MembersPopover'
-import { cn } from '@/lib/utils'
-import { ISearch, IPin, IConvene } from '@/components/icons'
-import type { Participant } from '@/types'
+import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
 import { useT } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
+import { useAuth } from '@/stores/auth'
+import { useConversations } from '@/stores/conversations'
+import { useParticipants } from '@/stores/participants'
+import type { Participant } from '@/types'
 
 /** Soft "Coming soon" popover anchored beneath the trigger. Auto-dismisses
  *  after a beat; also closes on outside-click or Escape. The sparkle
