@@ -22,6 +22,7 @@ import (
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/core"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	emaildomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/email"
+	hrdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/hr"
 	invitationsdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/invitations"
 	ogdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/og"
 	searchdomain "github.com/MaskedKM/cumora/apps/server-go/internal/domains/search"
@@ -423,6 +424,7 @@ func (s *Server) CreateCompany(w http.ResponseWriter, r *http.Request) {
 			VALUES ($1, 'human', $2, $3, '#FF8870', $4, 'avail', $5)
 			ON CONFLICT (id, company_id) DO NOTHING`, uid, dn, initial, avatar, id)
 		onboard.JoinAllHands(r.Context(), s.DB, id, uid)
+		hrdomain.EnsureProvisioned(r.Context(), s.DB, id) // #345 HR Agent 编外置备(幂等)
 		auditIP, auditUA := r.RemoteAddr, r.UserAgent()
 		auditDetail := fmt.Sprintf(`{"name":%s,"slug":%s}`, jsonString(name), jsonString(slug))
 		go s.DB.Exec(`INSERT INTO audit_events (user_id, company_id, kind, ip, user_agent, detail)

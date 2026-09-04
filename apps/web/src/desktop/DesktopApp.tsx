@@ -30,6 +30,7 @@ const WhispersView = lazy(() => import('./WhispersView').then((m) => ({ default:
 const InboxView = lazy(() => import('./InboxView').then((m) => ({ default: m.InboxView }))) // #264 人侧 Inbox
 const ConveneView = lazy(() => import('./ConveneView').then((m) => ({ default: m.ConveneView })))
 const AgentsView = lazy(() => import('./AgentsView').then((m) => ({ default: m.AgentsView })))
+const HrView = lazy(() => import('./HrView').then((m) => ({ default: m.HrView }))) // #345 HR Agent 配置面
 const BoardsView = lazy(() => import('./BoardsView').then((m) => ({ default: m.BoardsView })))
 const CalendarView = lazy(() => import('./CalendarView').then((m) => ({ default: m.CalendarView })))
 const DocumentsView = lazy(() => import('./DocumentsView').then((m) => ({ default: m.DocumentsView })))
@@ -125,6 +126,7 @@ export function DesktopApp() {
         {view === 'whispers' && <Suspense fallback={<ViewFallback />}><WhispersView /></Suspense>}
         {view === 'convene' && <Suspense fallback={<ViewFallback />}><ConveneView /></Suspense>}
         {view === 'agents' && <Suspense fallback={<ViewFallback />}><AgentsView /></Suspense>}
+        {view === 'hr' && <Suspense fallback={<ViewFallback />}><HrView /></Suspense>}
         {view === 'boards' && <Suspense fallback={<ViewFallback />}><BoardsView /></Suspense>}
         {view === 'calendar' && <Suspense fallback={<ViewFallback />}><CalendarView /></Suspense>}
         {view === 'documents' && <Suspense fallback={<ViewFallback />}><DocumentsView /></Suspense>}

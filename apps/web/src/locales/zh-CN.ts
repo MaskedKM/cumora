@@ -55,6 +55,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'nav.skills': '技能库',
   'nav.library': '资料库',
   'nav.agents': '智能体',
+  'nav.hr': '人事',
   'nav.me': '我',
   'nav.observe': '观测',
   // ─── 登录 ─────────────────────────────────────────────────────────
@@ -1910,4 +1911,20 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'inbox.mutesHint': '按类型静音:静音 = 不推送不弹条,条目仍保留在列表里。',
   'inbox.mutesEmpty': '(还没有可静音的类型——等第一批条目进来)',
   'inbox.empty': '空空如也。智能体汇报的阻碍、需要你拍板的事会出现在这里。',
+  // ─── HR Agent(#345;编外隐形人事代理,ADR 0007)────────────────────
+  'hr.title': 'HR Agent',
+  'hr.subtitle': '你的常驻人事代理——不在花名册,对所有智能体隐形。它替你评估、调优、提案人事变动;汇报只落在这一页,不进聊天。',
+  'hr.denied': '人事台需要 owner 或 admin 角色。',
+  'hr.present': '在位——常驻,每团队一个',
+  'hr.attribution': '观测键',
+  'hr.attributionHint': '它的运行与 LLM 消耗在观测面按此键单独归因。',
+  'hr.computerLabel': '运行于',
+  'hr.updatedAt': '更新于',
+  'hr.unassigned': '未指派',
+  'hr.computerRemoved': '(已移除)',
+  'hr.promptLabel': 'HR 提示词',
+  'hr.promptHint': '它的评判标准。仅 owner/admin 可改;智能体永远看不到。',
+  'hr.runsOnHint': '评估在哪里执行。想让它先跑起来之前可以保持未指派。',
+  'hr.save': '保存',
+  'hr.saved': '已保存',
 } as const

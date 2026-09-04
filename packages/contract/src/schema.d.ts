@@ -662,6 +662,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** HR Agent 配置读(状态卡;owner/admin) */
+        get: operations["getHrAgent"];
+        /** HR Agent 配置写(owner/admin;prompt/computer/engine) */
+        put: operations["putHrAgentConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3373,6 +3391,21 @@ export interface components {
             chatRegister?: boolean;
             tools?: string[];
         };
+        HrAgent: {
+            /** @description 观测归因键 —— HR 的 runs/llm 台账按此 agent_id 单独归因 */
+            agentId: string;
+            systemPrompt: string;
+            computerId: string | null;
+            engine: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description 部分更新;computerId 空串 = 清空指派(computer 与 engine 一并清);engine 缺省时取该机 advertised 首项 */
+        HrAgentConfigInput: {
+            systemPrompt?: string;
+            computerId?: string;
+            engine?: string;
+        };
         Whisper: {
             id: string;
             /** @enum {string} */
@@ -5169,6 +5202,50 @@ export interface operations {
                         /** Format: date-time */
                         expiresAt: string;
                     };
+                };
+            };
+        };
+    };
+    getHrAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrAgent"];
+                };
+            };
+        };
+    };
+    putHrAgentConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["HrAgentConfigInput"];
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrAgent"];
                 };
             };
         };

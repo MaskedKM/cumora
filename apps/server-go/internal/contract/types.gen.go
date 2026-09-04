@@ -1034,6 +1034,23 @@ type EmailFieldsDirection string
 // EngineId defines model for EngineId.
 type EngineId string
 
+// HrAgent defines model for HrAgent.
+type HrAgent struct {
+	// AgentId 观测归因键 —— HR 的 runs/llm 台账按此 agent_id 单独归因
+	AgentId      string    `json:"agentId"`
+	ComputerId   *string   `json:"computerId"`
+	Engine       *string   `json:"engine"`
+	SystemPrompt string    `json:"systemPrompt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+// HrAgentConfigInput 部分更新;computerId 空串 = 清空指派(computer 与 engine 一并清);engine 缺省时取该机 advertised 首项
+type HrAgentConfigInput struct {
+	ComputerId   *string `json:"computerId,omitempty"`
+	Engine       *string `json:"engine,omitempty"`
+	SystemPrompt *string `json:"systemPrompt,omitempty"`
+}
+
 // Id defines model for Id.
 type Id struct {
 	Id string `json:"id"`
@@ -2635,6 +2652,9 @@ type ReplyEmailJSONRequestBody ReplyEmailJSONBody
 
 // SendEmailJSONRequestBody defines body for SendEmail for application/json ContentType.
 type SendEmailJSONRequestBody SendEmailJSONBody
+
+// PutHrAgentConfigJSONRequestBody defines body for PutHrAgentConfig for application/json ContentType.
+type PutHrAgentConfigJSONRequestBody = HrAgentConfigInput
 
 // SetInboxMutesJSONRequestBody defines body for SetInboxMutes for application/json ContentType.
 type SetInboxMutesJSONRequestBody SetInboxMutesJSONBody

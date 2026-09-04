@@ -49,6 +49,7 @@ export const en = {
   'nav.skills': 'Skills',
   'nav.library': 'Library',
   'nav.agents': 'Agents',
+  'nav.hr': 'HR',
   'nav.me': 'Me',
   'nav.observe': 'Observe',
   // ─── sign-in ──────────────────────────────────────────────────────
@@ -1907,4 +1908,20 @@ export const en = {
   'inbox.mutesHint': 'Mute by type: muted = no push, no toast; items still land in the list.',
   'inbox.mutesEmpty': '(No muteable types yet — wait for the first items to arrive)',
   'inbox.empty': 'Nothing here. Agent blockers and decisions that need you will land in this inbox.',
+  // ─── HR Agent (#345;off-roster invisible personnel officer, ADR 0007) ──
+  'hr.title': 'HR Agent',
+  'hr.subtitle': 'Your resident personnel officer — off the roster, invisible to every agent. It evaluates, tunes, and proposes roster changes on your behalf; reports land here, never in chat.',
+  'hr.denied': 'The HR console requires an owner or admin role.',
+  'hr.present': 'Present — permanent, one per team',
+  'hr.attribution': 'Observation key',
+  'hr.attributionHint': 'Its runs and LLM spend are attributed under this key in observability.',
+  'hr.computerLabel': 'Runs on',
+  'hr.updatedAt': 'Updated',
+  'hr.unassigned': 'Not assigned',
+  'hr.computerRemoved': '(removed)',
+  'hr.promptLabel': 'HR prompt',
+  'hr.promptHint': 'Its judgment criteria. Only owners and admins can edit this; agents never see it.',
+  'hr.runsOnHint': 'Where its evaluations execute. Leave unassigned until you want them running.',
+  'hr.save': 'Save',
+  'hr.saved': 'Saved',
 } as const

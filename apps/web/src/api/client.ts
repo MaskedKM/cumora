@@ -13,6 +13,9 @@ export type ApiParticipant = Schemas['Participant']
 export type ApiComputer = Schemas['Computer']
 export type ApiSearchResults = Schemas['SearchResults']
 export type AgentInput = Schemas['AgentInput']
+// #345 HR Agent(编外隐形人事代理)配置面。
+export type ApiHrAgent = Schemas['HrAgent']
+export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
 /** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
 export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
 export type UploadCapabilities = Schemas['UploadCapabilities']
@@ -387,6 +390,11 @@ export const api = {
     http<{ ok: boolean }>(`/agents/${encodeURIComponent(id)}/rehire`, { method: 'POST' }),
   generateAgentAvatar: (id: string) =>
     http<{ url: string }>(`/agents/${encodeURIComponent(id)}/avatar/generate`, { method: 'POST' }),
+  // ─── HR (#345 HR Agent 配置面;服务端 owner/admin 闸) ───
+  getHrAgent: () => http<ApiHrAgent>('/hr'),
+  /** Partial update: computerId 空串 = 清空指派;engine 缺省取该机 advertised 首项。 */
+  putHrAgentConfig: (input: HrAgentConfigInput) =>
+    http<ApiHrAgent>('/hr', { method: 'PUT', body: JSON.stringify(input) }),
   getConversations: () => http<ApiConversation[]>('/conversations'),
   createGroup: (input: { title: string; members: string[]; subtitle?: string; projectId?: string | null }) =>
     http<{ id: string; members: string[]; projectId: string | null }>('/conversations', {

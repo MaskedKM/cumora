@@ -4,9 +4,10 @@ info:
   version: 0.2.2
   description: |
     Cumora 单一契约源(ADR 0004 · 票 #48)。覆盖全部存活路由域:
-    core(auth/me/companies/invitations)、computers/agents、conversations/messages、
-    email、projects、participants、boards、calendar、documents、push、uploads、
-    workspaces、observability、devtools、admin、shipping、runtime(BYOA daemon 专用面)。
+    core(auth/me/companies/invitations)、computers/agents、hr(编外人事代理)、
+    conversations/messages、email、projects、participants、boards、calendar、
+    documents、push、uploads、workspaces、observability、devtools、admin、
+    shipping、runtime(BYOA daemon 专用面)。
 
     ## WebSocket / SSE 事件面描述策略
 
@@ -38,6 +39,7 @@ tags:
   - { name: core }
   - { name: computers }
   - { name: agents }
+  - { name: hr }
   - { name: conversations }
   - { name: email }
   - { name: projects }
@@ -694,6 +696,31 @@ paths:
                 properties:
                   token: { type: string }
                   expiresAt: { type: string, format: date-time }
+  /api/hr:
+    get:
+      tags: [hr]
+      operationId: getHrAgent
+      summary: HR Agent 配置读(状态卡;owner/admin)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrAgent' }
+    put:
+      tags: [hr]
+      operationId: putHrAgentConfig
+      summary: HR Agent 配置写(owner/admin;prompt/computer/engine)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HrAgentConfigInput' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrAgent' }
   /api/agents:
     post:
       tags: [agents]
@@ -3932,6 +3959,22 @@ components:
         fastModel: { type: string, nullable: true }
         chatRegister: { type: boolean }
         tools: { type: array, items: { type: string } }
+    HrAgent:
+      type: object
+      required: [agentId, systemPrompt, computerId, engine, updatedAt]
+      properties:
+        agentId: { type: string, description: 观测归因键 —— HR 的 runs/llm 台账按此 agent_id 单独归因 }
+        systemPrompt: { type: string }
+        computerId: { type: string, nullable: true }
+        engine: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+    HrAgentConfigInput:
+      type: object
+      description: 部分更新;computerId 空串 = 清空指派(computer 与 engine 一并清);engine 缺省时取该机 advertised 首项
+      properties:
+        systemPrompt: { type: string }
+        computerId: { type: string }
+        engine: { type: string }
     Whisper:
       type: object
       required: [id, kind, title, members, createdAt, updatedAt, msgCount]
