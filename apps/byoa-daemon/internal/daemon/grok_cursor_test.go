@@ -382,7 +382,9 @@ func TestCursorSeedHomeGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, "AGENTS.md"))
-	if string(b) != mustGolden(t, "persona_cursor.txt") {
+	got := string(b)
+	goldenUpdate("persona_cursor.txt", got)
+	if got != mustGolden(t, "persona_cursor.txt") {
 		t.Fatalf("AGENTS.md drift (%d bytes)", len(b))
 	}
 	if !pathExists(filepath.Join(home, ".cursor", "skills")) {

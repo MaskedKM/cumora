@@ -1031,3 +1031,212 @@ test('[mirror-runtime] /wake-stream: steer events ride the same stream', async (
   })
   await Promise.all([streamDone, steerSeen])
 })
+
+// #336 /runtime/workspaces:daemon 挂载同步拉取面。可达语义 = 默认区
+// 全员 ∪ 显式成员 ∪ 关联推导(与 resolveAccess 同构);folderPath 仅
+// computer kind=local 返回(vps/无 computer → 省略,daemon 落 CLI 形态)。
+test('[mirror-runtime] /workspaces: 401 without token', async () => {
+  const res = await call('/runtime/workspaces', { method: 'GET' })
+  assert.equal(res.status, 401)
+})
+
+test('[mirror-runtime] /workspaces: default workspace self-heals; no computer → no folderPath', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  assert.ok(Array.isArray(res.body))
+  assert.equal(res.body.length, 1)
+  const ws = res.body[0]
+  assert.equal(ws.id, `ws-default-${companyId}`)
+  assert.equal(ws.isDefault, true)
+  assert.equal(ws.folderPath, undefined, 'no computer row → kind NULL → treated as remote, folderPath omitted')
+  void agentId
+})
+
+test('[mirror-runtime] /workspaces: local computer gets folderPath; membership gates the rest', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  // local computer + 挂到 agent
+  const computerId = `cp-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO computers (id, company_id, owner_user_id, name, kind, status)
+       VALUES ($1, $2, 'test-owner', 'box', 'local', 'active')`,
+    [computerId, companyId],
+  )
+  await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
+  // 自建区:未加成员 → 不可达
+  const otherWs = `ws-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Secret', '/tmp/not-yours')`,
+    [otherWs, companyId],
+  )
+  // 自建区:显式成员 → 可达且带 folderPath
+  const mineWs = `ws-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Mine', '/tmp/mine')`,
+    [mineWs, companyId],
+  )
+  await pool.query(
+    `INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`,
+    [mineWs, agentId],
+  )
+
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  const ids = res.body.map((w: any) => w.id)
+  assert.ok(ids.includes(`ws-default-${companyId}`))
+  assert.ok(ids.includes(mineWs))
+  assert.ok(!ids.includes(otherWs), 'non-member workspace must not leak')
+  const mine = res.body.find((w: any) => w.id === mineWs)
+  assert.equal(mine.folderPath, '/tmp/mine', 'local computer gets folderPath')
+})
+
+test('[mirror-runtime] /workspaces: vps computer → folderPath omitted', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const computerId = `cp-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO computers (id, company_id, owner_user_id, name, kind, status)
+       VALUES ($1, $2, 'test-owner', 'vps-box', 'vps', 'active')`,
+    [computerId, companyId],
+  )
+  await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
+  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  assert.equal(res.body.length, 1)
+  assert.equal(res.body[0].folderPath, undefined, 'vps computer never receives folderPath')
+})
+
+// #336 团队区 CLI 六命令矩阵(评审 #339 P1-3):经 /runtime/cli 打真
+// SUT —— CLI 面是逃逸/保留路径的敏感面,须端到端断言(先例 mirror-skills)。
+import { mkdtemp, writeFile, mkdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+async function seedWorkspaceFor(agentId: string, companyId: string): Promise<{ wsId: string; folder: string }> {
+  const folder = await mkdtemp(join(tmpdir(), 'ws-cli-'))
+  const wsId = `ws-${randomUUID().slice(0, 8)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'CLI', $3)`,
+    [wsId, companyId, folder],
+  )
+  await pool.query(`INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`, [wsId, agentId])
+  return { wsId, folder }
+}
+
+test('[mirror-runtime] workspace CLI: write/append/edit/mv/stat/delete round-trip + guards', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
+  const run = async (...argv: string[]) => {
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    assert.equal(res.status, 200)
+    return { ok: res.body.ok, text: String(res.body.text ?? '') }
+  }
+
+  // write → read
+  let r = await run('write', wsId, 'a.md', 'hello world')
+  assert.ok(r.ok, r.text)
+  r = await run('read', wsId, 'a.md')
+  assert.ok(r.text.includes('hello world'), r.text)
+
+  // append:不存在则创建;再追加拼接
+  r = await run('append', wsId, 'b.md', 'x')
+  assert.ok(r.ok, r.text)
+  r = await run('append', wsId, 'b.md', 'y')
+  assert.ok(r.ok, r.text)
+  r = await run('read', wsId, 'b.md')
+  assert.ok(r.text.includes('xy'), r.text) // append 原文拼接,无分隔
+
+  // edit:old→new;多处无 --all 拒绝
+  r = await run('edit', wsId, 'a.md', 'world', 'cumora')
+  assert.ok(r.ok, r.text)
+  r = await run('read', wsId, 'a.md')
+  assert.ok(r.text.includes('hello cumora'), r.text)
+  await run('write', wsId, 'c.md', 'z z z')
+  r = await run('edit', wsId, 'c.md', 'z', 'w')
+  assert.ok(!r.ok, 'multiple occurrences without --all must fail')
+
+  // stat --json
+  r = await run('stat', wsId, 'a.md', '--json')
+  assert.ok(r.ok, r.text)
+  const st = JSON.parse(r.text)
+  assert.equal(st.isDir, false)
+  assert.ok(st.size > 0)
+
+  // mv:改名;并入已存在目录
+  r = await run('mv', wsId, 'a.md', 'renamed.md')
+  assert.ok(r.ok, r.text)
+  await run('write', wsId, 'sub/x.md', 'dir seed')
+  r = await run('mv', wsId, 'renamed.md', 'sub')
+  assert.ok(r.ok, r.text)
+  r = await run('read', wsId, 'sub/renamed.md')
+  assert.ok(r.text.includes('hello cumora'), r.text)
+
+  // delete:文件;非空目录拒绝
+  r = await run('delete', wsId, 'sub/x.md')
+  assert.ok(r.ok, r.text)
+  r = await run('delete', wsId, 'sub')
+  assert.ok(!r.ok && r.text.includes('not empty'), r.text)
+  r = await run('delete', wsId, 'sub/renamed.md')
+  assert.ok(r.ok, r.text)
+
+  // 守卫:.cumora 保留路径全拒(write/read/delete/stat);根 "." 拒
+  // (delete/stat/mv);越界 ../ 拒
+  r = await run('write', wsId, '.cumora/x', 'nope')
+  assert.ok(!r.ok && r.text.includes('reserved'), r.text)
+  r = await run('read', wsId, '.cumora/x')
+  assert.ok(!r.ok && r.text.includes('reserved'), r.text)
+  r = await run('delete', wsId, '.cumora/x')
+  assert.ok(!r.ok && r.text.includes('reserved'), r.text)
+  r = await run('stat', wsId, '.cumora/versions/1')
+  assert.ok(!r.ok && r.text.includes('reserved'), r.text)
+  r = await run('delete', wsId, '.')
+  assert.ok(!r.ok && r.text.includes('root'), r.text)
+  r = await run('stat', wsId, '.')
+  assert.ok(!r.ok && r.text.includes('root'), r.text)
+  r = await run('mv', wsId, '.', 'elsewhere')
+  assert.ok(!r.ok, 'mv on workspace root must fail')
+  r = await run('read', wsId, '../escape')
+  assert.ok(!r.ok && r.text.includes('escape'), r.text)
+
+  // 2MB 帽
+  r = await run('write', wsId, 'big.txt', 'x'.repeat(3 * 1024 * 1024))
+  assert.ok(!r.ok && r.text.includes('too large'), r.text)
+  void folder
+})
+
+test('[mirror-runtime] workspace CLI: grep matches, -i short flag, skips .cumora/.git, truncates at cap', async () => {
+  const { agentId, companyId, token } = await seedAgent()
+  const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
+  const run = async (...argv: string[]) => {
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    assert.equal(res.status, 200)
+    return { ok: res.body.ok, text: String(res.body.text ?? '') }
+  }
+  await run('write', wsId, 'doc1.md', 'alpha beta')
+  await run('write', wsId, 'doc2.md', 'GAMMA delta')
+  // .cumora/.git 直接落盘(CLI 面拒写,只能种)
+  await mkdir(join(folder, '.cumora'), { recursive: true })
+  await writeFile(join(folder, '.cumora', 'v1'), 'alpha-inner')
+  await mkdir(join(folder, '.git'), { recursive: true })
+  await writeFile(join(folder, '.git', 'cfg'), 'alpha-git')
+
+  // 大小写敏感:alpha 只命中 doc1;跳过 .cumora/.git
+  let r = await run('grep', wsId, 'alpha')
+  assert.ok(r.ok, r.text)
+  assert.ok(r.text.includes('doc1.md:1'), r.text)
+  assert.ok(!r.text.includes('GAMMA'), r.text)
+  assert.ok(!r.text.includes('alpha-inner'), r.text)
+  assert.ok(!r.text.includes('alpha-git'), r.text)
+
+  // -i 短旗(评审 P1-2:单横线归一,不再死旗):gamma -i 命中 GAMMA
+  r = await run('grep', wsId, 'gamma')
+  assert.ok(r.text.includes('no matches'), r.text)
+  r = await run('grep', wsId, 'gamma', '-i')
+  assert.ok(r.ok && r.text.includes('doc2.md:1'), r.text)
+
+  // 200 命中帽:205 个文件 → 截断标记
+  for (let i = 0; i < 205; i++) {
+    await writeFile(join(folder, `hit${String(i).padStart(3, '0')}.txt`), `needle line\n`)
+  }
+  r = await run('grep', wsId, 'needle')
+  assert.ok(r.text.includes('truncated'), r.text)
+})

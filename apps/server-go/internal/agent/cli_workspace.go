@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -72,6 +73,43 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 }
 
 const cliMaxFileBytes = 2 * 1024 * 1024
+
+// cliRejectReserved:#336 起预留平台内部目录(.cumora/ —— 刀 2 的写前
+// 快照与冲突副本落此)。CLI 面读写删移全拒;挂载直写挡不住(引擎全权,
+// ADR 0006 信任域边界),这是 CLI 层的最大努力防护。
+func cliRejectReserved(rel string) string {
+	if rel == ".cumora" || strings.HasPrefix(rel, ".cumora"+string(filepath.Separator)) {
+		return "reserved path (.cumora is platform-internal)"
+	}
+	return ""
+}
+
+// cliRejectRoot:rel "." = workspace 根自身(filepath.Rel(root,root))。
+// delete/mv/stat 不得作用于根(评审 #339 P2;read/write 家族会被既有
+// "path is a directory" 检查拦)。
+func cliRejectRoot(rel string) string {
+	if rel == "." {
+		return "cannot operate on the workspace root"
+	}
+	return ""
+}
+
+// cliNormalizeShortI:grep 家族的 -i 短旗归一 —— cliParseArgs 只认 --
+// 前缀,单横线会落进 positional 变死旗(help/技能目录宣传的是 -i 形)。
+// 只在 grep 分支局部调用,不做全局短旗支持:reply 等命令的正文
+// positional 可以合法地以 - 开头(评审 #339 P1)。
+func cliNormalizeShortI(p cliParsed) cliParsed {
+	out := make([]string, 0, len(p.positional))
+	for _, v := range p.positional {
+		if v == "-i" {
+			p.flags["i"] = true
+			continue
+		}
+		out = append(out, v)
+	}
+	p.positional = out
+	return p
+}
 
 // cliResolveInside:双层防逃逸(resolve 归一 + realpath 复检),错误文案
 // 对齐 core.ts assertInside/resolveInside。
@@ -155,7 +193,9 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 	if tenant == "" {
 		return cliErr("no company for " + me + " — team workspaces need a team")
 	}
-	usage := "usage: workspace ls | workspace read <id> <path> | workspace write <id> <path> <body> [--as id]"
+	usage := "usage: workspace ls | workspace read <id> <path> | workspace write <id> <path> <body> | workspace append <id> <path> <body>\n" +
+		"       workspace edit <id> <path> <old> <new> [--all] | workspace delete <id> <path> | workspace mv <id> <src> <dst>\n" +
+		"       workspace stat <id> <path> | workspace grep <id> <pattern> [-i] [--json] [--as id]"
 	switch op {
 	case "ls":
 		if err := s.cliEnsureDefaultWorkspace(ctx, tenant); err != nil {
@@ -240,6 +280,279 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			"path":        path,
 			"bodyLength":  len(body),
 		})
+	case "append":
+		if len(parsed.positional) < 4 || parsed.positional[2] == "" {
+			return cliErr("usage: workspace append <id> <path> <body> [--as id]")
+		}
+		wsID, path := parsed.positional[1], parsed.positional[2]
+		body := strings.Join(positionalFrom(parsed, 3), " ")
+		if body == "" {
+			return cliErr("usage: workspace append <id> <path> <body> [--as id]")
+		}
+		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		abs, rel, errMsg := cliResolveInside(folder, path)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		if rel == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectReserved(rel); msg != "" {
+			return cliErr(msg)
+		}
+		var existing []byte
+		if st, err := os.Stat(abs); err == nil {
+			if st.IsDir() {
+				return cliErr("path is a directory")
+			}
+			if st.Size() > cliMaxFileBytes {
+				return cliErr("file too large")
+			}
+			if existing, err = os.ReadFile(abs); err != nil {
+				return cliErrThrow(err)
+			}
+		}
+		if len(existing)+len(body) > cliMaxFileBytes {
+			return cliErr("file too large")
+		}
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return cliErrThrow(err)
+		}
+		if err := os.WriteFile(abs, append(existing, []byte(body)...), 0o644); err != nil {
+			return cliErrThrow(err)
+		}
+		return cliOK(fmt.Sprintf("appended %d chars to %s in %s", len(body), path, wsName), CliSideEffect{
+			"event":       "team_workspace.file_written",
+			"command":     "workspace append",
+			"agentId":     me,
+			"companyId":   tenant,
+			"workspaceId": wsResolvedID,
+			"path":        path,
+			"bodyLength":  len(body),
+		})
+	case "edit":
+		if len(parsed.positional) < 4 || parsed.positional[1] == "" || parsed.positional[2] == "" {
+			return cliErr("usage: workspace edit <id> <path> <old> <new> [--all] [--as id]")
+		}
+		wsID, path := parsed.positional[1], parsed.positional[2]
+		oldStr := parsed.positional[3]
+		newStr := ""
+		if len(parsed.positional) > 4 {
+			newStr = parsed.positional[4]
+		}
+		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		body, errMsg := cliReadWorkspaceFile(folder, path)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		occurrences := strings.Count(body, oldStr)
+		if occurrences == 0 {
+			return cliErr("old string not found in " + path)
+		}
+		if occurrences > 1 && !parsed.flagTruey("all") {
+			return cliErr(fmt.Sprintf("old string appears %d times in %s — pass --all or include more context to make it unique", occurrences, path))
+		}
+		next := strings.Replace(body, oldStr, newStr, 1)
+		if parsed.flagTruey("all") {
+			next = strings.ReplaceAll(body, oldStr, newStr)
+		}
+		if errMsg := cliWriteWorkspaceFile(folder, path, next); errMsg != "" {
+			return cliErr(errMsg)
+		}
+		plural := "s"
+		if occurrences == 1 {
+			plural = ""
+		}
+		return cliOK(fmt.Sprintf("edited %s in %s (%d replacement%s)", path, wsName, occurrences, plural), CliSideEffect{
+			"event":        "team_workspace.file_updated",
+			"command":      "workspace edit",
+			"agentId":      me,
+			"companyId":    tenant,
+			"workspaceId":  wsResolvedID,
+			"path":         path,
+			"replacements": occurrences,
+			"bodyLength":   len(next),
+		})
+	case "delete":
+		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
+			return cliErr("usage: workspace delete <id> <path> [--as id]")
+		}
+		wsID, path := parsed.positional[1], parsed.positional[2]
+		folder, _, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		abs, rel, errMsg := cliResolveInside(folder, path)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		if rel == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(rel); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(rel); msg != "" {
+			return cliErr(msg)
+		}
+		st, err := os.Lstat(abs)
+		if err != nil {
+			return cliErr("file not found")
+		}
+		if st.IsDir() {
+			// 空目录才删(os.Remove 语义):非空目录保守拒绝,清空后再删。
+			if err := os.Remove(abs); err != nil {
+				return cliErr("directory not empty — remove its files first")
+			}
+		} else if err := os.Remove(abs); err != nil {
+			return cliErrThrow(err)
+		}
+		return cliOK("deleted "+rel, CliSideEffect{
+			"event":       "team_workspace.file_deleted",
+			"command":     "workspace delete",
+			"agentId":     me,
+			"companyId":   tenant,
+			"workspaceId": wsResolvedID,
+			"path":        rel,
+		})
+	case "mv":
+		if len(parsed.positional) < 4 || parsed.positional[1] == "" || parsed.positional[2] == "" || parsed.positional[3] == "" {
+			return cliErr("usage: workspace mv <id> <src> <dst> [--as id]")
+		}
+		wsID, src, dst := parsed.positional[1], parsed.positional[2], parsed.positional[3]
+		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		absSrc, relSrc, errMsg := cliResolveInside(folder, src)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		absDst, relDst, errMsg := cliResolveInside(folder, dst)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		if relSrc == "" || relDst == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(relSrc); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectRoot(relDst); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(relSrc); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(relDst); msg != "" {
+			return cliErr(msg)
+		}
+		if _, err := os.Lstat(absSrc); err != nil {
+			return cliErr("file not found")
+		}
+		if st, err := os.Lstat(absDst); err == nil && st.IsDir() {
+			// 对齐 mv 直觉:目标是目录 → 移入其中(保留原名)。
+			absDst = filepath.Join(absDst, filepath.Base(absSrc))
+			if msg := cliAssertInside(folder, absDst); msg != "" {
+				return cliErr(msg)
+			}
+			relDst, _ = filepath.Rel(folder, absDst)
+		}
+		if err := os.MkdirAll(filepath.Dir(absDst), 0o755); err != nil {
+			return cliErrThrow(err)
+		}
+		if err := os.Rename(absSrc, absDst); err != nil {
+			return cliErrThrow(err)
+		}
+		return cliOK(fmt.Sprintf("moved %s → %s in %s", relSrc, relDst, wsName), CliSideEffect{
+			"event":       "team_workspace.file_moved",
+			"command":     "workspace mv",
+			"agentId":     me,
+			"companyId":   tenant,
+			"workspaceId": wsResolvedID,
+			"from":        relSrc,
+			"to":          relDst,
+		})
+	case "stat":
+		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
+			return cliErr("usage: workspace stat <id> <path> [--json] [--as id]")
+		}
+		wsID, path := parsed.positional[1], parsed.positional[2]
+		folder, _, _, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		abs, rel, errMsg := cliResolveInside(folder, path)
+		if errMsg != "" {
+			return cliErr(errMsg)
+		}
+		if rel == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(rel); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(rel); msg != "" {
+			return cliErr(msg)
+		}
+		st, err := os.Stat(abs)
+		if err != nil {
+			return cliErr("file not found")
+		}
+		if parsed.flagTruey("json") {
+			js, e := cliJSONStringify(map[string]any{
+				"path": rel, "size": st.Size(), "isDir": st.IsDir(),
+				"modifiedAt": cliISOTime(st.ModTime()),
+			})
+			if e != nil {
+				return cliErrThrow(e)
+			}
+			return cliOK(js)
+		}
+		kindF := "file"
+		if st.IsDir() {
+			kindF = "dir"
+		}
+		return cliOK(fmt.Sprintf("%s — %s · %d bytes · modified %s", rel, kindF, st.Size(), st.ModTime().UTC().Format(time.RFC3339)))
+	case "grep":
+		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
+			return cliErr("usage: workspace grep <id> <pattern> [-i] [--json] [--as id]")
+		}
+		parsed = cliNormalizeShortI(parsed)
+		wsID, pattern := parsed.positional[1], parsed.positional[2]
+		folder, wsName, _, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
+		if msg != "" {
+			return cliErr(msg)
+		}
+		re, reErr := regexp.Compile(pattern)
+		if reErr == nil && parsed.flagTruey("i") {
+			re, reErr = regexp.Compile("(?i)" + pattern)
+		}
+		if reErr != nil {
+			return cliErr("bad regex: " + pattern)
+		}
+		hits, truncated := cliGrepWorkspaceFolder(folder, re)
+		if parsed.flagTruey("json") {
+			js, e := cliJSONStringify(hits)
+			if e != nil {
+				return cliErrThrow(e)
+			}
+			return cliOK(js)
+		}
+		if len(hits) == 0 {
+			return cliOK(fmt.Sprintf("(no matches for /%s/ in %s)", pattern, wsName))
+		}
+		lines := append([]string{fmt.Sprintf("%d match(es) in %s:", len(hits), wsName), ""}, hits...)
+		if truncated {
+			lines = append(lines, "", "  (output truncated)")
+		}
+		return cliOK(strings.Join(lines, "\n"))
 	}
 	return cliErr(usage)
 }
@@ -251,6 +564,9 @@ func cliReadWorkspaceFile(root, rawPath string) (string, string) {
 	}
 	if rel == "" {
 		return "", "path required"
+	}
+	if msg := cliRejectReserved(rel); msg != "" {
+		return "", msg
 	}
 	st, err := os.Stat(abs)
 	if err != nil {
@@ -277,6 +593,9 @@ func cliWriteWorkspaceFile(root, rawPath, content string) string {
 	if rel == "" {
 		return "path required"
 	}
+	if msg := cliRejectReserved(rel); msg != "" {
+		return msg
+	}
 	if len(content) > cliMaxFileBytes {
 		return "file too large"
 	}
@@ -290,6 +609,53 @@ func cliWriteWorkspaceFile(root, rawPath, content string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// cliGrepWorkspaceFolder:真实文件夹递归文本检索(#336)。跳过 .cumora/
+// (平台内部)与 .git/(对象库);单文件 >2MB 跳过(对齐读面上限);
+// 命中 200 条封顶(大 repo 防打爆,CLI 输出不是 grep 的主场——挂点
+// 直达后 agent 有 native grep)。
+const cliGrepMaxHits = 200
+
+func cliGrepWorkspaceFolder(root string, re *regexp.Regexp) (hits []string, truncated bool) {
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单点读失败(权限/并发删除)跳过,不中断整轮
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if p != root && (name == ".cumora" || name == ".git") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, ie := d.Info()
+		if ie != nil || info.Size() > cliMaxFileBytes {
+			return nil
+		}
+		body, reErr := os.ReadFile(p)
+		if reErr != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return nil
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			if re.MatchString(line) {
+				if len(hits) >= cliGrepMaxHits {
+					truncated = true
+					return fs.SkipAll // 触帽即收束,不再白读剩余整棵树
+				}
+				hits = append(hits, "  "+rel+":"+strconv.Itoa(i+1)+": "+utf16Slice(line, 200))
+			}
+		}
+		return nil
+	})
+	return hits, truncated
 }
 
 /* ───────── ws(私有区)───────── */
@@ -475,8 +841,9 @@ func (s *Service) cliCmdWorkspace(ctx context.Context, parsed cliParsed) cliResu
 		return cliOK(fmt.Sprintf("edited %s (%d replacement%s)", path, occurrences, plural), effect)
 	case "grep":
 		if len(parsed.positional) < 2 || parsed.positional[1] == "" {
-			return cliErr("usage: ws grep <pattern> [--as id]")
+			return cliErr("usage: ws grep <pattern> [-i] [--as id]")
 		}
+		parsed = cliNormalizeShortI(parsed)
 		pattern := parsed.positional[1]
 		flags := ""
 		if parsed.flagTruey("i") {

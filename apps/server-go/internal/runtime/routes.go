@@ -24,6 +24,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
@@ -109,6 +110,10 @@ func (h *Server) LoadSystemPrompt(w http.ResponseWriter, r *http.Request) {
 
 func (h *Server) LoadRoster(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleRoster)(w, r)
+}
+
+func (h *Server) LoadWorkspaces(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleWorkspaces)(w, r)
 }
 
 func (h *Server) ReportStatus(w http.ResponseWriter, r *http.Request) {
@@ -703,6 +708,92 @@ func (s *Service) handleRoster(w http.ResponseWriter, r *http.Request, agentID s
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"roster": roster})
+}
+
+// handleWorkspaces:#336 agent 可达团队工作区清单 —— daemon 挂载同步的
+// 拉取面(每 agent 同步周期一次)。可达语义与 resolveAccess/CLI 面
+// 同构:默认区全员 ∪ 显式成员 ∪ 三类关联推导。folderPath 仅 computer
+// kind=local 返回(单盒 ADR 0005 同机挂载前提);vps 省略 → daemon 不
+// 建挂点,persona 落 CLI 态。kind 查不到(LEFT JOIN NULL)按 vps 处理
+// ——宁可少给路径,不虚构同机前提。
+func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+	var companyID string
+	var kind sql.NullString
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT p.company_id, c.kind FROM participants p
+		   LEFT JOIN computers c ON c.id = p.computer_id
+		  WHERE p.id = $1`, agentID,
+	).Scan(&companyID, &kind); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.WriteError(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	// 默认区惰性自愈(与人侧列表同语义):全新 team 未开过 UI 也不能漏。
+	if err := workspaces.EnsureDefault(r.Context(), s.DB, companyID); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT w.id, w.name, w.is_default, w.folder_path
+		  FROM workspaces w
+		 WHERE w.company_id = $1 AND w.unbound_at IS NULL AND (
+		   w.is_default
+		   OR EXISTS (SELECT 1 FROM workspace_members m
+		               WHERE m.workspace_id = w.id AND m.participant_id = $2)
+		   OR EXISTS (SELECT 1 FROM workspace_associations a
+		               WHERE a.workspace_id = w.id AND a.company_id = $1
+		                 AND EXISTS (SELECT 1 FROM participants p
+		                              WHERE p.id = $2 AND p.company_id = $1
+		                                AND p.departed_at IS NULL)
+		                 AND (
+		                   (a.target_kind = 'project' AND EXISTS (
+		                      SELECT 1 FROM conversations c
+		                       WHERE c.project_id = a.target_id AND c.company_id = $1
+		                         AND EXISTS (SELECT 1 FROM conversation_members cm
+		                                      WHERE cm.conversation_id = c.id
+		                                        AND cm.participant_id = $2)))
+		                   OR (a.target_kind = 'board_card' AND EXISTS (
+		                      SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
+		                       WHERE bc.id = a.target_id AND b.company_id = $1
+		                         AND (bc.assignee_id = $2 OR bc.mentions @> to_jsonb($2::text))))
+		                   OR (a.target_kind = 'document' AND EXISTS (
+		                      SELECT 1 FROM documents d
+		                       WHERE d.id = a.target_id AND d.company_id = $1
+		                         AND (d.created_by = $2 OR d.collaborators @> to_jsonb($2::text))))
+		                 )))
+		 ORDER BY w.created_at ASC`, companyID, agentID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	type wsItem struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		IsDefault  bool   `json:"isDefault"`
+		FolderPath string `json:"folderPath,omitempty"`
+	}
+	local := kind.Valid && kind.String == "local"
+	var items []wsItem
+	for rows.Next() {
+		var it wsItem
+		if err := rows.Scan(&it.ID, &it.Name, &it.IsDefault, &it.FolderPath); err != nil {
+			httpx.WriteInternalError(w, r, err)
+			return
+		}
+		if !local {
+			it.FolderPath = ""
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, items)
 }
 
 /* ───────── 状态 + 在场 ───────── */

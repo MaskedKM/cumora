@@ -3094,6 +3094,26 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { type: object, additionalProperties: true } }
+  /runtime/workspaces:
+    get:
+      tags: [runtime]
+      operationId: loadWorkspaces
+      security: [{ agentRuntimeJWT: [] }]
+      summary: agent 可达团队工作区清单(daemon 挂载同步用;folderPath 仅 computer kind=local 时返回)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    name: { type: string }
+                    isDefault: { type: boolean }
+                    folderPath: { type: string, description: 服务器侧文件夹绝对路径;仅 local computer(同机挂载前提)返回,vps 省略 }
   /runtime/status:
     post:
       tags: [runtime]

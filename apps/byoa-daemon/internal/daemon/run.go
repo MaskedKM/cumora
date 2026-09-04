@@ -371,6 +371,12 @@ func doRun(ctx context.Context, serverOverride string) error {
 				}
 			}
 		}
+		// #336 团队工作区挂点:逐 runner 拉可达清单物化 symlink(local
+		// computer 直连文件夹;vps 回清单不带 folderPath → 不建,persona
+		// 双态文案自然引导 CLI)。拉取失败整轮跳过,保陈旧挂点。
+		for _, runner := range runners {
+			syncTeamMounts(ctx, cfg, runner)
+		}
 	}
 
 	heartbeat := func() {

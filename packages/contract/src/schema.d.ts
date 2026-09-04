@@ -2661,6 +2661,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtime/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** agent 可达团队工作区清单(daemon 挂载同步用;folderPath 仅 computer kind=local 时返回) */
+        get: operations["loadWorkspaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runtime/status": {
         parameters: {
             query?: never;
@@ -8874,6 +8891,32 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
+                    }[];
+                };
+            };
+        };
+    };
+    loadWorkspaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id?: string;
+                        name?: string;
+                        isDefault?: boolean;
+                        /** @description 服务器侧文件夹绝对路径;仅 local computer(同机挂载前提)返回 */
+                        folderPath?: string;
                     }[];
                 };
             };
