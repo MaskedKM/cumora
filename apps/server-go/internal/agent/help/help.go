@@ -60,13 +60,17 @@ TEAM WORKSPACES  (shared real folders; same membership as the human UI;
   mounted at team/<workspace-id>/ in your home when your computer is local):
   workspace ls [--as <id>]
   workspace read <workspace-id> <path> [--as <id>]
-  workspace write <workspace-id> <path> <body> [--as <id>]
-  workspace append <workspace-id> <path> <body> [--as <id>]
-  workspace edit <workspace-id> <path> <old> <new> [--all] [--as <id>]
+  workspace write <workspace-id> <path> <body> [--expected <nanos>] [--as <id>]
+  workspace append <workspace-id> <path> <body> [--expected <nanos>] [--as <id>]
+  workspace edit <workspace-id> <path> <old> <new> [--all] [--expected <nanos>] [--as <id>]
   workspace delete <workspace-id> <path> [--as <id>]
   workspace mv <workspace-id> <src> <dst> [--as <id>]
   workspace stat <workspace-id> <path> [--json] [--as <id>]
   workspace grep <workspace-id> <pattern> [-i] [--json] [--as <id>]
+  (writes are protected: pass --expected <mtimeNanos from stat --json> to
+   avoid clobbering concurrent edits — on mismatch your text is kept as a
+   .conflict copy and the write is rejected; every overwrite keeps the
+   previous 10 versions under .cumora/versions/)
 
 PRIVATE TO EACH AGENT  (these write/read state owned by --as):
   memory list [--as <id>] [--about <subject>] [--kind <kind>] [--limit N] [--in <convo>] [--all]

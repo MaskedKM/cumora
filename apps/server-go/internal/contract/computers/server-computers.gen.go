@@ -33,6 +33,9 @@ type ServerInterface interface {
 	// #261 daemon 按内容哈希拉取整包技能文件集
 	// (GET /api/computers/me/skills/{hash})
 	GetComputerSkillBundle(w http.ResponseWriter, r *http.Request, hash string)
+	// #337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播)
+	// (POST /api/computers/me/workspace-report)
+	ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request)
 	// daemon 兑换配对码 → 设备凭证
 	// (POST /api/computers/pair)
 	PairComputer(w http.ResponseWriter, r *http.Request)
@@ -175,6 +178,26 @@ func (siw *ServerInterfaceWrapper) GetComputerSkillBundle(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetComputerSkillBundle(w, r, hash)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReportWorkspaceChanges operation middleware
+func (siw *ServerInterfaceWrapper) ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, DeviceTokenScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReportWorkspaceChanges(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -392,6 +415,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/computers/me/agents", wrapper.ListAgentsForComputer)
 	m.HandleFunc("GET "+options.BaseURL+"/api/computers/me/skills", wrapper.ListComputerSkills)
 	m.HandleFunc("GET "+options.BaseURL+"/api/computers/me/skills/{hash}", wrapper.GetComputerSkillBundle)
+	m.HandleFunc("POST "+options.BaseURL+"/api/computers/me/workspace-report", wrapper.ReportWorkspaceChanges)
 	m.HandleFunc("POST "+options.BaseURL+"/api/computers/pair", wrapper.PairComputer)
 	m.HandleFunc("DELETE "+options.BaseURL+"/api/computers/{id}", wrapper.DeleteComputer)
 	m.HandleFunc("POST "+options.BaseURL+"/api/computers/{id}/repair", wrapper.RepairComputer)

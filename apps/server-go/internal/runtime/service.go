@@ -57,6 +57,10 @@ func (s *Service) StartCalendarReminderScheduler() { s.Sched.StartCalendarRemind
 // startDbGcWorker 移植)——五张高量表按保留窗小批扫删,详见 sched 包。
 func (s *Service) StartDbGcWorker() { s.Sched.StartDbGcWorker() }
 
+// StartWorkspaceScanWorker:#337 文件已知态 60min 兜底扫描(挂载 watcher
+// 丢事件/inotify 上限时接管;WORKSPACE_SCAN_INTERVAL_MS=0 禁用)。
+func (s *Service) StartWorkspaceScanWorker() { s.Sched.StartWorkspaceScanWorker() }
+
 // StartCalendarDispatchScheduler:#263 例行事务 dispatch 半边(到点
 // agent_task 事件投递 + 唤醒;幂等由 dispatch 槽位唯一键承担)。
 func (s *Service) StartCalendarDispatchScheduler() { s.Sched.StartCalendarDispatchScheduler() }

@@ -1915,6 +1915,14 @@ type RequestPairingCodeJSONBody = map[string]interface{}
 // HeartbeatComputerJSONBody defines parameters for HeartbeatComputer.
 type HeartbeatComputerJSONBody map[string]interface{}
 
+// ReportWorkspaceChangesJSONBody defines parameters for ReportWorkspaceChanges.
+type ReportWorkspaceChangesJSONBody struct {
+	Items []struct {
+		Path        string `json:"path"`
+		WorkspaceId string `json:"workspaceId"`
+	} `json:"items"`
+}
+
 // PairComputerJSONBody defines parameters for PairComputer.
 type PairComputerJSONBody struct {
 	Code       string    `json:"code"`
@@ -2271,7 +2279,8 @@ type WriteWorkspaceFileJSONBody struct {
 
 // WriteWorkspaceFileParams defines parameters for WriteWorkspaceFile.
 type WriteWorkspaceFileParams struct {
-	Path *string `form:"path,omitempty" json:"path,omitempty"`
+	Path               *string `form:"path,omitempty" json:"path,omitempty"`
+	ExpectedMtimeNanos *string `form:"expectedMtimeNanos,omitempty" json:"expectedMtimeNanos,omitempty"`
 }
 
 // ListWorkspaceFilesParams defines parameters for ListWorkspaceFiles.
@@ -2529,6 +2538,9 @@ type RequestPairingCodeJSONRequestBody = RequestPairingCodeJSONBody
 
 // HeartbeatComputerJSONRequestBody defines body for HeartbeatComputer for application/json ContentType.
 type HeartbeatComputerJSONRequestBody HeartbeatComputerJSONBody
+
+// ReportWorkspaceChangesJSONRequestBody defines body for ReportWorkspaceChanges for application/json ContentType.
+type ReportWorkspaceChangesJSONRequestBody ReportWorkspaceChangesJSONBody
 
 // PairComputerJSONRequestBody defines body for PairComputer for application/json ContentType.
 type PairComputerJSONRequestBody PairComputerJSONBody

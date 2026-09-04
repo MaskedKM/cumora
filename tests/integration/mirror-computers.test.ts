@@ -205,3 +205,99 @@ test('[mirror] GET /computers lists with daemon fields', async () => {
   assert.equal(mine.daemon_version, '1.0.0')
   assert.ok('latest_daemon_version' in mine && 'daemon_outdated' in mine)
 })
+
+// #337 挂载文件感知上报面:device token 调 /api/computers/me/workspace-report,
+// server 对账已知态(Redis cumora:wsidx:<wsId>)→ 变化项快照(.cumora/versions/)
+// → 广播 workspace.files_changed(cumora:workspace 通道帧 = wsx 桥的输入,
+// 桥的成员过滤已由 ws-push-go 覆盖,此处断 Redis 帧即断广播面)。
+import { mkdtemp, writeFile, readdir, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { redis } from './harness/redis.js'
+
+test('[mirror] workspace-report: dedup, snapshot, files_changed frame', async () => {
+  const code = (await call('/computers', { method: 'POST', body: '{}' })).json.code
+  const paired = (await call('/computers/pair', {
+    method: 'POST', body: JSON.stringify({ code, hostName: 'watch-box', engines: ['claude'], version: '9.9' }),
+  })).json
+
+  const folder = await mkdtemp(join(tmpdir(), 'ws-report-'))
+  const wsId = `ws-rep-${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Reported', $3)`,
+    [wsId, COMPANY, folder],
+  )
+  await writeFile(join(folder, 'note.md'), 'v1\n')
+
+  // 订阅广播通道(先订后动,防丢帧)。
+  const sub = redis.duplicate()
+  const frames: any[] = []
+  sub.on('messageBuffer', (_ch: Buffer, msg: Buffer) => {
+    try { frames.push(JSON.parse(msg.toString())) } catch { /* 非 JSON 帧(他测余波)忽略 */ }
+  })
+  await sub.subscribe('cumora:workspace')
+
+  const post = (items: unknown) =>
+    fetch(`${mirrorBase()}/api/computers/me/workspace-report`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${paired.deviceToken}` },
+      body: JSON.stringify({ items }),
+    })
+
+  // 首报:v1 → 变化 1 条 + 快照 v1 + 帧。
+  let res = await post([{ workspaceId: wsId, path: 'note.md' }])
+  assert.equal(res.status, 200)
+  assert.equal((await res.json() as { changed: number }).changed, 1)
+  const vdir = join(folder, '.cumora', 'versions', 'note.md')
+  const versions = await readdir(vdir)
+  assert.equal(versions.length, 1, 'first report snapshots current content')
+  const snap = await readFile(join(vdir, versions[0]), 'utf8')
+  assert.ok(snap.includes('v1'), 'snapshot holds the observed content')
+
+  // 改动后重报:v2 → 又一条;未改重报 → changed=0(已知态去重)。
+  await writeFile(join(folder, 'note.md'), 'v2\n')
+  res = await post([{ workspaceId: wsId, path: 'note.md' }])
+  assert.equal((await res.json() as { changed: number }).changed, 1)
+  res = await post([{ workspaceId: wsId, path: 'note.md' }])
+  assert.equal((await res.json() as { changed: number }).changed, 0, 'unchanged re-report deduped')
+  assert.ok((await readdir(vdir)).length >= 2, 'each observed change leaves a version')
+
+  // 删除对账(#341 评审 P2-8):已知态有、盘上无 → removed 条目 + 帧含 removed。
+  const { rm } = await import('node:fs/promises')
+  await rm(join(folder, 'note.md'))
+  res = await post([{ workspaceId: wsId, path: 'note.md' }])
+  assert.equal((await res.json() as { changed: number }).changed, 1, 'removal must be detected via known-state diff')
+
+  // 广播帧:workspace.files_changed,清单含 note.md。
+  await new Promise((r) => setTimeout(r, 300))
+  const evt = frames.find((f) => f.type === 'workspace.files_changed' && f.workspaceId === wsId)
+  assert.ok(evt, `files_changed frame expected, got ${JSON.stringify(frames.map((f) => f.type))}`)
+  assert.equal(evt.companyId, COMPANY)
+  assert.ok(evt.changes.some((c: any) => c.path === 'note.md'))
+  assert.ok(frames.some((f: any) => f.type === 'workspace.files_changed' &&
+    f.workspaceId === wsId && f.changes.some((c: any) => c.path === 'note.md' && c.removed === true)),
+    'a frame must carry the removed entry')
+
+  // 跨租户区:静默跳过(不确认存在性)。
+  const otherCo = `c-other-${Math.random().toString(36).slice(2, 8)}`
+  await pool.query(`INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, 'Other', $2, 'u-x')`, [otherCo, otherCo])
+  const otherWs = `ws-oth-${Math.random().toString(36).slice(2, 8)}`
+  await pool.query(`INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Other', '/tmp/x')`, [otherWs, otherCo])
+  res = await post([{ workspaceId: otherWs, path: 'secret.md' }])
+  assert.equal(res.status, 200)
+  assert.equal((await res.json() as { changed: number }).changed, 0, 'cross-tenant report silently ignored')
+
+  // 401:无 device token。
+  const noAuth = await fetch(`${mirrorBase()}/api/computers/me/workspace-report`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"items":[]}',
+  })
+  assert.equal(noAuth.status, 401)
+
+  await sub.disconnect()
+})
+
+function mirrorBase(): string {
+  const base = process.env.CUMORA_MIRROR_BASE
+  if (!base) throw new Error('CUMORA_MIRROR_BASE not set')
+  return base
+}

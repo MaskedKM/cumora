@@ -611,6 +611,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/computers/me/workspace-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** #337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播) */
+        post: operations["reportWorkspaceChanges"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/computers/me/skills/{hash}": {
         parameters: {
             query?: never;
@@ -1951,7 +1968,7 @@ export interface paths {
         };
         /** 读文件 */
         get: operations["readWorkspaceFile"];
-        /** 写文件 */
+        /** 写文件(#337 起支持 CAS) */
         put: operations["writeWorkspaceFile"];
         post?: never;
         delete?: never;
@@ -5021,6 +5038,37 @@ export interface operations {
             };
         };
     };
+    reportWorkspaceChanges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    items: {
+                        workspaceId: string;
+                        path: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        changed?: number;
+                    };
+                };
+            };
+        };
+    };
     getComputerSkillBundle: {
         parameters: {
             query?: never;
@@ -7709,6 +7757,8 @@ export interface operations {
                         size: number;
                         /** Format: date-time */
                         modifiedAt: string;
+                        /** @description #337 纳秒 mtime(十进制字符串,CAS expected 用) */
+                        mtimeNanos?: string;
                     };
                 };
             };
@@ -7718,6 +7768,7 @@ export interface operations {
         parameters: {
             query?: {
                 path?: string;
+                expectedMtimeNanos?: string;
             };
             header?: never;
             path: {
@@ -7742,6 +7793,21 @@ export interface operations {
                     "application/json": {
                         ok?: boolean;
                         path?: string;
+                        /** @description 写后 mtime(下一轮 CAS 的 expected 用) */
+                        mtimeNanos?: string;
+                    };
+                };
+            };
+            /** @description CAS 失配(盘上 mtime 与 expected 不符;挑战者内容已留 .conflict 副本) */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: string;
+                        currentMtimeNanos?: string;
+                        conflictPath?: string;
                     };
                 };
             };

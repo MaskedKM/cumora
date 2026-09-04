@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 )
 
 /* ───────── workspace(团队真实文件夹)───────── */
@@ -76,10 +78,30 @@ const cliMaxFileBytes = 2 * 1024 * 1024
 
 // cliRejectReserved:#336 起预留平台内部目录(.cumora/ —— 刀 2 的写前
 // 快照与冲突副本落此)。CLI 面读写删移全拒;挂载直写挡不住(引擎全权,
-// ADR 0006 信任域边界),这是 CLI 层的最大努力防护。
+// ADR 0006 信任域边界),这是 CLI 层的最大努力防护。大小写不敏感
+// (#339 评审余量:macOS 大小写不敏感盘 .CUMORA 绕纯前缀检查)。
 func cliRejectReserved(rel string) string {
-	if rel == ".cumora" || strings.HasPrefix(rel, ".cumora"+string(filepath.Separator)) {
-		return "reserved path (.cumora is platform-internal)"
+	return workspaces.RejectReserved(rel)
+}
+
+// cliCASCheck:#337 团队区写命令的可选 --expected <mtimeNanos> —— 失配
+// = 别人在你 stat 之后写过:挑战者内容留 .conflict 副本(永不静默丢),
+// 返回失败文案让 agent 重读重判(与消息面 HELD 同构)。
+func cliCASCheck(folder, rel, expected, principal, challenger string) string {
+	v, err := strconv.ParseInt(strings.TrimSpace(expected), 10, 64)
+	if err != nil {
+		return "--expected must be an integer (unix nanos, from `workspace stat --json`)"
+	}
+	cur := int64(0)
+	if st, serr := os.Stat(filepath.Join(folder, filepath.FromSlash(rel))); serr == nil && !st.IsDir() {
+		cur = st.ModTime().UnixNano()
+	}
+	if cur != v {
+		msg := fmt.Sprintf("stale write — current mtime %d ns ≠ expected %d ns; re-read and retry with --expected %d", cur, v, cur)
+		if conflict := workspaces.SaveConflictCopy(folder, rel, principal, challenger); conflict != "" {
+			msg += "; your content saved to " + conflict
+		}
+		return msg
 	}
 	return ""
 }
@@ -262,12 +284,34 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		body := strings.Join(positionalFrom(parsed, 3), " ")
 		if body == "" {
-			return cliErr("usage: workspace write <id> <path> <body> [--as id]")
+			return cliErr("usage: workspace write <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
 		if msg != "" {
 			return cliErr(msg)
 		}
+		// 评审 #341 P0:逃逸/保留路径校验必须先于 CAS 与快照 —— 否则
+		// --expected 路径的 SaveConflictCopy 会在校验前把挑战者内容写
+		// 到 Join(folder, 原始path) 的越界位置(照抄 append 的次序)。
+		_, relW, errMsgW := cliResolveInside(folder, path)
+		if errMsgW != "" {
+			return cliErr(errMsgW)
+		}
+		if relW == "" {
+			return cliErr("path required")
+		}
+		if msg := cliRejectRoot(relW); msg != "" {
+			return cliErr(msg)
+		}
+		if msg := cliRejectReserved(relW); msg != "" {
+			return cliErr(msg)
+		}
+		if exp, has := parsed.flagStr("expected"); has {
+			if fail := cliCASCheck(folder, path, exp, me, body); fail != "" {
+				return cliErr(fail)
+			}
+		}
+		workspaces.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, body); errMsg != "" {
 			return cliErr(errMsg)
 		}
@@ -282,12 +326,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		})
 	case "append":
 		if len(parsed.positional) < 4 || parsed.positional[2] == "" {
-			return cliErr("usage: workspace append <id> <path> <body> [--as id]")
+			return cliErr("usage: workspace append <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		body := strings.Join(positionalFrom(parsed, 3), " ")
 		if body == "" {
-			return cliErr("usage: workspace append <id> <path> <body> [--as id]")
+			return cliErr("usage: workspace append <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
 		if msg != "" {
@@ -318,6 +362,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if len(existing)+len(body) > cliMaxFileBytes {
 			return cliErr("file too large")
 		}
+		if exp, has := parsed.flagStr("expected"); has {
+			if fail := cliCASCheck(folder, path, exp, me, string(existing)+body); fail != "" {
+				return cliErr(fail)
+			}
+		}
+		workspaces.SnapshotVersion(folder, path)
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return cliErrThrow(err)
 		}
@@ -362,6 +412,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if parsed.flagTruey("all") {
 			next = strings.ReplaceAll(body, oldStr, newStr)
 		}
+		if exp, has := parsed.flagStr("expected"); has {
+			if fail := cliCASCheck(folder, path, exp, me, next); fail != "" {
+				return cliErr(fail)
+			}
+		}
+		workspaces.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, next); errMsg != "" {
 			return cliErr(errMsg)
 		}
@@ -405,6 +461,8 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if err != nil {
 			return cliErr("file not found")
 		}
+		// 删前留档:误删可从 .cumora/versions/ 恢复(#337)。
+		workspaces.SnapshotVersion(folder, path)
 		if st.IsDir() {
 			// 空目录才删(os.Remove 语义):非空目录保守拒绝,清空后再删。
 			if err := os.Remove(abs); err != nil {
@@ -467,6 +525,8 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if err := os.MkdirAll(filepath.Dir(absDst), 0o755); err != nil {
 			return cliErrThrow(err)
 		}
+		// 移前留档:源位置的旧内容可恢复(#337)。
+		workspaces.SnapshotVersion(folder, relSrc)
 		if err := os.Rename(absSrc, absDst); err != nil {
 			return cliErrThrow(err)
 		}
@@ -509,6 +569,8 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			js, e := cliJSONStringify(map[string]any{
 				"path": rel, "size": st.Size(), "isDir": st.IsDir(),
 				"modifiedAt": cliISOTime(st.ModTime()),
+				// 纳秒 int64 超 JS 安全整数:字符串化,LLM 抄写不丢精度。
+				"mtimeNanos": strconv.FormatInt(st.ModTime().UnixNano(), 10),
 			})
 			if e != nil {
 				return cliErrThrow(e)

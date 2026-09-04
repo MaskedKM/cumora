@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -738,6 +739,10 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, code, msg)
 		return
 	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
 	st, err := os.Stat(abs)
 	if err != nil || !st.IsDir() {
 		httpx.WriteError(w, http.StatusBadRequest, "path is not a directory inside the workspace folder")
@@ -753,6 +758,10 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 	}
 	out := []map[string]any{}
 	for _, e := range entries {
+		// .cumora 平台内部(版本快照/冲突副本):文件树不展示。
+		if rel == "" && strings.EqualFold(e.Name(), reservedPrefix) {
+			continue
+		}
 		var size any
 		var modAt any
 		if s, serr := os.Stat(filepath.Join(abs, e.Name())); serr == nil {
@@ -783,6 +792,10 @@ func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id st
 		httpx.WriteError(w, http.StatusBadRequest, "path required")
 		return
 	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
 	st, err := os.Stat(abs)
 	if err != nil {
 		httpx.WriteError(w, http.StatusNotFound, "file not found")
@@ -803,6 +816,7 @@ func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id st
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"path": rel, "body": string(content), "size": st.Size(), "modifiedAt": st.ModTime().UTC(),
+		"mtimeNanos": strconv.FormatInt(st.ModTime().UnixNano(), 10),
 	})
 }
 
@@ -819,6 +833,22 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 	if rel == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "path required")
 		return
+	}
+	if msg := RejectReserved(rel); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
+		return
+	}
+	// #337 CAS:可选 expectedMtimeNanos(query)。失配 = 别人在你 stat 之后
+	// 写过 —— 412 + 盘上最新 mtime + 挑战者内容留 .conflict 副本(永不
+	// 静默丢),调用方重读重判后再试(与消息面 HELD 同构)。
+	var expected *int64
+	if rawExp := strings.TrimSpace(r.URL.Query().Get("expectedMtimeNanos")); rawExp != "" {
+		v, err := strconv.ParseInt(rawExp, 10, 64)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "expectedMtimeNanos must be an integer")
+			return
+		}
+		expected = &v
 	}
 	// 严格解码:baseline 只接受字符串 body(express.json 解析失败即 400,
 	// typeof body !== 'string' 即 400)。用 RawMessage 逐键判型,杜绝
@@ -857,6 +887,23 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteError(w, http.StatusBadRequest, "path is a directory")
 		return
 	}
+	// CAS 检查(在 body 解码后、落盘前):失配 → 挑战者内容留副本 + 412。
+	if expected != nil {
+		cur := int64(0)
+		if st, err := os.Stat(abs); err == nil && !st.IsDir() {
+			cur = st.ModTime().UnixNano()
+		}
+		if cur != *expected {
+			uid, _ := httpx.RequireAuth(w, r)
+			conflict := SaveConflictCopy(ws.folderPath, rel, uid, content)
+			httpx.WriteJSON(w, http.StatusPreconditionFailed, map[string]any{
+				"error": "stale write", "currentMtimeNanos": strconv.FormatInt(cur, 10), "conflictPath": conflict,
+			})
+			return
+		}
+	}
+	// 写前快照:覆盖/新建路径上的旧内容留档(10 版帽,#337)。
+	SnapshotVersion(ws.folderPath, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -865,7 +912,17 @@ func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id s
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel,
+		"mtimeNanos": strconv.FormatInt(fileMtimeNanos(abs), 10)})
+}
+
+// fileMtimeNanos:写后回读 mtime(失败 0)—— CAS 回执给调用方下一轮
+// expected 用。
+func fileMtimeNanos(abs string) int64 {
+	if st, err := os.Stat(abs); err == nil {
+		return st.ModTime().UnixNano()
+	}
+	return 0
 }
 
 func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id string) {
