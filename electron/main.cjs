@@ -26,11 +26,13 @@ const { pathToFileURL } = require('node:url')
 const autoUpdater = require('./autoUpdater.cjs')
 const stackWizard = require('./main/stack.cjs')
 
-// Side-effect-free domain modules + the `app://` scheme registration
+// Mostly side-effect-free domain modules + the `app://` scheme registration
 // (main/appProtocol.cjs calls protocol.registerSchemesAsPrivileged at
-// require time — requiring it here keeps it the FIRST side effect of
-// the process, exactly where it sat in the old monolith; it must run
-// before app ready).
+// require time — requiring it here keeps it before app ready, exactly
+// where it sat in the old monolith). One real side effect sits ahead of
+// it: main/env.cjs decodes the app icon PNG synchronously at require time
+// (asar-aware, ~6ms) so BrowserWindow/dock consumers can share the
+// already-decoded NativeImage (#358).
 const { isDev, ICON } = require('./main/env.cjs')
 const state = require('./main/state.cjs')
 const { appProtocolFile } = require('./main/appProtocol.cjs')

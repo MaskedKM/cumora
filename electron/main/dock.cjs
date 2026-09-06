@@ -71,12 +71,12 @@ const DOCK_UNREAD_DOT = {
   stroke: 18,
 }
 
-let dockCleanIcon = null
 let dockUnreadIcon = null
 
 function getDockCleanIcon() {
-  if (!dockCleanIcon) dockCleanIcon = ICON
-  return dockCleanIcon
+  // #358: env.cjs decodes the icon once at require time and hands every
+  // consumer the same immutable NativeImage — nothing left to lazily cache.
+  return ICON
 }
 
 /** Paint the unread dot straight into an app-icon bitmap, in place.
