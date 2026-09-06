@@ -4,7 +4,7 @@
 const { app, BrowserWindow, shell, screen } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
-const { isDev, DEV_URL, ICON_PATH } = require('./env.cjs')
+const { isDev, DEV_URL, ICON } = require('./env.cjs')
 const state = require('./state.cjs')
 
 /** Persistent main-window geometry. Saved on every resize/move/close and
@@ -74,7 +74,7 @@ function createWindow() {
     minHeight: isDev ? 480 : 600,
     show: false,
     backgroundColor: '#E6F3FB',
-    icon: ICON_PATH,
+    icon: ICON,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
     trafficLightPosition: { x: 16, y: 15 },
     webPreferences: {

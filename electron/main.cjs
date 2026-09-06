@@ -3,7 +3,7 @@
 // This file used to be a 1,683-line monolith. It is now the boot
 // sequence + lifecycle wiring only; the domains live in ./main/:
 //
-//   main/env.cjs         isDev / DEV_URL / ICON_PATH constants
+//   main/env.cjs         isDev / DEV_URL / ICON constants
 //   main/state.cjs       cross-domain mutable refs (mainWindow, tray, …)
 //   main/appProtocol.cjs `app://` privileged scheme + file resolution
 //   main/window.cjs      main BrowserWindow + geometry persistence
@@ -20,7 +20,7 @@
 // IPC registration, app event handlers, whenReady) all remain HERE, in
 // their exact original order — see the PR equivalence notes. preload.cjs
 // is untouched.
-const { app, BrowserWindow, nativeImage, nativeTheme, protocol, net, globalShortcut } = require('electron')
+const { app, BrowserWindow, nativeTheme, protocol, net, globalShortcut } = require('electron')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const autoUpdater = require('./autoUpdater.cjs')
@@ -31,7 +31,7 @@ const stackWizard = require('./main/stack.cjs')
 // require time — requiring it here keeps it the FIRST side effect of
 // the process, exactly where it sat in the old monolith; it must run
 // before app ready).
-const { isDev, ICON_PATH } = require('./main/env.cjs')
+const { isDev, ICON } = require('./main/env.cjs')
 const state = require('./main/state.cjs')
 const { appProtocolFile } = require('./main/appProtocol.cjs')
 const { createWindow } = require('./main/window.cjs')
@@ -189,7 +189,7 @@ app.whenReady().then(() => {
     // but the call is cheap so we keep it as a defensive measure.
     scheduleRegularDockRepair()
     try {
-      const img = nativeImage.createFromPath(ICON_PATH)
+      const img = ICON
       if (!img.isEmpty()) app.dock.setIcon(img)
     } catch (_) { /* swallow — dev convenience only */ }
     setDockUnreadDot(state.dockUnreadDotVisible)
