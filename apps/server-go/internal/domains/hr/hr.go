@@ -23,9 +23,10 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
-// WakeFunc:评估触发唤醒注入面(main 接 sched.WakeOne,brief 随载荷下发;
-// #346)。nil 安全(测试/降级路径不触发)。
-type WakeFunc func(agentID, reason string, brief *sched.BackgroundBrief)
+// WakeFunc:评估触发唤醒注入面(main 接 sched.WakeOneCount,brief 随载荷
+// 下发;#346)。返回接收者数(0 = daemon 离线,brief 一次性投递已丢)。
+// nil 安全(测试/降级路径不触发)。
+type WakeFunc func(agentID, reason string, brief *sched.BackgroundBrief) int
 
 // Server:hr tag 的域实现(配置面 2 路由 + 评估面 3 路由 + CLI 面)。
 type Server struct {

@@ -13,6 +13,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -31,7 +33,11 @@ func (s *Server) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		TargetAgentID *string `json:"targetAgentId"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	// 坏体 400;空体(EOF)容忍 = 全员轮
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	target := ""
 	if body.TargetAgentID != nil {
 		target = strings.TrimSpace(*body.TargetAgentID)
@@ -89,7 +95,7 @@ func (s *Server) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Wake != nil {
-		s.Wake("hr-"+companyID, "hr-eval", &sched.BackgroundBrief{
+		delivered := s.Wake("hr-"+companyID, "hr-eval", &sched.BackgroundBrief{
 			Source: "hr-eval",
 			Title:  "HR evaluation round " + id,
 			Ref:    id,
@@ -101,6 +107,19 @@ func (s *Server) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
 					"`cumora hr report %s '<json>'`. The round closes when the report lands.",
 				id, id, id),
 		})
+		// brief 走 Redis PUBLISH 一次性投递,HR 无 inbox 持久兜底(非
+		// participant)——0 接收者 = daemon 离线,任务书已丢。本轮直接
+		// failed 放行重触发,不留 30min 悬置锁。
+		if delivered == 0 {
+			_, _ = s.DB.ExecContext(r.Context(), `
+				UPDATE hr_reports SET status = 'failed',
+				       error = 'HR daemon offline — reconnect its computer, then retrigger',
+				       updated_at = NOW(), finished_at = NOW()
+				 WHERE id = $1 AND status = 'pending'`, id)
+			httpx.WriteError(w, http.StatusServiceUnavailable,
+				"HR daemon offline — reconnect its computer, then retrigger")
+			return
+		}
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id": id, "trigger": "manual", "status": "pending",
@@ -114,8 +133,7 @@ func (s *Server) ListHrEvaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT id, target_agent_id, trigger_kind, status, error, created_at, updated_at, finished_at,
-		       (payload IS NOT NULL) AS has_payload
+		SELECT id, target_agent_id, trigger_kind, status, error, created_at, updated_at, finished_at
 		  FROM hr_reports WHERE company_id = $1
 		 ORDER BY created_at DESC LIMIT 50`, companyID)
 	if err != nil {
@@ -129,15 +147,13 @@ func (s *Server) ListHrEvaluations(w http.ResponseWriter, r *http.Request) {
 		var target, errMsg sql.NullString
 		var createdAt, updatedAt time.Time
 		var finishedAt sql.NullTime
-		var hasPayload bool
-		if rows.Scan(&id, &target, &triggerKind, &status, &errMsg, &createdAt, &updatedAt, &finishedAt, &hasPayload) != nil {
+		if rows.Scan(&id, &target, &triggerKind, &status, &errMsg, &createdAt, &updatedAt, &finishedAt) != nil {
 			continue
 		}
 		out = append(out, map[string]any{
 			"id": id, "trigger": triggerKind, "status": status,
 			"targetAgentId": nullStr(target), "error": nullStr(errMsg),
-			"hasPayload": hasPayload,
-			"createdAt":  createdAt.UTC(), "updatedAt": updatedAt.UTC(), "finishedAt": nullTime(finishedAt),
+			"createdAt": createdAt.UTC(), "updatedAt": updatedAt.UTC(), "finishedAt": nullTime(finishedAt),
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": out})
@@ -189,6 +205,14 @@ func (s *Server) Cli(ctx context.Context, p agent.Parsed) agent.Result {
 		return agent.Err("hr commands are reserved for the HR Agent")
 	}
 	companyID := strings.TrimPrefix(caller, "hr-")
+	// 实体闸(评审 P1-2):把租户闭合收回本域,不依赖"公司 id 恒 co- 前缀 +
+	// agents 域撞形守卫"两道跨域不变量 —— caller 对应的 hr_agents 行必须
+	// 真实存在(顺带挡掉 hr-assistant 这类普通 agent 的前缀穿越)。
+	var hrRowExists bool
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM hr_agents WHERE company_id = $1 LIMIT 1`, companyID).Scan(&hrRowExists); err != nil || !hrRowExists {
+		return agent.Err("hr commands are reserved for the HR Agent")
+	}
 	pos := p.Positional()
 	if len(pos) == 0 {
 		return agent.Err("usage: cumora hr <context|report> <evaluationId> [json]")
@@ -218,6 +242,12 @@ func (s *Server) cliContext(ctx context.Context, companyID string, pos []string)
 	if len(snapshot) == 0 {
 		return agent.Err("evaluation round has no input snapshot")
 	}
+	// 生命周期兑现(评审 P1-3):Brain 取输入即视为开跑 —— pending → running
+	// (幂等;终态轮不改)。
+	_, _ = s.DB.ExecContext(ctx, `
+		UPDATE hr_reports SET status = 'running', updated_at = NOW()
+		 WHERE id = $1 AND company_id = $2 AND status = 'pending`,
+		strings.TrimSpace(pos[1]), companyID)
 	return agent.OK(string(snapshot))
 }
 
@@ -317,11 +347,13 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		ids = append(ids, id)
 	}
 
-	// 五路聚合:失败仅记日志降级(缺表/部分 schema 不阻断触发;快照里
-	// 缺路=零值,报告可解释)。
+	// 五路聚合:失败记日志降级(缺表/部分 schema 不阻断触发;快照里缺路=
+	// 零值,报告可解释)—— 评审 P0 教训:静默吞错曾让 runs 路整窗恒零
+	// (agent_runs 无 created_at 列,应为 started_at)而无人知晓。
 	collect := func(query func(rows *sql.Rows), q string, args ...any) {
 		rows, err := s.DB.QueryContext(ctx, q, args...)
 		if err != nil {
+			slog.Warn("[hr] input lane query failed (lane degrades to zero)", "err", err)
 			return
 		}
 		query(rows)
@@ -339,9 +371,9 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT agent_id, COUNT(*)::int, COUNT(*) FILTER (WHERE status = 'failed')::int,
-		       COALESCE(SUM(token_count), 0)::bigint, COALESCE(SUM(cost_usd), 0), MAX(created_at)
+		       COALESCE(SUM(token_count), 0)::bigint, COALESCE(SUM(cost_usd), 0), MAX(started_at)
 		  FROM agent_runs
-		 WHERE company_id = $1 AND agent_id = ANY($2) AND created_at > NOW() - ($3 || ' days')::interval
+		 WHERE company_id = $1 AND agent_id = ANY($2) AND started_at > NOW() - ($3 || ' days')::interval
 		 GROUP BY agent_id`, companyID, ids, inputWindowDays)
 
 	collect(func(rows *sql.Rows) {
@@ -386,7 +418,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT assignee_id, COUNT(*)::int FROM board_cards
-		 WHERE assignee_id = ANY($1) GROUP BY assignee_id`, ids)
+		 WHERE assignee_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY assignee_id`, ids, inputWindowDays)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -399,7 +432,9 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT created_by, COUNT(*)::int, COUNT(*) FILTER (WHERE pr_state = 'merged')::int
-		  FROM card_deliveries WHERE created_by = ANY($1) GROUP BY created_by`, ids)
+		  FROM card_deliveries
+		 WHERE created_by = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY created_by`, ids, inputWindowDays)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -422,7 +457,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT assignee_id, status, COUNT(*)::int FROM calendar_events
-		 WHERE assignee_id = ANY($1) GROUP BY assignee_id, status`, ids)
+		 WHERE assignee_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY assignee_id, status`, ids, inputWindowDays)
 
 	targets := make([]map[string]any, 0, len(order))
 	for _, id := range order {

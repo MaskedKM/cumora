@@ -233,9 +233,10 @@ func main() {
 	domagents.Mount(coreRouter, pool,
 		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
 		runtimeSvc.GenerateAgentAvatar)
-	domhrSrv := domhr.Mount(coreRouter, pool, func(agentID, reason string, brief *sched.BackgroundBrief) {
-		// #346:评估触发唤醒(brief 即任务书,随 wake 载荷下发)
-		runtimeSvc.Sched.WakeOne(agentID, reason, nil, nil, &sched.WakeOpts{BackgroundBrief: brief})
+	domhrSrv := domhr.Mount(coreRouter, pool, func(agentID, reason string, brief *sched.BackgroundBrief) int {
+		// #346:评估触发唤醒(brief 即任务书,随 wake 载荷一次性下发;
+		// 返回接收数供 0 接收者回收轮次)
+		return runtimeSvc.Sched.WakeOneCount(agentID, reason, nil, nil, &sched.WakeOpts{BackgroundBrief: brief})
 	})
 	runtimeSvc.HrCli = domhrSrv.Cli
 	devtools.Mount(coreRouter, pool)

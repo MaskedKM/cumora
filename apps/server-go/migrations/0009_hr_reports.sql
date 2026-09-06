@@ -1,15 +1,16 @@
 -- 0009 — #346 HR Agent 手动评估全链:评估轮次的报告台账。
 --
 -- 一行 = 一次评估轮(手动/周期/事件触发;刀 2 只落 manual,另两枚举
--- 为 #350 预留)。生命周期:pending(已触发待 daemon 取件)→ running
--- (CLI hr report 提交前)→ done/failed。payload 存 HR Brain 产出的
--- 结构化评估(每 agent 评分/发现/建议);input_snapshot 存触发时刻装配
--- 的客观观测快照(CLI hr context 原样回放给 Brain,复现可考)。
+-- 为 #350 预留)。生命周期:pending(已触发)→ running(Brain 取输入即
+-- 开跑,cliContext 翻转)→ done/failed(报告落库)。payload 存 HR Brain
+-- 产出的结构化评估(每 agent 评分/发现/建议);input_snapshot 存触发时刻
+-- 装配的客观观测快照(CLI hr context 原样回放给 Brain,复现可考)。
 --
 -- 在飞互斥:部分唯一索引保证每公司同时至多一轮 pending/running ——
 -- 连点两次触发/周期撞上手动,数据库层面兜住(#346 幂等验收)。
--- target_agent_id/run_id 无 FK(agent_runs.agent_id 同款无 FK 纯文本,
--- 0008 先例);target NULL = 全员轮。
+-- target_agent_id 无 FK(0008 先例:观测/台账面纯文本键);run 归因走
+-- agent_runs.agent_id = 'hr-<companyId>' 约定(评审 P1-3:不设 run_id
+-- 列,归因键即关联)。
 
 CREATE TABLE public.hr_reports (
     id text NOT NULL,
@@ -20,7 +21,6 @@ CREATE TABLE public.hr_reports (
     payload jsonb,
     error text,
     input_snapshot jsonb,
-    run_id text,
     created_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,

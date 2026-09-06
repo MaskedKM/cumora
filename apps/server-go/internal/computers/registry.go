@@ -390,9 +390,10 @@ func MintAgentRuntimeToken(ctx context.Context, db *sql.DB, computerID, agentID 
 		 WHERE id = $1 AND kind = 'agent' AND computer_id = $2 LIMIT 1`, agentID, computerID).Scan(&companyID)
 	if err != nil && strings.HasPrefix(agentID, "hr-") {
 		companyID = sql.NullString{}
+		// 口径与 ListAgentsForComputer 的 UNION 一致:engine 未指派不上机
 		err = db.QueryRowContext(ctx, `
 			SELECT company_id::text FROM hr_agents
-			 WHERE company_id = $1 AND computer_id = $2 LIMIT 1`,
+			 WHERE company_id = $1 AND computer_id = $2 AND engine IS NOT NULL LIMIT 1`,
 			strings.TrimPrefix(agentID, "hr-"), computerID).Scan(&companyID)
 	}
 	if err != nil {

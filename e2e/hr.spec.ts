@@ -15,6 +15,8 @@ import { Client } from 'pg'
 const API = process.env.CUMORA_E2E_API_BASE ?? ''
 const WEB = process.env.CUMORA_E2E_WEB_BASE ?? ''
 test.skip(!API || !WEB, 'CUMORA_E2E_API_BASE/WEB_BASE 未注入(须由 INTEGRATION_E2E=1 runner 起跑)')
+// 文案断言锚定 en(评审 P2:默认 locale 恰为 en-US 才成立,显式钉死)
+test.use({ locale: 'en-US' })
 
 const USER = 'u-e2e-hr'
 const COMPANY = 'c-e2e-hr'

@@ -70,11 +70,29 @@ export function HrView() {
     try {
       const { rows } = await api.listHrEvaluations()
       setEvals(rows)
+      // 缓存详情只在状态未变时保留;轮次状态翻页(pending→done)即失效,
+      // 展开重新拉(评审 P2:expanded 陈旧)。
+      setExpanded((prev) => {
+        const next: Record<string, ApiHrEvaluation> = {}
+        for (const row of rows) {
+          const cached = prev[row.id]
+          if (cached && cached.status === row.status) next[row.id] = cached
+        }
+        return next
+      })
       setEvalError('')
     } catch (err) {
       setEvalError(errText(err))
     }
   }, [])
+
+  // 有未终态轮时低频轮询(报告落库后列表自己翻页;无在飞轮不空转)
+  const hasOpenRound = !!evals?.some((e) => e.status === 'pending' || e.status === 'running')
+  useEffect(() => {
+    if (!hasOpenRound) return
+    const timer = window.setInterval(() => { void reloadEvals() }, 8000)
+    return () => window.clearInterval(timer)
+  }, [hasOpenRound, reloadEvals])
 
   const runEvaluation = async () => {
     if (evaluating) return

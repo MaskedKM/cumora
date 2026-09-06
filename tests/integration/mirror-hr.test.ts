@@ -270,9 +270,30 @@ async function collectSSE(url: string, token: string, ms: number): Promise<strin
   return frames
 }
 
+/** 保持一条 wake-stream 订阅(评估触发要求接收者>0,否则 503 收轮)。 */
+async function holdWake(): Promise<() => void> {
+  const ac = new AbortController()
+  void fetch(`${mirror.baseUrl()}/runtime/wake-stream`, {
+    headers: { authorization: `Bearer ${hrToken()}`, accept: 'text/event-stream' },
+    signal: ac.signal,
+  }).catch(() => { /* 连接期失败由调用侧触发结果暴露 */ })
+  await new Promise((r) => setTimeout(r, 300)) // 等订阅注册进 Redis 通道
+  return () => ac.abort()
+}
+
 test('[mirror] hr: 评估全链 — 触发→wake 携 brief→CLI 拉输入/交报告→读面', async () => {
   await seedComputer('cpu-hr-eval', ['claude'])
   await seedAgent('ag-eval-1')
+  // 观测面种子:runs/llm 各一行 —— 咬住聚合查询非零(评审 P0:列名错曾
+  // 让 runs 路静默恒零)
+  await pool.query(
+    `INSERT INTO agent_runs (id, agent_id, company_id, status, token_count, started_at)
+     VALUES ('run-eval-1', 'ag-eval-1', $1, 'completed', 1200, NOW())`, [COMPANY],
+  )
+  await pool.query(
+    `INSERT INTO llm_calls (id, company_id, agent_id, purpose, model, cost_usd)
+     VALUES ('llm-eval-1', $1, 'ag-eval-1', 'agent-turn', 'test-model', 0.01)`, [COMPANY],
+  )
   const assigned = await call('/hr', {
     method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-eval', engine: 'claude' }),
   })
@@ -294,13 +315,16 @@ test('[mirror] hr: 评估全链 — 触发→wake 携 brief→CLI 拉输入/交�
   assert.ok(briefJSON.includes('backgroundBrief'), 'wake payload carries backgroundBrief')
   assert.ok(briefJSON.includes(evalId), 'brief carries the evaluation ref')
 
-  // CLI:拉输入快照(目标含种子 agent,五路零值也在)
+  // CLI:拉输入快照(目标含种子 agent;runs/llm 聚合非零 = 聚合查询咬合)
   const ctx = await hrCli(['hr', 'context', evalId])
   assert.equal(ctx.status, 200)
   assert.equal(ctx.json.ok, true)
   const snapshot = JSON.parse(ctx.json.text)
-  assert.ok(Array.isArray(snapshot.targets) && snapshot.targets.some((t: any) => t.agentId === 'ag-eval-1'))
-  assert.equal(snapshot.targets.find((t: any) => t.agentId === 'ag-eval-1').runs.total, 0)
+  const lane = snapshot.targets.find((t: any) => t.agentId === 'ag-eval-1')
+  assert.ok(lane, 'seeded agent is in the snapshot targets')
+  assert.equal(lane.runs.total, 1)
+  assert.equal(lane.runs.tokens, 1200)
+  assert.equal(lane.llm.calls, 1)
 
   // CLI:交报告 → done
   const report = {
@@ -339,6 +363,8 @@ test('[mirror] hr: 评估触发闸 — 未指派 400 / 在飞 409 / member 403 /
   assert.equal(
     (await call('/hr/evaluations', { method: 'POST', body: JSON.stringify({ targetAgentId: 'nope' }) })).status, 400,
   )
+  // 201/409 需要在线接收者(brief 一次性投递,0 接收者走 503 收轮)
+  const release = await holdWake()
   // 在飞互斥:第一轮 pending 未收 → 409;failed 形报告收轮后可再触发
   const first = await call('/hr/evaluations', { method: 'POST', body: '{}' })
   assert.equal(first.status, 201)
@@ -351,15 +377,38 @@ test('[mirror] hr: 评估触发闸 — 未指派 400 / 在飞 409 / member 403 /
   assert.equal(detail.json.error, 'engine unavailable')
   const third = await call('/hr/evaluations', { method: 'POST', body: '{}' })
   assert.equal(third.status, 201)
+  release()
+})
+
+test('[mirror] hr: daemon 离线触发 — 503 + 轮次即 failed + 订阅后重触发放行', async () => {
+  await seedComputer('cpu-hr-offline', ['claude'])
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-offline' }) })
+  // 无订阅者:brief 一次性投递即丢 → 503,行直接 failed(不留 30min 悬置锁)
+  const res = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(res.status, 503)
+  const list = await call('/hr/evaluations')
+  assert.equal(list.json.rows[0].status, 'failed')
+  assert.match(list.json.rows[0].error, /daemon offline/)
+  // 订阅在线后重触发 → 201
+  const release = await holdWake()
+  assert.equal((await call('/hr/evaluations', { method: 'POST', body: '{}' })).status, 201)
+  release()
 })
 
 test('[mirror] hr: CLI 身份闸 — 普通 agent / 异司 HR 均不可用', async () => {
   await seedComputer('cpu-hr-eval3', ['claude'])
   await seedAgent('ag-eval-3')
   await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-eval3' }) })
+  // 异司 HR 实体真实存在(实体闸按 hr_agents 行校验,行不存在=前缀穿越)
+  await pool.query(
+    `INSERT INTO companies (id, name, slug, owner_user_id) VALUES ('c-hr-other', 'Other Co', 'c-hr-other', $1)`, [USER],
+  )
+  await pool.query(`INSERT INTO hr_agents (company_id) VALUES ('c-hr-other')`)
+  const release = await holdWake()
   const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
   assert.equal(created.status, 201)
   const evalId = created.json.id as string
+  release()
 
   // 普通 agent 的 runtime JWT → hr 命令保留给 HR 实体
   const agentTok = signAgentToken({ agentId: 'ag-eval-3', companyId: COMPANY })
