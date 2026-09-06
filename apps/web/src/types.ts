@@ -122,9 +122,6 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
   streaming?: boolean
 }
 
-/** UI-only: starter-agent 模板的角色标签(非线上 wire 枚举) */
-export type AgentRole = 'researcher' | 'designer' | 'engineer' | 'pm' | 'brand' | 'ops'
-
 export interface ViewKey {
   view: 'conversations' | 'inbox' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'workspaces' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
 }

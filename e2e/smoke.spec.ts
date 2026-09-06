@@ -125,7 +125,7 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
     await pg.query(q)
   }
 
-  // ── 2) pairing:种 starter 团队(atlas/iris/bram/nova + DMs + all-hands)──
+  // ── 2) pairing:种 starter 团队(八席:#357 + DMs + all-hands)──
   const { code } = await apiCall('/api/computers', { method: 'POST', body: '{}' })
   const pair = await apiCall('/api/computers/pair', {
     method: 'POST',
