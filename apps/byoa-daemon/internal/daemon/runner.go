@@ -471,8 +471,8 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 		}
 		if event == "wake" || event == "steer" {
 			var payload struct {
-				ConversationID   string   `json:"conversationId"`
-				BackgroundBrief  *hrBrief `json:"backgroundBrief"`
+				ConversationID  string   `json:"conversationId"`
+				BackgroundBrief *hrBrief `json:"backgroundBrief"`
 			}
 			_ = json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &payload)
 			slog.Info("[computer] SSE received", "agent", r.agent.ID, "event", event, "convo", payload.ConversationID)
