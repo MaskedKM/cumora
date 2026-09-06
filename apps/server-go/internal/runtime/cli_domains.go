@@ -25,7 +25,8 @@ import (
 // claim/unclaim)、email(email/contacts)、mailbox(inbox/glance/ack/
 // mute/follow)、calendar/poll、doc/ship、avatar/image/skills、
 // tools(react/dm/pull-group/palette)。
-func wireDomainDispatch(core *agent.Service) {
+func wireDomainDispatch(svc *Service) {
+	core := svc.Service
 	b := boards.Domain{Service: core}
 	e := email.Domain{Service: core}
 	m := mailbox.Domain{Service: core}
@@ -90,6 +91,13 @@ func wireDomainDispatch(core *agent.Service) {
 			return mem.CmdInvite(ctx, p), true
 		case "kick":
 			return mem.CmdKick(ctx, p), true
+		case "hr":
+			// #346:HR 评估的拉输入/交报告(main 注入 domains/hr 的闭包;
+			// 身份由 handleCli 的 --as=JWT sub 钉死,仅 hr-<companyId> 可用)。
+			if svc.HrCli != nil {
+				return svc.HrCli(ctx, p), true
+			}
+			return agent.Result{}, false
 		case "help", "--help", "-h":
 			_, _ = ctx, p
 			return h.CmdHelp(), true

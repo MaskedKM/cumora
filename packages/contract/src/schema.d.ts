@@ -680,6 +680,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr/evaluations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 评估轮列表(owner/admin) */
+        get: operations["listHrEvaluations"];
+        put?: never;
+        /** 手动触发评估(单个/全员;owner/admin;在飞互斥) */
+        post: operations["createHrEvaluation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/evaluations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 评估轮详情(含 payload 与输入快照;owner/admin) */
+        get: operations["getHrEvaluation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3406,6 +3441,29 @@ export interface components {
             computerId?: string;
             engine?: string;
         };
+        HrEvaluation: {
+            id: string;
+            /** @enum {string} */
+            trigger: "manual" | "periodic" | "event";
+            /** @enum {string} */
+            status: "pending" | "running" | "done" | "failed";
+            /** @description null=全员轮 */
+            targetAgentId: string | null;
+            error?: string | null;
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description 仅详情(getHrEvaluation)携带 */
+            inputSnapshot?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            finishedAt?: string | null;
+        };
         Whisper: {
             id: string;
             /** @enum {string} */
@@ -5247,6 +5305,91 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HrAgent"];
                 };
+            };
+        };
+    };
+    listHrEvaluations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: components["schemas"]["HrEvaluation"][];
+                    };
+                };
+            };
+        };
+    };
+    createHrEvaluation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description 缺省=全员 */
+                    targetAgentId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description ok */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrEvaluation"];
+                };
+            };
+            /** @description 该公司已有在飞评估 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getHrEvaluation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrEvaluation"];
+                };
+            };
+            /** @description 无此轮或不属本公司 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

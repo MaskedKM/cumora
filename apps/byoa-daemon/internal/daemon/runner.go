@@ -42,6 +42,16 @@ func groupSteerMinInterval() time.Duration {
 	return time.Duration(n) * time.Millisecond
 }
 
+// hrBrief:#346 HR 评估任务书(wake 载荷 backgroundBrief 字段)。daemon
+// 侧本地形状,与服务端 sched.BackgroundBrief JSON 兼容;Ref=评估轮 id
+// (失败回报 `hr report` 寻址用)。
+type hrBrief struct {
+	Source string `json:"source"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	Ref    string `json:"ref,omitempty"`
+}
+
 // AgentRunner:单 agent 的常驻执行器。
 type AgentRunner struct {
 	cfg     *DaemonConfig
@@ -66,6 +76,9 @@ type AgentRunner struct {
 
 	wakeDebounce  *time.Timer
 	lastWakeConvo string
+	// pendingBrief:#346 —— wake 载荷携带的后台任务书(HR 评估)。非 nil
+	// 时空 inbox 也起 turn(brief 即任务);消费即清,失败则回报收轮。
+	pendingBrief *hrBrief
 
 	// streamAlive:#134——SSE 最近一行(ping/事件)到达时刻(UnixNano;
 	// 0=从未连上)。pollLoop 门控用;atomic:SSE 读循环与 pollLoop 并发。
@@ -458,7 +471,8 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 		}
 		if event == "wake" || event == "steer" {
 			var payload struct {
-				ConversationID string `json:"conversationId"`
+				ConversationID   string   `json:"conversationId"`
+				BackgroundBrief  *hrBrief `json:"backgroundBrief"`
 			}
 			_ = json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &payload)
 			slog.Info("[computer] SSE received", "agent", r.agent.ID, "event", event, "convo", payload.ConversationID)
@@ -467,6 +481,11 @@ func (r *AgentRunner) consumeStream(connectedAt *time.Time) error {
 			r.mu.Lock()
 			if payload.ConversationID != "" {
 				r.lastWakeConvo = payload.ConversationID
+			}
+			// #346:HR 评估任务书随帧抵达——挂起待 turn 消费(空 inbox
+			// 也起轮的开关)。
+			if payload.BackgroundBrief != nil && payload.BackgroundBrief.Source == "hr-eval" {
+				r.pendingBrief = payload.BackgroundBrief
 			}
 			r.mu.Unlock()
 			r.scheduleWake("sse-"+event, payload.ConversationID)
@@ -737,6 +756,16 @@ func (r *AgentRunner) turnDelta(reason string, rows []map[string]any) string {
 	return strings.TrimRight(b.String(), " \n")
 }
 
+// turnBriefDelta:brief 驱动轮的任务书渲染(#346)——后台任务不依赖会话,
+// 任务书全文即本轮输入;成功时报告由引擎经 CLI 提交。
+func (r *AgentRunner) turnBriefDelta(brief *hrBrief) string {
+	var b strings.Builder
+	b.WriteString("You've been woken for a background task — do it now, then end your turn.\n\n")
+	fmt.Fprintf(&b, "Current time (UTC): %s\n\n", time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+	fmt.Fprintf(&b, "## %s\n\n%s\n", brief.Title, brief.Body)
+	return strings.TrimRight(b.String(), " \n")
+}
+
 func authorLabel(row map[string]any) string {
 	who := str(row["author_name"])
 	if who == "" {
@@ -790,8 +819,18 @@ func (r *AgentRunner) runTurn(reason string) error {
 	if err := apiCall(r.ctx, r.cfg.ServerURL, http.MethodGet, "/runtime/inbox", token, nil, &inbox); err != nil {
 		return fmt.Errorf("inbox fetch: %w", err)
 	}
-	if len(inbox.Rows) == 0 {
+	// #346:brief 驱动轮——空 inbox 但挂有后台任务书时照跑(brief 即任务,
+	// 不依赖任何会话);消费即清。
+	r.mu.Lock()
+	brief := r.pendingBrief
+	r.pendingBrief = nil
+	r.mu.Unlock()
+	if len(inbox.Rows) == 0 && brief == nil {
 		return nil
+	}
+	delta := r.turnDelta(reason, inbox.Rows)
+	if brief != nil {
+		delta = r.turnBriefDelta(brief)
 	}
 
 	runtimeBest(r.ctx, r.cfg.ServerURL, "/status", token, map[string]any{"status": "thinking"})
@@ -857,7 +896,7 @@ func (r *AgentRunner) runTurn(reason string) error {
 					}
 				}
 			}()
-			res = sess.Send(r.turnPrompt(sess, r.turnDelta(reason, inbox.Rows)))
+			res = sess.Send(r.turnPrompt(sess, delta))
 			close(captureStop)
 			if sid := sess.SessionID(); sid != "" {
 				r.setSessionID(sid)
@@ -871,7 +910,7 @@ func (r *AgentRunner) runTurn(reason string) error {
 		} else {
 			args := RunArgs{
 				Home:            r.home,
-				Prompt:          r.turnPrompt(nil, r.turnDelta(reason, inbox.Rows)),
+				Prompt:          r.turnPrompt(nil, delta),
 				Env:             r.engineEnv(token),
 				Model:           resolveEngineModel(r.agent.Model, os.Getenv("CUMORA_ENGINE_MODEL")),
 				FastModel:       resolveEngineFastModel(r.agent.FastModel, os.Getenv("CUMORA_ENGINE_MODEL")),
@@ -936,6 +975,13 @@ func (r *AgentRunner) runTurn(reason string) error {
 			map[string]any{"status": status, "summary": summary})
 	}
 	runtimeBest(r.ctx, r.cfg.ServerURL, "/status", token, map[string]any{"status": "avail"})
+	// #346:brief 轮失败 → 经 CLI hr report 回收评估轮(failed 带 error;
+	// 成功轮的报告由引擎在轮内自行提交,daemon 不代劳)。
+	if brief != nil && brief.Ref != "" && res.Err != "" {
+		failJSON, _ := json.Marshal(map[string]any{"failed": true, "error": truncate(visibleErr, 500)})
+		runtimeBest(r.ctx, r.cfg.ServerURL, "/cli", token,
+			map[string]any{"argv": []string{"hr", "report", brief.Ref, string(failJSON)}})
+	}
 	if r.reporter != nil {
 		r.reporter.flush()
 	}

@@ -20,26 +20,39 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 	hrcontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/hr"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
 
-// Server:hr tag 的域实现(路由 2:getHrAgent/putHrAgentConfig)。
+// WakeFunc:评估触发唤醒注入面(main 接 sched.WakeOne,brief 随载荷下发;
+// #346)。nil 安全(测试/降级路径不触发)。
+type WakeFunc func(agentID, reason string, brief *sched.BackgroundBrief)
+
+// Server:hr tag 的域实现(配置面 2 路由 + 评估面 3 路由 + CLI 面)。
 type Server struct {
-	DB *sql.DB
+	DB   *sql.DB
+	Wake WakeFunc
 }
 
 var _ hrcontract.ServerInterface = (*Server)(nil)
 
-func Mount(mux *http.ServeMux, db *sql.DB) {
-	_ = hrcontract.HandlerFromMux(&Server{DB: db}, mux)
+func Mount(mux *http.ServeMux, db *sql.DB, wake WakeFunc) *Server {
+	s := &Server{DB: db, Wake: wake}
+	_ = hrcontract.HandlerFromMux(s, mux)
+	return s
 }
 
-// requireRole:owner/admin 闸(httpx.ResolveCompanyRole 薄包装,computers 域同款)。
-func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
+// requireRole:owner/admin 闸(httpx.ResolveCompanyRole 薄包装,computers
+// 域同款);返回 uid 供评估触发记 created_by。
+func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
-	return httpx.ResolveCompanyRole(w, r, db, uid)
+	companyID, ok := httpx.ResolveCompanyRole(w, r, db, uid)
+	if !ok {
+		return "", "", false
+	}
+	return uid, companyID, true
 }
 
 // EnsureProvisioned:幂等置备 —— CreateCompany 钩子与 GET 兜底共用;
@@ -96,7 +109,7 @@ func nullStr(ns sql.NullString) any {
 }
 
 func (s *Server) GetHrAgent(w http.ResponseWriter, r *http.Request) {
-	companyID, ok := requireRole(w, r, s.DB)
+	_, companyID, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -110,7 +123,7 @@ func (s *Server) GetHrAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) PutHrAgentConfig(w http.ResponseWriter, r *http.Request) {
-	companyID, ok := requireRole(w, r, s.DB)
+	_, companyID, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}

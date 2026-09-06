@@ -13,9 +13,10 @@ export type ApiParticipant = Schemas['Participant']
 export type ApiComputer = Schemas['Computer']
 export type ApiSearchResults = Schemas['SearchResults']
 export type AgentInput = Schemas['AgentInput']
-// #345 HR Agent(编外隐形人事代理)配置面。
+// #345 HR Agent(编外隐形人事代理)配置面;#346 评估面。
 export type ApiHrAgent = Schemas['HrAgent']
 export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
+export type ApiHrEvaluation = Schemas['HrEvaluation']
 /** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
 export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
 export type UploadCapabilities = Schemas['UploadCapabilities']
@@ -395,6 +396,12 @@ export const api = {
   /** Partial update: computerId 空串 = 清空指派;engine 缺省取该机 advertised 首项。 */
   putHrAgentConfig: (input: HrAgentConfigInput) =>
     http<ApiHrAgent>('/hr', { method: 'PUT', body: JSON.stringify(input) }),
+  /** 触发评估轮(targetAgentId 缺省 = 全员)。409 = 已有在飞轮。 */
+  createHrEvaluation: (input?: { targetAgentId?: string }) =>
+    http<ApiHrEvaluation>('/hr/evaluations', { method: 'POST', body: JSON.stringify(input ?? {}) }),
+  listHrEvaluations: () => http<{ rows: ApiHrEvaluation[] }>('/hr/evaluations'),
+  getHrEvaluation: (id: string) =>
+    http<ApiHrEvaluation>(`/hr/evaluations/${encodeURIComponent(id)}`),
   getConversations: () => http<ApiConversation[]>('/conversations'),
   createGroup: (input: { title: string; members: string[]; subtitle?: string; projectId?: string | null }) =>
     http<{ id: string; members: string[]; projectId: string | null }>('/conversations', {

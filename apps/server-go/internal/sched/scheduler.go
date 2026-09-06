@@ -38,10 +38,12 @@ type SteerPayload struct {
 }
 
 // BackgroundBrief: idle/scanner 合成唤醒携带的内部简报(渲染为普通模型输入)。
+// Ref:#346 任务引用(如评估轮 id)——daemon 侧失败回报寻址用,可空。
 type BackgroundBrief struct {
 	Source string `json:"source,omitempty"`
 	Title  string `json:"title"`
 	Body   string `json:"body"`
+	Ref    string `json:"ref,omitempty"`
 }
 
 // WakeOpts: 唤醒附加选项(idleReason 只渲染在 idle 合成唤醒上)。

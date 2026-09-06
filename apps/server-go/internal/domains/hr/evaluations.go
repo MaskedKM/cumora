@@ -1,0 +1,460 @@
+// evaluations —— #346 手动评估全链的 server 半边。
+//
+// 触发(POST /api/hr/evaluations):在飞互斥(部分唯一索引兜底)→ 客观
+// 观测快照装配落 input_snapshot → 唤醒 hr-<companyId>(brief 即任务书,
+// 不另设取件面)→ pending。daemon 侧 Brain 经 CLI 拉输入(`hr context`)
+// 与交报告(`hr report`);报告落库即终态(done/failed)。daemon 整机死亡
+// 的悬置轮由下一次触发的陈旧收尸(在飞 >30min 自动 failed)兜底,零新增
+// worker。读面(列表/详情)仅 owner/admin —— 评估结果只向老板汇报。
+package hr
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
+)
+
+func (s *Server) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
+	uid, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var body struct {
+		TargetAgentID *string `json:"targetAgentId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	target := ""
+	if body.TargetAgentID != nil {
+		target = strings.TrimSpace(*body.TargetAgentID)
+	}
+
+	cfgRow, ok := loadOrProvision(r.Context(), s.DB, companyID)
+	if !ok {
+		httpx.WriteInternalError(w, r, fmt.Errorf("hr_agents row missing for company %s", companyID))
+		return
+	}
+	if !cfgRow.computerID.Valid || !cfgRow.engine.Valid {
+		httpx.WriteError(w, http.StatusBadRequest, "assign a computer and engine to the HR Agent before triggering evaluations")
+		return
+	}
+	if target != "" {
+		var exists bool
+		_ = s.DB.QueryRowContext(r.Context(),
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL LIMIT 1`,
+			target, companyID).Scan(&exists)
+		if !exists {
+			httpx.WriteError(w, http.StatusBadRequest, "unknown target agent")
+			return
+		}
+	}
+	// 陈旧在飞收尸:daemon 整机死亡留下的悬置轮(>30min)自动 failed,
+	// 让本次触发可通过;新鲜在飞仍由唯一索引拦成 409。
+	_, _ = s.DB.ExecContext(r.Context(), `
+		UPDATE hr_reports
+		   SET status = 'failed', error = 'superseded: in-flight round stale over 30min',
+		       updated_at = NOW(), finished_at = NOW()
+		 WHERE company_id = $1 AND status IN ('pending', 'running')
+		   AND updated_at < NOW() - INTERVAL '30 minutes'`, companyID)
+
+	snapshot, err := s.assembleInputs(r.Context(), companyID, target)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	snapJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	id := "hre-" + authn.NewToken()[:10]
+	_, err = s.DB.ExecContext(r.Context(), `
+		INSERT INTO hr_reports (id, company_id, target_agent_id, trigger_kind, status, input_snapshot, created_by)
+		VALUES ($1, $2, NULLIF($3, ''), 'manual', 'pending', $4, NULLIF($5, ''))`,
+		id, companyID, target, snapJSON, uid)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			httpx.WriteError(w, http.StatusConflict, "an evaluation round is already in flight for this team")
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if s.Wake != nil {
+		s.Wake("hr-"+companyID, "hr-eval", &sched.BackgroundBrief{
+			Source: "hr-eval",
+			Title:  "HR evaluation round " + id,
+			Ref:    id,
+			Body: fmt.Sprintf(
+				"An HR evaluation round (%s) has been triggered by the owner. Steps: "+
+					"(1) fetch your inputs: `cumora hr context %s` "+
+					"(2) evaluate the target agent(s) per your standing instructions "+
+					"(3) submit the structured report as a single JSON object: "+
+					"`cumora hr report %s '<json>'`. The round closes when the report lands.",
+				id, id, id),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"id": id, "trigger": "manual", "status": "pending",
+		"targetAgentId": nilIfEmpty(target), "createdAt": time.Now().UTC(), "updatedAt": time.Now().UTC(),
+	})
+}
+
+func (s *Server) ListHrEvaluations(w http.ResponseWriter, r *http.Request) {
+	_, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT id, target_agent_id, trigger_kind, status, error, created_at, updated_at, finished_at,
+		       (payload IS NOT NULL) AS has_payload
+		  FROM hr_reports WHERE company_id = $1
+		 ORDER BY created_at DESC LIMIT 50`, companyID)
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, triggerKind, status string
+		var target, errMsg sql.NullString
+		var createdAt, updatedAt time.Time
+		var finishedAt sql.NullTime
+		var hasPayload bool
+		if rows.Scan(&id, &target, &triggerKind, &status, &errMsg, &createdAt, &updatedAt, &finishedAt, &hasPayload) != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id": id, "trigger": triggerKind, "status": status,
+			"targetAgentId": nullStr(target), "error": nullStr(errMsg),
+			"hasPayload": hasPayload,
+			"createdAt":  createdAt.UTC(), "updatedAt": updatedAt.UTC(), "finishedAt": nullTime(finishedAt),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": out})
+}
+
+func (s *Server) GetHrEvaluation(w http.ResponseWriter, r *http.Request, id string) {
+	_, companyID, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var target, errMsg sql.NullString
+	var triggerKind, status string
+	var payload, snapshot []byte
+	var createdAt, updatedAt time.Time
+	var finishedAt sql.NullTime
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT target_agent_id, trigger_kind, status, payload, error, input_snapshot, created_at, updated_at, finished_at
+		  FROM hr_reports WHERE id = $1 AND company_id = $2 LIMIT 1`, id, companyID).
+		Scan(&target, &triggerKind, &status, &payload, &errMsg, &snapshot, &createdAt, &updatedAt, &finishedAt)
+	if err == sql.ErrNoRows {
+		httpx.WriteError(w, http.StatusNotFound, "no such evaluation round")
+		return
+	}
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"id": id, "trigger": triggerKind, "status": status,
+		"targetAgentId": nullStr(target), "error": nullStr(errMsg),
+		"payload": rawJSON(payload), "inputSnapshot": rawJSON(snapshot),
+		"createdAt": createdAt.UTC(), "updatedAt": updatedAt.UTC(), "finishedAt": nullTime(finishedAt),
+	})
+}
+
+/* ───────── CLI 面(daemon 侧 Brain 的拉输入/交报告;JWT 钉身份) ───────── */
+
+// Cli:runtime 接线面(cli_domains case "hr")。调用方身份由 handleCli 从
+// JWT sub 钉死注入 --as —— 只有本公司的 hr-<companyId> 实体能用。
+//
+//	cumora hr context <evaluationId>            → 输入快照 JSON
+//	cumora hr report  <evaluationId> '<json>'   → 交报告收轮(done/failed)
+func (s *Server) Cli(ctx context.Context, p agent.Parsed) agent.Result {
+	caller, err := agent.ResolveAs(p)
+	if err != nil {
+		return agent.Err("hr: " + err.Error())
+	}
+	if !strings.HasPrefix(caller, "hr-") {
+		return agent.Err("hr commands are reserved for the HR Agent")
+	}
+	companyID := strings.TrimPrefix(caller, "hr-")
+	pos := p.Positional()
+	if len(pos) == 0 {
+		return agent.Err("usage: cumora hr <context|report> <evaluationId> [json]")
+	}
+	switch pos[0] {
+	case "context":
+		return s.cliContext(ctx, companyID, pos)
+	case "report":
+		return s.cliReport(ctx, companyID, pos, p)
+	default:
+		return agent.Err("unknown hr subcommand: " + pos[0] + " (context|report)")
+	}
+}
+
+func (s *Server) cliContext(ctx context.Context, companyID string, pos []string) agent.Result {
+	if len(pos) < 2 || strings.TrimSpace(pos[1]) == "" {
+		return agent.Err("usage: cumora hr context <evaluationId>")
+	}
+	var snapshot []byte
+	var status string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT input_snapshot, status FROM hr_reports WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		strings.TrimSpace(pos[1]), companyID).Scan(&snapshot, &status)
+	if err != nil {
+		return agent.Err("unknown evaluation round")
+	}
+	if len(snapshot) == 0 {
+		return agent.Err("evaluation round has no input snapshot")
+	}
+	return agent.OK(string(snapshot))
+}
+
+func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, p agent.Parsed) agent.Result {
+	if len(pos) < 2 || strings.TrimSpace(pos[1]) == "" {
+		return agent.Err("usage: cumora hr report <evaluationId> '<json>'")
+	}
+	id := strings.TrimSpace(pos[1])
+	body := strings.TrimSpace(p.JoinBodyArgs(2))
+	if body == "" {
+		return agent.Err("report JSON required: cumora hr report <evaluationId> '<json>'")
+	}
+	if agent.UTF16Len(body) > 120_000 {
+		return agent.Err("report too large (max 120k UTF-16 units)")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return agent.Err("report must be a single JSON object")
+	}
+	status := "done"
+	errText := ""
+	if failed, ok := payload["failed"].(bool); ok && failed {
+		status = "failed"
+	}
+	if ev, ok := payload["error"].(string); ok && ev != "" {
+		status = "failed"
+		errText = ev
+	}
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE hr_reports
+		   SET status = $3, payload = $4, error = NULLIF($5, ''),
+		       updated_at = NOW(), finished_at = NOW()
+		 WHERE id = $1 AND company_id = $2 AND status IN ('pending', 'running')`,
+		id, companyID, status, payload, errText)
+	if err != nil {
+		return agent.ErrThrow(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return agent.Err("evaluation round is not open (already reported or closed)")
+	}
+	return agent.OK("recorded: " + id + " (" + status + ")")
+}
+
+/* ───────── 客观观测快照装配(刀 2:五路聚合;#347 再补转录/同侪/评分) ───────── */
+
+const inputWindowDays = 14
+
+// hrInputTarget:单目标聚合累加器;装配即终形(payload 字段名=累加器输出键)。
+type hrInputTarget struct {
+	agentID, name, role               string
+	runsTotal, runsFailed             int
+	runTokens                         int64
+	runCost, llmCost                  float64
+	lastRunAt                         sql.NullTime
+	llmCalls                          int
+	triageTotal, triageActionable     int
+	cardsAssigned, deliveries, merged int
+	calActive, calDone, calCancelled  int
+}
+
+func (t hrInputTarget) payload() map[string]any {
+	return map[string]any{
+		"agentId": t.agentID, "name": t.name, "role": t.role,
+		"runs":     map[string]any{"total": t.runsTotal, "failed": t.runsFailed, "tokens": t.runTokens, "costUsd": t.runCost, "lastRunAt": nullTime(t.lastRunAt)},
+		"llm":      map[string]any{"calls": t.llmCalls, "costUsd": t.llmCost},
+		"triage":   map[string]any{"total": t.triageTotal, "actionable": t.triageActionable},
+		"cards":    map[string]any{"assigned": t.cardsAssigned, "deliveries": t.deliveries, "mergedDeliveries": t.merged},
+		"calendar": map[string]any{"active": t.calActive, "done": t.calDone, "cancelled": t.calCancelled},
+	}
+}
+
+func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (map[string]any, error) {
+	targetRows, err := s.DB.QueryContext(ctx, `
+		SELECT id, COALESCE(name, ''), COALESCE(role, '')
+		  FROM participants
+		 WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL
+		   AND ($2 = '' OR id = $2)
+		 ORDER BY name ASC`, companyID, target)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]*hrInputTarget{}
+	order := []string{}
+	for targetRows.Next() {
+		var t hrInputTarget
+		if targetRows.Scan(&t.agentID, &t.name, &t.role) == nil {
+			byID[t.agentID] = &t
+			order = append(order, t.agentID)
+		}
+	}
+	targetRows.Close()
+	if len(order) == 0 {
+		return map[string]any{"generatedAt": time.Now().UTC(), "windowDays": inputWindowDays, "targets": []any{}}, nil
+	}
+	ids := make([]string, 0, len(order))
+	for _, id := range order {
+		ids = append(ids, id)
+	}
+
+	// 五路聚合:失败仅记日志降级(缺表/部分 schema 不阻断触发;快照里
+	// 缺路=零值,报告可解释)。
+	collect := func(query func(rows *sql.Rows), q string, args ...any) {
+		rows, err := s.DB.QueryContext(ctx, q, args...)
+		if err != nil {
+			return
+		}
+		query(rows)
+		rows.Close()
+	}
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var t hrInputTarget
+			if rows.Scan(&aid, &t.runsTotal, &t.runsFailed, &t.runTokens, &t.runCost, &t.lastRunAt) == nil {
+				if m, ok := byID[aid]; ok {
+					m.runsTotal, m.runsFailed, m.runTokens, m.runCost, m.lastRunAt =
+						t.runsTotal, t.runsFailed, t.runTokens, t.runCost, t.lastRunAt
+				}
+			}
+		}
+	}, `SELECT agent_id, COUNT(*)::int, COUNT(*) FILTER (WHERE status = 'failed')::int,
+		       COALESCE(SUM(token_count), 0)::bigint, COALESCE(SUM(cost_usd), 0), MAX(created_at)
+		  FROM agent_runs
+		 WHERE company_id = $1 AND agent_id = ANY($2) AND created_at > NOW() - ($3 || ' days')::interval
+		 GROUP BY agent_id`, companyID, ids, inputWindowDays)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var calls int
+			var cost float64
+			if rows.Scan(&aid, &calls, &cost) == nil {
+				if m, ok := byID[aid]; ok {
+					m.llmCalls, m.llmCost = calls, cost
+				}
+			}
+		}
+	}, `SELECT agent_id, COUNT(*)::int, COALESCE(SUM(cost_usd), 0)
+		  FROM llm_calls
+		 WHERE company_id = $1 AND agent_id = ANY($2) AND created_at > NOW() - ($3 || ' days')::interval
+		 GROUP BY agent_id`, companyID, ids, inputWindowDays)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var total, actionable int
+			if rows.Scan(&aid, &total, &actionable) == nil {
+				if m, ok := byID[aid]; ok {
+					m.triageTotal, m.triageActionable = total, actionable
+				}
+			}
+		}
+	}, `SELECT agent_id, COUNT(*)::int, COUNT(*) FILTER (WHERE actionable)::int
+		  FROM agent_triages
+		 WHERE agent_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY agent_id`, ids, inputWindowDays)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var n int
+			if rows.Scan(&aid, &n) == nil {
+				if m, ok := byID[aid]; ok {
+					m.cardsAssigned = n
+				}
+			}
+		}
+	}, `SELECT assignee_id, COUNT(*)::int FROM board_cards
+		 WHERE assignee_id = ANY($1) GROUP BY assignee_id`, ids)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var total, merged int
+			if rows.Scan(&aid, &total, &merged) == nil {
+				if m, ok := byID[aid]; ok {
+					m.deliveries, m.merged = total, merged
+				}
+			}
+		}
+	}, `SELECT created_by, COUNT(*)::int, COUNT(*) FILTER (WHERE pr_state = 'merged')::int
+		  FROM card_deliveries WHERE created_by = ANY($1) GROUP BY created_by`, ids)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid, status string
+			var n int
+			if rows.Scan(&aid, &status, &n) != nil {
+				continue
+			}
+			m, ok := byID[aid]
+			if !ok {
+				continue
+			}
+			switch status {
+			case "active":
+				m.calActive = n
+			case "done":
+				m.calDone = n
+			case "cancelled":
+				m.calCancelled = n
+			}
+		}
+	}, `SELECT assignee_id, status, COUNT(*)::int FROM calendar_events
+		 WHERE assignee_id = ANY($1) GROUP BY assignee_id, status`, ids)
+
+	targets := make([]map[string]any, 0, len(order))
+	for _, id := range order {
+		targets = append(targets, byID[id].payload())
+	}
+	return map[string]any{
+		"generatedAt": time.Now().UTC(),
+		"windowDays":  inputWindowDays,
+		"note":        "objective observation only (runs/llm/triage/boards/calendar); transcripts, peer signals and owner ratings arrive in a later blade",
+		"targets":     targets,
+	}, nil
+}
+
+/* ───────── 小件 ───────── */
+
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func rawJSON(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
+}
+
+func nullTime(nt sql.NullTime) any {
+	if nt.Valid {
+		return nt.Time.UTC()
+	}
+	return nil
+}

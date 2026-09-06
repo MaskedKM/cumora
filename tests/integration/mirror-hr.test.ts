@@ -10,6 +10,7 @@
 import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { pool } from './harness/db/pool.js'
+import { signAgentToken } from './harness/agents/runtime/jwt.js'
 import {
   ensureSchemaOnce, resetAllTables, seedUserMembership, teardownAll, startMirror,
 } from './_helpers.js'
@@ -213,4 +214,167 @@ test('[mirror] hr: 归因键防撞 — 取名撞 hr-<companyId> 的 agent 改用
   })
   assert.equal(normal.status, 201)
   assert.equal(normal.json.id, 'hr-assistant')
+})
+
+/* ───────── #346 评估全链(直铸 hr JWT 模拟 daemon 侧) ───────── */
+
+const HR_AGENT_ID = `hr-${COMPANY}`
+
+function hrToken(agentId = HR_AGENT_ID, companyId: string | null = COMPANY): string {
+  return signAgentToken({ agentId, companyId })
+}
+
+async function hrCli(argv: string[], token = hrToken()): Promise<{ status: number; json: any }> {
+  // runtime 面挂 /runtime/*(daemon 直连,无 /api 前缀)
+  const res = await fetch(`${mirror.baseUrl()}/runtime/cli`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ argv }),
+  })
+  return { status: res.status, json: await res.json().catch(() => null) }
+}
+
+/** 收集窗口内全部 SSE 帧;deadline 后返回(不断言;mirror-scheduler 同款)。 */
+async function collectSSE(url: string, token: string, ms: number): Promise<string[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  const frames: string[] = []
+  try {
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+      signal: ctrl.signal,
+    })
+    assert.equal(res.status, 200)
+    const reader = (res.body as any).getReader() as { read(): Promise<{ done: boolean; value?: Uint8Array }> }
+    const decoder = new TextDecoder()
+    let buf = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        for (;;) {
+          const idx = buf.indexOf('\n\n')
+          if (idx < 0) break
+          frames.push(buf.slice(0, idx))
+          buf = buf.slice(idx + 2)
+        }
+      }
+    } catch {
+      // 窗口到点 abort —— 已收帧照常返回
+    }
+  } finally {
+    clearTimeout(timer)
+    ctrl.abort()
+  }
+  return frames
+}
+
+test('[mirror] hr: 评估全链 — 触发→wake 携 brief→CLI 拉输入/交报告→读面', async () => {
+  await seedComputer('cpu-hr-eval', ['claude'])
+  await seedAgent('ag-eval-1')
+  const assigned = await call('/hr', {
+    method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-eval', engine: 'claude' }),
+  })
+  assert.equal(assigned.status, 200)
+
+  // 先订阅 wake-stream,再触发(订阅建好后 300ms 触发,窗口 3s)
+  const framesPromise = collectSSE(`${mirror.baseUrl()}/runtime/wake-stream`, hrToken(), 3000)
+  await new Promise((r) => setTimeout(r, 300))
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  assert.equal(created.json.status, 'pending')
+  const evalId = created.json.id as string
+
+  const frames = await framesPromise
+  const wakeFrame = frames.find((f) => f.includes('event: wake') && f.includes('hr-eval'))
+  assert.ok(wakeFrame, `wake frame with hr-eval expected, got: ${frames.join('||').slice(0, 300)}`)
+  assert.ok(wakeFrame.includes(HR_AGENT_ID) || wakeFrame.includes('hr-eval'))
+  const briefJSON = wakeFrame.slice(wakeFrame.indexOf('data:'))
+  assert.ok(briefJSON.includes('backgroundBrief'), 'wake payload carries backgroundBrief')
+  assert.ok(briefJSON.includes(evalId), 'brief carries the evaluation ref')
+
+  // CLI:拉输入快照(目标含种子 agent,五路零值也在)
+  const ctx = await hrCli(['hr', 'context', evalId])
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.json.ok, true)
+  const snapshot = JSON.parse(ctx.json.text)
+  assert.ok(Array.isArray(snapshot.targets) && snapshot.targets.some((t: any) => t.agentId === 'ag-eval-1'))
+  assert.equal(snapshot.targets.find((t: any) => t.agentId === 'ag-eval-1').runs.total, 0)
+
+  // CLI:交报告 → done
+  const report = {
+    rounds: [{ agentId: 'ag-eval-1', score: 4, findings: ['solid delivery'], suggestion: 'keep' }],
+  }
+  const submitted = await hrCli(['hr', 'report', evalId, JSON.stringify(report)])
+  assert.equal(submitted.status, 200)
+  assert.equal(submitted.json.ok, true)
+  assert.match(submitted.json.text, /recorded.*done/)
+
+  // 读面:owner 列表+详情可见;member 403
+  const list = await call('/hr/evaluations')
+  assert.equal(list.status, 200)
+  assert.equal(list.json.rows[0].id, evalId)
+  assert.equal(list.json.rows[0].status, 'done')
+  assert.equal((await memberMirror.call('/hr/evaluations')).status, 403)
+  const detail = await call(`/hr/evaluations/${evalId}`)
+  assert.equal(detail.status, 200)
+  assert.deepEqual(detail.json.payload?.rounds?.[0]?.agentId, 'ag-eval-1')
+  assert.ok(detail.json.inputSnapshot, 'detail carries the input snapshot')
+
+  // 收轮后再交 → 拒
+  const again = await hrCli(['hr', 'report', evalId, '{"x":1}'])
+  assert.equal(again.json.ok, false)
+  assert.match(again.json.text, /not open/)
+})
+
+test('[mirror] hr: 评估触发闸 — 未指派 400 / 在飞 409 / member 403 / 未知目标 400', async () => {
+  assert.equal((await memberMirror.call('/hr/evaluations', { method: 'POST', body: '{}' })).status, 403)
+  // 未指派 computer → 400
+  const noComputer = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(noComputer.status, 400)
+  await seedComputer('cpu-hr-eval2', ['claude'])
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-eval2' }) })
+  // 未知目标 → 400
+  assert.equal(
+    (await call('/hr/evaluations', { method: 'POST', body: JSON.stringify({ targetAgentId: 'nope' }) })).status, 400,
+  )
+  // 在飞互斥:第一轮 pending 未收 → 409;failed 形报告收轮后可再触发
+  const first = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(first.status, 201)
+  const second = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(second.status, 409)
+  const fail = await hrCli(['hr', 'report', first.json.id, '{"failed":true,"error":"engine unavailable"}'])
+  assert.equal(fail.json.ok, true)
+  const detail = await call(`/hr/evaluations/${first.json.id}`)
+  assert.equal(detail.json.status, 'failed')
+  assert.equal(detail.json.error, 'engine unavailable')
+  const third = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(third.status, 201)
+})
+
+test('[mirror] hr: CLI 身份闸 — 普通 agent / 异司 HR 均不可用', async () => {
+  await seedComputer('cpu-hr-eval3', ['claude'])
+  await seedAgent('ag-eval-3')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-eval3' }) })
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const evalId = created.json.id as string
+
+  // 普通 agent 的 runtime JWT → hr 命令保留给 HR 实体
+  const agentTok = signAgentToken({ agentId: 'ag-eval-3', companyId: COMPANY })
+  const asAgent = await hrCli(['hr', 'context', evalId], agentTok)
+  assert.equal(asAgent.json.ok, false)
+  assert.match(asAgent.json.text, /reserved for the HR Agent/)
+
+  // 异司 HR → 找不到本轮(行按公司隔离)
+  const foreignTok = signAgentToken({ agentId: 'hr-c-hr-other', companyId: 'c-hr-other' })
+  const foreign = await hrCli(['hr', 'context', evalId], foreignTok)
+  assert.equal(foreign.json.ok, false)
+  assert.match(foreign.json.text, /unknown evaluation round/)
+
+  // 坏 JSON / 非对象 → 拒
+  const bad = await hrCli(['hr', 'report', evalId, 'not-json'])
+  assert.equal(bad.json.ok, false)
+  await hrCli(['hr', 'report', evalId, '{"failed":true,"error":"cleanup"}'])
 })

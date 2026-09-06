@@ -381,12 +381,20 @@ func VerifyAgentToken(token string) (agentID string, companyID *string, ok bool)
 	return claims.Sub, claims.CompanyID, true
 }
 
-// MintAgentRuntimeToken:仅当 agent 真分配在该 computer(同租户)。
+// MintAgentRuntimeToken:仅当 agent 真分配在该 computer(同租户);
+// #346:编外 HR 实体(hr-<companyId>)按 hr_agents 指派同权铸造。
 func MintAgentRuntimeToken(ctx context.Context, db *sql.DB, computerID, agentID string) (string, int, bool) {
 	var companyID sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT company_id FROM participants
 		 WHERE id = $1 AND kind = 'agent' AND computer_id = $2 LIMIT 1`, agentID, computerID).Scan(&companyID)
+	if err != nil && strings.HasPrefix(agentID, "hr-") {
+		companyID = sql.NullString{}
+		err = db.QueryRowContext(ctx, `
+			SELECT company_id::text FROM hr_agents
+			 WHERE company_id = $1 AND computer_id = $2 LIMIT 1`,
+			strings.TrimPrefix(agentID, "hr-"), computerID).Scan(&companyID)
+	}
 	if err != nil {
 		return "", 0, false
 	}
@@ -436,6 +444,13 @@ func ListAgentsForComputer(ctx context.Context, db *sql.DB, computerID string) [
 		SELECT id, name, role, system_prompt, engine, model, fast_model, chat_register,
 		       COALESCE(company_id, '') FROM participants
 		 WHERE computer_id = $1 AND kind = 'agent' AND departed_at IS NULL
+		 UNION ALL
+		-- #346:编外 HR 实体以虚拟 agent 行上机(daemon 零改动托管其 runner;
+		-- id=hr-<companyId> 即观测归因键,与花名册/participants 无涉)。
+		SELECT 'hr-' || h.company_id, 'HR Agent', NULL, h.system_prompt, h.engine,
+		       NULL, NULL, NULL, h.company_id
+		  FROM hr_agents h
+		 WHERE h.computer_id = $1 AND h.engine IS NOT NULL
 		 ORDER BY name ASC`, computerID)
 	if err != nil {
 		return []AgentEntry{}

@@ -21,6 +21,10 @@ type Service struct {
 
 	// Sched:唤醒调度/议程域(#140 收官刀自本包拆出,构造时接线)。
 	Sched *sched.S
+
+	// HrCli:#346 hr CLI 面(context/report)。domains/hr 挂载后由 main
+	// 注入闭包(构造期 hr 域未建,避免 runtime→domains 静态依赖)。
+	HrCli func(ctx context.Context, p agent.Parsed) agent.Result
 }
 
 func New(db *sql.DB, rdb redis.UniversalClient) *Service {
@@ -33,7 +37,7 @@ func New(db *sql.DB, rdb redis.UniversalClient) *Service {
 	core.SetWakeHook(func(agentID, reason string, conversationID *string) {
 		schedS.WakeOne(agentID, reason, conversationID, nil, nil)
 	})
-	wireDomainDispatch(core)
+	wireDomainDispatch(svc)
 	return svc
 }
 
