@@ -148,14 +148,25 @@ async function provisionOneOffStack() {
   if (exited) return { ok: false, reason: 'provision-failed' }
   // 容器名在 run【之前】就登记(rm -f 打不存在的名字只是无害报错)——
   // 拆栈不再依赖 run 成功与否;局部 stack 引用不被信号置 null 波及。
-  const stack = { pg: `cumora-it-pg-${id}`, redis: `cumora-it-redis-${id}`, dbUrl: null, redisUrl: null }
-  const { pg, redis: rd } = stack
-  autoStack = stack // 预登记:任何时刻收信号,teardown 都有两个名字可 rm
+  // net:专用 bridge 网络(#346 环境坑修复)——宿主 LAN 若落在 docker 默认
+  // 桥段(实测 172.17.0.0/17 Wi-Fi 与 docker0 /16 撞段),host→容器流量
+  // 被更长前缀的 LAN 路由抢走,pg 一律 ECONNRESET。自定义网络不指定子网
+  // 时 docker 从默认池分配,默认池 172.17/16 已被 docker0 占用必被跳过,
+  // 按构造免疫此撞段。
+  const stack = { pg: `cumora-it-pg-${id}`, redis: `cumora-it-redis-${id}`, net: `cumora-it-net-${id}`, dbUrl: null, redisUrl: null }
+  const { pg, redis: rd, net } = stack
+  autoStack = stack // 预登记:任何时刻收信号,teardown 都有名字可 rm
+  const netRun = await runCmd('docker', ['network', 'create', net], 60_000)
+  if (netRun.code !== 0) {
+    console.error(`[integration] docker network create failed: ${(netRun.err.trim() || 'timeout/no-output').slice(0, 300)}`)
+    autoStack = null
+    return { ok: false, reason: 'provision-failed' }
+  }
   // 与 CI/scratch 同款镜像(pgvector 为迁移所需;本机两者皆有缓存,
   // 拉取仅首次)。POSTGRES_* 与 CI services 块同参。run 宽超时:首次
   // 拉取数百 MB,30s 必掐死(#199 评审 P2)。
   const pgRun = await runCmd('docker', [
-    'run', '-d', '--name', pg, '-p', '127.0.0.1::5432',
+    'run', '-d', '--name', pg, '--network', net, '-p', '127.0.0.1::5432',
     '-e', 'POSTGRES_USER=cumora', '-e', 'POSTGRES_PASSWORD=cumora', '-e', 'POSTGRES_DB=cumora_test',
     'pgvector/pgvector:pg16',
   ], 300_000)
@@ -165,6 +176,7 @@ async function provisionOneOffStack() {
     // 无人调 teardown —— 就地 rm 镜像 redis 失败分支(评审 P2)。信号
     // 路径不受影响(earlySignal 拆预登记名,rm 不存在的名字无害)。
     await runCmd('docker', ['rm', '-f', '-v', pg])
+    await runCmd('docker', ['network', 'rm', net])
     autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -172,11 +184,12 @@ async function provisionOneOffStack() {
   // 这里只需停止后续起栈,不必重复 rm。
   if (exited || autoStack !== stack) return { ok: false, reason: 'provision-failed' }
   const rdRun = await runCmd('docker', [
-    'run', '-d', '--name', rd, '-p', '127.0.0.1::6379', 'redis:7',
+    'run', '-d', '--name', rd, '--network', net, '-p', '127.0.0.1::6379', 'redis:7',
   ], 300_000)
   if (rdRun.code !== 0) {
     console.error(`[integration] docker run redis failed: ${(rdRun.err.trim() || 'timeout/no-output').slice(0, 500)}`)
     await runCmd('docker', ['rm', '-f', '-v', pg])
+    await runCmd('docker', ['network', 'rm', net])
     autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -187,6 +200,7 @@ async function provisionOneOffStack() {
   if (!ready) {
     console.error('[integration] one-off stack never became ready — tearing down')
     await runCmd('docker', ['rm', '-f', '-v', pg, rd])
+    await runCmd('docker', ['network', 'rm', net])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -195,6 +209,7 @@ async function provisionOneOffStack() {
   if (!pgPort || !rdPort) {
     console.error('[integration] could not discover one-off stack ports')
     await runCmd('docker', ['rm', '-f', '-v', pg, rd])
+    await runCmd('docker', ['network', 'rm', net])
     if (autoStack === stack) autoStack = null
     return { ok: false, reason: 'provision-failed' }
   }
@@ -209,15 +224,24 @@ async function provisionOneOffStack() {
  *  也拆,rm -f 对不存在者无害)。两段各有 10s 硬上限:CLI 陷 D-state
  *  不回 'exit' 时 promise 永悬,不能把退出流程一起挂死(#199 复核 P2/P3)。 */
 async function teardownAutoStack() {
-  const names = autoStack ? [autoStack.pg, autoStack.redis].filter(Boolean) : []
+  const names = autoStack
+    ? [autoStack.pg, autoStack.redis, autoStack.net].filter(Boolean).map((n, i) => ({ n, isNet: autoStack.net === n && i === 2 }))
+    : []
   autoStack = null
   await Promise.race([
     Promise.allSettled([...inflightCmds]),
     new Promise((r) => setTimeout(r, 10_000)),
   ])
   if (names.length === 0) return
+  // 容器先拆,网络后拆(网内还有接口时 network rm 会拒);net 用 network rm。
+  const containers = names.filter((x) => !x.isNet).map((x) => x.n)
+  const nets = names.filter((x) => x.isNet).map((x) => x.n)
   await Promise.race([
-    Promise.allSettled(names.map((n) => runCmd('docker', ['rm', '-f', '-v', n]))),
+    Promise.allSettled(containers.map((n) => runCmd('docker', ['rm', '-f', '-v', n]))),
+    new Promise((r) => setTimeout(r, 10_000)),
+  ])
+  await Promise.race([
+    Promise.allSettled(nets.map((n) => runCmd('docker', ['network', 'rm', n]))),
     new Promise((r) => setTimeout(r, 10_000)),
   ])
 }

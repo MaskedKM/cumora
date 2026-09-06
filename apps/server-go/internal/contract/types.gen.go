@@ -151,6 +151,21 @@ const (
 	Zcode  EngineId = "zcode"
 )
 
+// Defines values for HrEvaluationStatus.
+const (
+	HrEvaluationStatusDone    HrEvaluationStatus = "done"
+	HrEvaluationStatusFailed  HrEvaluationStatus = "failed"
+	HrEvaluationStatusPending HrEvaluationStatus = "pending"
+	HrEvaluationStatusRunning HrEvaluationStatus = "running"
+)
+
+// Defines values for HrEvaluationTrigger.
+const (
+	HrEvaluationTriggerEvent    HrEvaluationTrigger = "event"
+	HrEvaluationTriggerManual   HrEvaluationTrigger = "manual"
+	HrEvaluationTriggerPeriodic HrEvaluationTrigger = "periodic"
+)
+
 // Defines values for InvitationRole.
 const (
 	InvitationRoleAdmin  InvitationRole = "admin"
@@ -177,13 +192,13 @@ const (
 
 // Defines values for InvitationPreviewStatus.
 const (
-	InvitationPreviewStatusAlreadyMember InvitationPreviewStatus = "already_member"
-	InvitationPreviewStatusConsumed      InvitationPreviewStatus = "consumed"
-	InvitationPreviewStatusExpired       InvitationPreviewStatus = "expired"
-	InvitationPreviewStatusNotFound      InvitationPreviewStatus = "not_found"
-	InvitationPreviewStatusRevoked       InvitationPreviewStatus = "revoked"
-	InvitationPreviewStatusValid         InvitationPreviewStatus = "valid"
-	InvitationPreviewStatusWrongEmail    InvitationPreviewStatus = "wrong_email"
+	AlreadyMember InvitationPreviewStatus = "already_member"
+	Consumed      InvitationPreviewStatus = "consumed"
+	Expired       InvitationPreviewStatus = "expired"
+	NotFound      InvitationPreviewStatus = "not_found"
+	Revoked       InvitationPreviewStatus = "revoked"
+	Valid         InvitationPreviewStatus = "valid"
+	WrongEmail    InvitationPreviewStatus = "wrong_email"
 )
 
 // Defines values for InvitationWithTokenRole.
@@ -513,10 +528,10 @@ const (
 
 // Defines values for FinishRunJSONBodyStatus.
 const (
-	Completed FinishRunJSONBodyStatus = "completed"
-	Failed    FinishRunJSONBodyStatus = "failed"
-	Running   FinishRunJSONBodyStatus = "running"
-	Skipped   FinishRunJSONBodyStatus = "skipped"
+	FinishRunJSONBodyStatusCompleted FinishRunJSONBodyStatus = "completed"
+	FinishRunJSONBodyStatusFailed    FinishRunJSONBodyStatus = "failed"
+	FinishRunJSONBodyStatusRunning   FinishRunJSONBodyStatus = "running"
+	FinishRunJSONBodyStatusSkipped   FinishRunJSONBodyStatus = "skipped"
 )
 
 // Defines values for StatusHeartbeatJSONBodyStatus.
@@ -1050,6 +1065,30 @@ type HrAgentConfigInput struct {
 	Engine       *string `json:"engine,omitempty"`
 	SystemPrompt *string `json:"systemPrompt,omitempty"`
 }
+
+// HrEvaluation defines model for HrEvaluation.
+type HrEvaluation struct {
+	CreatedAt  time.Time  `json:"createdAt"`
+	Error      *string    `json:"error"`
+	FinishedAt *time.Time `json:"finishedAt"`
+	Id         string     `json:"id"`
+
+	// InputSnapshot 仅详情(getHrEvaluation)携带
+	InputSnapshot *map[string]interface{} `json:"inputSnapshot"`
+	Payload       *map[string]interface{} `json:"payload"`
+	Status        HrEvaluationStatus      `json:"status"`
+
+	// TargetAgentId null=全员轮
+	TargetAgentId *string             `json:"targetAgentId"`
+	Trigger       HrEvaluationTrigger `json:"trigger"`
+	UpdatedAt     time.Time           `json:"updatedAt"`
+}
+
+// HrEvaluationStatus defines model for HrEvaluation.Status.
+type HrEvaluationStatus string
+
+// HrEvaluationTrigger defines model for HrEvaluation.Trigger.
+type HrEvaluationTrigger string
 
 // Id defines model for Id.
 type Id struct {
@@ -2100,6 +2139,12 @@ type SendEmailJSONBody struct {
 	To      []string  `json:"to"`
 }
 
+// CreateHrEvaluationJSONBody defines parameters for CreateHrEvaluation.
+type CreateHrEvaluationJSONBody struct {
+	// TargetAgentId 缺省=全员
+	TargetAgentId *string `json:"targetAgentId,omitempty"`
+}
+
 // SetInboxMutesJSONBody defines parameters for SetInboxMutes.
 type SetInboxMutesJSONBody struct {
 	Types []string `json:"types"`
@@ -2655,6 +2700,9 @@ type SendEmailJSONRequestBody SendEmailJSONBody
 
 // PutHrAgentConfigJSONRequestBody defines body for PutHrAgentConfig for application/json ContentType.
 type PutHrAgentConfigJSONRequestBody = HrAgentConfigInput
+
+// CreateHrEvaluationJSONRequestBody defines body for CreateHrEvaluation for application/json ContentType.
+type CreateHrEvaluationJSONRequestBody CreateHrEvaluationJSONBody
 
 // SetInboxMutesJSONRequestBody defines body for SetInboxMutes for application/json ContentType.
 type SetInboxMutesJSONRequestBody SetInboxMutesJSONBody

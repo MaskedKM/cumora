@@ -38,10 +38,12 @@ type SteerPayload struct {
 }
 
 // BackgroundBrief: idle/scanner 合成唤醒携带的内部简报(渲染为普通模型输入)。
+// Ref:#346 任务引用(如评估轮 id)——daemon 侧失败回报寻址用,可空。
 type BackgroundBrief struct {
 	Source string `json:"source,omitempty"`
 	Title  string `json:"title"`
 	Body   string `json:"body"`
+	Ref    string `json:"ref,omitempty"`
 }
 
 // WakeOpts: 唤醒附加选项(idleReason 只渲染在 idle 合成唤醒上)。
@@ -140,13 +142,19 @@ func steerEnabled() bool {
 // wakeOne: scheduler.wakeOne 等价——预算闸 → Deliver(wake)→ busy 时
 // 补发 steer(+steer-ack typing)→ 0 接收者记日志(inbox 持久兜底)。
 func (s *S) WakeOne(agentID, reason string, conversationID *string, steer *SteerPayload, opts *WakeOpts) {
+	s.WakeOneCount(agentID, reason, conversationID, steer, opts)
+}
+
+// WakeOneCount:WakeOne 的计数形(#346)——返回 wake 帧的实际接收者数。
+// brief 类一次性投递的调用方(HR 评估)用它判 daemon 离线并回收任务。
+func (s *S) WakeOneCount(agentID, reason string, conversationID *string, steer *SteerPayload, opts *WakeOpts) int {
 	if s.Bus == nil {
 		slog.Info("[scheduler] daemon offline — wake deferred to reconnect", "agent", agentID, "reason", reason)
-		return
+		return 0
 	}
 	if (reason == "idle" || reason == "background_scan") && !consumeLowPriorityWakeBudget() {
 		slog.Warn("[scheduler] synthetic wake dropped: budget exceeded", "agent", agentID, "reason", reason)
-		return
+		return 0
 	}
 	payload := map[string]any{
 		"kind":           "wake",
@@ -170,7 +178,7 @@ func (s *S) WakeOne(agentID, reason string, conversationID *string, steer *Steer
 	delivered, err := s.Bus.Deliver(agentID, payload)
 	if err != nil {
 		slog.Warn("[scheduler] wake deliver failed", "agent", agentID, "err", err)
-		return
+		return 0
 	}
 
 	// 轮中注入:busy 租约存在 → 同内容补发 steer;steer-ack typing 让
@@ -203,6 +211,7 @@ func (s *S) WakeOne(agentID, reason string, conversationID *string, steer *Steer
 		// 休眠),无可拉起对象;唤醒经 inbox 持久,重连排水兜底。
 		slog.Info("[scheduler] daemon offline — wake deferred to reconnect", "agent", agentID, "reason", reason)
 	}
+	return int(delivered)
 }
 
 /* ───────── 静音投递契约 ───────── */

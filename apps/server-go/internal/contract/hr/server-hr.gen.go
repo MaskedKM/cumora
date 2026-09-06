@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/oapi-codegen/runtime"
 )
 
 // ServerInterface represents all server handlers.
@@ -19,6 +21,15 @@ type ServerInterface interface {
 	// HR Agent 配置写(owner/admin;prompt/computer/engine)
 	// (PUT /api/hr)
 	PutHrAgentConfig(w http.ResponseWriter, r *http.Request)
+	// 评估轮列表(owner/admin)
+	// (GET /api/hr/evaluations)
+	ListHrEvaluations(w http.ResponseWriter, r *http.Request)
+	// 手动触发评估(单个/全员;owner/admin;在飞互斥)
+	// (POST /api/hr/evaluations)
+	CreateHrEvaluation(w http.ResponseWriter, r *http.Request)
+	// 评估轮详情(含 payload 与输入快照;owner/admin)
+	// (GET /api/hr/evaluations/{id})
+	GetHrEvaluation(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -61,6 +72,77 @@ func (siw *ServerInterfaceWrapper) PutHrAgentConfig(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutHrAgentConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListHrEvaluations operation middleware
+func (siw *ServerInterfaceWrapper) ListHrEvaluations(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListHrEvaluations(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateHrEvaluation operation middleware
+func (siw *ServerInterfaceWrapper) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateHrEvaluation(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHrEvaluation operation middleware
+func (siw *ServerInterfaceWrapper) GetHrEvaluation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHrEvaluation(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -192,6 +274,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr", wrapper.GetHrAgent)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/hr", wrapper.PutHrAgentConfig)
+	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations", wrapper.ListHrEvaluations)
+	m.HandleFunc("POST "+options.BaseURL+"/api/hr/evaluations", wrapper.CreateHrEvaluation)
+	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations/{id}", wrapper.GetHrEvaluation)
 
 	return m
 }

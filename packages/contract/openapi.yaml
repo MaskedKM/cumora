@@ -721,6 +721,55 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HrAgent' }
+  /api/hr/evaluations:
+    post:
+      tags: [hr]
+      operationId: createHrEvaluation
+      summary: 手动触发评估(单个/全员;owner/admin;在飞互斥)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetAgentId: { type: string, description: 缺省=全员 }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrEvaluation' }
+        '409': { description: 该公司已有在飞评估 }
+    get:
+      tags: [hr]
+      operationId: listHrEvaluations
+      summary: 评估轮列表(owner/admin)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/HrEvaluation' }
+  /api/hr/evaluations/{id}:
+    get:
+      tags: [hr]
+      operationId: getHrEvaluation
+      summary: 评估轮详情(含 payload 与输入快照;owner/admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrEvaluation' }
+        '404': { description: 无此轮或不属本公司 }
   /api/agents:
     post:
       tags: [agents]
@@ -3975,6 +4024,20 @@ components:
         systemPrompt: { type: string }
         computerId: { type: string }
         engine: { type: string }
+    HrEvaluation:
+      type: object
+      required: [id, trigger, status, targetAgentId, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        trigger: { type: string, enum: [manual, periodic, event] }
+        status: { type: string, enum: [pending, running, done, failed] }
+        targetAgentId: { type: string, nullable: true, description: null=全员轮 }
+        error: { type: string, nullable: true }
+        payload: { type: object, additionalProperties: true, nullable: true }
+        inputSnapshot: { type: object, additionalProperties: true, nullable: true, description: 仅详情(getHrEvaluation)携带 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
     Whisper:
       type: object
       required: [id, kind, title, members, createdAt, updatedAt, msgCount]

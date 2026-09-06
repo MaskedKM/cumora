@@ -233,7 +233,12 @@ func main() {
 	domagents.Mount(coreRouter, pool,
 		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
 		runtimeSvc.GenerateAgentAvatar)
-	domhr.Mount(coreRouter, pool) // #345 HR Agent 配置面(编外隐形实体,ADR 0007)
+	domhrSrv := domhr.Mount(coreRouter, pool, func(agentID, reason string, brief *sched.BackgroundBrief) int {
+		// #346:评估触发唤醒(brief 即任务书,随 wake 载荷一次性下发;
+		// 返回接收数供 0 接收者回收轮次)
+		return runtimeSvc.Sched.WakeOneCount(agentID, reason, nil, nil, &sched.WakeOpts{BackgroundBrief: brief})
+	})
+	runtimeSvc.HrCli = domhrSrv.Cli
 	devtools.Mount(coreRouter, pool)
 	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
 	// users/waitlist/stats/observability-llm 子面留待完整化票。
