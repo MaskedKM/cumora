@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -348,8 +349,13 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	}
 
 	// 五路聚合:失败记日志降级(缺表/部分 schema 不阻断触发;快照里缺路=
-	// 零值,报告可解释)—— 评审 P0 教训:静默吞错曾让 runs 路整窗恒零
-	// (agent_runs 无 created_at 列,应为 started_at)而无人知晓。
+	// 零值,报告可解释)—— 评审 P0 教训 ×3(全部实测自 standing-stack 日志):
+	// ①静默吞错让错误不可见;②ANY($N) 直传 []string 经 database/sql 不绑
+	// (库内惯例:数组字面量 + ::text[],conversations.arrayLiteral 同款);
+	// ③($N || ' days')::interval 令 PG 把参数推断成 text(OID 25),pgx
+	// 编不出 int→text —— 窗口参数以字符串传入。五路全部显式转型绑定。
+	idsArr := pgTextArray(ids)
+	windowDaysArg := strconv.Itoa(inputWindowDays)
 	collect := func(query func(rows *sql.Rows), q string, args ...any) {
 		rows, err := s.DB.QueryContext(ctx, q, args...)
 		if err != nil {
@@ -373,8 +379,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	}, `SELECT agent_id, COUNT(*)::int, COUNT(*) FILTER (WHERE status = 'failed')::int,
 		       COALESCE(SUM(token_count), 0)::bigint, COALESCE(SUM(cost_usd), 0), MAX(started_at)
 		  FROM agent_runs
-		 WHERE company_id = $1 AND agent_id = ANY($2) AND started_at > NOW() - ($3 || ' days')::interval
-		 GROUP BY agent_id`, companyID, ids, inputWindowDays)
+		 WHERE company_id = $1 AND agent_id = ANY($2::text[]) AND started_at > NOW() - ($3 || ' days')::interval
+		 GROUP BY agent_id`, companyID, idsArr, windowDaysArg)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -389,8 +395,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		}
 	}, `SELECT agent_id, COUNT(*)::int, COALESCE(SUM(cost_usd), 0)
 		  FROM llm_calls
-		 WHERE company_id = $1 AND agent_id = ANY($2) AND created_at > NOW() - ($3 || ' days')::interval
-		 GROUP BY agent_id`, companyID, ids, inputWindowDays)
+		 WHERE company_id = $1 AND agent_id = ANY($2::text[]) AND created_at > NOW() - ($3 || ' days')::interval
+		 GROUP BY agent_id`, companyID, idsArr, windowDaysArg)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -404,8 +410,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		}
 	}, `SELECT agent_id, COUNT(*)::int, COUNT(*) FILTER (WHERE actionable)::int
 		  FROM agent_triages
-		 WHERE agent_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
-		 GROUP BY agent_id`, ids, inputWindowDays)
+		 WHERE agent_id = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY agent_id`, idsArr, windowDaysArg)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -418,8 +424,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT assignee_id, COUNT(*)::int FROM board_cards
-		 WHERE assignee_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
-		 GROUP BY assignee_id`, ids, inputWindowDays)
+		 WHERE assignee_id = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY assignee_id`, idsArr, windowDaysArg)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -433,8 +439,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		}
 	}, `SELECT created_by, COUNT(*)::int, COUNT(*) FILTER (WHERE pr_state = 'merged')::int
 		  FROM card_deliveries
-		 WHERE created_by = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
-		 GROUP BY created_by`, ids, inputWindowDays)
+		 WHERE created_by = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY created_by`, idsArr, windowDaysArg)
 
 	collect(func(rows *sql.Rows) {
 		for rows.Next() {
@@ -457,8 +463,8 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 			}
 		}
 	}, `SELECT assignee_id, status, COUNT(*)::int FROM calendar_events
-		 WHERE assignee_id = ANY($1) AND created_at > NOW() - ($2 || ' days')::interval
-		 GROUP BY assignee_id, status`, ids, inputWindowDays)
+		 WHERE assignee_id = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
+		 GROUP BY assignee_id, status`, idsArr, windowDaysArg)
 
 	targets := make([]map[string]any, 0, len(order))
 	for _, id := range order {
@@ -473,6 +479,18 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 }
 
 /* ───────── 小件 ───────── */
+
+// pgTextArray:[]string → PG 数组字面量。database/sql 不直接绑切片参数,
+// 库内既有惯例即此形态(conversations.arrayLiteral 同款)。
+func pgTextArray(ids []string) string {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		escaped := strings.ReplaceAll(id, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		parts = append(parts, `"`+escaped+`"`)
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
 
 func nilIfEmpty(s string) any {
 	if s == "" {

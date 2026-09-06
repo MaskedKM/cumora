@@ -270,14 +270,21 @@ async function collectSSE(url: string, token: string, ms: number): Promise<strin
   return frames
 }
 
-/** 保持一条 wake-stream 订阅(评估触发要求接收者>0,否则 503 收轮)。 */
+/** 保持一条 wake-stream 订阅(评估触发要求接收者>0,否则 503 收轮)。
+ * 确定性等订阅建好:拿到服务端连上即发的 ready/ping 首帧才返回(裸 sleep
+ * 赌时序会抖 —— 503!==201 的来源)。 */
 async function holdWake(): Promise<() => void> {
   const ac = new AbortController()
-  void fetch(`${mirror.baseUrl()}/runtime/wake-stream`, {
+  const res = await fetch(`${mirror.baseUrl()}/runtime/wake-stream`, {
     headers: { authorization: `Bearer ${hrToken()}`, accept: 'text/event-stream' },
     signal: ac.signal,
-  }).catch(() => { /* 连接期失败由调用侧触发结果暴露 */ })
-  await new Promise((r) => setTimeout(r, 300)) // 等订阅注册进 Redis 通道
+  })
+  assert.equal(res.status, 200)
+  const reader = (res.body as any).getReader() as { read(): Promise<{ done: boolean; value?: Uint8Array }> }
+  await reader.read() // 首帧(ready/ping)= Redis 通道已订阅
+  void (async () => {
+    try { for (;;) { const { done } = await reader.read(); if (done) break } } catch { /* aborted */ }
+  })()
   return () => ac.abort()
 }
 
