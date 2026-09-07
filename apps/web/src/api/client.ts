@@ -902,7 +902,11 @@ export const api = {
   本段 createProject 为唯一新建面 —— folderPath 留空即在受管目录自动建盘
   (ADR 0008 §3);deleteProject 为生命周期唯一出口(ADR 0008 §6)。) */
   createProject: (name: string, folderPath?: string) =>
-    http<Schemas['Project']>('/projects', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
+    // 返回类型 = 契约 POST 201 内联子集(无两个 count/时间戳);调用方
+    // 需要全字段就重拉列表,不在本地造数据。
+    http<{ id: string; name: string; description: string; color: string | null; status: string; folderPath: string; isDefault: boolean }>(
+      '/projects', { method: 'POST', body: JSON.stringify({ name, folderPath }) },
+    ),
   deleteProject: (id: string) =>
     http<{ ok: boolean; id: string; folderKept: string | null }>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   addProjectMember: (id: string, participantId: string) =>

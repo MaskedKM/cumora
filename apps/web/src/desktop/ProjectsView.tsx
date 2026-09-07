@@ -347,14 +347,16 @@ export function ProjectsView() {
   }
 
   // ADR 0008 §3:folderPath 留空即在受管目录自动建盘,名称是唯一必填。
+  // 创建后重拉列表(而非本地 append):POST 201 是内联子集形状(无两个
+  // count/时间戳),重拉拿全字段,服务端排序(默认置顶)也天然正确。
   const submitCreate = async () => {
     if (!newProjectName.trim()) return
     setManageError(null)
     try {
       const created = await api.createProject(newProjectName.trim(), newProjectFolder.trim() || undefined)
       resetCreate()
-      // POST 201 响应不含两个 count(契约内联对象),追加行补 0。
-      setList((rows) => [...rows, { ...created, conversationCount: 0, explicitMemberCount: 0 }])
+      const rows = await api.listProjects()
+      setList(rows)
       setSelectedId(created.id)
     } catch (e) {
       setManageError(e instanceof Error ? e.message : String(e))
@@ -365,6 +367,7 @@ export function ProjectsView() {
   // 原地保留(确认文案明示);is_default 项目拒删(服务端 403 兜底)。
   const deleteSelectedProject = async () => {
     if (!selectedId || !detail || detail.isDefault) return
+    if (!guardDirty()) return
     if (!confirm(t('proj.deleteConfirm'))) return
     setManageError(null)
     try {
@@ -408,7 +411,10 @@ export function ProjectsView() {
                 </span>
               )}
               {p.conversationCount > 0 && (
-                <span className="ml-auto shrink-0 text-[11px] text-ink-400" title={t('proj.convoCountPlural', { n: p.conversationCount })}>
+                <span
+                  className="ml-auto shrink-0 text-[11px] text-ink-400"
+                  title={p.conversationCount === 1 ? t('proj.convoCount', { n: p.conversationCount }) : t('proj.convoCountPlural', { n: p.conversationCount })}
+                >
                   {p.conversationCount}
                 </span>
               )}
