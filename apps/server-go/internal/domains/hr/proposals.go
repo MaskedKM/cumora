@@ -15,13 +15,22 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/contract"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/agents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
+)
+
+// 哨兵错误(approve claim 事务内分类)。errNotFound 与 changes.go 共用。
+var (
+	errAlreadyDecided   = errors.New("proposal already decided")
+	errMalformedProfile = errors.New("proposal profile is malformed")
+	errAgentsUnwired    = errors.New("agents domain not wired")
 )
 
 // reportProposal:报告 payload 的单条提案。
@@ -62,11 +71,15 @@ func recordProposals(ctx context.Context, tx *sql.Tx, companyID, evaluationID st
 		if p.Reason != "" && agent.UTF16Len(p.Reason) > 2000 {
 			return errors.New("proposals[].reason exceeds 2000 UTF-16 units")
 		}
+		// 校验与 CreateAgentCore 同步(trim 语义对齐,评审 P1:否则
+		// 空白档案"落库合格、执行时 400",提案永久卡 open)
 		switch p.Kind {
 		case "hire":
 			b, _ := json.Marshal(p.Profile)
 			var hp hireProfile
-			if json.Unmarshal(b, &hp) != nil || hp.Name == "" || len(hp.SystemPrompt) < 10 {
+			if json.Unmarshal(b, &hp) != nil ||
+				strings.TrimSpace(hp.Name) == "" ||
+				len(strings.TrimSpace(hp.SystemPrompt)) < 10 {
 				return errors.New("hire proposal requires profile.name and profile.systemPrompt (>= 10 chars)")
 			}
 		case "offboard":
@@ -137,13 +150,67 @@ func (s *Server) ApproveHrProposal(w http.ResponseWriter, r *http.Request, id st
 	if !ok {
 		return
 	}
+	// 行锁 claim(评审 P0):并发双 approve / approve·reject 交错的执行面
+	// 必须互斥 —— SELECT ... FOR UPDATE 持锁到处置 UPDATE 落库,第二个
+	// 进来时状态已非 open,不会再执行。执行(Core 走自己的连接)在锁内
+	// 发生,锁保证同一提案的执行至多一次。
 	var kind, agentID string
 	var profile []byte
-	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT kind, COALESCE(agent_id, ''), profile FROM hr_proposals
-		 WHERE id = $1 AND company_id = $2 AND status = 'open' LIMIT 1`, id, companyID).
-		Scan(&kind, &agentID, &profile)
-	if err == sql.ErrNoRows {
+	var createdAt time.Time
+	claim := func() error {
+		return db.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+			err := tx.QueryRowContext(r.Context(), `
+				SELECT kind, COALESCE(agent_id, ''), profile, created_at FROM hr_proposals
+				 WHERE id = $1 AND company_id = $2 AND status = 'open' LIMIT 1 FOR UPDATE`, id, companyID).
+				Scan(&kind, &agentID, &profile, &createdAt)
+			if err == sql.ErrNoRows {
+				return errNotFound
+			}
+			if err != nil {
+				return err
+			}
+			var resultAgent string
+			var execErr error
+			if kind == "hire" {
+				var hp hireProfile
+				if json.Unmarshal(profile, &hp) != nil {
+					return errMalformedProfile
+				}
+				if s.Agents == nil {
+					return errAgentsUnwired
+				}
+				resultAgent, execErr = s.Agents.CreateAgentCore(r.Context(), uid, companyID, agents.AgentCreateInput{
+					Name: hp.Name, Role: hp.Role, Bio: hp.Bio, SystemPrompt: hp.SystemPrompt,
+					Model: hp.Model, FastModel: hp.FastModel,
+				})
+			} else {
+				if s.Agents == nil {
+					return errAgentsUnwired
+				}
+				execErr = s.Agents.OffboardAgentCore(r.Context(), agentID, companyID)
+			}
+			if execErr != nil {
+				return execErr // 锁回滚,提案保持 open 可重试
+			}
+			res, err := tx.ExecContext(r.Context(), `
+				UPDATE hr_proposals SET status = 'approved', decided_by = $3, decided_at = NOW(),
+				       result_agent_id = NULLIF($4, '')
+				 WHERE id = $1 AND company_id = $2 AND status = 'open'`, id, companyID, uid, resultAgent)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errAlreadyDecided
+			}
+			return nil
+		})
+	}
+	err := claim()
+	var badInput agents.ErrAgentInput
+	var conflict agents.ErrAgentConflict
+	switch {
+	case err == nil:
+	case err == errNotFound:
 		// 区分"不存在/异司"与"已处置"
 		var exists bool
 		_ = s.DB.QueryRowContext(r.Context(),
@@ -154,67 +221,54 @@ func (s *Server) ApproveHrProposal(w http.ResponseWriter, r *http.Request, id st
 		}
 		httpx.WriteError(w, http.StatusConflict, "proposal already decided")
 		return
-	}
-	if err != nil {
+	case err == errAlreadyDecided:
+		httpx.WriteError(w, http.StatusConflict, "proposal already decided")
+		return
+	case err == errMalformedProfile:
+		httpx.WriteError(w, http.StatusBadRequest, "proposal profile is malformed")
+		return
+	case err == errAgentsUnwired:
+		httpx.WriteError(w, http.StatusInternalServerError, "agents domain not wired")
+		return
+	case errors.As(err, &badInput):
+		httpx.WriteError(w, http.StatusBadRequest, badInput.Msg)
+		return
+	case errors.As(err, &conflict):
+		httpx.WriteError(w, http.StatusConflict, conflict.Msg)
+		return
+	case errors.Is(err, agents.ErrAgentAlreadyDeparted),
+		errors.Is(err, agents.ErrAgentNotFound),
+		errors.Is(err, agents.ErrAgentNotAgent):
+		// offboard 目标已不在(离职/消失)= 已无需执行,409 语义
+		httpx.WriteError(w, http.StatusConflict, "offboard target is already gone")
+		return
+	default:
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 
-	var resultAgent string
-	var execErr error
-	if kind == "hire" {
-		var hp hireProfile
-		if json.Unmarshal(profile, &hp) != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "proposal profile is malformed")
-			return
-		}
-		if s.Agents == nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "agents domain not wired")
-			return
-		}
-		resultAgent, execErr = s.Agents.CreateAgentCore(r.Context(), uid, companyID, agents.AgentCreateInput{
-			Name: hp.Name, Role: hp.Role, Bio: hp.Bio, SystemPrompt: hp.SystemPrompt,
-			Model: hp.Model, FastModel: hp.FastModel,
-		})
-	} else {
-		if s.Agents == nil {
-			httpx.WriteError(w, http.StatusInternalServerError, "agents domain not wired")
-			return
-		}
-		execErr = s.Agents.OffboardAgentCore(r.Context(), agentID, companyID)
-	}
-	if execErr != nil {
-		// 执行失败:提案保持 open 可重试(错误面带语义)
-		var badInput agents.ErrAgentInput
-		var conflict agents.ErrAgentConflict
-		switch {
-		case errors.As(execErr, &badInput):
-			httpx.WriteError(w, http.StatusBadRequest, badInput.Msg)
-		case errors.As(execErr, &conflict):
-			httpx.WriteError(w, http.StatusConflict, conflict.Msg)
-		case errors.Is(execErr, agents.ErrAgentAlreadyDeparted):
-			httpx.WriteError(w, http.StatusConflict, execErr.Error())
-		case errors.Is(execErr, agents.ErrAgentNotFound), errors.Is(execErr, agents.ErrAgentNotAgent):
-			httpx.WriteError(w, http.StatusConflict, execErr.Error())
-		default:
-			httpx.WriteInternalError(w, r, execErr)
-		}
-		return
-	}
-
-	if _, err := s.DB.ExecContext(r.Context(), `
-		UPDATE hr_proposals SET status = 'approved', decided_by = $3, decided_at = NOW(),
-		       result_agent_id = NULLIF($4, '')
-		 WHERE id = $1 AND company_id = $2 AND status = 'open'`, id, companyID, uid, resultAgent); err != nil {
+	// 处置后回读整行返回(评审 P2:响应体须与 HrProposal 契约对齐,
+	// createdAt 是提案创建时间而非处置时间)
+	var reason string
+	var evaluationID sql.NullString
+	var decidedAt sql.NullTime
+	var resultAgent sql.NullString
+	err = s.DB.QueryRowContext(r.Context(), `
+		SELECT reason, evaluation_id, decided_at, result_agent_id FROM hr_proposals
+		 WHERE id = $1 AND company_id = $2`, id, companyID).
+		Scan(&reason, &evaluationID, &decidedAt, &resultAgent)
+	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"id": id, "kind": kind, "status": "approved",
-		"agentId":   nilIfEmpty(agentID),
-		"decidedBy": uid, "decidedAt": time.Now().UTC(),
-		"resultAgentId": nilIfEmpty(resultAgent),
-		"createdAt":     time.Now().UTC(),
+		"agentId": nilIfEmpty(agentID), "profile": rawJSON(profile), "reason": reason,
+		"evaluationId":  nullStr(evaluationID),
+		"decidedBy":     uid,
+		"decidedAt":     nullTime(decidedAt),
+		"resultAgentId": nullStr(resultAgent),
+		"createdAt":     createdAt.UTC(),
 	})
 }
 

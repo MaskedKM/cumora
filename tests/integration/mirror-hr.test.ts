@@ -837,3 +837,48 @@ test('[mirror] hr: 批准 offboard — 软删可复聘 + 拒绝路径', async ()
   assert.equal((await call(`/hr/proposals/${victim.id}/reject`, { method: 'POST' })).status, 409)
   assert.equal((await call('/hr/proposals/hrp-nope/approve', { method: 'POST' })).status, 404)
 })
+
+test('[mirror] hr: 提案并发与失败面 — 双 approve 只执行一次;执行失败保持 open', async () => {
+  await seedComputer('cpu-hr-prop4', ['claude'])
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-prop4' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  assert.equal((await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    proposals: [{ kind: 'hire', profile: { name: 'Racer Test', systemPrompt: 'Race safely and fast.' }, reason: 'load' }],
+  })])).json.ok, true)
+  release()
+  const list = await call('/hr/proposals')
+  const hire = list.json.rows[0]
+
+  // 并发双 approve:恰好一个 200,另一 409;只建一个 agent(评审 P0)
+  const [a, b] = await Promise.all([
+    call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' }),
+    call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' }),
+  ])
+  const statuses = [a.status, b.status].sort()
+  assert.deepEqual(statuses, [200, 409], `expected one 200 one 409, got ${statuses}`)
+  const { rows: created2 } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM participants WHERE company_id = $1 AND name = 'Racer Test'`, [COMPANY],
+  )
+  assert.equal(created2[0].n, 1, 'exactly one agent created')
+
+  // 执行失败保持 open:offboard 目标已被并发路径离职 → 409,提案仍 open 可拒
+  await seedAgent('ag-prop-dead')
+  const release2 = await holdWake()
+  const created3 = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created3.status, 201)
+  assert.equal((await hrCli(['hr', 'report', created3.json.id, JSON.stringify({
+    proposals: [{ kind: 'offboard', agentId: 'ag-prop-dead', reason: 'stale' }],
+  })])).json.ok, true)
+  release2()
+  await pool.query(`UPDATE participants SET departed_at = NOW() WHERE id = 'ag-prop-dead' AND company_id = $1`, [COMPANY])
+  const deadList = await call('/hr/proposals?status=open')
+  const deadProp = deadList.json.rows[0]
+  const failApprove = await call(`/hr/proposals/${deadProp.id}/approve`, { method: 'POST' })
+  assert.equal(failApprove.status, 409)
+  assert.match(failApprove.json.error, /already gone/)
+  const still = await call('/hr/proposals?status=open')
+  assert.equal(still.json.rows.some((p: any) => p.id === deadProp.id), true, 'stays open after failed execution')
+  assert.equal((await call(`/hr/proposals/${deadProp.id}/reject`, { method: 'POST' })).status, 200)
+})

@@ -4220,7 +4220,7 @@ components:
         kind: { type: string, enum: [hire, offboard] }
         status: { type: string, enum: [open, approved, rejected] }
         agentId: { type: string, nullable: true, description: offboard 目标;hire 为 null }
-        profile: { type: object, additionalProperties: true, nullable: true, description: hire 档案草稿(name/role/bio/systemPrompt/model/engine/headcountNote) }
+        profile: { type: object, additionalProperties: true, nullable: true, description: hire 档案草稿(name/role/bio/systemPrompt/model/fastModel/headcountNote;engine 暂不入执行链) }
         reason: { type: string }
         evaluationId: { type: string, nullable: true }
         decidedBy: { type: string, nullable: true }

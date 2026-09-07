@@ -3626,7 +3626,7 @@ export interface components {
             status: "open" | "approved" | "rejected";
             /** @description offboard 目标;hire 为 null */
             agentId?: string | null;
-            /** @description hire 档案草稿(name/role/bio/systemPrompt/model/engine/headcountNote) */
+            /** @description hire 档案草稿(name/role/bio/systemPrompt/model/fastModel/headcountNote;engine 暂不入执行链) */
             profile?: {
                 [key: string]: unknown;
             } | null;

@@ -286,8 +286,8 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 	if err != nil {
 		return agent.Err(err.Error())
 	}
-	if status == "failed" && len(edits) > 0 {
-		return agent.Err("failed rounds cannot carry jobEdits — report without edits, or fix the failure")
+	if status == "failed" && (len(edits) > 0 || payload["proposals"] != nil) {
+		return agent.Err("failed rounds cannot carry jobEdits/proposals — report without them, or fix the failure")
 	}
 	var applied int
 	var proposals int
