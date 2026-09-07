@@ -4,7 +4,7 @@
 // (ADR 0007)。数据走页内局部 state(SkillsView 范式)——单页数据,不入
 // 共享 store。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { type ApiHrAgent, type ApiHrEvaluation, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
+import { type ApiHrAgent, type ApiHrChange, type ApiHrEvaluation, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
 import { Select } from '@/components/Select'
 import { type MessageKey, useT } from '@/lib/i18n'
 import { useAuth } from '@/stores/auth'
@@ -23,6 +23,13 @@ const EVAL_STATUS_KEYS: Record<string, MessageKey> = {
   running: 'hr.st.running',
   done: 'hr.st.done',
   failed: 'hr.st.failed',
+}
+
+// 变更字段 → i18n 键(同上,显式映射)。
+const CHANGE_FIELD_KEYS: Record<string, MessageKey> = {
+  systemPrompt: 'hr.field.systemPrompt',
+  bio: 'hr.field.bio',
+  role: 'hr.field.role',
 }
 
 function engineLabel(t: ReturnType<typeof useT>, en: string): string {
@@ -127,6 +134,38 @@ export function HrView() {
   const [ratingsBy, setRatingsBy] = useState<Record<string, ApiHrRating>>({})
   const [ratingDraft, setRatingDraft] = useState<Record<string, { score: string; comment: string }>>({})
   const [savingRatings, setSavingRatings] = useState<Set<string>>(new Set())
+
+  // 变更历史(#348):岗位层修改台账 + 一键回滚
+  const [changes, setChanges] = useState<ApiHrChange[] | null>(null)
+  const [reverting, setReverting] = useState<Set<string>>(new Set())
+  const reloadChanges = useCallback(async () => {
+    try {
+      const { rows } = await api.listHrChanges()
+      setChanges(rows)
+    } catch (err) {
+      setEvalError(errText(err))
+    }
+  }, [])
+  useEffect(() => { void reloadChanges() }, [reloadChanges])
+
+  const revertChange = async (id: string) => {
+    if (reverting.has(id)) return
+    setReverting((prev) => new Set(prev).add(id))
+    try {
+      await api.revertHrChange(id)
+      await reloadChanges()
+      setEvalError('')
+    } catch (err) {
+      setEvalError(errText(err))
+    } finally {
+      setReverting((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
   const reloadRatings = useCallback(async () => {
     try {
       const { rows } = await api.listHrRatings()
@@ -402,6 +441,40 @@ export function HrView() {
                 })}
                 {agents.length === 0 && <li className="text-[12.5px] opacity-50">{t('hr.ratingsEmpty')}</li>}
               </ul>
+            </div>
+
+            {/* 变更历史(#348):岗位层修改台账 + 一键回滚 */}
+            <div className="mb-6">
+              <label className="mb-1.5 block text-[13px] font-semibold">{t('hr.changesTitle')}</label>
+              <p className="mb-2 text-[12px] opacity-55">{t('hr.changesHint')}</p>
+              {changes === null ? (
+                <div className="py-4 text-center text-[12.5px] opacity-50">{t('common.loading')}</div>
+              ) : changes.length === 0 ? (
+                <p className="text-[12.5px] opacity-50">{t('hr.changesEmpty')}</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {changes.map((ch) => (
+                    <li key={ch.id} className="flex items-center gap-2 rounded-[10px] border border-ink-100 bg-white px-3 py-1.5 text-[12.5px]">
+                      <span className="min-w-20 truncate">{participantsById[ch.agentId]?.name ?? ch.agentId}</span>
+                      <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[10.5px] font-semibold" style={{ color: 'var(--skype-deep)' }}>
+                        {t(CHANGE_FIELD_KEYS[ch.field] ?? 'hr.field.systemPrompt')}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate opacity-75" title={`${ch.oldValue} → ${ch.newValue}`}>
+                        {(ch.oldValue || '∅').slice(0, 40)} → {(ch.newValue || '∅').slice(0, 60)}
+                      </span>
+                      <span className="shrink-0 opacity-45">{new Date(ch.createdAt).toLocaleDateString()}</span>
+                      <button
+                        type="button"
+                        disabled={reverting.has(ch.id)}
+                        onClick={() => { void revertChange(ch.id) }}
+                        className="shrink-0 rounded-lg border border-ink-200 px-2.5 py-1 text-[11px] font-medium transition hover:bg-cloud disabled:opacity-30"
+                      >
+                        {reverting.has(ch.id) ? '…' : t('hr.changesRevert')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {/* prompt:HR 的评判标准,仅 owner/admin 可改 */}

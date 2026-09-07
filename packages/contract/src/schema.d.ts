@@ -753,6 +753,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 岗位层变更历史(owner/admin;可按 agent 过滤) */
+        get: operations["listHrChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/changes/{id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 一键回滚一次岗位层变更(owner/admin;回滚本身入历史) */
+        post: operations["revertHrChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3516,6 +3550,23 @@ export interface components {
             score: number;
             comment?: string;
         };
+        HrChange: {
+            id: string;
+            agentId: string;
+            /**
+             * @description 对应 participants 岗位层三字段(system_prompt/bio/role)
+             * @enum {string}
+             */
+            field: "systemPrompt" | "bio" | "role";
+            oldValue: string;
+            newValue: string;
+            /** @description 依据的评估轮;手动回滚产生的行为 null */
+            evaluationId?: string | null;
+            /** @description 本行是回滚时 → 被回滚的目标行 */
+            revertedChangeId?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
         Whisper: {
             id: string;
             /** @enum {string} */
@@ -5537,6 +5588,59 @@ export interface operations {
             };
             /** @description 未知目标或分数越界 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listHrChanges: {
+        parameters: {
+            query?: {
+                agentId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: components["schemas"]["HrChange"][];
+                    };
+                };
+            };
+        };
+    };
+    revertHrChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrChange"];
+                };
+            };
+            /** @description 无此变更或不属本公司 */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

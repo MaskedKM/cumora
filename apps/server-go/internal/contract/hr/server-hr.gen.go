@@ -21,6 +21,12 @@ type ServerInterface interface {
 	// HR Agent 配置写(owner/admin;prompt/computer/engine)
 	// (PUT /api/hr)
 	PutHrAgentConfig(w http.ResponseWriter, r *http.Request)
+	// 岗位层变更历史(owner/admin;可按 agent 过滤)
+	// (GET /api/hr/changes)
+	ListHrChanges(w http.ResponseWriter, r *http.Request, params ListHrChangesParams)
+	// 一键回滚一次岗位层变更(owner/admin;回滚本身入历史)
+	// (POST /api/hr/changes/{id}/revert)
+	RevertHrChange(w http.ResponseWriter, r *http.Request, id string)
 	// 评估轮列表(owner/admin)
 	// (GET /api/hr/evaluations)
 	ListHrEvaluations(w http.ResponseWriter, r *http.Request)
@@ -78,6 +84,70 @@ func (siw *ServerInterfaceWrapper) PutHrAgentConfig(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutHrAgentConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListHrChanges operation middleware
+func (siw *ServerInterfaceWrapper) ListHrChanges(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListHrChangesParams
+
+	// ------------- Optional query parameter "agentId" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "agentId", r.URL.Query(), &params.AgentId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListHrChanges(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevertHrChange operation middleware
+func (siw *ServerInterfaceWrapper) RevertHrChange(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevertHrChange(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -331,6 +401,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr", wrapper.GetHrAgent)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/hr", wrapper.PutHrAgentConfig)
+	m.HandleFunc("GET "+options.BaseURL+"/api/hr/changes", wrapper.ListHrChanges)
+	m.HandleFunc("POST "+options.BaseURL+"/api/hr/changes/{id}/revert", wrapper.RevertHrChange)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations", wrapper.ListHrEvaluations)
 	m.HandleFunc("POST "+options.BaseURL+"/api/hr/evaluations", wrapper.CreateHrEvaluation)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations/{id}", wrapper.GetHrEvaluation)

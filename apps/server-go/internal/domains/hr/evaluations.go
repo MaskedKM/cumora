@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
@@ -277,20 +279,43 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 		status = "failed"
 		errText = ev
 	}
-	res, err := s.DB.ExecContext(ctx, `
-		UPDATE hr_reports
-		   SET status = $3, payload = $4, error = NULLIF($5, ''),
-		       updated_at = NOW(), finished_at = NOW()
-		 WHERE id = $1 AND company_id = $2 AND status IN ('pending', 'running')`,
-		id, companyID, status, payload, errText)
+	// #348:报告可携带 jobEdits(岗位层修改)—— 与收轮同事务应用;任一条
+	// 不合法整体回滚(轮保持打开,半套优化落库比不落库更糟)。
+	edits, err := jobEditsFrom(payload)
 	if err != nil {
-		return agent.ErrThrow(err)
+		return agent.Err(err.Error())
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	var applied int
+	err = db.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
+		if err := applyJobEdits(ctx, tx, companyID, id, edits); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE hr_reports
+			   SET status = $3, payload = $4, error = NULLIF($5, ''),
+			       updated_at = NOW(), finished_at = NOW()
+			 WHERE id = $1 AND company_id = $2 AND status IN ('pending', 'running')`,
+			id, companyID, status, payload, errText)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errRoundClosed
+		}
+		applied = len(edits)
+		return nil
+	})
+	if err == errRoundClosed {
 		return agent.Err("evaluation round is not open (already reported or closed)")
 	}
-	return agent.OK("recorded: " + id + " (" + status + ")")
+	if err != nil {
+		return agent.Err(err.Error())
+	}
+	return agent.OK(fmt.Sprintf("recorded: %s (%s, %d job edit(s) applied)", id, status, applied))
 }
+
+// errRoundClosed:收轮 UPDATE 零行的哨兵(区别于其它 SQL 错误)。
+var errRoundClosed = errors.New("round closed")
 
 /* ───────── 客观观测快照装配(刀 2:五路聚合;#347 再补转录/同侪/评分) ───────── */
 

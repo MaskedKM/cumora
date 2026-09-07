@@ -18,6 +18,7 @@ export type ApiHrAgent = Schemas['HrAgent']
 export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
 export type ApiHrEvaluation = Schemas['HrEvaluation']
 export type ApiHrRating = Schemas['HrRating']
+export type ApiHrChange = Schemas['HrChange']
 /** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
 export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
 export type UploadCapabilities = Schemas['UploadCapabilities']
@@ -409,6 +410,12 @@ export const api = {
     http<ApiHrRating>(`/hr/ratings/${encodeURIComponent(agentId)}`, {
       method: 'PUT', body: JSON.stringify(input),
     }),
+  /** #348 岗位层变更历史(可按 agent 过滤)。 */
+  listHrChanges: (agentId?: string) =>
+    http<{ rows: ApiHrChange[] }>(`/hr/changes${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`),
+  /** 回滚一次岗位层变更(回滚本身入历史)。 */
+  revertHrChange: (id: string) =>
+    http<ApiHrChange>(`/hr/changes/${encodeURIComponent(id)}/revert`, { method: 'POST' }),
   getConversations: () => http<ApiConversation[]>('/conversations'),
   createGroup: (input: { title: string; members: string[]; subtitle?: string; projectId?: string | null }) =>
     http<{ id: string; members: string[]; projectId: string | null }>('/conversations', {

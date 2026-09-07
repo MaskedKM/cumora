@@ -1946,4 +1946,11 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'hr.ratingCommentPlaceholder': '一句话评语…',
   'hr.ratingSave': '保存',
   'hr.ratingsEmpty': '(还没有 agent——招进来会出现在这里。)',
+  'hr.changesTitle': '岗位层变更',
+  'hr.changesHint': 'HR Agent 落过的每一次 prompt 优化,可一键回滚。agent 们对此一无所知。',
+  'hr.changesEmpty': '(还没有岗位层变更。)',
+  'hr.changesRevert': '回滚',
+  'hr.field.systemPrompt': '系统提示词',
+  'hr.field.bio': '简介',
+  'hr.field.role': '头衔',
 } as const

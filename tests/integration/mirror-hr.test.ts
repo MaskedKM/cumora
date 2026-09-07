@@ -529,3 +529,120 @@ test('[mirror] hr: 输入补全 — 转录/同侪/评分三路进快照(非零�
   release()
   await hrCli(['hr', 'report', created.json.id, '{"failed":true,"error":"cleanup"}'])
 })
+
+/* ───────── #348 岗位层修改闭环 ───────── */
+
+async function seedAgentWithPrompt(id: string, systemPrompt: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO participants (id, company_id, kind, name, role, initial, avatar_bg, status, system_prompt)
+     VALUES ($1, $2, 'agent', $3, 'tester', 'A', '#111111', 'resting', $4)
+     ON CONFLICT (id, company_id) DO NOTHING`,
+    [id, COMPANY, id, systemPrompt],
+  )
+}
+
+test('[mirror] hr: jobEdits — 应用+台账+无声(不产生任何消息)', async () => {
+  await seedComputer('cpu-hr-edit', ['claude'])
+  await seedAgentWithPrompt('ag-edit-1', 'old prompt')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-edit', engine: 'claude' }) })
+  const { rows: msgBefore } = await pool.query(`SELECT COUNT(*)::int AS n FROM messages WHERE company_id = $1`, [COMPANY])
+
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', {
+    method: 'POST', body: JSON.stringify({ targetAgentId: 'ag-edit-1' }),
+  })
+  assert.equal(created.status, 201)
+  const report = { rounds: [{ agentId: 'ag-edit-1', score: 2 }], jobEdits: [
+    { agentId: 'ag-edit-1', field: 'systemPrompt', value: 'sharper prompt' },
+  ] }
+  const res = await hrCli(['hr', 'report', created.json.id, JSON.stringify(report)])
+  assert.equal(res.json.ok, true, JSON.stringify(res.json).slice(0, 200))
+  assert.match(res.json.text, /1 job edit\(s\) applied/)
+
+  // 字段已改 + 台账行(含依据轮)
+  const { rows: pr } = await pool.query(`SELECT system_prompt FROM participants WHERE id = 'ag-edit-1'`)
+  assert.equal(pr[0].system_prompt, 'sharper prompt')
+  const { rows: cr } = await pool.query(
+    `SELECT field, old_value, new_value, evaluation_id FROM hr_changes WHERE company_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [COMPANY],
+  )
+  assert.equal(cr.length, 1)
+  assert.equal(cr[0].field, 'system_prompt')
+  assert.equal(cr[0].old_value, 'old prompt')
+  assert.equal(cr[0].new_value, 'sharper prompt')
+  assert.equal(cr[0].evaluation_id, created.json.id)
+
+  // 无声:消息数不变(HR 域不触会话面)
+  const { rows: msgAfter } = await pool.query(`SELECT COUNT(*)::int AS n FROM messages WHERE company_id = $1`, [COMPANY])
+  assert.equal(msgAfter[0].n, msgBefore[0].n)
+  release()
+})
+
+test('[mirror] hr: jobEdits 作用域 — 非岗位字段/未知目标整体拒绝,轮保持打开', async () => {
+  await seedComputer('cpu-hr-edit2', ['claude'])
+  await seedAgentWithPrompt('ag-edit-2', 'keep me')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-edit2' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  // 非岗位字段 → 整体拒绝
+  const bad1 = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    jobEdits: [{ agentId: 'ag-edit-2', field: 'model', value: 'gpt-x' }],
+  })])
+  assert.equal(bad1.json.ok, false)
+  assert.match(bad1.json.text, /not a job-level field/)
+  // 未知目标 → 拒绝
+  const bad2 = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    jobEdits: [{ agentId: 'nope', field: 'bio', value: 'x' }],
+  })])
+  assert.equal(bad2.json.ok, false)
+  // 轮仍打开:合法报告可收
+  const ok = await hrCli(['hr', 'report', created.json.id, JSON.stringify({ rounds: [] })])
+  assert.equal(ok.json.ok, true)
+  // 拒绝路径不留任何变更
+  const { rows: cr } = await pool.query(`SELECT COUNT(*)::int AS n FROM hr_changes WHERE company_id = $1`, [COMPANY])
+  assert.equal(cr[0].n, 0)
+  const { rows: pr } = await pool.query(`SELECT system_prompt FROM participants WHERE id = 'ag-edit-2'`)
+  assert.equal(pr[0].system_prompt, 'keep me')
+  release()
+})
+
+test('[mirror] hr: 变更回滚 — 写回旧值+回滚入历史+权限闸', async () => {
+  await seedComputer('cpu-hr-edit3', ['claude'])
+  await seedAgentWithPrompt('ag-edit-3', 'v1')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-edit3' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const report = { jobEdits: [{ agentId: 'ag-edit-3', field: 'systemPrompt', value: 'v2' }] }
+  assert.equal((await hrCli(['hr', 'report', created.json.id, JSON.stringify(report)])).json.ok, true)
+  release()
+
+  // 列表:owner 200 / member 403
+  const list = await call('/hr/changes')
+  assert.equal(list.status, 200)
+  assert.equal(list.json.rows.length, 1)
+  assert.equal(list.json.rows[0].field, 'systemPrompt')
+  const target = list.json.rows[0].id as string
+  assert.equal((await memberMirror.call('/hr/changes')).status, 403)
+  assert.equal(
+    (await memberMirror.call(`/hr/changes/${target}/revert`, { method: 'POST' })).status, 403,
+  )
+
+  // 回滚:字段回 v1,回滚行入历史(revertedChangeId 指向目标行)
+  const rev = await call(`/hr/changes/${target}/revert`, { method: 'POST' })
+  assert.equal(rev.status, 200)
+  assert.equal(rev.json.newValue, 'v1')
+  assert.equal(rev.json.revertedChangeId, target)
+  const { rows: pr } = await pool.query(`SELECT system_prompt FROM participants WHERE id = 'ag-edit-3'`)
+  assert.equal(pr[0].system_prompt, 'v1')
+  const list2 = await call('/hr/changes')
+  assert.equal(list2.json.rows.length, 2)
+  assert.equal(list2.json.rows[0].revertedChangeId, target)
+
+  // 按 agent 过滤 + 未知 404
+  const filtered = await call('/hr/changes?agentId=ag-edit-3')
+  assert.equal(filtered.json.rows.length, 2)
+  assert.equal((await call('/hr/changes?agentId=nobody')).json.rows.length, 0)
+  assert.equal((await call('/hr/changes/hrc-nope/revert', { method: 'POST' })).status, 404)
+})
