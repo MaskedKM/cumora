@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (2026-09-04)
+Accepted (2026-09-04). Implemented in the planned three cuts: #354
+(data re-tracking + projects domain, PR #361) → #355 (contract / CLI /
+daemon rename + retired endpoints, PR #365) → #356 (UI promotion,
+settings-tab retirement, glossary finalization — CONTEXT.md Project entry
+live, Workspace entry retired).
 
 ## Context
 

@@ -17,7 +17,7 @@ import {
   IBold, ICode, ICodeBlock, IH1, IH2, IH3,IImage, IItalic, ILink, 
   IList, IListOrdered, IQuote, IRedo,IStrike, IUndo, 
 } from '@/components/EditorIcons'
-import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
+import { ProjectLinkModal } from '@/components/ProjectLinkModal'
 import { useT } from '@/lib/i18n'
 import { buildMentionExtension } from '@/lib/mentionExtension'
 import { cn } from '@/lib/utils'
@@ -122,8 +122,8 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
   const doc = useDocuments((s) => s.list.find((d) => d.id === documentId) ?? null)
   const rename = useDocuments((s) => s.rename)
   const remove = useDocuments((s) => s.remove)
-  // #338 双向入口:document 关联任意成员可建(AddWorkspaceAssociation 分层)
-  const [linkingWs, setLinkingWs] = useState(false)
+  // #338 双向入口:document 关联任意成员可建(AddProjectAssociation 分层)
+  const [linkingProject, setLinkingProject] = useState(false)
 
   // The Yjs session owns the Y.Doc + Awareness; TipTap binds to them via
   // the Collaboration / CollaborationCursor extensions.
@@ -199,13 +199,13 @@ export function DocumentEditor({ documentId, variant = 'full', onClose, onOpenFu
         </div>
         <button
           type="button"
-          onClick={() => setLinkingWs(true)}
-          title={t('wsLink.title')}
-          aria-label={t('wsLink.title')}
+          onClick={() => setLinkingProject(true)}
+          title={t('projLink.title')}
+          aria-label={t('projLink.title')}
           className="shrink-0 text-sm leading-none text-stone-500 hover:text-skype-deep transition-colors"
         >⌗</button>
-        {linkingWs && doc && (
-          <WorkspaceLinkModal kind="document" targetId={doc.id} onClose={() => setLinkingWs(false)} />
+        {linkingProject && doc && (
+          <ProjectLinkModal kind="document" targetId={doc.id} onClose={() => setLinkingProject(false)} />
         )}
         {isPeek && onOpenFull ? (
           <button

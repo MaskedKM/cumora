@@ -18,31 +18,33 @@ Single-context repo. Glossary only — no implementation detail, no specs.
 
 **Cerebellum Route** — the deployment-wide setting deciding whether Cerebellum-tier calls go to a `remote` provider or the operator's `byoa` local engine, with automatic fallback to `remote` when the configured local engine isn't available on the calling agent's Computer.
 
-**Team** — the tenant-level home grouping every member, human and agent, and owning the conversations, boards, documents, calendars, and workspaces they share.
+**Team** — the tenant-level home grouping every member, human and agent, and owning the conversations, boards, documents, calendars, and projects they share.
 _Avoid_: workspace / 工作区 (retired for this meaning), organization.
 
-**Workspace** — a team-shared collaboration surface bound to exactly one real folder, and a folder belongs to at most one workspace; everyone in the workspace's member scope reads and writes it. Each team has exactly one default workspace whose member scope is the entire team. On the machine running the stack, the folder is exposed to each member agent at its Mountpoint — direct and read-write; on other computers (VPS) agents reach it only through the workspace CLI.
-_Avoid_: reusing this word for the tenant (see Team) or for an agent's own files (see Private Area).
+**Project** — the single container for a body of work: conversations attach to it (`conversations.project_id`), it owns exactly one real folder (mandatory — auto-created under the managed directory unless a path is given; a folder belongs to at most one project), and board cards / documents link to it by Association. Members = explicitly added participants ∪ members of attached conversations. Every team has exactly one is_default project ("team files"): pinned, company-wide in scope, non-deletable. Lifecycle has no terminal state — deletion is the only exit, and it keeps conversations (detached) and folder files in place. On the machine running the stack, the project's folder is exposed to each member agent at its Mountpoint — direct and read-write; on other computers (VPS) agents reach it only through the project CLI (ADR 0008).
+_Avoid_: workspace / 工作区 (retired for this meaning — ADR 0008), organization (see Team), or treating a project as a mere conversation label (it owns a folder and a member scope).
 
-**Mountpoint** — the fixed location under an agent's local home (e.g. `~/team/<workspace-id>/`) where a workspace's folder is bind-mounted, read-write, for that agent's engine to use with native tooling. Exists only on local computers (the stack machine); VPS computers have no mountpoint and fall back to the workspace CLI. It is the same folder, not a copy or a sync.
-_Avoid_: calling it a sync/mirror/copy — it is the workspace folder itself; or confusing it with the private scratch `workspace/` directory inside the home (see Private Area).
+**Workspace** — retired term: the former team-shared folder-bound collaboration surface, absorbed into Project by ADR 0008 (2026-09). The word survives only in historical ADRs and as the literal name of the agent-private scratch directory (`workspace/`, see Private Area).
 
-**Association** — the link attaching a project, a board card, or a document to a workspace; participants of an associated item thereby join that workspace's member scope, alongside explicitly added members.
+**Mountpoint** — the fixed location under an agent's local home (e.g. `~/team/<project-id>/`) where a project's folder is bind-mounted, read-write, for that agent's engine to use with native tooling. Exists only on local computers (the stack machine); VPS computers have no mountpoint and fall back to the project CLI. It is the same folder, not a copy or a sync.
+_Avoid_: calling it a sync/mirror/copy — it is the project folder itself; or confusing it with the private scratch `workspace/` directory inside the home (see Private Area).
 
-**Private Area** — an agent's own private file space (persona, memory, skills, scratch files), materialized as the local home directory; never visible to other agents. An agent's file activity is confined to its Private Area plus the Workspaces it is a member of.
+**Association** — the link attaching a board card or a document to a project; participants of an associated item thereby join that project's member scope, alongside explicitly added members and the members of conversations attached to the project.
+
+**Private Area** — an agent's own private file space (persona, memory, skills, scratch files), materialized as the local home directory; never visible to other agents. An agent's file activity is confined to its Private Area plus the Projects it is a member of.
 _Avoid_: workspace, private workspace, 私有工作区.
 
 **Conflicted copy** — the second copy preserved, alongside the original and suffixed with author and timestamp, when concurrent writes to the same file through the mount path are detected. The deliberate "keep both" outcome: never auto-merged, never silently dropped.
 _Avoid_: treating it as an error state, or conflating it with Versions (snapshots are per-overwrite history; a conflicted copy is a detected fork with two live writers).
 
-**Versions** — the write-before-overwrite snapshots of a workspace file, kept inside the workspace folder itself (`.cumora/versions/`), bounded to the most recent 10, written only by the server/daemon, living and dying with the folder.
+**Versions** — the write-before-overwrite snapshots of a project file, kept inside the project folder itself (`.cumora/versions/`), bounded to the most recent 10, written only by the server/daemon, living and dying with the folder.
 _Avoid_: storing them in the database; or confusing them with document snapshots (yjs, `document_snapshots`).
 
-**Worktree** — the per-task git worktree materialized for a claimed board card inside its linked workspace's folder (`.cumora/worktrees/<cardId>/`, branch `cumora/<cardId>`), where the assignee agent does code work with native git/build/test instead of on the bare shared checkout. Platform-internal from the file surface's point of view (not listed, not indexed, not reported by the watcher); git semantics govern it.
+**Worktree** — the per-task git worktree materialized for a claimed board card inside its linked project's folder (`.cumora/worktrees/<cardId>/`, branch `cumora/<cardId>`), where the assignee agent does code work with native git/build/test instead of on the bare shared checkout. Platform-internal from the file surface's point of view (not listed, not indexed, not reported by the watcher); git semantics govern it.
 _Avoid_: treating it as another mountpoint (it is a git checkout inside the folder, not a symlink in the home), or expecting the platform to prune it — branches and worktrees survive task failure by design; cleanup is an operator's git call.
 
 **Delivery** — the recorded link between a board card and the git branch (and optional PR, with review state) an agent delivered on: one row per (card, branch), written by `cumora card start` (branch visible from the moment work begins — a failing task's progress stays findable) and extended by `cumora card deliver` (PR URL, open/merged/closed). Merging stays a human call; the platform's gate is visibility, not blocking.
-_Avoid_: mixing it up with shipping (the feature-lifecycle domain) or with associations (a card is linked to a workspace; a delivery says which branch carried the card's work).
+_Avoid_: mixing it up with shipping (the feature-lifecycle domain) or with associations (a card is linked to a project; a delivery says which branch carried the card's work).
 
 **Convene** — a live work session (现场合议) held inside a conversation: members convene on a topic with a running transcript (`convene_sessions` / `convene_transcript`); starting a new session supersedes the conversation's previous live one. A server-side first-class concept (three routes under the conversations tag).
 _Avoid_: conflating with Whisper — Convene is a group huddle mechanism, not a private-chat view.

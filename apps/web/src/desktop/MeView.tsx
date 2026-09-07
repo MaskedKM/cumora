@@ -1,8 +1,9 @@
 // 子组件分桶(#219 ④):本文件保留 MeView 壳(标签身份词表 tabs/Tab、活动页
-// 状态、守护进程横幅编排、六页条件装配),原局部子组件按职责分居 ./me/:
+// 状态、守护进程横幅编排、五页条件装配),原局部子组件按职责分居 ./me/:
 //   profile(身份/会话/社区/关于)· usage(配额三卡族)· trust(自治阈值+战绩)
-//   · projects(项目 CRUD)· preferences(开关组/语言/提示音/开发者)
+//   · preferences(开关组/语言/提示音/开发者)
 //   · computers(设备配对+DaemonUpgradeBanner)· shared(Section 节壳)。
+// #356:projects 件随设置页项目标签退役(项目面移至项目视图 ProjectsView)。
 // store 消费面未动(zustand v5 无新对象 selector,无需 useShallow)。
 import { useEffect, useState } from 'react'
 import { type MessageKey, useT } from '@/lib/i18n'
@@ -12,10 +13,9 @@ import { useComputers } from '@/stores/computers'
 import { ComputersTab, DaemonUpgradeBanner } from './me/computers'
 import { PreferencesTab } from './me/preferences'
 import { ProfileTab } from './me/profile'
-import { ProjectsTab } from './me/projects'
+import { StackTab } from './me/StackTab'
 import { TrustTab } from './me/trust'
 import { UsageTab } from './me/usage'
-import { StackTab } from './me/StackTab'
 
 // The tab's identity is its `key`; the label is a message key resolved at
 // render. Before this they were the same string, which would have made
@@ -24,7 +24,6 @@ const baseTabs = [
   { key: 'profile', label: 'me.tab.profile' },
   { key: 'usage', label: 'me.tab.usage' },
   { key: 'computers', label: 'me.tab.computers' },
-  { key: 'projects', label: 'me.tab.projects' },
   { key: 'trust', label: 'me.tab.trust' },
   { key: 'preferences', label: 'me.tab.preferences' },
 ] as const satisfies ReadonlyArray<{ key: string; label: MessageKey }>
@@ -77,7 +76,6 @@ export function MeView() {
         {tab === 'profile' && <ProfileTab />}
         {tab === 'usage' && <UsageTab />}
         {tab === 'computers' && <ComputersTab />}
-        {tab === 'projects' && <ProjectsTab />}
         {tab === 'trust' && <TrustTab />}
         {tab === 'preferences' && <PreferencesTab />}
         {tab === 'stack' && <StackTab />}
