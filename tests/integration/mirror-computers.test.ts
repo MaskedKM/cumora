@@ -224,7 +224,7 @@ test('[mirror] workspace-report: dedup, snapshot, files_changed frame', async ()
   const folder = await mkdtemp(join(tmpdir(), 'ws-report-'))
   const wsId = `ws-rep-${Math.random().toString(36).slice(2, 10)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Reported', $3)`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Reported', '', $3, FALSE)`,
     [wsId, COMPANY, folder],
   )
   await writeFile(join(folder, 'note.md'), 'v1\n')
@@ -282,7 +282,7 @@ test('[mirror] workspace-report: dedup, snapshot, files_changed frame', async ()
   const otherCo = `c-other-${Math.random().toString(36).slice(2, 8)}`
   await pool.query(`INSERT INTO companies (id, name, slug, owner_user_id) VALUES ($1, 'Other', $2, 'u-x')`, [otherCo, otherCo])
   const otherWs = `ws-oth-${Math.random().toString(36).slice(2, 8)}`
-  await pool.query(`INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Other', '/tmp/x')`, [otherWs, otherCo])
+  await pool.query(`INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Other', '', '/tmp/x', FALSE)`, [otherWs, otherCo])
   res = await post([{ workspaceId: otherWs, path: 'secret.md' }])
   assert.equal(res.status, 200)
   assert.equal((await res.json() as { changed: number }).changed, 0, 'cross-tenant report silently ignored')

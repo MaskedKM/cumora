@@ -64,16 +64,14 @@ type wsRow struct {
 	folderPath string
 	isDefault  bool
 	createdAt  time.Time
-	unboundAt  sql.NullTime
-	unboundBy  sql.NullString
 }
 
 func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow, bool) {
 	var w wsRow
 	err := db.QueryRowContext(ctx, `
-		SELECT id, company_id, name, folder_path, is_default, created_at, unbound_at, unbound_by
-		  FROM workspaces WHERE id = $1 AND company_id = $2`, id, companyID).
-		Scan(&w.id, &w.companyID, &w.name, &w.folderPath, &w.isDefault, &w.createdAt, &w.unboundAt, &w.unboundBy)
+		SELECT id, company_id, name, folder_path, is_default, created_at
+		  FROM projects WHERE id = $1 AND company_id = $2`, id, companyID).
+		Scan(&w.id, &w.companyID, &w.name, &w.folderPath, &w.isDefault, &w.createdAt)
 	if err != nil {
 		return w, false
 	}
@@ -87,10 +85,12 @@ func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow
 // 不变量,CWD 变了也不能搬家。
 // EnsureDefault:默认区惰性自愈(导出供 runtime 挂载清单 #336 复用——
 // daemon 同步周期拉可达清单,全新 team 不能因未开过人侧 UI 就漏掉默认区)。
+// #354 起 workspace 即项目(ADR 0008):行落 projects 表,id 惯例
+// ws-default-<companyId> 沿用(migration 0009 已把存量默认区按原 id 迁入)。
 func EnsureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 	var exists bool
 	if err := db.QueryRowContext(ctx,
-		`SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`, companyID).Scan(&exists); err == nil && exists {
+		`SELECT 1 FROM projects WHERE company_id = $1 AND is_default LIMIT 1`, companyID).Scan(&exists); err == nil && exists {
 		return nil
 	}
 	folder := filepath.Join(config.UploadsDir(), "workspaces", companyID)
@@ -105,8 +105,8 @@ func EnsureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 		return err
 	}
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO workspaces (id, company_id, name, folder_path, is_default)
-		VALUES ($1, $2, 'Team files', $3, TRUE) ON CONFLICT DO NOTHING`,
+		INSERT INTO projects (id, company_id, name, description, folder_path, is_default)
+		VALUES ($1, $2, 'Team files', '', $3, TRUE) ON CONFLICT DO NOTHING`,
 		"ws-default-"+companyID, companyID, real)
 	if err != nil && !isUniqueViolation(err) {
 		return err
@@ -114,16 +114,15 @@ func EnsureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 	return nil
 }
 
-// resolveAccess 对齐 core.resolveWorkspaceAccess:默认区全员;否则
-// 显式行 ∪ 关联目标活跃参与者(project=会话成员/board_card=assignee+
-// mentions/document=creator+collaborators)。
+// resolveAccess:默认区全员;否则显式成员 ∪ 挂靠会话成员 ∪ 关联目标活跃
+// 参与者(board_card=assignee+mentions/document=creator+collaborators)。
+// #354(ADR 0008 §5):project-kind 关联退役,"项目下会话成员"改为顶层
+// 直推导(挂靠本项目的会话之成员);推导统一走 conversation_members 表
+// —— 原 implicitMembers 的 legacy members jsonb 分叉随之消灭。
 func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string) (wsRow, int, string) {
 	w, ok := loadWorkspace(ctx, db, companyID, wsID)
 	if !ok {
 		return w, http.StatusNotFound, "workspace not found"
-	}
-	if w.unboundAt.Valid {
-		return w, http.StatusGone, "workspace is unbound"
 	}
 	if w.isDefault {
 		return w, 0, ""
@@ -132,16 +131,17 @@ func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string)
 	err := db.QueryRowContext(ctx, `
 		SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
 		UNION ALL
+		SELECT 1 FROM conversations c
+		 WHERE c.project_id = $1 AND c.company_id = $3
+		   AND EXISTS (SELECT 1 FROM conversation_members cm
+		                WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
+		UNION ALL
 		SELECT 1 FROM workspace_associations a
 		 WHERE a.workspace_id = $1 AND a.company_id = $3
 		   AND EXISTS (SELECT 1 FROM participants p
 		                WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
 		   AND (
-		     (a.target_kind = 'project' AND EXISTS (
-		        SELECT 1 FROM conversations c
-		         WHERE c.project_id = a.target_id AND c.company_id = $3
-		           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)))
-		     OR (a.target_kind = 'board_card' AND EXISTS (
+		     (a.target_kind = 'board_card' AND EXISTS (
 		        SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		         WHERE bc.id = a.target_id AND b.company_id = $3
 		           AND (bc.assignee_id = $2 OR bc.mentions @> to_jsonb($2::text))))
@@ -247,7 +247,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	var bound string
 	_ = s.DB.QueryRowContext(r.Context(),
-		`SELECT id FROM workspaces WHERE folder_path = $1 LIMIT 1`, folder).Scan(&bound)
+		`SELECT id FROM projects WHERE folder_path = $1 LIMIT 1`, folder).Scan(&bound)
 	if bound != "" {
 		httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
 		return
@@ -262,8 +262,8 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var createdAt time.Time
 	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(r.Context(), `
-			INSERT INTO workspaces (id, company_id, name, folder_path)
-			VALUES ($1, $2, $3, $4) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
+			INSERT INTO projects (id, company_id, name, description, folder_path, is_default)
+			VALUES ($1, $2, $3, '', $4, FALSE) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(r.Context(), `
@@ -296,8 +296,8 @@ func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT w.id, w.name, w.is_default, w.created_at, count(m.participant_id)::int
-		  FROM workspaces w LEFT JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.company_id = $1 AND w.unbound_at IS NULL
+		  FROM projects w LEFT JOIN workspace_members m ON m.workspace_id = w.id
+		 WHERE w.company_id = $1
 		 GROUP BY w.id ORDER BY w.created_at ASC`, companyID)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
@@ -449,27 +449,15 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 	privileged := role == "owner" || role == "admin"
 	resp := map[string]any{
 		"id": ws.id, "name": ws.name, "isDefault": ws.isDefault,
-		"createdAt": ws.createdAt.UTC(), "unboundAt": nullTime(ws.unboundAt), "unboundBy": nullStr(ws.unboundBy),
+		// unboundAt/unboundBy 恒 null:解绑语义已退役(ADR 0008 §6),
+		// 契约字段保留到刀 2 随路由族退役。
+		"createdAt": ws.createdAt.UTC(), "unboundAt": nil, "unboundBy": nil,
 		"members": append(explicit, implicit...), "associations": associations,
 	}
 	if privileged {
 		resp["folderPath"] = ws.folderPath
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
-}
-
-func nullTime(nt sql.NullTime) any {
-	if nt.Valid {
-		return nt.Time.UTC()
-	}
-	return nil
-}
-
-func nullStr(ns sql.NullString) any {
-	if ns.Valid {
-		return ns.String
-	}
-	return nil
 }
 
 func toAny(xs []string) []any {
@@ -484,10 +472,9 @@ func toAny(xs []string) []any {
 func implicitMembers(ctx context.Context, db *sql.DB, wsID, companyID string) map[string]bool {
 	out := map[string]bool{}
 	queries := []string{`
-		SELECT DISTINCT x.pid FROM workspace_associations a,
-		LATERAL (SELECT jsonb_array_elements_text(c.members) AS pid FROM conversations c
-		          WHERE c.project_id = a.target_id AND c.company_id = $2) x
-		 WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'project'`, `
+		SELECT DISTINCT cm.participant_id FROM conversations c
+		  JOIN conversation_members cm ON cm.conversation_id = c.id
+		 WHERE c.project_id = $1 AND c.company_id = $2`, `
 		SELECT DISTINCT x.pid FROM workspace_associations a,
 		LATERAL (SELECT bc.assignee_id AS pid FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		          WHERE bc.id = a.target_id AND b.company_id = $2
@@ -527,10 +514,6 @@ func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id s
 	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
 	if !ok {
 		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-		return
-	}
-	if ws.unboundAt.Valid {
-		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
 		return
 	}
 	var body struct {
@@ -578,10 +561,6 @@ func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, i
 		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	if ws.unboundAt.Valid {
-		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
-		return
-	}
 	res, err := s.DB.ExecContext(r.Context(),
 		`DELETE FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
 		ws.id, participantId)
@@ -596,7 +575,9 @@ func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, i
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-var assocKinds = map[string]bool{"project": true, "board_card": true, "document": true}
+// #354(ADR 0008 §5):project-kind 关联退役 —— 项目自带盘,成员由"挂靠
+// 会话成员"直推导;白名单只剩 board_card/document(存量行 migration 已清)。
+var assocKinds = map[string]bool{"board_card": true, "document": true}
 
 func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
@@ -607,7 +588,7 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 	kind := text(body.Kind, 20)
 	targetID := text(body.TargetID, 100)
 	if !assocKinds[kind] {
-		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
+		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of board_card, document")
 		return
 	}
 	if targetID == "" {
@@ -630,10 +611,6 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
 	if !ok {
 		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-		return
-	}
-	if ws.unboundAt.Valid {
-		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
 		return
 	}
 	if !targetExists(r.Context(), s.DB, companyID, kind, targetID) {
@@ -659,8 +636,6 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 func targetExists(ctx context.Context, db *sql.DB, companyID, kind, targetID string) bool {
 	var q string
 	switch kind {
-	case "project":
-		q = `SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`
 	case "board_card":
 		q = `SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id WHERE bc.id = $1 AND b.company_id = $2 LIMIT 1`
 	default:
@@ -673,7 +648,7 @@ func targetExists(ctx context.Context, db *sql.DB, companyID, kind, targetID str
 
 func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string, kind string, targetId string) {
 	if !assocKinds[kind] {
-		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of project, board_card, document")
+		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of board_card, document")
 		return
 	}
 	uid, ok := httpx.RequireAuth(w, r)
@@ -692,10 +667,6 @@ func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Reque
 	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
 	if !ok {
 		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-		return
-	}
-	if ws.unboundAt.Valid {
-		httpx.WriteError(w, http.StatusGone, "workspace is unbound")
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(), `
@@ -947,23 +918,11 @@ func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id stri
 		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	if ws.isDefault {
-		httpx.WriteError(w, http.StatusForbidden, "the default workspace cannot be unbound")
-		return
-	}
-	var unboundAt time.Time
-	err := s.DB.QueryRowContext(r.Context(), `
-		UPDATE workspaces SET unbound_at = NOW(), unbound_by = $2
-		 WHERE id = $1 AND unbound_at IS NULL RETURNING unbound_at`, ws.id, uid).Scan(&unboundAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			httpx.WriteError(w, http.StatusConflict, "workspace is already unbound")
-			return
-		}
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unboundAt": unboundAt.UTC()})
+	_ = ws
+	// 解绑语义已退役(ADR 0008 §6:生命周期无终点、仅删除):端点活体至
+	// 刀 2 随路由族退役,期间统一 410 指路删除。
+	httpx.WriteError(w, http.StatusGone,
+		"unbind retired (ADR 0008) — delete the project instead; folder files are left in place")
 }
 
 // maxBinaryBytes:#338 multipart 二进制帽(对齐 uploads 域 25MB;文本面

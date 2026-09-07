@@ -738,24 +738,23 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT w.id, w.name, w.is_default, w.folder_path
-		  FROM workspaces w
-		 WHERE w.company_id = $1 AND w.unbound_at IS NULL AND (
+		  FROM projects w
+		 WHERE w.company_id = $1 AND (
 		   w.is_default
 		   OR EXISTS (SELECT 1 FROM workspace_members m
 		               WHERE m.workspace_id = w.id AND m.participant_id = $2)
+		   OR EXISTS (SELECT 1 FROM conversations c
+		               WHERE c.project_id = w.id AND c.company_id = $1
+		                 AND EXISTS (SELECT 1 FROM conversation_members cm
+		                              WHERE cm.conversation_id = c.id
+		                                AND cm.participant_id = $2))
 		   OR EXISTS (SELECT 1 FROM workspace_associations a
 		               WHERE a.workspace_id = w.id AND a.company_id = $1
 		                 AND EXISTS (SELECT 1 FROM participants p
 		                              WHERE p.id = $2 AND p.company_id = $1
 		                                AND p.departed_at IS NULL)
 		                 AND (
-		                   (a.target_kind = 'project' AND EXISTS (
-		                      SELECT 1 FROM conversations c
-		                       WHERE c.project_id = a.target_id AND c.company_id = $1
-		                         AND EXISTS (SELECT 1 FROM conversation_members cm
-		                                      WHERE cm.conversation_id = c.id
-		                                        AND cm.participant_id = $2)))
-		                   OR (a.target_kind = 'board_card' AND EXISTS (
+		                   (a.target_kind = 'board_card' AND EXISTS (
 		                      SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		                       WHERE bc.id = a.target_id AND b.company_id = $1
 		                         AND (bc.assignee_id = $2 OR bc.mentions @> to_jsonb($2::text))))

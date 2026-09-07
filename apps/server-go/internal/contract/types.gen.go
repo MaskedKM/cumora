@@ -1299,14 +1299,18 @@ type PresignResponseKind string
 
 // Project defines model for Project.
 type Project struct {
-	ArchivedAt        *time.Time    `json:"archivedAt"`
-	Color             *string       `json:"color"`
-	ConversationCount int           `json:"conversationCount"`
-	CreatedAt         time.Time     `json:"createdAt"`
-	Description       string        `json:"description"`
-	Id                string        `json:"id"`
-	Name              string        `json:"name"`
-	Status            ProjectStatus `json:"status"`
+	ArchivedAt        *time.Time `json:"archivedAt"`
+	Color             *string    `json:"color"`
+	ConversationCount int        `json:"conversationCount"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	Description       string     `json:"description"`
+
+	// FolderPath 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。
+	FolderPath *string       `json:"folderPath"`
+	Id         string        `json:"id"`
+	IsDefault  bool          `json:"isDefault"`
+	Name       string        `json:"name"`
+	Status     ProjectStatus `json:"status"`
 }
 
 // ProjectStatus defines model for Project.Status.
@@ -2134,7 +2138,10 @@ type CastPollVoteJSONBody struct {
 type CreateProjectJSONBody struct {
 	Color       *string `json:"color,omitempty"`
 	Description *string `json:"description,omitempty"`
-	Name        string  `json:"name"`
+
+	// FolderPath 可选自填已有文件夹(缺省在受管目录自动建空盘,ADR 0008 §3)。
+	FolderPath *string `json:"folderPath,omitempty"`
+	Name       string  `json:"name"`
 }
 
 // UpdateProjectJSONBody defines parameters for UpdateProject.

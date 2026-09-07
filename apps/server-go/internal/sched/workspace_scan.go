@@ -181,7 +181,7 @@ func workspaceScanIntervalMS() int64 {
 // 导出供测试直驱。
 func (s *S) RunWorkspaceScanTick(ctx context.Context) int {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, company_id, folder_path FROM workspaces WHERE unbound_at IS NULL`)
+		`SELECT id, company_id, folder_path FROM projects WHERE folder_path IS NOT NULL`)
 	if err != nil {
 		slog.Warn("[ws-scan] query failed", "err", err)
 		return 0

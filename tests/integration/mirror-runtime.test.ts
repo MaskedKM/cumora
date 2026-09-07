@@ -1066,13 +1066,13 @@ test('[mirror-runtime] /workspaces: local computer gets folderPath; membership g
   // 自建区:未加成员 → 不可达
   const otherWs = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Secret', '/tmp/not-yours')`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Secret', '', '/tmp/not-yours', FALSE)`,
     [otherWs, companyId],
   )
   // 自建区:显式成员 → 可达且带 folderPath
   const mineWs = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Mine', '/tmp/mine')`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Mine', '', '/tmp/mine', FALSE)`,
     [mineWs, companyId],
   )
   await pool.query(
@@ -1115,7 +1115,7 @@ async function seedWorkspaceFor(agentId: string, companyId: string): Promise<{ w
   const folder = await mkdtemp(join(tmpdir(), 'ws-cli-'))
   const wsId = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'CLI', $3)`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'CLI', '', $3, FALSE)`,
     [wsId, companyId, folder],
   )
   await pool.query(`INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`, [wsId, agentId])
