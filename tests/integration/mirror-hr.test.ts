@@ -469,22 +469,33 @@ test('[mirror] hr: 输入补全 — 转录/同侪/评分三路进快照(非零�
   await seedAgent('ag-enrich-1')
   await seedAgent('ag-enrich-2')
   await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-enrich', engine: 'claude' }) })
-  // 转录:agent 间私聊一条(members jsonb 触发器自动落 conversation_members)
+  // 转录:agent 间私聊(members jsonb 触发器自动落 conversation_members)。
+  // 45+1 条同刻消息 → 每目标 40 帽 + id DESC 平局裁决 + 正序翻转全被咬住;
+  // 其中一条 500 单元长文 → 400 截断。
   await pool.query(
     `INSERT INTO conversations (id, kind, title, members, company_id)
      VALUES ('cv-enrich', 'direct', '', $1, $2)`,
     [JSON.stringify(['ag-enrich-1', 'ag-enrich-2']), COMPANY],
   )
+  for (let i = 1; i <= 45; i++) {
+    const body = i === 45 ? 'peer says hi — final' : `msg-${String(i).padStart(2, '0')}`
+    await pool.query(
+      `INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
+       VALUES ($1, 'cv-enrich', 'ag-enrich-2', 'text', $2, $3, $4)`,
+      [`m-enrich-${String(i).padStart(2, '0')}`, body, i, COMPANY],
+    )
+  }
   await pool.query(
     `INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
-     VALUES ('m-enrich', 'cv-enrich', 'ag-enrich-2', 'text', 'peer says hi', 1, $1)`,
-    [COMPANY],
+     VALUES ('m-enrich-long', 'cv-enrich', 'ag-enrich-2', 'text', $1, 46, $2)`,
+    ['x'.repeat(500), COMPANY],
   )
-  // 同侪:peer → target 的 affinity/trust
+  // 同侪:生产写形态 —— 不带 company_id(列 DEFAULT 'personal',全库生产
+  // 写入方均如此);租户必须经 participants 连接推导(评审 P0)。双向各一行
   await pool.query(
-    `INSERT INTO agent_climate (agent_id, about_id, company_id, affinity, trust, last_note)
-     VALUES ('ag-enrich-2', 'ag-enrich-1', $1, 0.5, 0.7, 'reliable')`,
-    [COMPANY],
+    `INSERT INTO agent_climate (agent_id, about_id, affinity, trust, last_note) VALUES
+     ('ag-enrich-2', 'ag-enrich-1', 0.5, 0.7, 'reliable'),
+     ('ag-enrich-1', 'ag-enrich-2', -0.1, 0.3, 'noisy')`,
   )
   // 评分:owner 打 4
   await call('/hr/ratings/ag-enrich-1', { method: 'PUT', body: JSON.stringify({ score: 4, comment: 'steady' }) })
@@ -498,13 +509,19 @@ test('[mirror] hr: 输入补全 — 转录/同侪/评分三路进快照(非零�
   assert.equal(ctx.json.ok, true)
   const lane = (JSON.parse(ctx.json.text).targets ?? []).find((t: any) => t.agentId === 'ag-enrich-1')
   assert.ok(lane, 'target lane present')
-  // 转录路
-  assert.ok(Array.isArray(lane.recentMessages) && lane.recentMessages.length >= 1, 'recentMessages non-empty')
+  // 转录路:40 帽(同刻平局按 id DESC 取最新 40:msg-07..45+长文)、正序输出、长文 400 截断
+  assert.equal(lane.recentMessages.length, 40, 'per-target cap 40')
+  assert.match(lane.recentMessages[0].body, /^msg-07/, 'oldest kept first (chronological)')
+  assert.match(lane.recentMessages[39].body, /^x+$/, 'newest is the long body')
+  assert.equal(lane.recentMessages[39].body.length, 400, 'body capped at 400 UTF-16 units')
   assert.ok(lane.recentMessages.some((m: any) => String(m.body).includes('peer says hi')))
-  // 同侪路(towardThem:别人对目标)
+  // 同侪路:双向(towardThem=别人对其;theyFeel=其对别人)—— join 推导租户
   assert.equal(lane.climate.towardThem.length, 1)
   assert.equal(lane.climate.towardThem[0].from, 'ag-enrich-2')
   assert.equal(lane.climate.towardThem[0].trust, 0.7)
+  assert.equal(lane.climate.theyFeel.length, 1)
+  assert.equal(lane.climate.theyFeel[0].about, 'ag-enrich-2')
+  assert.equal(lane.climate.theyFeel[0].affinity, -0.1)
   // 评分路
   assert.equal(lane.rating.score, 4)
   assert.equal(lane.rating.comment, 'steady')

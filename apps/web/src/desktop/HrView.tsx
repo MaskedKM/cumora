@@ -126,7 +126,7 @@ export function HrView() {
   // 评分面(#347):owner 主观打分/评语,进入下一轮评估输入
   const [ratingsBy, setRatingsBy] = useState<Record<string, ApiHrRating>>({})
   const [ratingDraft, setRatingDraft] = useState<Record<string, { score: string; comment: string }>>({})
-  const [savingRating, setSavingRating] = useState('')
+  const [savingRatings, setSavingRatings] = useState<Set<string>>(new Set())
   const reloadRatings = useCallback(async () => {
     try {
       const { rows } = await api.listHrRatings()
@@ -142,19 +142,28 @@ export function HrView() {
     const v = ratingValue(agentId)
     const score = Number(v.score)
     if (!Number.isInteger(score) || score < 1 || score > 5) return
-    setSavingRating(agentId)
+    setSavingRatings((prev) => new Set(prev).add(agentId))
     try {
       const saved = await api.putHrRating(agentId, { score, comment: v.comment })
       setRatingsBy((prev) => ({ ...prev, [agentId]: saved }))
+      // 保存期间的继续编辑不吞(评审 P1):仅当 draft 仍等于发出快照才清
       setRatingDraft((prev) => {
-        const next = { ...prev }
-        delete next[agentId]
-        return next
+        const cur = prev[agentId]
+        if (!cur || (cur.score === v.score && cur.comment === v.comment)) {
+          const next = { ...prev }
+          delete next[agentId]
+          return next
+        }
+        return prev
       })
     } catch (err) {
       setEvalError(errText(err))
     } finally {
-      setSavingRating('')
+      setSavingRatings((prev) => {
+        const next = new Set(prev)
+        next.delete(agentId)
+        return next
+      })
     }
   }
 
@@ -366,7 +375,9 @@ export function HrView() {
                           value={v.score}
                           onValueChange={(score) => setRatingDraft((prev) => ({ ...prev, [a.id]: { ...ratingValue(a.id), score } }))}
                           options={[
-                            { value: '', label: t('hr.ratingUnrated') },
+                            // 已有存档时不给"未评"项(无删除操作,选了会悬死在
+                            // 不可保存态——评审 P2)
+                            ...(saved ? [] : [{ value: '', label: t('hr.ratingUnrated') }]),
                             ...[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: String(n) })),
                           ]}
                         />
@@ -380,11 +391,11 @@ export function HrView() {
                       />
                       <button
                         type="button"
-                        disabled={!dirty || !v.score || savingRating === a.id}
+                        disabled={!dirty || !v.score || savingRatings.has(a.id)}
                         onClick={() => { void saveRating(a.id) }}
                         className="rounded-lg bg-ink px-3 py-1 text-[11.5px] font-medium text-cloud transition hover:opacity-90 disabled:opacity-30"
                       >
-                        {savingRating === a.id ? '…' : t('hr.ratingSave')}
+                        {savingRatings.has(a.id) ? '…' : t('hr.ratingSave')}
                       </button>
                     </li>
                   )

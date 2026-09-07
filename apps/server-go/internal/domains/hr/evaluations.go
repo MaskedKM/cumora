@@ -492,76 +492,103 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	}, `SELECT agent_id, score, comment FROM hr_ratings
 		 WHERE company_id = $1 AND agent_id = ANY($2::text[])`, companyID, idsArr)
 
-	collect(func(rows *sql.Rows) {
+	// 同侪(评审 P0 修正):agent_climate.company_id 无任何生产写入方(恒
+	// DEFAULT 'personal'),按它过滤 = 生产恒空 —— 租户改经 participants
+	// 连接推导(自愈,免回填)。每目标查(两方向合计 ≤ climateCap 行),
+	// 消除全员轮的 N² 无界快照。
+	const climateCap = 40
+	for _, tid := range order {
+		rows, err := s.DB.QueryContext(ctx, `
+			SELECT ac.agent_id, ac.about_id, ac.affinity, ac.trust, ac.last_note
+			  FROM agent_climate ac
+			  JOIN participants p1 ON p1.id = ac.agent_id AND p1.company_id = $1
+			  JOIN participants p2 ON p2.id = ac.about_id AND p2.company_id = $1
+			 WHERE (ac.about_id = $2 AND ac.agent_id <> $2) OR (ac.agent_id = $2 AND ac.about_id <> $2)
+			 ORDER BY ac.updated_at DESC
+			 LIMIT $3`, companyID, tid, climateCap)
+		if err != nil {
+			slog.Warn("[hr] input lane query failed (lane degrades to zero)", "lane", "climate", "err", err)
+			continue
+		}
 		for rows.Next() {
 			var agentID, aboutID, note string
 			var affinity, trust float32
-			if rows.Scan(&agentID, &aboutID, &affinity, &trust, &note) != nil {
+			if rows.Scan(&agentID, &aboutID, &affinity, &trust, &note) != nil || agentID == aboutID {
 				continue
 			}
-			if agentID == aboutID {
-				continue
-			}
-			if m, ok := byID[aboutID]; ok {
-				m.climateToward = append(m.climateToward, climateRow("from", agentID, affinity, trust, note))
-			}
-			if m, ok := byID[agentID]; ok {
-				m.climateFelt = append(m.climateFelt, climateRow("about", aboutID, affinity, trust, note))
+			if aboutID == tid {
+				byID[tid].climateToward = append(byID[tid].climateToward, climateRow("from", agentID, affinity, trust, note))
+			} else {
+				byID[tid].climateFelt = append(byID[tid].climateFelt, climateRow("about", aboutID, affinity, trust, note))
 			}
 		}
-	}, `SELECT agent_id, about_id, affinity, trust, last_note FROM agent_climate
-		 WHERE company_id = $1 AND (about_id = ANY($2::text[]) OR agent_id = ANY($2::text[]))`,
-		companyID, idsArr)
+		rows.Close()
+	}
 
-	// 转录:目标为成员的会话近窗消息(含 agent 间私聊),整查封顶 800 行,
-	// 每目标保最新 40 条、单条截 400 UTF-16 单元,输出翻成时间正序。
-	collect(func(rows *sql.Rows) {
-		const perTargetCap = 40
-		const bodyCap = 400
-		lists := map[string][]map[string]any{}
+	// 转录(评审 P1 修正):改每目标取数(LIMIT + id tie-breaker)—— 原
+	// 全局 800 截断在多目标轮会被话多的目标吃满,安静目标饿死为零。
+	// 单条截 400 UTF-16;全轮转录预算 transcriptBudget 单元,先到先得,
+	// 触顶即截该目标并在快照上置 transcriptsTruncated(Brain 可见口径)。
+	const perTargetMsgCap = 40
+	const bodyCap = 400
+	const transcriptBudget = 150_000 // UTF-16 单元
+	budgetLeft := transcriptBudget
+	transcriptsTruncated := false
+	for _, tid := range order {
+		rows, err := s.DB.QueryContext(ctx, `
+			SELECT m.conversation_id, c.kind, m.author_id, m.kind, m.body, m.created_at
+			  FROM conversation_members cm
+			  JOIN messages m ON m.conversation_id = cm.conversation_id
+			  JOIN conversations c ON c.id = m.conversation_id AND c.company_id = $1
+			 WHERE cm.participant_id = $2
+			   AND m.created_at > NOW() - ($3 || ' days')::interval
+			 ORDER BY m.created_at DESC, m.id DESC
+			 LIMIT $4`, companyID, tid, windowDaysArg, perTargetMsgCap)
+		if err != nil {
+			slog.Warn("[hr] input lane query failed (lane degrades to zero)", "lane", "transcripts", "err", err)
+			continue
+		}
+		list := []map[string]any{}
 		for rows.Next() {
-			var tid, conversationID, convKind, authorID, msgKind, body string
+			var conversationID, convKind, authorID, msgKind, body string
 			var createdAt time.Time
-			if rows.Scan(&tid, &conversationID, &convKind, &authorID, &msgKind, &body, &createdAt) != nil {
+			if rows.Scan(&conversationID, &convKind, &authorID, &msgKind, &body, &createdAt) != nil {
 				continue
 			}
-			if _, ok := byID[tid]; !ok {
-				continue
+			capped := httpx.UTF16Cap(body, bodyCap)
+			units := agent.UTF16Len(capped)
+			if units > budgetLeft {
+				transcriptsTruncated = true
+				break
 			}
-			lists[tid] = append(lists[tid], map[string]any{
+			budgetLeft -= units
+			// 时间正序输出(rows 是 DESC)
+			list = append([]map[string]any{{
 				"conversationId": conversationID, "conversationKind": convKind,
 				"authorId": authorID, "kind": msgKind,
-				"body": httpx.UTF16Cap(body, bodyCap), "at": createdAt.UTC(),
-			})
+				"body": capped, "at": createdAt.UTC(),
+			}}, list...)
 		}
-		for tid, list := range lists {
-			if len(list) > perTargetCap {
-				list = list[:perTargetCap]
-			}
-			for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
-				list[i], list[j] = list[j], list[i]
-			}
-			byID[tid].recentMessages = list
-		}
-	}, `SELECT cm.participant_id, m.conversation_id, c.kind, m.author_id, m.kind, m.body, m.created_at
-		  FROM conversation_members cm
-		  JOIN messages m ON m.conversation_id = cm.conversation_id
-		  JOIN conversations c ON c.id = m.conversation_id AND c.company_id = $1
-		 WHERE cm.participant_id = ANY($2::text[])
-		   AND m.created_at > NOW() - ($3 || ' days')::interval
-		 ORDER BY m.created_at DESC
-		 LIMIT 800`, companyID, idsArr, windowDaysArg)
+		rows.Close()
+		byID[tid].recentMessages = list
+	}
 
 	targets := make([]map[string]any, 0, len(order))
 	for _, id := range order {
 		targets = append(targets, byID[id].payload())
 	}
-	return map[string]any{
+	snapshot := map[string]any{
 		"generatedAt": time.Now().UTC(),
 		"windowDays":  inputWindowDays,
-		"note":        "four input lanes: objective observation (runs/llm/triage/boards/calendar), owner ratings (score 0 = unrated), peer signals (agent_climate both directions), bounded recent transcripts (40/target, 400 UTF-16 units/message)",
-		"targets":     targets,
-	}, nil
+		"note": "four input lanes: objective observation (runs/llm/triage/boards/calendar), owner ratings (score 0 = unrated), " +
+			"peer signals (agent_climate both directions, 40 rows/target), bounded recent transcripts " +
+			"(40/target, 400 UTF-16 units/message, 150k-unit round budget)",
+		"targets": targets,
+	}
+	if transcriptsTruncated {
+		snapshot["transcriptsTruncated"] = true
+	}
+	return snapshot, nil
 }
 
 // climateRow:同侪信号行的两种朝向(towardThem 用 "from",theyFeel 用 "about")。

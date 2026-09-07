@@ -6,6 +6,7 @@
 package hr
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -20,8 +21,11 @@ func (s *Server) ListHrRatings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT agent_id, score, comment, updated_at
-		  FROM hr_ratings WHERE company_id = $1 ORDER BY agent_id ASC`, companyID)
+		SELECT rr.agent_id, rr.score, rr.comment, rr.updated_at
+		  FROM hr_ratings rr
+		  JOIN participants p ON p.id = rr.agent_id AND p.company_id = rr.company_id
+		 WHERE rr.company_id = $1 AND p.kind = 'agent' AND p.departed_at IS NULL
+		 ORDER BY rr.agent_id ASC`, companyID)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -66,15 +70,19 @@ func (s *Server) PutHrRating(w http.ResponseWriter, r *http.Request, agentID str
 		comment = httpx.UTF16Cap(strings.TrimSpace(*body.Comment), 2000)
 	}
 	var exists bool
-	_ = s.DB.QueryRowContext(r.Context(),
+	err := s.DB.QueryRowContext(r.Context(),
 		`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL LIMIT 1`,
 		agentID, companyID).Scan(&exists)
+	if err != nil && err != sql.ErrNoRows {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
 	if !exists {
 		httpx.WriteError(w, http.StatusBadRequest, "unknown target agent")
 		return
 	}
 	var updatedAt time.Time
-	err := s.DB.QueryRowContext(r.Context(), `
+	err = s.DB.QueryRowContext(r.Context(), `
 		INSERT INTO hr_ratings (company_id, agent_id, score, comment, updated_by)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (company_id, agent_id)
