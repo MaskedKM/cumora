@@ -14,7 +14,8 @@
       "!**/node_modules",
       "!ios",
       "!android",
-      "!**/*.min.js"
+      "!**/*.min.js",
+      "!design-preview"
     ]
   },
   "formatter": {

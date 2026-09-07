@@ -539,7 +539,7 @@
     <div class="scrim" id="scrim" hidden></div>
     <aside class="menu" id="menu" hidden>
       <div class="so-profile" data-view="me" title="个人设置 — Profile / 用量 / 信任 / 偏好 / 本地栈">
-        <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#F4B740)">郑<span class="st" style="background:var(--avail)"></span></span>
+        <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#F4B740)">郑<span class="st" style="background:var(--avail)"></span><span style="position:absolute;top:-2px;right:-2px;width:11px;height:11px;border-radius:50%;background:var(--gold-deep);border:2px solid var(--cloud)" title="daemon 待升级"></span></span>
         <div class="who"><b>郑瑞杰</b><span>Owner · 8 席团队 · 在线</span></div>
         <span class="so-arrow">›</span>
       </div>
@@ -789,7 +789,7 @@
   /* 列表行点选(演示态) */
   document.querySelectorAll('.row[data-chat]').forEach((row) => {
     row.addEventListener('click', () => {
-      document.querySelectorAll('.row').forEach((r) => r.classList.remove('active'))
+      document.querySelectorAll('.row').forEach((r) => { r.classList.remove('active') })
       row.classList.add('active')
     })
   })

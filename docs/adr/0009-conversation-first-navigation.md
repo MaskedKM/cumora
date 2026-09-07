@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted(2026-09-07). Planned implementation in three cuts: #368
+Accepted (2026-09-07). Planned implementation in three cuts: #368
 (刀 1:rail 退役、滑出菜单、会话列表分区、看板常驻入口)→
 #369(刀 2:二级面统一全屏接管、peek 抽屉机制退役)→
 #370(刀 3:移动端单列表对齐)。
@@ -66,7 +66,9 @@ HTML 原型三轮试用迭代(`design-preview/chat-first-nav.html`,终态经用�
   多一次返回;这是用户在原型试用中亲自选择的取舍。
 - **移动端在刀 3 之前与桌面形态分叉**(MobileTabBar 仍是旧形态),属
   已知欠账。
-- `ViewKey` 清理顺车完成(`library` 死键移除;`convene` 上下文进入不受影响)。
+- `ViewKey` 清理顺车完成:`library` 在**桌面侧**是死键(无渲染分支、无 rail
+  入口),刀 1 移除;但移动端 `MobileTabBar` 仍是活消费方(MobileLibrary),
+  union 成员的最终移除随刀 3 落地。`convene` 上下文进入不受影响。
 - 命令面板(⌘K 式中央搜索)本轮不做,记余量——与滑出菜单不冲突,
   可作未来加速器。
 - 原型 `design-preview/chat-first-nav.html` 入库为形态基准(设计资产,
