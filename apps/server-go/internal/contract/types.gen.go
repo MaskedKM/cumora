@@ -151,6 +151,13 @@ const (
 	Zcode  EngineId = "zcode"
 )
 
+// Defines values for HrChangeField.
+const (
+	Bio          HrChangeField = "bio"
+	Role         HrChangeField = "role"
+	SystemPrompt HrChangeField = "systemPrompt"
+)
+
 // Defines values for HrEvaluationStatus.
 const (
 	HrEvaluationStatusDone    HrEvaluationStatus = "done"
@@ -1065,6 +1072,27 @@ type HrAgentConfigInput struct {
 	Engine       *string `json:"engine,omitempty"`
 	SystemPrompt *string `json:"systemPrompt,omitempty"`
 }
+
+// HrChange defines model for HrChange.
+type HrChange struct {
+	AgentId   string    `json:"agentId"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// EvaluationId 依据的评估轮;手动回滚产生的行为 null
+	EvaluationId *string `json:"evaluationId"`
+
+	// Field 对应 participants 岗位层三字段(system_prompt/bio/role)
+	Field    HrChangeField `json:"field"`
+	Id       string        `json:"id"`
+	NewValue string        `json:"newValue"`
+	OldValue string        `json:"oldValue"`
+
+	// RevertedChangeId 本行是回滚时 → 被回滚的目标行
+	RevertedChangeId *string `json:"revertedChangeId"`
+}
+
+// HrChangeField 对应 participants 岗位层三字段(system_prompt/bio/role)
+type HrChangeField string
 
 // HrEvaluation defines model for HrEvaluation.
 type HrEvaluation struct {
@@ -2155,6 +2183,11 @@ type SendEmailJSONBody struct {
 	Cc      *[]string `json:"cc,omitempty"`
 	Subject string    `json:"subject"`
 	To      []string  `json:"to"`
+}
+
+// ListHrChangesParams defines parameters for ListHrChanges.
+type ListHrChangesParams struct {
+	AgentId *string `form:"agentId,omitempty" json:"agentId,omitempty"`
 }
 
 // CreateHrEvaluationJSONBody defines parameters for CreateHrEvaluation.

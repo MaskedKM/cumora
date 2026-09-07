@@ -104,6 +104,7 @@ const TABLES_TO_WIPE: readonly string[] = [
   'company_skills',
   'hr_agents',
   'hr_reports',
+  'hr_changes',
   'hr_ratings',
   'company_members',
   'participants',

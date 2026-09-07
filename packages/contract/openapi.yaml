@@ -831,6 +831,39 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HrRating' }
         '400': { description: 未知目标或分数越界 }
+  /api/hr/changes:
+    get:
+      tags: [hr]
+      operationId: listHrChanges
+      summary: 岗位层变更历史(owner/admin;可按 agent 过滤)
+      parameters:
+        - { name: agentId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/HrChange' }
+  /api/hr/changes/{id}/revert:
+    post:
+      tags: [hr]
+      operationId: revertHrChange
+      summary: 一键回滚一次岗位层变更(owner/admin;回滚本身入历史)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrChange' }
+        '404': { description: 无此变更或不属本公司 }
   /api/agents:
     post:
       tags: [agents]
@@ -4118,6 +4151,18 @@ components:
       properties:
         score: { type: integer, minimum: 1, maximum: 5 }
         comment: { type: string }
+    HrChange:
+      type: object
+      required: [id, agentId, field, oldValue, newValue, createdAt]
+      properties:
+        id: { type: string }
+        agentId: { type: string }
+        field: { type: string, enum: [systemPrompt, bio, role], description: 对应 participants 岗位层三字段(system_prompt/bio/role) }
+        oldValue: { type: string }
+        newValue: { type: string }
+        evaluationId: { type: string, nullable: true, description: 依据的评估轮;手动回滚产生的行为 null }
+        revertedChangeId: { type: string, nullable: true, description: 本行是回滚时 → 被回滚的目标行 }
+        createdAt: { type: string, format: date-time }
     Whisper:
       type: object
       required: [id, kind, title, members, createdAt, updatedAt, msgCount]
