@@ -6,7 +6,7 @@ info:
     Cumora 单一契约源(ADR 0004 · 票 #48)。覆盖全部存活路由域:
     core(auth/me/companies/invitations)、computers/agents、hr(编外人事代理)、
     conversations/messages、email、projects、participants、boards、calendar、
-    documents、push、uploads、workspaces、observability、devtools、admin、
+    documents、push、uploads、projects、observability、devtools、admin、
     shipping、runtime(BYOA daemon 专用面)。
 
     ## WebSocket / SSE 事件面描述策略
@@ -49,7 +49,6 @@ tags:
   - { name: documents }
   - { name: push }
   - { name: uploads }
-  - { name: workspaces }
   - { name: observability }
   - { name: devtools }
   - { name: admin }
@@ -433,6 +432,13 @@ paths:
                   folderPath: { type: string }
                   isDefault: { type: boolean }
   /api/projects/{id}:
+    get:
+      tags: [projects]
+      operationId: getProject
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      summary: 项目详情(盘路径仅特权成员可见;#355 起原工作区详情面)
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectDetail' } } } }
     delete:
       tags: [projects]
       operationId: deleteProject
@@ -471,30 +477,6 @@ paths:
                 color: { type: string, nullable: true }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/projects/{id}/archive:
-    post:
-      tags: [projects]
-      operationId: archiveProject
-      summary: 归档/恢复项目
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                archive: { type: boolean }
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  status: { type: string }
   /api/participants:
     get:
       tags: [participants]
@@ -645,10 +627,10 @@ paths:
                     name: { type: string }
                     description: { type: string }
                     bundleHash: { type: string }
-  /api/computers/me/workspace-report:
+  /api/computers/me/project-report:
     post:
       tags: [computers]
-      operationId: reportWorkspaceChanges
+      operationId: reportProjectChanges
       security: [{ deviceToken: [] }]
       summary: '#337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播)'
       requestBody:
@@ -666,7 +648,7 @@ paths:
                     type: object
                     required: [workspaceId, path]
                     properties:
-                      workspaceId: { type: string }
+                      projectId: { type: string }
                       path: { type: string }
       responses:
         '200':
@@ -1288,30 +1270,6 @@ paths:
       summary: 已读
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/conversations/{id}/project:
-    post:
-      tags: [projects]
-      operationId: attachProject
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      summary: 会话挂/摘项目
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                projectId: { type: string, nullable: true }
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  projectId: { type: string, nullable: true }
   /api/conversations/{id}/messages:
     get:
       tags: [conversations]
@@ -2527,58 +2485,10 @@ paths:
                 token: { type: string }
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/workspaces:
-    get:
-      tags: [workspaces]
-      operationId: listWorkspaces
-      summary: 工作区列表(自动确保默认区)
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/WorkspaceSummary' }
+  /api/projects/{id}/members:
     post:
-      tags: [workspaces]
-      operationId: createWorkspace
-      summary: 建区(绑真实文件夹,1:1)
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, folderPath]
-              properties:
-                name: { type: string }
-                folderPath: { type: string }
-      responses:
-        '201':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [id, name, folderPath, isDefault, createdAt]
-                properties:
-                  id: { type: string }
-                  name: { type: string }
-                  folderPath: { type: string }
-                  isDefault: { type: boolean }
-                  createdAt: { type: string, format: date-time }
-  /api/workspaces/{id}:
-    get:
-      tags: [workspaces]
-      operationId: getWorkspace
-      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
-      summary: 工作区详情(路径仅特权成员可见)
-      responses:
-        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceDetail' } } } }
-  /api/workspaces/{id}/members:
-    post:
-      tags: [workspaces]
-      operationId: addWorkspaceMember
+      tags: [projects]
+      operationId: addProjectMember
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       summary: 加显式成员
       requestBody:
@@ -2591,22 +2501,22 @@ paths:
                 participantId: { type: string }
       responses:
         '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/workspaces/{id}/members/{participantId}:
+  /api/projects/{id}/members/{participantId}:
     delete:
-      tags: [workspaces]
-      operationId: removeWorkspaceMember
+      tags: [projects]
+      operationId: removeProjectMember
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: participantId, in: path, required: true, schema: { type: string } }
       summary: 移除显式成员
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/workspaces/{id}/associations:
+  /api/projects/{id}/associations:
     post:
-      tags: [workspaces]
-      operationId: addWorkspaceAssociation
+      tags: [projects]
+      operationId: addProjectAssociation
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
-      summary: 关联三件套(项目/看板卡/文档)
+      summary: 关联(看板卡/文档;project-kind 已随概念合并退役 #354)
       requestBody:
         content:
           application/json:
@@ -2614,7 +2524,7 @@ paths:
               type: object
               required: [kind, targetId]
               properties:
-                kind: { type: string, enum: [project, board_card, document] }
+                kind: { type: string, enum: [board_card, document] }
                 targetId: { type: string }
       responses:
         '201':
@@ -2626,29 +2536,29 @@ paths:
                 required: [ok, kind, targetId]
                 properties:
                   ok: { type: boolean }
-                  kind: { type: string, enum: [project, board_card, document] }
+                  kind: { type: string, enum: [board_card, document] }
                   targetId: { type: string }
-  /api/workspaces/{id}/associations/{kind}/{targetId}:
+  /api/projects/{id}/associations/{kind}/{targetId}:
     delete:
-      tags: [workspaces]
-      operationId: removeWorkspaceAssociation
+      tags: [projects]
+      operationId: removeProjectAssociation
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        # 枚举校验与文案在 handler('kind must be one of project, board_card, document')
+        # 枚举校验与文案在 handler('kind must be one of board_card, document')
         - { name: kind, in: path, required: true, schema: { type: string } }
         - { name: targetId, in: path, required: true, schema: { type: string } }
       summary: 解除关联
       responses:
         '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Ok' } } } }
-  /api/workspaces/{id}/files:
+  /api/projects/{id}/files:
     get:
-      tags: [workspaces]
-      operationId: listWorkspaceFiles
+      tags: [projects]
+      operationId: listProjectFiles
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
         - { name: path, in: query, schema: { type: string } }
-      summary: 范围制列目录
+      summary: 盘内列目录(范围制)
       responses:
         '200':
           description: ok
@@ -2661,11 +2571,11 @@ paths:
                   path: { type: string }
                   entries:
                     type: array
-                    items: { $ref: '#/components/schemas/WorkspaceFileEntry' }
-  /api/workspaces/{id}/file:
+                    items: { $ref: '#/components/schemas/ProjectFileEntry' }
+  /api/projects/{id}/file:
     get:
-      tags: [workspaces]
-      operationId: readWorkspaceFile
+      tags: [projects]
+      operationId: readProjectFile
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
@@ -2686,8 +2596,8 @@ paths:
                   modifiedAt: { type: string, format: date-time }
                   mtimeNanos: { type: string, description: '#337 纳秒 mtime(十进制字符串,CAS expected 用)' }
     put:
-      tags: [workspaces]
-      operationId: writeWorkspaceFile
+      tags: [projects]
+      operationId: writeProjectFile
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         # 校验与文案在 handler('path required' 或作可选过滤),保持宽松声明
@@ -2725,10 +2635,10 @@ paths:
                   error: { type: string }
                   currentMtimeNanos: { type: string }
                   conflictPath: { type: string }
-  /api/workspaces/{id}/upload:
+  /api/projects/{id}/upload:
     post:
-      tags: [workspaces]
-      operationId: uploadWorkspaceFile
+      tags: [projects]
+      operationId: uploadProjectFile
       summary: '#338 multipart 上传二进制(单文件 25MB 帽;复用防逃逸/保留路径/写前快照)'
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       requestBody:
@@ -2739,7 +2649,7 @@ paths:
               type: object
               required: [path, file]
               properties:
-                path: { type: string, description: 工作区内相对路径 }
+                path: { type: string, description: 盘内相对路径 }
                 file: { type: string, format: binary }
       responses:
         '200':
@@ -2761,10 +2671,10 @@ paths:
                 type: object
                 properties:
                   error: { type: string }
-  /api/workspaces/{id}/raw:
+  /api/projects/{id}/raw:
     get:
-      tags: [workspaces]
-      operationId: readWorkspaceFileRaw
+      tags: [projects]
+      operationId: readProjectFileRaw
       summary: '#338 原始字节读(图片预览/下载;Content-Type 按扩展名猜)'
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -2785,23 +2695,6 @@ paths:
               schema: { type: string, format: binary }
             image/svg+xml:
               schema: { type: string, format: binary }
-  /api/workspaces/{id}/unbind:
-    post:
-      tags: [workspaces]
-      operationId: unbindWorkspace
-      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
-      summary: 安全解绑(不动文件)
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok, unboundAt]
-                properties:
-                  ok: { type: boolean }
-                  unboundAt: { type: string, format: date-time }
   /api/admin/me:
     get:
       tags: [admin]
@@ -3420,10 +3313,10 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { type: object, additionalProperties: true } }
-  /runtime/workspaces:
+  /runtime/projects:
     get:
       tags: [runtime]
-      operationId: loadWorkspaces
+      operationId: loadProjects
       security: [{ agentRuntimeJWT: [] }]
       summary: agent 可达团队工作区清单(daemon 挂载同步用;folderPath 仅 computer kind=local 时返回)
       responses:
@@ -4082,7 +3975,7 @@ components:
         clientId: { type: string }
     Project:
       type: object
-      required: [id, name, description, color, status, createdAt, archivedAt, folderPath, isDefault, conversationCount]
+      required: [id, name, description, color, status, createdAt, archivedAt, folderPath, isDefault, conversationCount, explicitMemberCount]
       properties:
         id: { type: string }
         name: { type: string }
@@ -4097,6 +3990,7 @@ components:
           description: 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。
         isDefault: { type: boolean }
         conversationCount: { type: integer }
+        explicitMemberCount: { type: integer, description: '显式成员数(推导成员不计;#355 并入原列表语义)' }
     QuotaWindow:
       type: object
       required: [usedUsd, limitUsd, windowStart]
@@ -4617,7 +4511,7 @@ components:
       properties:
         id: { type: string }
         branch: { type: string }
-        workspaceId: { type: string }
+        projectId: { type: string }
         prUrl: { type: string, nullable: true }
         prState: { type: string, nullable: true, enum: [open, merged, closed] }
         createdBy: { type: string }
@@ -4733,16 +4627,7 @@ components:
         conversationId: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-    WorkspaceSummary:
-      type: object
-      required: [id, name, isDefault, createdAt, explicitMemberCount]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        isDefault: { type: boolean }
-        createdAt: { type: string, format: date-time }
-        explicitMemberCount: { type: integer }
-    WorkspaceMember:
+    ProjectMember:
       type: object
       required: [participantId, name, kind, addedAt, source]
       properties:
@@ -4751,31 +4636,29 @@ components:
         kind: { type: string }
         addedAt: { type: string, nullable: true, format: date-time }
         source: { type: string, enum: [explicit, implicit] }
-    WorkspaceAssociation:
+    ProjectAssociation:
       type: object
       required: [kind, targetId, createdAt]
       properties:
-        kind: { type: string, enum: [project, board_card, document] }
+        kind: { type: string, enum: [board_card, document] }
         targetId: { type: string }
         createdAt: { type: string, format: date-time }
-    WorkspaceDetail:
+    ProjectDetail:
       type: object
-      required: [id, name, isDefault, createdAt, unboundAt, unboundBy, members, associations]
+      required: [id, name, isDefault, createdAt, members, associations]
       properties:
         id: { type: string }
         name: { type: string }
         isDefault: { type: boolean }
         createdAt: { type: string, format: date-time }
-        unboundAt: { type: string, nullable: true, format: date-time }
-        unboundBy: { type: string, nullable: true }
         folderPath: { type: string }
         members:
           type: array
-          items: { $ref: '#/components/schemas/WorkspaceMember' }
+          items: { $ref: '#/components/schemas/ProjectMember' }
         associations:
           type: array
-          items: { $ref: '#/components/schemas/WorkspaceAssociation' }
-    WorkspaceFileEntry:
+          items: { $ref: '#/components/schemas/ProjectAssociation' }
+    ProjectFileEntry:
       type: object
       required: [name, dir, size, modifiedAt]
       properties:

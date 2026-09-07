@@ -90,10 +90,10 @@
       "ts": "CH_INBOX",
       "description": "人侧 Inbox 分级(#264):inbox.new 按严重度打扰。"
     },
-    "cumora:workspace": {
-      "go": "ChWorkspace",
-      "ts": "CH_WORKSPACE",
-      "description": "工作区文件面(#337):workspace.files_changed(区级变更清单,watcher 上报与兜底扫描聚合)。订阅方:wsx 聊天桥(按租户成员资格扇出)。"
+    "cumora:project": {
+      "go": "ChProject",
+      "ts": "CH_PROJECT",
+      "description": "工作区文件面(#337):project.files_changed(区级变更清单,watcher 上报与兜底扫描聚合)。订阅方:wsx 聊天桥(按租户成员资格扇出)。"
     }
   },
   "$defs": {
@@ -1021,22 +1021,22 @@
       },
       "required": ["type", "recipientUserId", "itemId", "severity", "itemType", "title", "at"]
     },
-    "WorkspaceFilesChangedEvent": {
+    "ProjectFilesChangedEvent": {
       "type": "object",
       "description": "团队工作区文件变更广播(#337,区级粒度,带文件清单不含内容)。发布方:server(挂载 watcher 上报处理 / 兜底扫描);帧路径对同租户成员可见,内容不随帧下发。",
       "x-event": {
-        "type": "workspace.files_changed",
-        "channel": "cumora:workspace",
+        "type": "project.files_changed",
+        "channel": "cumora:project",
         "scope": "company"
       },
       "properties": {
         "type": {
-          "const": "workspace.files_changed"
+          "const": "project.files_changed"
         },
         "companyId": {
           "type": "string"
         },
-        "workspaceId": {
+        "projectId": {
           "type": "string",
           "description": "变更所属工作区 id"
         },
@@ -1076,7 +1076,7 @@
       "required": [
         "type",
         "companyId",
-        "workspaceId",
+        "projectId",
         "changes"
       ]
     }

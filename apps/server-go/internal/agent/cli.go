@@ -412,8 +412,8 @@ func (s *Service) RunCli(ctx context.Context, argv []string) (res cliResult) {
 		return s.cliCmdClimate(ctx, parsed)
 	case "log":
 		return s.cliCmdLog(ctx, parsed)
-	case "workspace":
-		return s.cliCmdTeamWorkspace(ctx, parsed)
+	case "project":
+		return s.cliCmdTeamProject(ctx, parsed)
 	case "ws":
 		return s.cliCmdWorkspace(ctx, parsed)
 	case "tasks":

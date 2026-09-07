@@ -10,7 +10,7 @@
 // 失败保分支:平台不提供任何删除路径 —— 分支与 worktree 永久保留,
 // 任务失败时的进度就是分支本身;清理由 operator 以 git 语义人工处理
 // (git worktree remove / branch -d)。
-package workspaces
+package projects
 
 import (
 	"bytes"

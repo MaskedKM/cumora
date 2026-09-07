@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
-  type ApiWorkspaceDetail,
-  type ApiWorkspaceFileEntry,
-  type ApiWorkspaceSummary,
-  api,ws
+  type ApiProject,
+  type ApiProjectDetail,
+  type ApiProjectFileEntry,
+  api,
+  ws,
 } from '../api/client'
 import { Input } from '../components/Input'
 import { CodeBlock, RichBody } from '../components/Message'
@@ -71,13 +72,13 @@ export function WorkspacesView() {
   const docList = useDocuments((s) => s.list)
   const docLoad = useDocuments((s) => s.load)
 
-  const [list, setList] = useState<ApiWorkspaceSummary[]>([])
+  const [list, setList] = useState<ApiProject[]>([])
   const [listError, setListError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [detail, setDetail] = useState<ApiWorkspaceDetail | null>(null)
+  const [detail, setDetail] = useState<ApiProjectDetail | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [dirPath, setDirPath] = useState('')
-  const [entries, setEntries] = useState<ApiWorkspaceFileEntry[] | null>(null)
+  const [entries, setEntries] = useState<ApiProjectFileEntry[] | null>(null)
   const [filesError, setFilesError] = useState<string | null>(null)
   const [openFile, setOpenFile] = useState<{ wsId: string; path: string; body: string } | null>(null)
   const [editing, setEditing] = useState(false)
@@ -100,14 +101,14 @@ export function WorkspacesView() {
   const [addingMember, setAddingMember] = useState(false)
   const [memberId, setMemberId] = useState('')
   const [addingLink, setAddingLink] = useState(false)
-  const [linkKind, setLinkKind] = useState<'project' | 'board_card' | 'document'>('project')
+  const [linkKind, setLinkKind] = useState<'board_card' | 'document'>('board_card')
   const [linkTarget, setLinkTarget] = useState('')
   const [manageError, setManageError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setListError(null)
-    api.listWorkspaces()
+    api.listTeamProjects()
       .then((rows) => {
         if (cancelled) return
         setList(rows)
@@ -141,7 +142,7 @@ export function WorkspacesView() {
     setMemberId('')
     setLinkTarget('')
     if (openImage) { URL.revokeObjectURL(openImage.url); setOpenImage(null) }
-    api.getWorkspace(selectedId)
+    api.getProject(selectedId)
       .then((d) => { if (!cancelled) setDetail(d) })
       .catch((e) => { if (!cancelled) setDetailError(e instanceof Error ? e.message : String(e)) })
     return () => { cancelled = true }
@@ -149,28 +150,27 @@ export function WorkspacesView() {
 
   const reloadDir = useCallback(() => {
     setFilesError(null)
-    if (!selectedId || detail?.unboundAt) return
+    if (!selectedId) return
     let cancelled = false
-    api.listWorkspaceFiles(selectedId, dirPath)
+    api.listProjectFiles(selectedId, dirPath)
       .then((r) => { if (!cancelled) setEntries(r.entries) })
       .catch((e) => {
         if (cancelled) return
         setEntries(null)
         setFilesError(
           e instanceof ApiError && e.status === 403 ? t('ws.notMember')
-            : e instanceof ApiError && e.status === 410 ? t('ws.unbound')
-              : e instanceof Error ? e.message : String(e),
+            : e instanceof Error ? e.message : String(e),
         )
       })
     return () => { cancelled = true }
-  }, [selectedId, dirPath, detail?.unboundAt, t])
+  }, [selectedId, dirPath, t])
 
-  // #337 实时刷新:订阅 workspace.files_changed(区级),当前打开的区
+  // #337 实时刷新:订阅 project.files_changed(项目级),当前打开的项目
   // 变了就重拉目录;正在编辑时不覆盖草稿(保存后 reloadDir 自会追平)。
   // ws.on 幂等订阅,reloadDir deps 变化重挂无妨。
   useEffect(() => {
     const off = ws.on((e) => {
-      if (e.type !== 'workspace.files_changed' || e.workspaceId !== selectedId) return
+      if (e.type !== 'project.files_changed' || e.projectId !== selectedId) return
       if (editing) return
       reloadDir()
     })
@@ -190,7 +190,7 @@ export function WorkspacesView() {
   const reloadDetail = useCallback(() => {
     if (!selectedId) return
     const wsAtStart = selectedId
-    api.getWorkspace(selectedId)
+    api.getProject(selectedId)
       .then((d) => { if (selectedIdRef.current === wsAtStart) setDetail(d) })
       .catch(() => { /* 详情拉取失败保留旧态,下次切换重试 */ })
   }, [selectedId])
@@ -213,7 +213,7 @@ export function WorkspacesView() {
     if (openImage) { URL.revokeObjectURL(openImage.url); setOpenImage(null) }
   }
 
-  const openEntry = async (entry: ApiWorkspaceFileEntry) => {
+  const openEntry = async (entry: ApiProjectFileEntry) => {
     if (!selectedId) return
     const path = joinPath(dirPath, entry.name)
     if (!guardDirty()) return
@@ -226,7 +226,7 @@ export function WorkspacesView() {
     // #338 图片(不限 2MB 文本帽):原始字节读 → blob 预览。
     if (isImagePath(path)) {
       try {
-        const blob = await api.fetchWorkspaceRaw(selectedId, path)
+        const blob = await api.fetchProjectRaw(selectedId, path)
         if (selectedIdRef.current !== selectedId) { return } // 切区后迟到,弃
         if (openImage) URL.revokeObjectURL(openImage.url)
         setOpenFile(null)
@@ -238,7 +238,7 @@ export function WorkspacesView() {
       return
     }
     try {
-      const f = await api.readWorkspaceFile(selectedId, path)
+      const f = await api.readProjectFile(selectedId, path)
       if (openFile !== null || editing) {
         // a previous file was open — reset the saved flash for the new one
         setSavedTick(0)
@@ -257,7 +257,7 @@ export function WorkspacesView() {
     if (!selectedId || !openFile || !editing || openFile.wsId !== selectedId) return
     setSaving(true)
     try {
-      await api.writeWorkspaceFile(selectedId, openFile.path, draft)
+      await api.writeProjectFile(selectedId, openFile.path, draft)
       setOpenFile({ wsId: selectedId, path: openFile.path, body: draft })
       setEditing(false)
       setSavedTick((n) => n + 1)
@@ -275,7 +275,7 @@ export function WorkspacesView() {
     setFileError(null)
     const path = newPath.trim().replace(/^\/+/, '')
     try {
-      await api.writeWorkspaceFile(selectedId, path, '')
+      await api.writeProjectFile(selectedId, path, '')
       setCreating(false)
       setNewPath('')
       setOpenFile({ wsId: selectedId, path, body: '' })
@@ -294,7 +294,7 @@ export function WorkspacesView() {
     if (!selectedId || !memberId.trim()) return
     setManageError(null)
     try {
-      await api.addWorkspaceMember(selectedId, memberId.trim())
+      await api.addProjectMember(selectedId, memberId.trim())
       setAddingMember(false); setMemberId('')
       reloadDetail()
     } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
@@ -304,7 +304,7 @@ export function WorkspacesView() {
     if (!selectedId) return
     setManageError(null)
     try {
-      await api.removeWorkspaceMember(selectedId, pid)
+      await api.removeProjectMember(selectedId, pid)
       reloadDetail()
     } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
   }
@@ -313,38 +313,28 @@ export function WorkspacesView() {
     if (!selectedId || !linkTarget.trim()) return
     setManageError(null)
     try {
-      await api.addWorkspaceAssociation(selectedId, linkKind, linkTarget.trim())
+      await api.addProjectAssociation(selectedId, linkKind, linkTarget.trim())
       setAddingLink(false); setLinkTarget('')
       reloadDetail()
     } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
   }
 
-  const removeLink = async (kind: 'project' | 'board_card' | 'document', targetId: string) => {
+  const removeLink = async (kind: 'board_card' | 'document', targetId: string) => {
     if (!selectedId) return
     setManageError(null)
     try {
-      await api.removeWorkspaceAssociation(selectedId, kind, targetId)
-      reloadDetail()
-    } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
-  }
-
-  const unbind = async () => {
-    if (!selectedId) return
-    if (!confirm(t('ws.unbindConfirm'))) return
-    setManageError(null)
-    try {
-      await api.unbindWorkspace(selectedId)
+      await api.removeProjectAssociation(selectedId, kind, targetId)
       reloadDetail()
     } catch (e) { setManageError(e instanceof Error ? e.message : String(e)) }
   }
 
   const upload = async (file: File) => {
-    if (!selectedId || detail?.unboundAt) return
+    if (!selectedId) return
     setUploading(true)
     setFileError(null)
     try {
       const target = joinPath(dirPath, file.name)
-      await api.uploadWorkspaceFile(selectedId, target, file)
+      await api.uploadProjectFile(selectedId, target, file)
       void reloadDir()
     } catch (e) {
       setFileError(e instanceof Error ? e.message : String(e))
@@ -358,7 +348,7 @@ export function WorkspacesView() {
     if (!newWsName.trim() || !newWsFolder.trim()) return
     setManageError(null)
     try {
-      const ws = await api.createWorkspace(newWsName.trim(), newWsFolder.trim())
+      const ws = await api.createTeamProject(newWsName.trim(), newWsFolder.trim())
       resetCreateWs()
       // POST 201 响应不含 explicitMemberCount(契约内联对象),追加行补 0。
       setList((rows) => [...rows, { ...ws, explicitMemberCount: 0 }])
@@ -457,11 +447,6 @@ export function WorkspacesView() {
                   {t('ws.default')}
                 </span>
               )}
-              {detail.unboundAt && (
-                <span className="rounded-full bg-coral-soft px-2 py-0.5 text-[10.5px] font-medium text-coral-deep">
-                  {t('ws.unbound')}
-                </span>
-              )}
               {detail.folderPath && (
                 <span className="ml-auto max-w-[45%] truncate font-mono text-[11.5px] text-ink-400" title={detail.folderPath}>
                   {detail.folderPath}
@@ -472,11 +457,7 @@ export function WorkspacesView() {
             <div className="flex-1 min-h-0 grid" style={{ gridTemplateColumns: 'minmax(0, 1fr) 264px' }}>
               {/* Files */}
               <section className="min-w-0 h-full flex flex-col border-r border-ink-100">
-                {detail.unboundAt ? (
-                  <div className="flex-1 grid place-items-center px-6 text-center text-[13px] text-ink-400">
-                    {t('ws.unbound')}
-                  </div>
-                ) : (
+                {(
                   <>
                     <div className="flex items-center gap-1.5 border-b border-ink-100 px-4 py-2 text-[12px] text-ink-500">
                       <button
@@ -656,7 +637,7 @@ export function WorkspacesView() {
                       )}
                     </div>
                   ))}
-                  {canManage && !detail.unboundAt && (addingMember ? (
+                  {canManage && (addingMember ? (
                     <div className="flex items-center gap-1.5">
                       <Input
                         autoFocus
@@ -686,12 +667,12 @@ export function WorkspacesView() {
                     detail.associations.map((a, i) => (
                       <div key={`${a.kind}:${a.targetId}:${i}`} className="flex items-center gap-2 text-[12.5px] text-stone-700" title={a.targetId}>
                         <span className="shrink-0 rounded-md bg-stone-100 px-1.5 py-0.5 text-[10.5px] text-stone-600">
-                          {a.kind === 'project' ? t('ws.kindProject') : a.kind === 'board_card' ? t('ws.kindBoardCard') : t('ws.kindDocument')}
+                          {a.kind === 'board_card' ? t('ws.kindBoardCard') : t('ws.kindDocument')}
                         </span>
                         <span className="truncate">
                           {a.kind === 'document' ? (docTitles.get(a.targetId) ?? a.targetId) : a.targetId}
                         </span>
-                        {canManage && !detail.unboundAt && (
+                        {canManage && (
                           <button
                             type="button"
                             onClick={() => void removeLink(a.kind, a.targetId)}
@@ -704,15 +685,14 @@ export function WorkspacesView() {
                       </div>
                     ))
                   )}
-                  {canManage && !detail.unboundAt && (addingLink ? (
+                  {canManage && (addingLink ? (
                     <div className="flex flex-col gap-1.5">
                       <div className="flex items-center gap-1.5">
                         <select
                           value={linkKind}
-                          onChange={(e) => setLinkKind(e.target.value as 'project' | 'board_card' | 'document')}
+                          onChange={(e) => setLinkKind(e.target.value as 'board_card' | 'document')}
                           className="rounded-md border border-ink-100 px-1.5 py-1 text-[11.5px] text-stone-700 outline-none"
                         >
-                          <option value="project">{t('ws.kindProject')}</option>
                           <option value="board_card">{t('ws.kindBoardCard')}</option>
                           <option value="document">{t('ws.kindDocument')}</option>
                         </select>
@@ -739,15 +719,6 @@ export function WorkspacesView() {
                     </button>
                   ))}
                 </div>
-                {canManage && !detail.isDefault && !detail.unboundAt && (
-                  <button
-                    type="button"
-                    onClick={() => void unbind()}
-                    className="mt-6 w-full rounded-lg border border-coral-deep/30 px-2 py-1.5 text-[12px] text-coral-deep hover:bg-coral-soft"
-                  >
-                    {t('ws.unbind')}
-                  </button>
-                )}
               </aside>
             </div>
           </>

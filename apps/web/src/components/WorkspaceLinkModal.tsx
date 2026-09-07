@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ApiError, api } from '../api/client'
+import { ApiError, type ApiProject, api } from '../api/client'
 import { useT } from '../lib/i18n'
 
-export type WorkspaceLinkKind = 'project' | 'board_card' | 'document'
+export type WorkspaceLinkKind = 'board_card' | 'document'
 
 /**
  * #338 双向入口的被关联物一侧:把一张卡片 / 一个项目 / 一篇文档挂进
  * 某个团队工作区(服务端语义:关联目标的参与者随之进入该区的 member
  * scope)。权限门在调用方 —— project/board_card 关联服务端要求
- * owner/admin,document 任意成员可建(与 AddWorkspaceAssociation 一致)。
+ * owner/admin,document 任意成员可建(与 AddProjectAssociation 一致)。
  */
 export function WorkspaceLinkModal({ kind, targetId, onClose }: {
   kind: WorkspaceLinkKind
@@ -16,14 +16,14 @@ export function WorkspaceLinkModal({ kind, targetId, onClose }: {
   onClose: () => void
 }) {
   const t = useT()
-  const [list, setList] = useState<{ id: string; name: string; isDefault: boolean }[] | null>(null)
+  const [list, setList] = useState<ApiProject[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    api.listWorkspaces()
+    api.listTeamProjects()
       .then((rows) => { if (!cancelled) setList(rows) })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
     return () => { cancelled = true }
@@ -33,7 +33,7 @@ export function WorkspaceLinkModal({ kind, targetId, onClose }: {
     setBusy(true)
     setError(null)
     try {
-      await api.addWorkspaceAssociation(wsId, kind, targetId)
+      await api.addProjectAssociation(wsId, kind, targetId)
       setDone(wsName)
     } catch (e) {
       setError(e instanceof ApiError && e.status === 409 ? t('wsLink.already') : e instanceof Error ? e.message : String(e))

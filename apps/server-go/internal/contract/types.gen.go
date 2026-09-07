@@ -290,6 +290,18 @@ const (
 	ProjectStatusArchived ProjectStatus = "archived"
 )
 
+// Defines values for ProjectAssociationKind.
+const (
+	ProjectAssociationKindBoardCard ProjectAssociationKind = "board_card"
+	ProjectAssociationKindDocument  ProjectAssociationKind = "document"
+)
+
+// Defines values for ProjectMemberSource.
+const (
+	Explicit ProjectMemberSource = "explicit"
+	Implicit ProjectMemberSource = "implicit"
+)
+
 // Defines values for RecurrenceRuleFreq.
 const (
 	Daily   RecurrenceRuleFreq = "daily"
@@ -478,19 +490,6 @@ const (
 	WhisperKindGroup  WhisperKind = "group"
 )
 
-// Defines values for WorkspaceAssociationKind.
-const (
-	WorkspaceAssociationKindBoardCard WorkspaceAssociationKind = "board_card"
-	WorkspaceAssociationKindDocument  WorkspaceAssociationKind = "document"
-	WorkspaceAssociationKindProject   WorkspaceAssociationKind = "project"
-)
-
-// Defines values for WorkspaceMemberSource.
-const (
-	Explicit WorkspaceMemberSource = "explicit"
-	Implicit WorkspaceMemberSource = "implicit"
-)
-
 // Defines values for AdminPutSettingsJSONBodyCerebellumRoute.
 const (
 	AdminPutSettingsJSONBodyCerebellumRouteByoa   AdminPutSettingsJSONBodyCerebellumRoute = "byoa"
@@ -523,6 +522,12 @@ const (
 	CreatePollJSONBodyModeSingle CreatePollJSONBodyMode = "single"
 )
 
+// Defines values for AddProjectAssociationJSONBodyKind.
+const (
+	AddProjectAssociationJSONBodyKindBoardCard AddProjectAssociationJSONBodyKind = "board_card"
+	AddProjectAssociationJSONBodyKindDocument  AddProjectAssociationJSONBodyKind = "document"
+)
+
 // Defines values for RegisterPushDeviceJSONBodyPlatform.
 const (
 	RegisterPushDeviceJSONBodyPlatformAndroid RegisterPushDeviceJSONBodyPlatform = "android"
@@ -536,13 +541,6 @@ const (
 	CreateShippingReleaseJSONBodyEnvironmentDevelopment CreateShippingReleaseJSONBodyEnvironment = "development"
 	CreateShippingReleaseJSONBodyEnvironmentProduction  CreateShippingReleaseJSONBodyEnvironment = "production"
 	CreateShippingReleaseJSONBodyEnvironmentStaging     CreateShippingReleaseJSONBodyEnvironment = "staging"
-)
-
-// Defines values for AddWorkspaceAssociationJSONBodyKind.
-const (
-	AddWorkspaceAssociationJSONBodyKindBoardCard AddWorkspaceAssociationJSONBodyKind = "board_card"
-	AddWorkspaceAssociationJSONBodyKindDocument  AddWorkspaceAssociationJSONBodyKind = "document"
-	AddWorkspaceAssociationJSONBodyKindProject   AddWorkspaceAssociationJSONBodyKind = "project"
 )
 
 // Defines values for RecordEventJSONBodyLevel.
@@ -896,14 +894,14 @@ type CalendarReminderChannel string
 
 // CardDelivery #265 卡片交付行 —— `cumora card start` 物化 worktree 时落行(失败保分支的可见性),`card deliver` 补 PR 链接与审查状态。
 type CardDelivery struct {
-	Branch      string               `json:"branch"`
-	CreatedAt   time.Time            `json:"createdAt"`
-	CreatedBy   string               `json:"createdBy"`
-	Id          string               `json:"id"`
-	PrState     *CardDeliveryPrState `json:"prState"`
-	PrUrl       *string              `json:"prUrl"`
-	UpdatedAt   time.Time            `json:"updatedAt"`
-	WorkspaceId string               `json:"workspaceId"`
+	Branch    string               `json:"branch"`
+	CreatedAt time.Time            `json:"createdAt"`
+	CreatedBy string               `json:"createdBy"`
+	Id        string               `json:"id"`
+	PrState   *CardDeliveryPrState `json:"prState"`
+	PrUrl     *string              `json:"prUrl"`
+	ProjectId *string              `json:"projectId,omitempty"`
+	UpdatedAt time.Time            `json:"updatedAt"`
 }
 
 // CardDeliveryPrState defines model for CardDelivery.PrState.
@@ -1432,6 +1430,9 @@ type Project struct {
 	CreatedAt         time.Time  `json:"createdAt"`
 	Description       string     `json:"description"`
 
+	// ExplicitMemberCount 显式成员数(推导成员不计;#355 并入原列表语义)
+	ExplicitMemberCount int `json:"explicitMemberCount"`
+
 	// FolderPath 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。
 	FolderPath *string       `json:"folderPath"`
 	Id         string        `json:"id"`
@@ -1442,6 +1443,47 @@ type Project struct {
 
 // ProjectStatus defines model for Project.Status.
 type ProjectStatus string
+
+// ProjectAssociation defines model for ProjectAssociation.
+type ProjectAssociation struct {
+	CreatedAt time.Time              `json:"createdAt"`
+	Kind      ProjectAssociationKind `json:"kind"`
+	TargetId  string                 `json:"targetId"`
+}
+
+// ProjectAssociationKind defines model for ProjectAssociation.Kind.
+type ProjectAssociationKind string
+
+// ProjectDetail defines model for ProjectDetail.
+type ProjectDetail struct {
+	Associations []ProjectAssociation `json:"associations"`
+	CreatedAt    time.Time            `json:"createdAt"`
+	FolderPath   *string              `json:"folderPath,omitempty"`
+	Id           string               `json:"id"`
+	IsDefault    bool                 `json:"isDefault"`
+	Members      []ProjectMember      `json:"members"`
+	Name         string               `json:"name"`
+}
+
+// ProjectFileEntry defines model for ProjectFileEntry.
+type ProjectFileEntry struct {
+	Dir        bool       `json:"dir"`
+	ModifiedAt *time.Time `json:"modifiedAt"`
+	Name       string     `json:"name"`
+	Size       *int       `json:"size"`
+}
+
+// ProjectMember defines model for ProjectMember.
+type ProjectMember struct {
+	AddedAt       *time.Time          `json:"addedAt"`
+	Kind          string              `json:"kind"`
+	Name          string              `json:"name"`
+	ParticipantId string              `json:"participantId"`
+	Source        ProjectMemberSource `json:"source"`
+}
+
+// ProjectMemberSource defines model for ProjectMember.Source.
+type ProjectMemberSource string
 
 // QuotaResponse defines model for QuotaResponse.
 type QuotaResponse struct {
@@ -1888,58 +1930,6 @@ type WhisperMessage struct {
 	} `json:"tool"`
 }
 
-// WorkspaceAssociation defines model for WorkspaceAssociation.
-type WorkspaceAssociation struct {
-	CreatedAt time.Time                `json:"createdAt"`
-	Kind      WorkspaceAssociationKind `json:"kind"`
-	TargetId  string                   `json:"targetId"`
-}
-
-// WorkspaceAssociationKind defines model for WorkspaceAssociation.Kind.
-type WorkspaceAssociationKind string
-
-// WorkspaceDetail defines model for WorkspaceDetail.
-type WorkspaceDetail struct {
-	Associations []WorkspaceAssociation `json:"associations"`
-	CreatedAt    time.Time              `json:"createdAt"`
-	FolderPath   *string                `json:"folderPath,omitempty"`
-	Id           string                 `json:"id"`
-	IsDefault    bool                   `json:"isDefault"`
-	Members      []WorkspaceMember      `json:"members"`
-	Name         string                 `json:"name"`
-	UnboundAt    *time.Time             `json:"unboundAt"`
-	UnboundBy    *string                `json:"unboundBy"`
-}
-
-// WorkspaceFileEntry defines model for WorkspaceFileEntry.
-type WorkspaceFileEntry struct {
-	Dir        bool       `json:"dir"`
-	ModifiedAt *time.Time `json:"modifiedAt"`
-	Name       string     `json:"name"`
-	Size       *int       `json:"size"`
-}
-
-// WorkspaceMember defines model for WorkspaceMember.
-type WorkspaceMember struct {
-	AddedAt       *time.Time            `json:"addedAt"`
-	Kind          string                `json:"kind"`
-	Name          string                `json:"name"`
-	ParticipantId string                `json:"participantId"`
-	Source        WorkspaceMemberSource `json:"source"`
-}
-
-// WorkspaceMemberSource defines model for WorkspaceMember.Source.
-type WorkspaceMemberSource string
-
-// WorkspaceSummary defines model for WorkspaceSummary.
-type WorkspaceSummary struct {
-	CreatedAt           time.Time `json:"createdAt"`
-	ExplicitMemberCount int       `json:"explicitMemberCount"`
-	Id                  string    `json:"id"`
-	IsDefault           bool      `json:"isDefault"`
-	Name                string    `json:"name"`
-}
-
 // AdminLlmSummaryParams defines parameters for AdminLlmSummary.
 type AdminLlmSummaryParams struct {
 	SinceDays *string `form:"sinceDays,omitempty" json:"sinceDays,omitempty"`
@@ -2090,11 +2080,11 @@ type RequestPairingCodeJSONBody = map[string]interface{}
 // HeartbeatComputerJSONBody defines parameters for HeartbeatComputer.
 type HeartbeatComputerJSONBody map[string]interface{}
 
-// ReportWorkspaceChangesJSONBody defines parameters for ReportWorkspaceChanges.
-type ReportWorkspaceChangesJSONBody struct {
+// ReportProjectChangesJSONBody defines parameters for ReportProjectChanges.
+type ReportProjectChangesJSONBody struct {
 	Items []struct {
-		Path        string `json:"path"`
-		WorkspaceId string `json:"workspaceId"`
+		Path      string  `json:"path"`
+		ProjectId *string `json:"projectId,omitempty"`
 	} `json:"items"`
 }
 
@@ -2156,11 +2146,6 @@ type SetMuteJSONBody struct {
 // TogglePinJSONBody defines parameters for TogglePin.
 type TogglePinJSONBody struct {
 	Pinned *bool `json:"pinned,omitempty"`
-}
-
-// AttachProjectJSONBody defines parameters for AttachProject.
-type AttachProjectJSONBody struct {
-	ProjectId *string `json:"projectId"`
 }
 
 // SetTitleJSONBody defines parameters for SetTitle.
@@ -2297,9 +2282,52 @@ type UpdateProjectJSONBody struct {
 	Name        *string `json:"name,omitempty"`
 }
 
-// ArchiveProjectJSONBody defines parameters for ArchiveProject.
-type ArchiveProjectJSONBody struct {
-	Archive *bool `json:"archive,omitempty"`
+// AddProjectAssociationJSONBody defines parameters for AddProjectAssociation.
+type AddProjectAssociationJSONBody struct {
+	Kind     AddProjectAssociationJSONBodyKind `json:"kind"`
+	TargetId string                            `json:"targetId"`
+}
+
+// AddProjectAssociationJSONBodyKind defines parameters for AddProjectAssociation.
+type AddProjectAssociationJSONBodyKind string
+
+// ReadProjectFileParams defines parameters for ReadProjectFile.
+type ReadProjectFileParams struct {
+	Path *string `form:"path,omitempty" json:"path,omitempty"`
+}
+
+// WriteProjectFileJSONBody defines parameters for WriteProjectFile.
+type WriteProjectFileJSONBody struct {
+	Body string `json:"body"`
+}
+
+// WriteProjectFileParams defines parameters for WriteProjectFile.
+type WriteProjectFileParams struct {
+	Path               *string `form:"path,omitempty" json:"path,omitempty"`
+	ExpectedMtimeNanos *string `form:"expectedMtimeNanos,omitempty" json:"expectedMtimeNanos,omitempty"`
+}
+
+// ListProjectFilesParams defines parameters for ListProjectFiles.
+type ListProjectFilesParams struct {
+	Path *string `form:"path,omitempty" json:"path,omitempty"`
+}
+
+// AddProjectMemberJSONBody defines parameters for AddProjectMember.
+type AddProjectMemberJSONBody struct {
+	ParticipantId string `json:"participantId"`
+}
+
+// ReadProjectFileRawParams defines parameters for ReadProjectFileRaw.
+type ReadProjectFileRawParams struct {
+	Path string `form:"path" json:"path"`
+}
+
+// UploadProjectFileMultipartBody defines parameters for UploadProjectFile.
+type UploadProjectFileMultipartBody struct {
+	File openapi_types.File `json:"file"`
+
+	// Path 盘内相对路径
+	Path string `json:"path"`
 }
 
 // RegisterPushDeviceJSONBody defines parameters for RegisterPushDevice.
@@ -2447,60 +2475,6 @@ type PresignUploadJSONBody struct {
 type RefreshUploadUrlJSONBody struct {
 	Key *string `json:"key,omitempty"`
 	Url *string `json:"url,omitempty"`
-}
-
-// CreateWorkspaceJSONBody defines parameters for CreateWorkspace.
-type CreateWorkspaceJSONBody struct {
-	FolderPath string `json:"folderPath"`
-	Name       string `json:"name"`
-}
-
-// AddWorkspaceAssociationJSONBody defines parameters for AddWorkspaceAssociation.
-type AddWorkspaceAssociationJSONBody struct {
-	Kind     AddWorkspaceAssociationJSONBodyKind `json:"kind"`
-	TargetId string                              `json:"targetId"`
-}
-
-// AddWorkspaceAssociationJSONBodyKind defines parameters for AddWorkspaceAssociation.
-type AddWorkspaceAssociationJSONBodyKind string
-
-// ReadWorkspaceFileParams defines parameters for ReadWorkspaceFile.
-type ReadWorkspaceFileParams struct {
-	Path *string `form:"path,omitempty" json:"path,omitempty"`
-}
-
-// WriteWorkspaceFileJSONBody defines parameters for WriteWorkspaceFile.
-type WriteWorkspaceFileJSONBody struct {
-	Body string `json:"body"`
-}
-
-// WriteWorkspaceFileParams defines parameters for WriteWorkspaceFile.
-type WriteWorkspaceFileParams struct {
-	Path               *string `form:"path,omitempty" json:"path,omitempty"`
-	ExpectedMtimeNanos *string `form:"expectedMtimeNanos,omitempty" json:"expectedMtimeNanos,omitempty"`
-}
-
-// ListWorkspaceFilesParams defines parameters for ListWorkspaceFiles.
-type ListWorkspaceFilesParams struct {
-	Path *string `form:"path,omitempty" json:"path,omitempty"`
-}
-
-// AddWorkspaceMemberJSONBody defines parameters for AddWorkspaceMember.
-type AddWorkspaceMemberJSONBody struct {
-	ParticipantId string `json:"participantId"`
-}
-
-// ReadWorkspaceFileRawParams defines parameters for ReadWorkspaceFileRaw.
-type ReadWorkspaceFileRawParams struct {
-	Path string `form:"path" json:"path"`
-}
-
-// UploadWorkspaceFileMultipartBody defines parameters for UploadWorkspaceFile.
-type UploadWorkspaceFileMultipartBody struct {
-	File openapi_types.File `json:"file"`
-
-	// Path 工作区内相对路径
-	Path string `json:"path"`
 }
 
 // AgendaVerdictJSONBody defines parameters for AgendaVerdict.
@@ -2749,8 +2723,8 @@ type RequestPairingCodeJSONRequestBody = RequestPairingCodeJSONBody
 // HeartbeatComputerJSONRequestBody defines body for HeartbeatComputer for application/json ContentType.
 type HeartbeatComputerJSONRequestBody HeartbeatComputerJSONBody
 
-// ReportWorkspaceChangesJSONRequestBody defines body for ReportWorkspaceChanges for application/json ContentType.
-type ReportWorkspaceChangesJSONRequestBody ReportWorkspaceChangesJSONBody
+// ReportProjectChangesJSONRequestBody defines body for ReportProjectChanges for application/json ContentType.
+type ReportProjectChangesJSONRequestBody ReportProjectChangesJSONBody
 
 // PairComputerJSONRequestBody defines body for PairComputer for application/json ContentType.
 type PairComputerJSONRequestBody PairComputerJSONBody
@@ -2778,9 +2752,6 @@ type SetMuteJSONRequestBody SetMuteJSONBody
 
 // TogglePinJSONRequestBody defines body for TogglePin for application/json ContentType.
 type TogglePinJSONRequestBody TogglePinJSONBody
-
-// AttachProjectJSONRequestBody defines body for AttachProject for application/json ContentType.
-type AttachProjectJSONRequestBody AttachProjectJSONBody
 
 // SetTitleJSONRequestBody defines body for SetTitle for application/json ContentType.
 type SetTitleJSONRequestBody SetTitleJSONBody
@@ -2836,8 +2807,17 @@ type CreateProjectJSONRequestBody CreateProjectJSONBody
 // UpdateProjectJSONRequestBody defines body for UpdateProject for application/json ContentType.
 type UpdateProjectJSONRequestBody UpdateProjectJSONBody
 
-// ArchiveProjectJSONRequestBody defines body for ArchiveProject for application/json ContentType.
-type ArchiveProjectJSONRequestBody ArchiveProjectJSONBody
+// AddProjectAssociationJSONRequestBody defines body for AddProjectAssociation for application/json ContentType.
+type AddProjectAssociationJSONRequestBody AddProjectAssociationJSONBody
+
+// WriteProjectFileJSONRequestBody defines body for WriteProjectFile for application/json ContentType.
+type WriteProjectFileJSONRequestBody WriteProjectFileJSONBody
+
+// AddProjectMemberJSONRequestBody defines body for AddProjectMember for application/json ContentType.
+type AddProjectMemberJSONRequestBody AddProjectMemberJSONBody
+
+// UploadProjectFileMultipartRequestBody defines body for UploadProjectFile for multipart/form-data ContentType.
+type UploadProjectFileMultipartRequestBody UploadProjectFileMultipartBody
 
 // RegisterPushDeviceJSONRequestBody defines body for RegisterPushDevice for application/json ContentType.
 type RegisterPushDeviceJSONRequestBody RegisterPushDeviceJSONBody
@@ -2898,21 +2878,6 @@ type PresignUploadJSONRequestBody PresignUploadJSONBody
 
 // RefreshUploadUrlJSONRequestBody defines body for RefreshUploadUrl for application/json ContentType.
 type RefreshUploadUrlJSONRequestBody RefreshUploadUrlJSONBody
-
-// CreateWorkspaceJSONRequestBody defines body for CreateWorkspace for application/json ContentType.
-type CreateWorkspaceJSONRequestBody CreateWorkspaceJSONBody
-
-// AddWorkspaceAssociationJSONRequestBody defines body for AddWorkspaceAssociation for application/json ContentType.
-type AddWorkspaceAssociationJSONRequestBody AddWorkspaceAssociationJSONBody
-
-// WriteWorkspaceFileJSONRequestBody defines body for WriteWorkspaceFile for application/json ContentType.
-type WriteWorkspaceFileJSONRequestBody WriteWorkspaceFileJSONBody
-
-// AddWorkspaceMemberJSONRequestBody defines body for AddWorkspaceMember for application/json ContentType.
-type AddWorkspaceMemberJSONRequestBody AddWorkspaceMemberJSONBody
-
-// UploadWorkspaceFileMultipartRequestBody defines body for UploadWorkspaceFile for multipart/form-data ContentType.
-type UploadWorkspaceFileMultipartRequestBody UploadWorkspaceFileMultipartBody
 
 // AgendaVerdictJSONRequestBody defines body for AgendaVerdict for application/json ContentType.
 type AgendaVerdictJSONRequestBody AgendaVerdictJSONBody

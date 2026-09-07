@@ -398,8 +398,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ws.dirtyConfirm': '放弃未保存的修改？',
   'ws.tooLarge': '文件过大，无法打开（上限 2MB）',
   'ws.notMember': '你不在该工作区的成员范围内',
-  'ws.unbound': '该工作区已解绑 —— 文件为只读历史',
-  'ws.kindProject': '项目',
   'ws.kindBoardCard': '看板卡',
   'ws.kindDocument': '文档',
 
@@ -414,8 +412,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'ws.addLink': '关联项目 / 卡片 / 文档',
   'ws.targetIdPh': '目标 id',
   'ws.removeLink': '移除关联',
-  'ws.unbind': '解绑工作区',
-  'ws.unbindConfirm': '解绑该工作区?文件保留在磁盘,工作区变为只读历史。',
   'ws.upload': '上传文件(25MB 上限)',
   'ws.filterPh': '按名称过滤',
   'ws.close': '关闭',

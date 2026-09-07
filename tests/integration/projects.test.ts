@@ -85,7 +85,7 @@ test('create: mandatory folder — auto-created under the managed root; creator 
   assert.equal(st.isDirectory(), true)
 
   // creator is an explicit member: file access works without any conversation
-  const w = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces/${p.id}/file?path=hi.txt`, {
+  const w = await fetchAs(OWNER, `${MIRROR_BASE}/api/projects/${p.id}/file?path=hi.txt`, {
     method: 'PUT',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ body: 'x' }),
@@ -109,7 +109,7 @@ test('create: custom folderPath — realpath required, at most one project per f
 
 test('list: merged collection — workspaces-family rows appear among projects; default pinned first', async () => {
   const wdir = await mkdtemp(join(tmpRoot, 'wsl-'))
-  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces`, {
+  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/projects`, {
     method: 'POST',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ name: 'FromWs', folderPath: wdir }),
@@ -121,6 +121,9 @@ test('list: merged collection — workspaces-family rows appear among projects; 
   const rows = await listProjects()
   const ids = rows.map((r) => r.id)
   assert.ok(ids.includes(ws.id), 'workspace-family row present in projects list (merged entity)')
+  // explicitMemberCount:#355 并入原列表语义的成员计数(HTTP 级断言,评审补口)
+  const created1 = rows.find((r) => r.id === ws.id) as { explicitMemberCount: number }
+  assert.equal(created1.explicitMemberCount, 1, 'creator is the one explicit member')
   assert.equal(rows[0].isDefault, true, 'default project pinned first')
   const defaults = rows.filter((r) => r.isDefault)
   assert.equal(defaults.length, 1)
@@ -154,7 +157,7 @@ test('delete: cascades — conversations SET NULL, delivery survives with NULL r
     [OWNER],
   )
   await pool.query(
-    `INSERT INTO card_deliveries (id, card_id, workspace_id, branch, created_by)
+    `INSERT INTO card_deliveries (id, card_id, project_id, branch, created_by)
      VALUES ('dlv-pj', 'card-pj', $1, 'cumora/card-pj', $2)`,
     [p.id, AGENT],
   )
@@ -170,11 +173,11 @@ test('delete: cascades — conversations SET NULL, delivery survives with NULL r
   assert.equal(cv.rowCount, 1)
   assert.equal(cv.rows[0].project_id, null)
   // delivery row survived with a NULL reference (traceability kept)
-  const dlv = await pool.query(`SELECT workspace_id, branch FROM card_deliveries WHERE id = 'dlv-pj'`)
+  const dlv = await pool.query(`SELECT project_id, branch FROM card_deliveries WHERE id = 'dlv-pj'`)
   assert.equal(dlv.rowCount, 1)
-  assert.equal(dlv.rows[0].workspace_id, null)
+  assert.equal(dlv.rows[0].project_id, null)
   // members/associations cleared; row gone; folder files untouched
-  const members = await pool.query(`SELECT 1 FROM workspace_members WHERE workspace_id = $1`, [p.id])
+  const members = await pool.query(`SELECT 1 FROM project_members WHERE project_id = $1`, [p.id])
   assert.equal(members.rowCount, 0)
   const gone = await deleteProject(p.id)
   assert.equal(gone.status, 404)
@@ -182,7 +185,7 @@ test('delete: cascades — conversations SET NULL, delivery survives with NULL r
   assert.ok((await readdir(dir)).includes('keep.txt'))
 })
 
-test('delete: default project refused; member role refused; archived endpoint retired (410)', async () => {
+test('delete: default project refused; member role refused; archive endpoint gone (404)', async () => {
   const rows = await listProjects()
   const def = rows.find((r) => r.isDefault) as { id: string }
   assert.equal((await deleteProject(def.id)).status, 403)
@@ -191,11 +194,19 @@ test('delete: default project refused; member role refused; archived endpoint re
   const p = (await mine.json()) as { id: string }
   assert.equal((await deleteProject(p.id, MEMBER)).status, 403)
 
+  // 归档端点已随刀 2 路由族退役删除(ADR 0008 §6)——404 = 端点不存在
   const arch = await fetchAs(OWNER, `${MIRROR_BASE}/api/projects/${p.id}/archive`, {
     method: 'POST',
     headers: jsonHeaders(COMPANY),
     body: JSON.stringify({ archive: true }),
   })
-  assert.equal(arch.status, 410)
-  assert.match(String(((await arch.json()) as { error?: string }).error), /retired/)
+  assert.equal(arch.status, 404)
+
+  // 第三条退役路由(会话挂靠改挂)同样 404 —— 删了没人看的面要有断言(#365 评审)
+  const attach = await fetchAs(OWNER, `${MIRROR_BASE}/api/conversations/cv-x/project`, {
+    method: 'POST',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ projectId: p.id }),
+  })
+  assert.equal(attach.status, 404)
 })

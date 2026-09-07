@@ -1,4 +1,4 @@
-// /runtime/cli 文件区命令组(#89):workspace(团队真实文件夹,resolve 归一
+// /runtime/cli 文件区命令组(#89):project(团队项目盘,resolve 归一
 // + realpath 双层防逃逸)/ ws(agent 私有区)(原 cli_private.go 拆出,
 // 函数体零改动)。
 package agent
@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 )
 
-/* ───────── workspace(团队真实文件夹)───────── */
+/* ───────── project(团队项目盘)───────── */
 
 // cliWorkspaceResolve:core.ts resolveWorkspaceAccess 的 CLI 面 —— 默认区
 // 全员;显式成员/关联;错误文案与 TS WorkspaceError 逐字对齐。
@@ -32,25 +32,25 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 	).Scan(&fpS, &n, &isDefault)
 	fp := fpS.String
 	if err == sql.ErrNoRows {
-		return "", "", "", "workspace not found"
+		return "", "", "", "project not found"
 	}
 	if err != nil {
-		return "", "", "", "workspace lookup failed"
+		return "", "", "", "project lookup failed"
 	}
 	if isDefault {
 		return fp, n, wsID, ""
 	}
 	var allowed bool
 	err = s.DB.QueryRowContext(ctx, `
-		SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
+		SELECT 1 FROM project_members WHERE project_id = $1 AND participant_id = $2
 		UNION ALL
 		SELECT 1 FROM conversations c
 		 WHERE c.project_id = $1 AND c.company_id = $3
 		   AND EXISTS (SELECT 1 FROM conversation_members cm
 		                WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 		UNION ALL
-		SELECT 1 FROM workspace_associations a
-		 WHERE a.workspace_id = $1 AND a.company_id = $3
+		SELECT 1 FROM project_associations a
+		 WHERE a.project_id = $1 AND a.company_id = $3
 		   AND EXISTS (SELECT 1 FROM participants p
 		                WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
 		   AND (
@@ -68,7 +68,7 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 		return "", "", "", "membership query failed"
 	}
 	if err == sql.ErrNoRows || !allowed {
-		return "", "", "", "not a member of this workspace"
+		return "", "", "", "not a member of this project"
 	}
 	return fp, n, wsID, ""
 }
@@ -80,7 +80,7 @@ const cliMaxFileBytes = 2 * 1024 * 1024
 // ADR 0006 信任域边界),这是 CLI 层的最大努力防护。大小写不敏感
 // (#339 评审余量:macOS 大小写不敏感盘 .CUMORA 绕纯前缀检查)。
 func cliRejectReserved(rel string) string {
-	return workspaces.RejectReserved(rel)
+	return projects.RejectReserved(rel)
 }
 
 // cliCASCheck:#337 团队区写命令的可选 --expected <mtimeNanos> —— 失配
@@ -89,7 +89,7 @@ func cliRejectReserved(rel string) string {
 func cliCASCheck(folder, rel, expected, principal, challenger string) string {
 	v, err := strconv.ParseInt(strings.TrimSpace(expected), 10, 64)
 	if err != nil {
-		return "--expected must be an integer (unix nanos, from `workspace stat --json`)"
+		return "--expected must be an integer (unix nanos, from `project stat --json`)"
 	}
 	cur := int64(0)
 	if st, serr := os.Stat(filepath.Join(folder, filepath.FromSlash(rel))); serr == nil && !st.IsDir() {
@@ -97,7 +97,7 @@ func cliCASCheck(folder, rel, expected, principal, challenger string) string {
 	}
 	if cur != v {
 		msg := fmt.Sprintf("stale write — current mtime %d ns ≠ expected %d ns; re-read and retry with --expected %d", cur, v, cur)
-		if conflict := workspaces.SaveConflictCopy(folder, rel, principal, challenger); conflict != "" {
+		if conflict := projects.SaveConflictCopy(folder, rel, principal, challenger); conflict != "" {
 			msg += "; your content saved to " + conflict
 		}
 		return msg
@@ -110,7 +110,7 @@ func cliCASCheck(folder, rel, expected, principal, challenger string) string {
 // "path is a directory" 检查拦)。
 func cliRejectRoot(rel string) string {
 	if rel == "." {
-		return "cannot operate on the workspace root"
+		return "cannot operate on the project root"
 	}
 	return ""
 }
@@ -163,10 +163,10 @@ func cliResolveInside(root, raw string) (abs, rel string, errMsg string) {
 func cliAssertInside(root, abs string) string {
 	fromRoot, err := filepath.Rel(root, abs)
 	if err != nil {
-		return "path escapes the workspace folder"
+		return "path escapes the project folder"
 	}
 	if fromRoot != "" && (fromRoot == ".." || strings.HasPrefix(fromRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(fromRoot)) {
-		return "path escapes the workspace folder"
+		return "path escapes the project folder"
 	}
 	return ""
 }
@@ -198,7 +198,7 @@ func (s *Service) cliEnsureDefaultWorkspace(ctx context.Context, tenant string) 
 	return err
 }
 
-func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cliResult {
+func (s *Service) cliCmdTeamProject(ctx context.Context, parsed cliParsed) cliResult {
 	op := ""
 	if len(parsed.positional) > 0 {
 		op = parsed.positional[0]
@@ -212,9 +212,9 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		return cliErrThrow(err)
 	}
 	if tenant == "" {
-		return cliErr("no company for " + me + " — team workspaces need a team")
+		return cliErr("no company for " + me + " — team projects need a team")
 	}
-	usage := "usage: workspace ls | workspace read <id> <path> | workspace write <id> <path> <body> | workspace append <id> <path> <body>\n" +
+	usage := "usage: project ls | workspace read <id> <path> | workspace write <id> <path> <body> | workspace append <id> <path> <body>\n" +
 		"       workspace edit <id> <path> <old> <new> [--all] | workspace delete <id> <path> | workspace mv <id> <src> <dst>\n" +
 		"       workspace stat <id> <path> | workspace grep <id> <pattern> [-i] [--json] [--as id]"
 	switch op {
@@ -222,7 +222,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if err := s.cliEnsureDefaultWorkspace(ctx, tenant); err != nil {
 			return cliErrThrow(err)
 		}
-		if err := workspaces.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
+		if err := projects.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
 			return cliErrThrow(err)
 		}
 		rows, err := s.DB.QueryContext(ctx,
@@ -256,7 +256,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			}
 			return cliOK(js)
 		}
-		lines := []string{fmt.Sprintf("%d team workspace(s):", len(all)), ""}
+		lines := []string{fmt.Sprintf("%d team project(s):", len(all)), ""}
 		for _, r := range all {
 			def := ""
 			if r.IsDefault {
@@ -267,7 +267,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		return cliOK(strings.Join(lines, "\n"))
 	case "read":
 		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
-			return cliErr("usage: workspace read <id> <path> [--as id]")
+			return cliErr("usage: project read <id> <path> [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		folder, _, _, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
@@ -281,12 +281,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		return cliOK(body)
 	case "write":
 		if len(parsed.positional) < 4 || parsed.positional[2] == "" {
-			return cliErr("usage: workspace write <id> <path> <body> [--as id]")
+			return cliErr("usage: project write <id> <path> <body> [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		body := strings.Join(positionalFrom(parsed, 3), " ")
 		if body == "" {
-			return cliErr("usage: workspace write <id> <path> <body> [--expected <nanos>] [--as id]")
+			return cliErr("usage: project write <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
 		if msg != "" {
@@ -313,27 +313,27 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, body); errMsg != "" {
 			return cliErr(errMsg)
 		}
 		return cliOK(fmt.Sprintf("wrote %s in %s (%d chars)", path, wsName, len(body)), CliSideEffect{
-			"event":       "team_workspace.file_written",
-			"command":     "workspace write",
-			"agentId":     me,
-			"companyId":   tenant,
-			"workspaceId": wsResolvedID,
-			"path":        path,
-			"bodyLength":  len(body),
+			"event":      "team_workspace.file_written",
+			"command":    "workspace write",
+			"agentId":    me,
+			"companyId":  tenant,
+			"projectId":  wsResolvedID,
+			"path":       path,
+			"bodyLength": len(body),
 		})
 	case "append":
 		if len(parsed.positional) < 4 || parsed.positional[2] == "" {
-			return cliErr("usage: workspace append <id> <path> <body> [--expected <nanos>] [--as id]")
+			return cliErr("usage: project append <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		body := strings.Join(positionalFrom(parsed, 3), " ")
 		if body == "" {
-			return cliErr("usage: workspace append <id> <path> <body> [--expected <nanos>] [--as id]")
+			return cliErr("usage: project append <id> <path> <body> [--expected <nanos>] [--as id]")
 		}
 		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
 		if msg != "" {
@@ -369,7 +369,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return cliErrThrow(err)
 		}
@@ -377,17 +377,17 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErrThrow(err)
 		}
 		return cliOK(fmt.Sprintf("appended %d chars to %s in %s", len(body), path, wsName), CliSideEffect{
-			"event":       "team_workspace.file_written",
-			"command":     "workspace append",
-			"agentId":     me,
-			"companyId":   tenant,
-			"workspaceId": wsResolvedID,
-			"path":        path,
-			"bodyLength":  len(body),
+			"event":      "team_workspace.file_written",
+			"command":    "workspace append",
+			"agentId":    me,
+			"companyId":  tenant,
+			"projectId":  wsResolvedID,
+			"path":       path,
+			"bodyLength": len(body),
 		})
 	case "edit":
 		if len(parsed.positional) < 4 || parsed.positional[1] == "" || parsed.positional[2] == "" {
-			return cliErr("usage: workspace edit <id> <path> <old> <new> [--all] [--as id]")
+			return cliErr("usage: project edit <id> <path> <old> <new> [--all] [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		oldStr := parsed.positional[3]
@@ -419,7 +419,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, next); errMsg != "" {
 			return cliErr(errMsg)
 		}
@@ -432,14 +432,14 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			"command":      "workspace edit",
 			"agentId":      me,
 			"companyId":    tenant,
-			"workspaceId":  wsResolvedID,
+			"projectId":    wsResolvedID,
 			"path":         path,
 			"replacements": occurrences,
 			"bodyLength":   len(next),
 		})
 	case "delete":
 		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
-			return cliErr("usage: workspace delete <id> <path> [--as id]")
+			return cliErr("usage: project delete <id> <path> [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		folder, _, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
@@ -464,7 +464,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErr("file not found")
 		}
 		// 删前留档:误删可从 .cumora/versions/ 恢复(#337)。
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if st.IsDir() {
 			// 空目录才删(os.Remove 语义):非空目录保守拒绝,清空后再删。
 			if err := os.Remove(abs); err != nil {
@@ -474,16 +474,16 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErrThrow(err)
 		}
 		return cliOK("deleted "+rel, CliSideEffect{
-			"event":       "team_workspace.file_deleted",
-			"command":     "workspace delete",
-			"agentId":     me,
-			"companyId":   tenant,
-			"workspaceId": wsResolvedID,
-			"path":        rel,
+			"event":     "team_workspace.file_deleted",
+			"command":   "workspace delete",
+			"agentId":   me,
+			"companyId": tenant,
+			"projectId": wsResolvedID,
+			"path":      rel,
 		})
 	case "mv":
 		if len(parsed.positional) < 4 || parsed.positional[1] == "" || parsed.positional[2] == "" || parsed.positional[3] == "" {
-			return cliErr("usage: workspace mv <id> <src> <dst> [--as id]")
+			return cliErr("usage: project mv <id> <src> <dst> [--as id]")
 		}
 		wsID, src, dst := parsed.positional[1], parsed.positional[2], parsed.positional[3]
 		folder, wsName, wsResolvedID, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
@@ -528,22 +528,22 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErrThrow(err)
 		}
 		// 移前留档:源位置的旧内容可恢复(#337)。
-		workspaces.SnapshotVersion(folder, relSrc)
+		projects.SnapshotVersion(folder, relSrc)
 		if err := os.Rename(absSrc, absDst); err != nil {
 			return cliErrThrow(err)
 		}
 		return cliOK(fmt.Sprintf("moved %s → %s in %s", relSrc, relDst, wsName), CliSideEffect{
-			"event":       "team_workspace.file_moved",
-			"command":     "workspace mv",
-			"agentId":     me,
-			"companyId":   tenant,
-			"workspaceId": wsResolvedID,
-			"from":        relSrc,
-			"to":          relDst,
+			"event":     "team_workspace.file_moved",
+			"command":   "workspace mv",
+			"agentId":   me,
+			"companyId": tenant,
+			"projectId": wsResolvedID,
+			"from":      relSrc,
+			"to":        relDst,
 		})
 	case "stat":
 		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
-			return cliErr("usage: workspace stat <id> <path> [--json] [--as id]")
+			return cliErr("usage: project stat <id> <path> [--json] [--as id]")
 		}
 		wsID, path := parsed.positional[1], parsed.positional[2]
 		folder, _, _, msg := s.cliWorkspaceResolve(ctx, tenant, me, wsID)
@@ -586,7 +586,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		return cliOK(fmt.Sprintf("%s — %s · %d bytes · modified %s", rel, kindF, st.Size(), st.ModTime().UTC().Format(time.RFC3339)))
 	case "grep":
 		if len(parsed.positional) < 3 || parsed.positional[1] == "" || parsed.positional[2] == "" {
-			return cliErr("usage: workspace grep <id> <pattern> [-i] [--json] [--as id]")
+			return cliErr("usage: project grep <id> <pattern> [-i] [--json] [--as id]")
 		}
 		parsed = cliNormalizeShortI(parsed)
 		wsID, pattern := parsed.positional[1], parsed.positional[2]

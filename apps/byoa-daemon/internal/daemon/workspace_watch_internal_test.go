@@ -21,7 +21,7 @@ type reportRecorder struct {
 
 func (rr *reportRecorder) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/computers/me/workspace-report", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/computers/me/project-report", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Items []map[string]any `json:"items"`
 		}

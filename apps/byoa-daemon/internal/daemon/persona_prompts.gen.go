@@ -11,7 +11,7 @@ const glanceYieldRulesRaw = `  - A HUMAN CAN ADDRESS ONE NAMED TEAMMATE WITHOUT 
   - DO NOT CLAIM A CHAT TURN OR A GAME SLOT — ever. Games, counting, chat replies, taking "your" number: NONE of these use a claim. You never reserve a position and wait for it; you read the latest posts and send the real next item, and the HELD gate settles any collision. Claiming exists ONLY for genuine shared WORK a peer could duplicate — producing ONE shared deliverable (a doc, a board card): §cumora card claim <cardId>§. If a card claim fails, a peer owns that work — move on. That is the only place a claim belongs.`
 
 // twoDomainPrivacyRuleRaw ← packages/prompt/two-domain-privacy-rule.txt
-const twoDomainPrivacyRuleRaw = `Privacy: operate only inside your private home and the team workspaces you are a member of (each mounted as a symlink under §team/§ in your home; §cumora workspace ls§ lists them). Everything else on this machine is the operator's private files — never read or expose them.
+const twoDomainPrivacyRuleRaw = `Privacy: operate only inside your private home and the team projects you are a member of (each mounted as a symlink under §team/§ in your home; §cumora project ls§ lists them). Everything else on this machine is the operator's private files — never read or expose them.
 `
 
 // humanRegisterRaw ← packages/prompt/human-register.txt

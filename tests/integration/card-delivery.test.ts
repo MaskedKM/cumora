@@ -101,7 +101,7 @@ async function seedBoardCardWithWorkspace(): Promise<{ cardId: string; wsId: str
     `INSERT INTO board_cards (id, board_id, column_id, title, created_by) VALUES ($1, $2, 'col-todo', 'Fix login flow', $3)`,
     [cardId, boardId, AGENT],
   )
-  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces`, {
+  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/projects`, {
     method: 'POST',
     headers: { 'x-company-id': COMPANY, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Repo', folderPath: repoDir }),
@@ -109,7 +109,7 @@ async function seedBoardCardWithWorkspace(): Promise<{ cardId: string; wsId: str
   assert.equal(wsRes.status, 201)
   const wsId = ((await wsRes.json()) as { id: string }).id
   await pool.query(
-    `INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
+    `INSERT INTO project_associations (id, project_id, company_id, target_kind, target_id, created_by)
      VALUES ($1, $2, $3, 'board_card', $4, $5)`,
     [`wa-${randomUUID().slice(0, 12)}`, wsId, COMPANY, cardId, OWNER],
   )
@@ -151,6 +151,8 @@ test('claim → start: worktree materialized on disk, delivery row visible immed
   assert.equal(cards[0].deliveries.length, 1)
   assert.equal(cards[0].deliveries[0].branch, `cumora/${cardId}`)
   assert.equal(cards[0].deliveries[0].prUrl, null)
+  // #355:台账键已改 projectId(实发契约对齐,评审 P1 补口)
+  assert.ok('projectId' in cards[0].deliveries[0], 'delivery row carries projectId key')
 
   // Idempotent: second start reuses, does not duplicate the row.
   const again = await cli(token, ['card', 'start', cardId])
@@ -207,14 +209,14 @@ test('start guards: unlinked card, non-git folder, non-assignee agent', async ()
 
   // Linked but folder is not a git repo → honest refusal.
   const plainDir = await mkdtemp(join(tmpRoot, 'plain-'))
-  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/workspaces`, {
+  const wsRes = await fetchAs(OWNER, `${MIRROR_BASE}/api/projects`, {
     method: 'POST',
     headers: { 'x-company-id': COMPANY, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Plain', folderPath: plainDir }),
   })
   const plainWs = ((await wsRes.json()) as { id: string }).id
   await pool.query(
-    `INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
+    `INSERT INTO project_associations (id, project_id, company_id, target_kind, target_id, created_by)
      VALUES ($1, $2, $3, 'board_card', $4, $5)`,
     [`wa-${randomUUID().slice(0, 12)}`, plainWs, COMPANY, cardId, OWNER],
   )
@@ -264,12 +266,12 @@ test('deliver without start: fresh INSERT on a self-built branch, --ws routing, 
   // path and records the workspace of the card's association.
   const d = await cli(token, ['card', 'deliver', cardId, '--branch', 'feature/self-1', '--pr', 'https://github.com/x/y/pull/9'])
   assert.equal(d.ok, true)
-  const wsRows = await pool.query<{ workspace_id: string }>(
-    `SELECT workspace_id FROM card_deliveries WHERE card_id = $1 AND branch = 'feature/self-1'`,
+  const wsRows = await pool.query<{ project_id: string }>(
+    `SELECT project_id FROM card_deliveries WHERE card_id = $1 AND branch = 'feature/self-1'`,
     [cardId],
   )
   assert.equal(wsRows.rowCount, 1)
-  const wsId = wsRows.rows[0].workspace_id
+  const wsId = wsRows.rows[0].project_id
   const cards = await boardCards(boardId)
   assert.equal(cards[0].deliveries[0].branch, 'feature/self-1')
   assert.equal(cards[0].deliveries[0].prState, 'open')

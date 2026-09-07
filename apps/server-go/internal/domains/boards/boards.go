@@ -475,7 +475,7 @@ func (s *Server) GetBoardCard(w http.ResponseWriter, r *http.Request, id string)
 func (s *Server) boardDeliveries(ctx context.Context, boardID string) map[string][]map[string]any {
 	out := map[string][]map[string]any{}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT d.card_id, d.id, d.branch, d.workspace_id, d.pr_url, d.pr_state,
+		SELECT d.card_id, d.id, d.branch, d.project_id, d.pr_url, d.pr_state,
 		       d.created_by, d.created_at, d.updated_at
 		  FROM card_deliveries d JOIN board_cards c ON c.id = d.card_id
 		 WHERE c.board_id = $1 ORDER BY d.created_at ASC`, boardID)
@@ -494,7 +494,7 @@ func (s *Server) boardDeliveries(ctx context.Context, boardID string) map[string
 			continue
 		}
 		out[cardID] = append(out[cardID], map[string]any{
-			"id": id, "branch": branch, "workspaceId": wsID,
+			"id": id, "branch": branch, "projectId": wsID,
 			"prUrl": nullOr(prURL), "prState": nullOr(prState),
 			"createdBy": createdBy, "createdAt": ca.Time.UTC(), "updatedAt": ua.Time.UTC(),
 		})

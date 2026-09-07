@@ -21,7 +21,6 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/projects"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -38,10 +37,10 @@ func Mount(mux *http.ServeMux, db *sql.DB) {
 }
 
 // requireRole:owner/admin 门(TS requireCompanyRole;403 恒同文案)。
-func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bool) {
+func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, string, bool) {
 	uid, companyID, ok := httpx.RequireCompany(w, r, db)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	var role string
 	if err := db.QueryRowContext(r.Context(),
@@ -51,9 +50,9 @@ func requireRole(w http.ResponseWriter, r *http.Request, db *sql.DB) (string, bo
 	}
 	if role != "owner" && role != "admin" {
 		httpx.WriteError(w, http.StatusForbidden, "this action requires an owner or admin of the team")
-		return "", false
+		return "", "", false
 	}
-	return companyID, true
+	return uid, companyID, true
 }
 
 func decodeBody(r *http.Request) map[string]json.RawMessage {
@@ -81,14 +80,15 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	// #354:每队默认区(团队文件)的自愈随主列表走 —— 并表后这就是"项目"
 	// 的列表面,全新 team 不能因未开过工作区视图就漏掉公共盘。
-	if err := workspaces.EnsureDefault(r.Context(), s.DB, tenant); err != nil {
+	if err := EnsureDefault(r.Context(), s.DB, tenant); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT id, name, description, color, status,
 		       created_at, archived_at, folder_path, is_default,
-		       (SELECT COUNT(*)::int FROM conversations WHERE project_id = projects.id)
+		       (SELECT COUNT(*)::int FROM conversations WHERE project_id = projects.id),
+		       (SELECT COUNT(*)::int FROM project_members WHERE project_id = projects.id)
 		  FROM projects
 		 WHERE company_id = $1
 		 ORDER BY is_default DESC, created_at DESC`, tenant)
@@ -104,8 +104,8 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		var archivedAt sql.NullTime
 		var isDefault bool
-		var convoCount int
-		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &folder, &isDefault, &convoCount); err != nil {
+		var convoCount, memberCount int
+		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &folder, &isDefault, &convoCount, &memberCount); err != nil {
 			continue
 		}
 		row := map[string]any{
@@ -113,7 +113,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 			"description": nullAny(description), "color": nullAny(color),
 			"status": status, "createdAt": httpx.ISOms(createdAt),
 			"folderPath": nullAny(folder), "isDefault": isDefault,
-			"conversationCount": convoCount,
+			"conversationCount": convoCount, "explicitMemberCount": memberCount,
 		}
 		if archivedAt.Valid {
 			row["archivedAt"] = httpx.ISOms(archivedAt.Time)
@@ -133,7 +133,9 @@ func nullAny(ns sql.NullString) any {
 }
 
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
-	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	// #355:建项目必带盘(ADR 0008 §3)—— 与原建工作区同级敏感,owner/admin
+	// 门随概念合并过来(原 CreateProject 的宽门是纯分组时代的语义)。
+	uid, tenant, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -215,7 +217,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	// 建区者即显式成员(CreateWorkspace 同款;否则未挂会话的创建人自己
 	// 不在成员域内,看不到刚建的盘 —— 评审 P2)。
 	if _, err := s.DB.ExecContext(r.Context(),
-		`INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+		`INSERT INTO project_members (project_id, participant_id, added_by) VALUES ($1, $2, $2)`,
 		id, uid); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -227,7 +229,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request, id string) {
-	tenant, ok := requireRole(w, r, s.DB)
+	_, tenant, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -277,85 +279,13 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request, id string
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) ArchiveProject(w http.ResponseWriter, r *http.Request, id string) {
-	// #354(ADR 0008 §6):归档概念退役 —— 生命周期无终点、仅删除。端点活体
-	// 至刀 2 随路由族退役,期间恒 410 指路(与 unbind 同款对称处置)。
-	httpx.WriteError(w, http.StatusGone,
-		"archive retired (ADR 0008) — projects have no terminal state; delete is the only exit")
-}
-
-func (s *Server) AttachProject(w http.ResponseWriter, r *http.Request, id string) {
-	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
-	if !ok {
-		return
-	}
-	body := decodeBody(r)
-	// undefined(缺键/非串非 null)→ 400;null → 解绑;串 → 绑定。
-	raw, has := bodyAny(body, "projectId")
-	if !has {
-		httpx.WriteError(w, http.StatusBadRequest, "projectId required (string or null to detach)")
-		return
-	}
-	var projectID any
-	switch v := raw.(type) {
-	case nil:
-		projectID = nil
-	case string:
-		s := strings.TrimSpace(v)
-		if s == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "projectId required (string or null to detach)")
-			return
-		}
-		projectID = s
-	default:
-		httpx.WriteError(w, http.StatusBadRequest, "projectId required (string or null to detach)")
-		return
-	}
-	var membersJSON string
-	err := s.DB.QueryRowContext(r.Context(),
-		`SELECT members::text FROM conversations WHERE id = $1 AND company_id = $2`, id, tenant).
-		Scan(&membersJSON)
-	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not found")
-		return
-	}
-	var members []string
-	_ = json.Unmarshal([]byte(membersJSON), &members)
-	isMember := false
-	for _, m := range members {
-		if m == uid {
-			isMember = true
-			break
-		}
-	}
-	if !isMember {
-		httpx.WriteError(w, http.StatusForbidden, "only members can change the project")
-		return
-	}
-	if pid, isStr := projectID.(string); isStr {
-		var one int
-		if err := s.DB.QueryRowContext(r.Context(),
-			`SELECT 1 FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`, pid, tenant).Scan(&one); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "unknown project")
-			return
-		}
-	}
-	if _, err := s.DB.ExecContext(r.Context(),
-		`UPDATE conversations SET project_id = $2, updated_at = NOW() WHERE id = $1 AND company_id = $3`,
-		id, projectID, tenant); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "projectId": projectID})
-}
-
 // DeleteProject:#354(ADR 0008 §6)项目删除 —— 生命周期的唯一出口
 // (归档/解绑已退役)。级联语义:对话经 FK ON DELETE SET NULL 保留、交付
 // 台账经 FK SET NULL 随卡片存活(0007 可追溯意图的延续)、成员/关联行
 // 清理;盘文件原地保留(平台不代删真实文件,受管目录可手动清理)。
 // is_default 项目(团队文件公共盘)不可删。
 func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string) {
-	tenant, ok := requireRole(w, r, s.DB)
+	_, tenant, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -378,11 +308,11 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string
 	}
 	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(r.Context(),
-			`DELETE FROM workspace_members WHERE workspace_id = $1`, id); err != nil {
+			`DELETE FROM project_members WHERE project_id = $1`, id); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(r.Context(),
-			`DELETE FROM workspace_associations WHERE workspace_id = $1`, id); err != nil {
+			`DELETE FROM project_associations WHERE project_id = $1`, id); err != nil {
 			return err
 		}
 		res, err := tx.ExecContext(r.Context(),
@@ -402,7 +332,7 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
-	// conversations.project_id / card_deliveries.workspace_id 由 FK
+	// conversations.project_id / card_deliveries.project_id 由 FK
 	// ON DELETE SET NULL 自动置空;盘目录未删。
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "id": id, "folderKept": nullAny(folder),

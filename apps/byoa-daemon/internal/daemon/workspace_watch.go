@@ -1,9 +1,9 @@
 // daemon 包 workspace_watch —— #337 挂载工作区文件变更感知:进程级
 // fsnotify watcher 监听各 agent 挂点指向的真实文件夹(同 ws 多 agent
 // 同 inode,watch 一处即全知),per-ws ≈2s 去抖聚合上报
-// POST /api/computers/me/workspace-report(device token —— 上报者是
+// POST /api/computers/me/project-report(device token —— 上报者是
 // daemon 计算机而非某 agent)。server 对账已知态→快照→广播
-// workspace.files_changed;上报失败丢弃本批(watcher 仍在,下次变更
+// project.files_changed;上报失败丢弃本批(watcher 仍在,下次变更
 // 再报;60min 兜底扫描终会追上)。inotify watch 上限/Add 失败只 Warn
 // —— 该区感知退化为兜底扫描(Syncthing 同款分层)。
 package daemon
@@ -212,12 +212,12 @@ func (t *teamWatcher) flush(wsID string) {
 		return
 	}
 	type reportItem struct {
-		WorkspaceID string `json:"workspaceId"`
-		Path        string `json:"path"`
+		ProjectID string `json:"projectId"`
+		Path      string `json:"path"`
 	}
 	items := make([]reportItem, 0, len(rels))
 	for rel := range rels {
-		items = append(items, reportItem{WorkspaceID: wsID, Path: rel})
+		items = append(items, reportItem{ProjectID: wsID, Path: rel})
 	}
 	// 分片 ≤500(服务端契约硬帽):git checkout/unzip 类单窗巨量变更恰是
 	// watcher 核心场景,不分片会被整批 400(#341 评审 P1)。
@@ -228,7 +228,7 @@ func (t *teamWatcher) flush(wsID string) {
 			end = len(items)
 		}
 		if err := apiCall(t.ctx, t.cfg.ServerURL, http.MethodPost,
-			"/api/computers/me/workspace-report", t.cfg.DeviceToken,
+			"/api/computers/me/project-report", t.cfg.DeviceToken,
 			map[string]any{"items": items[start:end]}, nil); err != nil {
 			slog.Warn("[computer] workspace report failed — batch dropped (server scan will catch up)",
 				"ws", wsID, "items", end-start, "err", err)

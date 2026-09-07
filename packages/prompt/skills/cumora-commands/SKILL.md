@@ -1,6 +1,6 @@
 ---
 name: cumora-commands
-description: Full cumora CLI catalog — mailbox, docs, kanban, DMs/pull-groups, memory, workspaces, web/browser, attachments. Read this (or run `cumora help`) BEFORE concluding you can't do something.
+description: Full cumora CLI catalog — mailbox, docs, kanban, DMs/pull-groups, memory, team projects, web/browser, attachments. Read this (or run `cumora help`) BEFORE concluding you can't do something.
 ---
 
 # cumora-commands
@@ -64,28 +64,28 @@ Every world capability is a subcommand of the `cumora` CLI on PATH (it runs as y
         company library (the team playbook), already materialized in your engine skills directory.
 
 ## TEAM WORKSPACES (shared real folders — the same folders the human UI shows;
-you must be in the workspace's member scope, exactly like humans)
+you must be in the project's member scope, exactly like humans)
 
-Each workspace you can reach is mounted at `team/<workspace-id>/` in your home —
+Each project folder you can reach is mounted at `team/<project-id>/` in your home —
 that symlink IS the real folder (not a copy): work there directly with your
 normal tools (edit files, grep, run builds, tests, and git). `ls team/` to see
 yours. If `team/` is empty or missing (e.g. your computer is remote from the
 server), the CLI covers everything:
 
-    bash("cumora workspace ls")
-    bash("cumora workspace read <workspace-id> <path>")
-    bash("cumora workspace write <workspace-id> <path> '<body>'")
-    bash("cumora workspace append <workspace-id> <path> '<body>'")
-    bash("cumora workspace edit <workspace-id> <path> '<old>' '<new>' --all")
-    # concurrent-edit safety: `workspace stat <id> <path> --json` returns mtimeNanos;
+    bash("cumora project ls")
+    bash("cumora project read <project-id> <path>")
+    bash("cumora project write <project-id> <path> '<body>'")
+    bash("cumora project append <project-id> <path> '<body>'")
+    bash("cumora project edit <project-id> <path> '<old>' '<new>' --all")
+    # concurrent-edit safety: `project stat <id> <path> --json` returns mtimeNanos;
     # pass `--expected <mtimeNanos>` on write/append/edit — on mismatch the write is
     # rejected, your text is kept as a `<name>.conflict-<you>-<ts>` copy, and you
     # re-read + retry. Overwritten/deleted/moved files keep their last 10 versions
-    # in the workspace's `.cumora/versions/` (ask the operator to restore one).
-    bash("cumora workspace delete <workspace-id> <path>")
-    bash("cumora workspace mv <workspace-id> <src> <dst>")
-    bash("cumora workspace stat <workspace-id> <path> --json")
-    bash("cumora workspace grep <workspace-id> '<regex>' -i")
+    # in the project folder's `.cumora/versions/` (ask the operator to restore one).
+    bash("cumora project delete <project-id> <path>")
+    bash("cumora project mv <project-id> <src> <dst>")
+    bash("cumora project stat <project-id> <path> --json")
+    bash("cumora project grep <project-id> '<regex>' -i")
 
 ## AVATAR
 
@@ -147,9 +147,9 @@ or asks you to track / plan / move work, RUN `cumora kanban ls` first. The verbs
     bash("cumora card show <card_id>")
     bash("cumora card add <board_id> '<title>' --column <col_id> [--description '...'] [--assign <id>]")
     bash("cumora card move <card_id> --to <column_id>")   — move a card between columns (this is how "done" happens)
-    bash("cumora card start <card_id> [--ws <workspace_id>]")
+    bash("cumora card start <card_id> [--ws <project_id>]")
                                                         — CODE TASKS: materialize an isolated git worktree for this card
-                                                          inside its linked team workspace (branch cumora/<card_id>, path
+                                                          inside its linked team project (branch cumora/<card_id>, path
                                                           team/<ws-id>/.cumora/worktrees/<card_id>/). Do the work there with
                                                           native git/build/test. The branch SURVIVES task failure — your
                                                           progress stays on it even if you fail mid-task.

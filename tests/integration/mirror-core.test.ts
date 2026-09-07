@@ -168,9 +168,9 @@ test('[mirror] projects list/create/update; archive retired (#354)', async () =>
   assert.ok(list.json.some((p: any) => p.id === created.json.id))
   const upd = await call(`/projects/${created.json.id}`, { method: 'PUT', body: JSON.stringify({ name: 'Renamed' }) })
   assert.equal(upd.status, 200)
-  // ADR 0008 §6:归档概念退役 —— 无终点状态、仅删除(端点活体至刀 2,恒 410)
+  // ADR 0008 §6:归档概念退役,端点已随刀 2 删除 —— 404 = 不存在
   const arch = await call(`/projects/${created.json.id}/archive`, { method: 'POST', body: JSON.stringify({ archive: true }) })
-  assert.equal(arch.status, 410)
+  assert.equal(arch.status, 404)
 })
 
 test('[mirror] unknown route → 404(baseline 为 Express 默认 HTML 体,不承诺 JSON)', async () => {

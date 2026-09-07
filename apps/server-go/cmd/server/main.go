@@ -36,7 +36,6 @@ import (
 	shipping "github.com/MaskedKM/cumora/apps/server-go/internal/domains/shipping"
 	domskills "github.com/MaskedKM/cumora/apps/server-go/internal/domains/skills"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/uploads"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	pollsengine "github.com/MaskedKM/cumora/apps/server-go/internal/polls"
@@ -217,7 +216,6 @@ func main() {
 	core.Mount(coreRouter, pool, rdb, livezPing)
 	conversations.Mount(coreRouter, pool)
 	boards.Mount(coreRouter, pool, runtimeSvc.WakeMentionedAgents)
-	workspaces.Mount(coreRouter, pool)
 	documents.Mount(coreRouter, pool)
 	domskills.Mount(coreRouter, pool) // #261 公司 Skills 库
 	dominbox.Mount(coreRouter, pool)  // #264 人侧 Inbox 分级

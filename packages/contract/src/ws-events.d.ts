@@ -263,15 +263,15 @@ export interface InboxNewEvent {
 } // scope: company,通道 cumora:inbox
 
 /** 团队工作区文件变更广播(#337,区级粒度,带文件清单不含内容)。发布方:server(挂载 watcher 上报处理 / 兜底扫描);帧路径对同租户成员可见,内容不随帧下发。 */
-export interface WorkspaceFilesChangedEvent {
-  type: 'workspace.files_changed'
+export interface ProjectFilesChangedEvent {
+  type: 'project.files_changed'
   companyId: string
   /** 变更所属工作区 id */
-  workspaceId: string
+  projectId: string
   changes: { path: string; mtimeNanos?: string; size?: number; removed: boolean }[]
   /** ISO 毫秒(httpx.ISOms 同形) */
   at?: string
-} // scope: company,通道 cumora:workspace
+} // scope: company,通道 cumora:project
 
 /** 客户端在 /ws 上可能收到的全部事件帧(含 gateway 自产的 hello/doc.sync/doc.error)。 */
 export type WsEvent =
@@ -298,7 +298,7 @@ export type WsEvent =
   CalendarEventChangedEvent |
   HelloEvent |
   InboxNewEvent |
-  WorkspaceFilesChangedEvent
+  ProjectFilesChangedEvent
 
 /** Redis 总线上发布的事件(harness publish 面;gateway 自产帧不在其列)。 */
 export type WsBroadcastEvent =
@@ -322,7 +322,7 @@ export type WsBroadcastEvent =
   CalendarReminderEvent |
   CalendarEventChangedEvent |
   InboxNewEvent |
-  WorkspaceFilesChangedEvent
+  ProjectFilesChangedEvent
 
 /** 事件 → Redis 通道映射(多事件可共用通道:cumora:status 承载 participants.* 与 computers.*)。
  *  harness 的 CH_* 运行时常量以此 `satisfies` 钉值,防手写漂移。 */
@@ -347,6 +347,6 @@ export interface WsChannels {
   'calendar.reminder': 'cumora:calendar.reminder'
   'calendar.changed': 'cumora:calendar.events'
   'inbox.new': 'cumora:inbox'
-  'workspace.files_changed': 'cumora:workspace'
+  'project.files_changed': 'cumora:project'
 }
 

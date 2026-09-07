@@ -124,15 +124,15 @@ func InboxNew(ctx context.Context, evt InboxNewEvent) {
 	_ = publishJSON(ctx, ChInbox, evt)
 }
 
-// WorkspaceFilesChanged 广播工作区文件变更清单(#337,区级粒度)。发布方:
+// ProjectFilesChanged 广播项目盘文件变更清单(#337,项目级粒度;#355 改名)。发布方:
 // 挂载 watcher 上报处理 / 兜底扫描(server 侧写路径不自发 —— UI 写后
 // 本地刷新,server 写路径的变更由 UI 下一次拉取覆盖)。companyId 空 =
 // 死帧,拒发(同 inbox.new)。
-func WorkspaceFilesChanged(ctx context.Context, evt WorkspaceFilesChangedEvent) {
+func ProjectFilesChanged(ctx context.Context, evt ProjectFilesChangedEvent) {
 	if evt.CompanyID == "" {
-		slog.Warn("workspace.files_changed publish skipped — empty companyId would be dropped by the wsx bridge", "ws", evt.WorkspaceID)
+		slog.Warn("project.files_changed publish skipped — empty companyId would be dropped by the wsx bridge", "ws", evt.ProjectID)
 		return
 	}
-	evt.Type = EventWorkspaceFilesChanged
-	_ = publishJSON(ctx, ChWorkspace, evt)
+	evt.Type = EventProjectFilesChanged
+	_ = publishJSON(ctx, ChProject, evt)
 }

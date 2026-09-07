@@ -1,8 +1,8 @@
-// domains/workspaces —— 工作区域(#56):建区/列表/详情(成员范围推导)/
+// projects 域文件面(#355 并入,#56 起源):详情(成员范围推导)/
 // 显式成员/关联三件套/文件列读写/安全解绑。文件安全对齐
 // 已退役 TS server 的 workspaces/core.ts 的双层防逃逸(resolve 归一 + realpath 复检,
 // 新建文件回退父目录 realpath)。真目录 IO(非 mock)。
-package workspaces
+package projects
 
 import (
 	"context"
@@ -21,8 +21,7 @@ import (
 	"time"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
-	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/workspaces"
-	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -49,15 +48,7 @@ func isUniqueViolation(err error) bool {
 // Server:workspaces tag 的域实现(#187 机械迁移,documents 范式)。
 // 方法体自原闭包工厂原样搬运;文件面的查询参数宽容读法保留在
 // handler(规范已如实化为可选,校验文案是契约的一部分)。
-type Server struct{ DB *sql.DB }
-
-var _ contract.ServerInterface = (*Server)(nil)
-
-func Mount(mux *http.ServeMux, db *sql.DB) {
-	_ = contract.HandlerFromMux(&Server{DB: db}, mux)
-}
-
-type wsRow struct {
+type projRow struct {
 	id         string
 	companyID  string
 	name       string
@@ -66,8 +57,8 @@ type wsRow struct {
 	createdAt  time.Time
 }
 
-func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow, bool) {
-	var w wsRow
+func loadProject(ctx context.Context, db *sql.DB, companyID, id string) (projRow, bool) {
+	var w projRow
 	var folder sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT id, company_id, name, folder_path, is_default, created_at
@@ -162,25 +153,25 @@ func EnsureProjectFolders(ctx context.Context, db *sql.DB, companyID string) err
 // departed 闸门有意只罩关联分支:挂靠推导以"还在会话里"为界(退群即出
 // 域),离职者留在 conversation_members 是会话面的清理债,不在文件面拦
 // (#343 评审确认的有意放宽)。
-func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string) (wsRow, int, string) {
-	w, ok := loadWorkspace(ctx, db, companyID, wsID)
+func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string) (projRow, int, string) {
+	w, ok := loadProject(ctx, db, companyID, wsID)
 	if !ok {
-		return w, http.StatusNotFound, "workspace not found"
+		return w, http.StatusNotFound, "project not found"
 	}
 	if w.isDefault {
 		return w, 0, ""
 	}
 	var allowed bool
 	err := db.QueryRowContext(ctx, `
-		SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
+		SELECT 1 FROM project_members WHERE project_id = $1 AND participant_id = $2
 		UNION ALL
 		SELECT 1 FROM conversations c
 		 WHERE c.project_id = $1 AND c.company_id = $3
 		   AND EXISTS (SELECT 1 FROM conversation_members cm
 		                WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 		UNION ALL
-		SELECT 1 FROM workspace_associations a
-		 WHERE a.workspace_id = $1 AND a.company_id = $3
+		SELECT 1 FROM project_associations a
+		 WHERE a.project_id = $1 AND a.company_id = $3
 		   AND EXISTS (SELECT 1 FROM participants p
 		                WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
 		   AND (
@@ -198,7 +189,7 @@ func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string)
 		return w, http.StatusInternalServerError, "membership query failed"
 	}
 	if err != nil || !allowed {
-		return w, http.StatusForbidden, "not a member of this workspace"
+		return w, http.StatusForbidden, "not a member of this project"
 	}
 	return w, 0, ""
 }
@@ -255,126 +246,14 @@ func text(v string, max int) string {
 
 /* handlers */
 
-func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return
-	}
-	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
-	if !ok {
-		return
-	}
-	var body struct {
-		Name       string `json:"name"`
-		FolderPath string `json:"folderPath"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	name := text(body.Name, 80)
-	if name == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "name required")
-		return
-	}
-	rawPath := text(body.FolderPath, 4096)
-	if rawPath == "" || !filepath.IsAbs(rawPath) {
-		httpx.WriteError(w, http.StatusBadRequest, "folderPath must be an absolute path")
-		return
-	}
-	folder, err := filepath.EvalSymlinks(rawPath)
-	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "folder not found")
-		return
-	}
-	if st, serr := os.Stat(folder); serr != nil || !st.IsDir() {
-		httpx.WriteError(w, http.StatusBadRequest, "folderPath must be a directory")
-		return
-	}
-	var bound string
-	_ = s.DB.QueryRowContext(r.Context(),
-		`SELECT id FROM projects WHERE folder_path = $1 LIMIT 1`, folder).Scan(&bound)
-	if bound != "" {
-		httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
-		return
-	}
-	id := "ws-" + shortID()
-	// #235 收编 db.WithTx:#214 后各步 500 均为 WriteInternalError(err)
-	// 同构映射,#213 豁免的"文案各异"半理由消失;剩余 unique-violation
-	// 409 分支由外层 isUniqueViolation(errors.As pg 23505)二分表达——
-	// WithTx 将 fn 错误原样回传,23505 只可能来自 workspaces INSERT
-	// (member INSERT 撞的是刚建区的全新 id;schema 无 DEFERRABLE 约束,
-	// Commit 阶段不会补出 23505),回滚路径与手写版一致,响应字节不变。
-	var createdAt time.Time
-	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(r.Context(), `
-			INSERT INTO projects (id, company_id, name, description, folder_path, is_default)
-			VALUES ($1, $2, $3, '', $4, FALSE) RETURNING created_at`, id, companyID, name, folder).Scan(&createdAt); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(r.Context(), `
-			INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
-			id, uid); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		if isUniqueViolation(err) {
-			httpx.WriteError(w, http.StatusConflict, "folder already bound to a workspace")
-			return
-		}
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-		"id": id, "name": name, "folderPath": folder, "isDefault": false, "createdAt": createdAt.UTC(),
-	})
-}
-
-func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
-	_, companyID, ok := httpx.RequireCompany(w, r, s.DB)
-	if !ok {
-		return
-	}
-	if err := EnsureDefault(r.Context(), s.DB, companyID); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if err := EnsureProjectFolders(r.Context(), s.DB, companyID); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT w.id, w.name, w.is_default, w.created_at, count(m.participant_id)::int
-		  FROM projects w LEFT JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.company_id = $1
-		 GROUP BY w.id ORDER BY w.created_at ASC`, companyID)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		var id, name string
-		var isDefault bool
-		var createdAt time.Time
-		var count int
-		if rows.Scan(&id, &name, &isDefault, &createdAt, &count) == nil {
-			out = append(out, map[string]any{
-				"id": id, "name": name, "isDefault": isDefault,
-				"createdAt": createdAt.UTC(), "explicitMemberCount": count,
-			})
-		}
-	}
-	httpx.WriteJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) GetProject(w http.ResponseWriter, r *http.Request, id string) {
 	uid, companyID, ok := httpx.RequireCompany(w, r, s.DB)
 	if !ok {
 		return
 	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	// 显式成员。slice 必须 make:删光成员后 nil 会序列化成 null,
@@ -390,9 +269,9 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 	explicitSet := map[string]bool{}
 	explicitRows, err := s.DB.QueryContext(r.Context(), `
 		SELECT m.participant_id, p.name, p.kind, m.created_at
-		  FROM workspace_members m JOIN participants p
+		  FROM project_members m JOIN participants p
 		    ON p.id = m.participant_id AND p.company_id = $2
-		 WHERE m.workspace_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
+		 WHERE m.project_id = $1 ORDER BY m.created_at ASC`, ws.id, companyID)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -471,8 +350,8 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 	}
 	associations := []assoc{}
 	assocRows, err := s.DB.QueryContext(r.Context(), `
-		SELECT target_kind, target_id, created_at FROM workspace_associations
-		 WHERE workspace_id = $1 ORDER BY created_at ASC`, ws.id)
+		SELECT target_kind, target_id, created_at FROM project_associations
+		 WHERE project_id = $1 ORDER BY created_at ASC`, ws.id)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -496,10 +375,8 @@ func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id string)
 	privileged := role == "owner" || role == "admin"
 	resp := map[string]any{
 		"id": ws.id, "name": ws.name, "isDefault": ws.isDefault,
-		// unboundAt/unboundBy 恒 null:解绑语义已退役(ADR 0008 §6),
-		// 契约字段保留到刀 2 随路由族退役。
-		"createdAt": ws.createdAt.UTC(), "unboundAt": nil, "unboundBy": nil,
-		"members": append(explicit, implicit...), "associations": associations,
+		"createdAt": ws.createdAt.UTC(),
+		"members":   append(explicit, implicit...), "associations": associations,
 	}
 	if privileged {
 		resp["folderPath"] = ws.folderPath
@@ -522,17 +399,17 @@ func implicitMembers(ctx context.Context, db *sql.DB, wsID, companyID string) ma
 		SELECT DISTINCT cm.participant_id FROM conversations c
 		  JOIN conversation_members cm ON cm.conversation_id = c.id
 		 WHERE c.project_id = $1 AND c.company_id = $2`, `
-		SELECT DISTINCT x.pid FROM workspace_associations a,
+		SELECT DISTINCT x.pid FROM project_associations a,
 		LATERAL (SELECT bc.assignee_id AS pid FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		          WHERE bc.id = a.target_id AND b.company_id = $2
 		         UNION ALL SELECT jsonb_array_elements_text(bc.mentions) FROM board_cards bc
 		          JOIN boards b ON b.id = bc.board_id WHERE bc.id = a.target_id AND b.company_id = $2) x
-		 WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'board_card'`, `
-		SELECT DISTINCT x.pid FROM workspace_associations a,
+		 WHERE a.project_id = $1 AND a.company_id = $2 AND a.target_kind = 'board_card'`, `
+		SELECT DISTINCT x.pid FROM project_associations a,
 		LATERAL (SELECT d.created_by AS pid FROM documents d WHERE d.id = a.target_id AND d.company_id = $2
 		         UNION ALL SELECT jsonb_array_elements_text(d.collaborators) FROM documents d
 		          WHERE d.id = a.target_id AND d.company_id = $2) x
-		 WHERE a.workspace_id = $1 AND a.company_id = $2 AND a.target_kind = 'document'`}
+		 WHERE a.project_id = $1 AND a.company_id = $2 AND a.target_kind = 'document'`}
 	for _, q := range queries {
 		rows, err := db.QueryContext(ctx, q, wsID, companyID)
 		if err != nil {
@@ -549,7 +426,7 @@ func implicitMembers(ctx context.Context, db *sql.DB, wsID, companyID string) ma
 	return out
 }
 
-func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) AddProjectMember(w http.ResponseWriter, r *http.Request, id string) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
 		return
@@ -558,9 +435,9 @@ func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id s
 	if !ok {
 		return
 	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	var body struct {
@@ -581,7 +458,7 @@ func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(), `
-		INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $3)
+		INSERT INTO project_members (project_id, participant_id, added_by) VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING`, ws.id, pid, uid)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
@@ -594,7 +471,7 @@ func (s *Server) AddWorkspaceMember(w http.ResponseWriter, r *http.Request, id s
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true})
 }
 
-func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, id string, participantId string) {
+func (s *Server) RemoveProjectMember(w http.ResponseWriter, r *http.Request, id string, participantId string) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
 		return
@@ -603,13 +480,13 @@ func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, i
 	if !ok {
 		return
 	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(),
-		`DELETE FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2`,
+		`DELETE FROM project_members WHERE project_id = $1 AND participant_id = $2`,
 		ws.id, participantId)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
@@ -626,7 +503,7 @@ func (s *Server) RemoveWorkspaceMember(w http.ResponseWriter, r *http.Request, i
 // 会话成员"直推导;白名单只剩 board_card/document(存量行 migration 已清)。
 var assocKinds = map[string]bool{"board_card": true, "document": true}
 
-func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) AddProjectAssociation(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		Kind     string `json:"kind"`
 		TargetID string `json:"targetId"`
@@ -655,9 +532,9 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	if !targetExists(r.Context(), s.DB, companyID, kind, targetID) {
@@ -666,8 +543,8 @@ func (s *Server) AddWorkspaceAssociation(w http.ResponseWriter, r *http.Request,
 	}
 	assocID := "wa-" + shortID()
 	res, err := s.DB.ExecContext(r.Context(), `
-		INSERT INTO workspace_associations (id, workspace_id, company_id, target_kind, target_id, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, target_kind, target_id) DO NOTHING`,
+		INSERT INTO project_associations (id, project_id, company_id, target_kind, target_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project_id, target_kind, target_id) DO NOTHING`,
 		assocID, ws.id, companyID, kind, targetID, uid)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
@@ -693,7 +570,7 @@ func targetExists(ctx context.Context, db *sql.DB, companyID, kind, targetID str
 	return exists
 }
 
-func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Request, id string, kind string, targetId string) {
+func (s *Server) RemoveProjectAssociation(w http.ResponseWriter, r *http.Request, id string, kind string, targetId string) {
 	if !assocKinds[kind] {
 		httpx.WriteError(w, http.StatusBadRequest, "kind must be one of board_card, document")
 		return
@@ -711,13 +588,13 @@ func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
+	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(), `
-		DELETE FROM workspace_associations WHERE workspace_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
+		DELETE FROM project_associations WHERE project_id = $1 AND company_id = $2 AND target_kind = $3 AND target_id = $4`,
 		ws.id, companyID, kind, targetId)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
@@ -730,24 +607,24 @@ func (s *Server) RemoveWorkspaceAssociation(w http.ResponseWriter, r *http.Reque
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func requireMember(w http.ResponseWriter, r *http.Request, db *sql.DB) (wsRow, bool) {
+func requireMember(w http.ResponseWriter, r *http.Request, db *sql.DB) (projRow, bool) {
 	uid, ok := httpx.RequireAuth(w, r)
 	if !ok {
-		return wsRow{}, false
+		return projRow{}, false
 	}
 	companyID, ok := httpx.ResolveCompany(w, r, db, uid)
 	if !ok {
-		return wsRow{}, false
+		return projRow{}, false
 	}
 	ws, code, msg := resolveAccess(r.Context(), db, uid, companyID, r.PathValue("id"))
 	if code != 0 {
 		httpx.WriteError(w, code, msg)
-		return wsRow{}, false
+		return projRow{}, false
 	}
 	return ws, true
 }
 
-func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id string, params contract.ListWorkspaceFilesParams) {
+func (s *Server) ListProjectFiles(w http.ResponseWriter, r *http.Request, id string, params contract.ListProjectFilesParams) {
 	ws, ok := requireMember(w, r, s.DB)
 	if !ok {
 		return
@@ -797,7 +674,7 @@ func (s *Server) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, id s
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"path": rel, "entries": out})
 }
 
-func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params contract.ReadWorkspaceFileParams) {
+func (s *Server) ReadProjectFile(w http.ResponseWriter, r *http.Request, id string, params contract.ReadProjectFileParams) {
 	ws, ok := requireMember(w, r, s.DB)
 	if !ok {
 		return
@@ -839,7 +716,7 @@ func (s *Server) ReadWorkspaceFile(w http.ResponseWriter, r *http.Request, id st
 	})
 }
 
-func (s *Server) WriteWorkspaceFile(w http.ResponseWriter, r *http.Request, id string, params contract.WriteWorkspaceFileParams) {
+func (s *Server) WriteProjectFile(w http.ResponseWriter, r *http.Request, id string, params contract.WriteProjectFileParams) {
 	ws, ok := requireMember(w, r, s.DB)
 	if !ok {
 		return
@@ -951,36 +828,15 @@ func fileMtimeNanos(abs string) int64 {
 	return 0
 }
 
-func (s *Server) UnbindWorkspace(w http.ResponseWriter, r *http.Request, id string) {
-	uid, ok := httpx.RequireAuth(w, r)
-	if !ok {
-		return
-	}
-	companyID, ok := httpx.ResolveCompanyRole(w, r, s.DB, uid)
-	if !ok {
-		return
-	}
-	ws, ok := loadWorkspace(r.Context(), s.DB, companyID, id)
-	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
-		return
-	}
-	_ = ws
-	// 解绑语义已退役(ADR 0008 §6:生命周期无终点、仅删除):端点活体至
-	// 刀 2 随路由族退役,期间统一 410 指路删除。
-	httpx.WriteError(w, http.StatusGone,
-		"unbind retired (ADR 0008) — delete the project instead; folder files are left in place")
-}
-
 // maxBinaryBytes:#338 multipart 二进制帽(对齐 uploads 域 25MB;文本面
 // 维持 maxFileBytes 2MB 不变)。
 const maxBinaryBytes = 25 * 1024 * 1024
 
-// UploadWorkspaceFile:#338 multipart 上传 —— 人侧 UI 通道(agent 走挂载
+// UploadProjectFile:#338 multipart 上传 —— 人侧 UI 通道(agent 走挂载
 // 盘原生写入)。流式读 file part(LimitReader 25MB+1),复用全套写路径
 // 防护:requireMember → resolveInside 防逃逸 → RejectReserved/RejectRoot
 // → 写前快照 → 落盘。字段序宽容:path 与 file 任意先后。
-func (s *Server) UploadWorkspaceFile(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) UploadProjectFile(w http.ResponseWriter, r *http.Request, id string) {
 	ws, ok := requireMember(w, r, s.DB)
 	if !ok {
 		return
@@ -1088,9 +944,9 @@ var rawContentTypes = map[string]string{
 	".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
 }
 
-// ReadWorkspaceFileRaw:#338 原始字节读 —— 图片预览/下载通道。二进制读
+// ReadProjectFileRaw:#338 原始字节读 —— 图片预览/下载通道。二进制读
 // 帽 25MB(与上传面对齐;文本 JSON 面维持 2MB)。
-func (s *Server) ReadWorkspaceFileRaw(w http.ResponseWriter, r *http.Request, id string, params contract.ReadWorkspaceFileRawParams) {
+func (s *Server) ReadProjectFileRaw(w http.ResponseWriter, r *http.Request, id string, params contract.ReadProjectFileRawParams) {
 	ws, ok := requireMember(w, r, s.DB)
 	if !ok {
 		return

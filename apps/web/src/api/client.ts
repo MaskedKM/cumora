@@ -89,11 +89,10 @@ export type ShippingFriction = Schemas['ShippingFriction']
 export type ShippingRegression = Schemas['ShippingRegression']
 export type ShippingFeatureDetail = Schemas['ShippingFeatureDetail']
 export type ShippingOverview = Schemas['ShippingOverview']
-export type ApiWorkspaceSummary = Schemas['WorkspaceSummary']
-export type ApiWorkspaceMember = Schemas['WorkspaceMember']
-export type ApiWorkspaceAssociation = Schemas['WorkspaceAssociation']
-export type ApiWorkspaceDetail = Schemas['WorkspaceDetail']
-export type ApiWorkspaceFileEntry = Schemas['WorkspaceFileEntry']
+export type ApiProjectMember = Schemas['ProjectMember']
+export type ApiProjectAssociation = Schemas['ProjectAssociation']
+export type ApiProjectDetail = Schemas['ProjectDetail']
+export type ApiProjectFileEntry = Schemas['ProjectFileEntry']
 export type ApiDocument = Schemas['Document']
 export type CalendarEventInput = Schemas['CalendarEventInput']
 export type PresignResponse = Schemas['PresignResponse']
@@ -305,14 +304,6 @@ export const api = {
   updateProject: (id: string, input: { name?: string; description?: string; color?: string | null }) =>
     http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}`, {
       method: 'PUT', body: JSON.stringify(input),
-    }),
-  archiveProject: (id: string, archive = true) =>
-    http<{ ok: boolean; status: string }>(`/projects/${encodeURIComponent(id)}/archive`, {
-      method: 'POST', body: JSON.stringify({ archive }),
-    }),
-  attachProject: (conversationId: string, projectId: string | null) =>
-    http<{ ok: boolean; projectId: string | null }>(`/conversations/${encodeURIComponent(conversationId)}/project`, {
-      method: 'POST', body: JSON.stringify({ projectId }),
     }),
   createCompany: (name: string) =>
     http<{ id: string; name: string; slug: string; role: string }>('/companies', {
@@ -896,65 +887,61 @@ export const api = {
   deleteDocument: (id: string) =>
     http<{ ok: boolean }>(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /* ============== Team workspaces (shared real folders) ============== */
-  listWorkspaces: () =>
-    http<ApiWorkspaceSummary[]>('/workspaces'),
-  getWorkspace: (id: string) =>
-    http<ApiWorkspaceDetail>(`/workspaces/${encodeURIComponent(id)}`),
-  listWorkspaceFiles: (id: string, path: string) =>
-    http<{ path: string; entries: ApiWorkspaceFileEntry[] }>(
-      `/workspaces/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`,
+  /* ============== Team projects (shared real folders; #355) ============== */
+  listTeamProjects: () =>
+    http<Schemas['Project'][]>('/projects'),
+  getProject: (id: string) =>
+    http<ApiProjectDetail>(`/projects/${encodeURIComponent(id)}`),
+  listProjectFiles: (id: string, path: string) =>
+    http<{ path: string; entries: ApiProjectFileEntry[] }>(
+      `/projects/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`,
     ),
-  readWorkspaceFile: (id: string, path: string) =>
+  readProjectFile: (id: string, path: string) =>
     http<{ path: string; body: string; size: number; modifiedAt: string }>(
-      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+      `/projects/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
     ),
-  writeWorkspaceFile: (id: string, path: string, body: string) =>
-    http<{ ok: boolean; path: string }>(
-      `/workspaces/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+  writeProjectFile: (id: string, path: string, body: string, expectedMtimeNanos?: string) =>
+    http<{ ok: boolean; path: string; mtimeNanos: string }>(
+      `/projects/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}` +
+        (expectedMtimeNanos ? `&expectedMtimeNanos=${encodeURIComponent(expectedMtimeNanos)}` : ''),
       { method: 'PUT', body: JSON.stringify({ body }) },
     ),
 
-  /* #338 管理面 mutation(服务端/契约已就绪,补齐前端封装) */
-  createWorkspace: (name: string, folderPath: string) =>
-    http<ApiWorkspaceSummary>('/workspaces', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
-  // 注:POST 201 响应不含 explicitMemberCount(契约内联对象);调用方
-  // 以此修正追加行(#342 评审 P2)。
-  addWorkspaceMember: (id: string, participantId: string) =>
-    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/members`, {
+  /* 管理面 mutation(#338 封装,#355 改名;unbind 随 ADR 0008 §6 退役) */
+  createTeamProject: (name: string, folderPath: string) =>
+    http<Schemas['Project']>('/projects', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
+  addProjectMember: (id: string, participantId: string) =>
+    http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}/members`, {
       method: 'POST', body: JSON.stringify({ participantId }),
     }),
-  removeWorkspaceMember: (id: string, participantId: string) =>
-    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/members/${encodeURIComponent(participantId)}`, {
+  removeProjectMember: (id: string, participantId: string) =>
+    http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(participantId)}`, {
       method: 'DELETE',
     }),
-  addWorkspaceAssociation: (id: string, kind: 'project' | 'board_card' | 'document', targetId: string) =>
-    http<{ ok: boolean; kind: string; targetId: string }>(`/workspaces/${encodeURIComponent(id)}/associations`, {
+  addProjectAssociation: (id: string, kind: 'board_card' | 'document', targetId: string) =>
+    http<{ ok: boolean; kind: string; targetId: string }>(`/projects/${encodeURIComponent(id)}/associations`, {
       method: 'POST', body: JSON.stringify({ kind, targetId }),
     }),
-  removeWorkspaceAssociation: (id: string, kind: 'project' | 'board_card' | 'document', targetId: string) =>
-    http<{ ok: boolean }>(`/workspaces/${encodeURIComponent(id)}/associations/${kind}/${encodeURIComponent(targetId)}`, {
+  removeProjectAssociation: (id: string, kind: 'board_card' | 'document', targetId: string) =>
+    http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}/associations/${kind}/${encodeURIComponent(targetId)}`, {
       method: 'DELETE',
     }),
-  unbindWorkspace: (id: string) =>
-    http<{ ok: boolean; unboundAt: string }>(`/workspaces/${encodeURIComponent(id)}/unbind`, { method: 'POST' }),
-
   /* #338 multipart 上传 / 原始字节读:fetchJson 恒 JSON(core.ts),此二
   面必须裸 fetch(带 Bearer + x-company-id;FormData 不设 content-type,
   让浏览器填 multipart boundary)。错误形状对齐 ApiError,含 401 清
   session —— 与 fetchJson 语义同源(#342 评审 P1)。 */
-  uploadWorkspaceFile: async (id: string, path: string, file: File) => {
+  uploadProjectFile: async (id: string, path: string, file: File) => {
     const form = new FormData()
     form.append('path', path)
     form.append('file', file)
-    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/upload`, {
+    const res = await fetch(`${SERVER_ORIGIN}/api/projects/${encodeURIComponent(id)}/upload`, {
       method: 'POST', headers: wsBinaryHeaders(), body: form,
     })
     throwUnlessOk(res)
     return (await res.json()) as { ok: boolean; path: string; size: number; mtimeNanos: string }
   },
-  fetchWorkspaceRaw: async (id: string, path: string): Promise<Blob> => {
-    const res = await fetch(`${SERVER_ORIGIN}/api/workspaces/${encodeURIComponent(id)}/raw?path=${encodeURIComponent(path)}`, { headers: wsBinaryHeaders() })
+  fetchProjectRaw: async (id: string, path: string): Promise<Blob> => {
+    const res = await fetch(`${SERVER_ORIGIN}/api/projects/${encodeURIComponent(id)}/raw?path=${encodeURIComponent(path)}`, { headers: wsBinaryHeaders() })
     throwUnlessOk(res)
     return await res.blob()
   },

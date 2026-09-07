@@ -1,5 +1,5 @@
 // daemon 包 workspace_sync —— #336 团队工作区挂点物化:每个 agent 在
-// 同步周期拉 GET /runtime/workspaces(runtime JWT),为 local computer
+// 同步周期拉 GET /runtime/projects(runtime JWT),为 local computer
 // 的 agent 在 home/team/<wsId> 建挂点 symlink → 服务器侧文件夹(同
 // inode 直写,native 工具链全解锁)。stamp 记 wsId→target:无变化零写
 // 盘、变更重建、清单消失回收(只删 stamp 记录的 symlink,不碰 agent
@@ -19,9 +19,9 @@ import (
 	"path/filepath"
 )
 
-// workspaceMountRef:/runtime/workspaces 清单行(folderPath 仅 local
+// projectMountRef:/runtime/projects 清单行(folderPath 仅 local
 // computer 返回;vps 零值 → 不建挂点,agent 落 CLI 形态)。
-type workspaceMountRef struct {
+type projectMountRef struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsDefault  bool   `json:"isDefault"`
@@ -37,11 +37,11 @@ const teamMountsStamp = ".cumora-team-mounts.json"
 // 此目录的 <wsId> 名字空间)。
 func teamMountsDir(home string) string { return filepath.Join(home, "team") }
 
-// listAgentWorkspaces:拉 agent 可达工作区清单(失败返回 nil,调用方
+// listAgentProjects:拉 agent 可达工作区清单(失败返回 nil,调用方
 // 按"无变化"处理——整轮跳过,不误回收)。
-func listAgentWorkspaces(ctx context.Context, cfg *DaemonConfig, token string) []workspaceMountRef {
-	var refs []workspaceMountRef
-	if err := apiCall(ctx, cfg.ServerURL, http.MethodGet, "/runtime/workspaces", token, nil, &refs); err != nil {
+func listAgentProjects(ctx context.Context, cfg *DaemonConfig, token string) []projectMountRef {
+	var refs []projectMountRef
+	if err := apiCall(ctx, cfg.ServerURL, http.MethodGet, "/runtime/projects", token, nil, &refs); err != nil {
 		return nil
 	}
 	return refs
@@ -57,7 +57,7 @@ func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) map[
 		slog.Warn("[computer] team workspace mounts skipped — no runtime token", "agent", r.agent.ID, "err", err)
 		return nil
 	}
-	refs := listAgentWorkspaces(ctx, cfg, token)
+	refs := listAgentProjects(ctx, cfg, token)
 	if refs == nil {
 		return nil
 	}
@@ -76,7 +76,7 @@ func syncTeamMounts(ctx context.Context, cfg *DaemonConfig, r *AgentRunner) map[
 //     agent 抢名字空间。
 //   - 清单消失(成员移除/解绑/转 vps)→ 只回收 stamp 记录且 target 未被
 //     改动的 symlink;被手改过的视为"不再归我们",保守留下。
-func materializeTeamMounts(dir string, refs []workspaceMountRef) (map[string]string, error) {
+func materializeTeamMounts(dir string, refs []projectMountRef) (map[string]string, error) {
 	stamps, err := readTeamMountStamps(dir)
 	if err != nil {
 		return nil, err

@@ -10,7 +10,7 @@
 //     同目录双份并存;挑战者重读最新内容后自行合并 —— symlink 挂载是
 //     同一 inode,无 Syncthing 式双端副本分叉,CAS 时刻是唯一可精确
 //     检测的分叉点(设计修正见 #337 PR)。
-package workspaces
+package projects
 
 import (
 	"log/slog"
