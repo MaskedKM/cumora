@@ -120,7 +120,8 @@ export function EmptyConversationState() {
   const t = useT()
   // Live counts pulled straight from the store so the empty stage carries
   // one tiny piece of "alive" data at the bottom — matches the inline
-  // italic counter pattern in WhispersView's sidebar header.
+  // italic counter pattern in the Agent-chats section of the sidebar
+  // (formerly WhispersView's header; #368 刀1).
   const list = useConversations((s) => s.list)
   const total = list.length
   const unread = useMemo(

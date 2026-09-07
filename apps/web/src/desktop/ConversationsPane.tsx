@@ -9,7 +9,7 @@
 import type React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { type ApiProject, type ApiSearchResults, api } from '@/api/client'
+import { type ApiProject, type ApiSearchResults, api, type ApiInboxItem } from '@/api/client'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { GroupCreator } from '@/components/GroupCreator'
 import { IMail, IPlus } from '@/components/icons'
@@ -19,18 +19,24 @@ import { cn } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useAuth } from '@/stores/auth'
 import { isMuted, useConversations } from '@/stores/conversations'
+import { useInbox } from '@/stores/inbox'
 import { useParticipants } from '@/stores/participants'
+import { useWhispers } from '@/stores/whispers'
+import type { ApiWhisper } from '@/api/client'
 import type { Conversation } from '@/types'
 import { ConvoRow } from './conversations/ConvoRow'
 import { openConvoContextMenu } from './conversations/convoMenu'
 import { AddMembersPicker, AddToGroupPicker, ConfirmLeave } from './conversations/modals'
 import { SearchInput, SearchResultsPane } from './conversations/search'
+import { WhisperRow } from './conversations/WhisperRow'
 
-const staticFilters = ['All', 'Unread', 'Agents', 'Humans', 'Groups', 'Email', 'Whispers'] as const
+const staticFilters = ['All', 'Unread', 'Agents', 'Humans', 'Groups', 'Email'] as const
 type StaticFilter = (typeof staticFilters)[number]
 /** Display labels for the static filter chips. The enum values in
  *  `staticFilters` stay English so the existing `matches()` comparison
- *  keeps working; this Record maps each enum to its translation key. */
+ *  keeps working; this Record maps each enum to its translation key.
+ *  (#368 刀1:'Whispers' 滤片随 WhispersView 退役移除——纯 agent 会话如今
+ *  常驻主列表的「Agent 对话」分区,不再是一个要切进去的过滤器。) */
 const FILTER_LABEL: Record<StaticFilter, MessageKey> = {
   All: 'convo.filterAll',
   Unread: 'convo.filterUnread',
@@ -38,7 +44,6 @@ const FILTER_LABEL: Record<StaticFilter, MessageKey> = {
   Humans: 'convo.filterHumans',
   Groups: 'convo.filterGroups',
   Email: 'convo.filterEmail',
-  Whispers: 'convo.filterWhispers',
 }
 /** A filter is either one of the static labels, or a project chip identified
  *  by `project:<id>`. Keeping it as a string union lets the existing chip
@@ -55,7 +60,6 @@ function matches(c: Conversation, f: Filter, byId: Record<string, { kind: string
   // whole point of mute is "stop nagging me about this". Their per-row
   // unread badge still shows under "All".
   if (f === 'Unread') return (c.unread ?? 0) > 0 && !isMuted(c)
-  if (f === 'Whispers') return c.kind === 'whisper'
   if (f === 'Email') return c.kind === 'email'
   if (f === 'Groups') return c.kind === 'group'
   const isHumanChat = c.tag === 'human' || c.members.every((m) => byId[m]?.kind === 'human')
@@ -66,18 +70,22 @@ function matches(c: Conversation, f: Filter, byId: Record<string, { kind: string
 
 /** Items rendered by the conversations Virtuoso — section labels and the
  *  Pinned/Rest divider live in the same flat list so the whole pane scrolls
- *  through one virtualized container. */
+ *  through one virtualized container. #368 刀1:末尾追加「Agent 对话」分区
+ *  (wlabel + wrow),与普通会话同列表虚拟化。 */
 type ConvoListItem =
   | { type: 'loading'; key: string }
   | { type: 'label'; key: string; text: string }
   | { type: 'divider'; key: string }
   | { type: 'row'; key: string; c: Conversation }
+  | { type: 'wlabel'; key: string }
+  | { type: 'wrow'; key: string; w: ApiWhisper }
 
 export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React.MouseEvent) => void }) {
   const t = useT()
   const locale = useLocale()
   const selected = useApp((s) => s.selectedConversationId)
   const select = useApp((s) => s.selectConversation)
+  const setView = useApp((s) => s.setView)
   const list = useConversations((s) => s.list)
   const loaded = useConversations((s) => s.loaded)
   const byId = useParticipants((s) => s.byId)
@@ -169,6 +177,43 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
   const [confirmLeave, setConfirmLeave] = useState<Conversation | null>(null)
   const meId = useAuth((s) => s.user?.id ?? null)
 
+  // ── #368 刀1:两分区 + 菜单触发 ──────────────────────────────
+  // ☰ 触发左侧滑出菜单(NavMenu 渲染在 DesktopApp,状态在 app store)。
+  const toggleNavMenu = useApp((s) => s.toggleNavMenu)
+  // 「需要你行动」分区(InboxView 退役):action_required + attention 进
+  // 分区,info 不进——纯落账不占注意力(沿用收件箱徽标语义)。store 由
+  // NotificationToasts 在启动/WS 时刷新,这里再兜一次拉取。
+  const inboxItems = useInbox((s) => s.items)
+  const inboxCounts = useInbox((s) => s.counts)
+  const inboxMutedTypes = useInbox((s) => s.mutedTypes)
+  const navMenuOpen = useApp((s) => s.navMenuOpen)
+  const [actionCollapsed, setActionCollapsed] = useState(false)
+  const [mutesOpen, setMutesOpen] = useState(false)
+  useEffect(() => { void useInbox.getState().load() }, [])
+  // 「Agent 对话」分区(WhispersView 退役):owner 专属,数据源
+  // /peek/agent-chats(bootWhispers 已常驻拉取,WS 维护新鲜度)。
+  const isOwner = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.role === 'owner')
+  const whispers = useWhispers((s) => s.list)
+  const actionCount = inboxCounts.actionRequired + inboxCounts.attention
+  const actionRows = useMemo(
+    () => inboxItems.filter((it) => it.severity !== 'info')
+      .sort((a, b) => Number(a.read) - Number(b.read) || b.createdAt.localeCompare(a.createdAt)),
+    [inboxItems],
+  )
+  const openActionItem = (it: ApiInboxItem) => {
+    if (!it.read) void useInbox.getState().markRead(it.id)
+    if (it.linkKind === 'conversation' && it.linkId) {
+      setView('conversations')
+      select(it.linkId)
+    } else if (it.linkKind === 'board') {
+      setView('boards')
+    } else if (it.linkKind === 'calendar') {
+      setView('calendar')
+    } else if (it.linkKind === 'observability') {
+      setView('observability')
+    }
+  }
+
   const otherMember = (c: Conversation): string | null => {
     return c.members.find((m) => m !== meId) ?? null
   }
@@ -217,10 +262,16 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
       if (rest.length > 0) out.push({ type: 'divider', key: 'divider' })
     }
     for (const c of rest) out.push({ type: 'row', key: `r:${c.id}`, c })
+    // 「Agent 对话」分区:仅 owner、仅在无滤片时随列表滚(分区不是过滤器,
+    // 搜索/滤片态下隐藏与既有 chips 语义一致)。
+    if (isOwner && filter === 'All' && whispers.length > 0) {
+      out.push({ type: 'wlabel', key: 'wlabel' })
+      for (const w of whispers) out.push({ type: 'wrow', key: `w:${w.id}`, w })
+    }
     return out
     // locale in the deps so the baked-in section label re-renders on a
     // language switch (t itself is identity-unstable, locale is not).
-  }, [loaded, pinned, rest, locale])
+  }, [loaded, pinned, rest, isOwner, filter, whispers, locale])
 
   const sectionLabel = (label: string, hint?: string) => (
     <div className="px-2 pt-3 pb-1.5 text-[10px] font-bold text-ink-300 tracking-[0.12em] uppercase flex items-center justify-between">
@@ -237,6 +288,39 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
   return (
     <aside className="relative flex flex-col overflow-hidden border-r border-ink-100 bg-paper">
       <div className="pt-3 px-[18px] pb-2 flex items-center gap-2">
+        {/* #368 刀1:☰ = 左侧全高滑出菜单的触发钮(工作面/公司/我/退出
+            都在里面;rail 已退役)。 */}
+        <button
+          type="button"
+          onClick={toggleNavMenu}
+          className="inline-flex items-center p-1.5 text-ink-700 bg-cloud border border-ink-100 rounded-[7px] hover:border-sky2-200 hover:text-skype-deep transition shrink-0"
+          title={t('nav.menu')}
+          aria-label={t('nav.menu')}
+          aria-expanded={navMenuOpen}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M4 7h16M4 12h16M4 17h10" />
+          </svg>
+        </button>
+        {/* 评审 P2-1(#372):行动计数聚合胶囊挂列表头 —— 分区块头的计数只
+            在列表顶部可见,头部胶囊保证任何滚动/滤片态下待办信号不丢
+            (对话未读总数仍由 Unread 滤片徽标承载)。点按 = 展开分区。 */}
+        {actionCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setActionCollapsed(false)}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11.5px] font-semibold transition-colors hover:bg-[#FFEFEA]"
+            style={{ background: '#FFF6F5', borderColor: 'var(--coral-soft)', color: 'var(--coral-deep)' }}
+            title={t('convo.actionSection')}
+            aria-label={t('convo.actionSection')}
+          >
+            <span
+              className="grid h-4 min-w-4 place-items-center rounded-full px-1 text-[9.5px] font-bold"
+              style={{ background: 'var(--coral)', color: 'white' }}
+            >{actionCount}</span>
+            <span className="hidden sm:inline">{t('convo.actionSection')}</span>
+          </button>
+        )}
         <h1 className="font-display font-medium text-[20px] tracking-tight text-ink-900 leading-none flex-1 min-w-0 truncate whitespace-nowrap">
           {t('convo.title')}
           <svg
@@ -366,6 +450,93 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
       </div>
       )}
 
+      {/* ── 「需要你行动」高优分区(#368 刀1,InboxView 退役)────────────
+          非虚拟化固定块:条目量级天然有界(action_required + attention),
+          常驻列表顶、可折叠;搜索态隐藏(与滤片同语义)。 */}
+      {!query.trim() && actionRows.length > 0 && (
+        <div className="px-2.5 pt-1">
+          <div className="relative flex items-center gap-1 px-1 pb-1">
+            <button
+              type="button"
+              onClick={() => setActionCollapsed((v) => !v)}
+              className="flex flex-1 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-ink-300 hover:text-ink-500 transition-colors text-left"
+              aria-expanded={!actionCollapsed}
+            >
+              <span className={cn('inline-block transition-transform', actionCollapsed && '-rotate-90')}>▾</span>
+              {t('convo.actionSection')}
+              {actionCount > 0 && (
+                <span
+                  className="ml-0.5 grid h-[16px] min-w-[16px] place-items-center rounded-full px-1 text-[9.5px] font-bold"
+                  style={{ background: 'var(--coral)', color: 'white' }}
+                >{actionCount}</span>
+              )}
+            </button>
+            {/* 收件箱时代的两枚操作随视图退役迁入分区头:全部已读 + 按 type 静音。 */}
+            <button
+              type="button"
+              onClick={() => { void useInbox.getState().markAllRead() }}
+              className="text-[10px] font-semibold text-ink-300 hover:text-skype-deep transition-colors"
+              title={t('inbox.readAll')}
+            >✓</button>
+            <button
+              type="button"
+              onClick={() => setMutesOpen((v) => !v)}
+              className="text-[11px] font-bold text-ink-300 hover:text-skype-deep transition-colors px-0.5"
+              title={t('inbox.mutes')}
+              aria-label={t('inbox.mutes')}
+            >⋯</button>
+            {mutesOpen && (
+              <div className="absolute right-1 top-6 z-20 rounded-xl border border-ink-100 bg-cloud p-2.5 shadow-lg max-w-[240px]">
+                <p className="mb-1.5 text-[10.5px] font-semibold text-ink-500">{t('inbox.mutesHint')}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from(new Set(inboxItems.map((it) => it.type))).sort().map((type) => {
+                    const muted = inboxMutedTypes.includes(type)
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => {
+                          void useInbox.getState().setMutes(muted ? inboxMutedTypes.filter((x) => x !== type) : [...inboxMutedTypes, type])
+                        }}
+                        className={cn(
+                          'rounded-full px-2 py-0.5 font-mono text-[10px]',
+                          muted ? 'bg-ink text-cloud' : 'bg-ink/5 text-ink-700',
+                        )}
+                      >{type}{muted ? ' 🔇' : ''}</button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+          {!actionCollapsed && actionRows.slice(0, 6).map((it) => (
+            <button
+              key={it.id}
+              type="button"
+              onClick={() => openActionItem(it)}
+              className={cn(
+                'mb-0.5 flex w-full items-start gap-2 rounded-[10px] border-l-[3px] px-2.5 py-2 text-left transition-colors',
+                it.read ? 'border-transparent opacity-60 hover:bg-ink/[0.03]' : 'border-transparent bg-white/60 hover:bg-white',
+              )}
+              style={{ borderLeftColor: it.read ? 'transparent' : it.severity === 'action_required' ? 'var(--coral)' : 'var(--skype)' }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12.5px] font-semibold text-ink-900">{it.title}</span>
+                {it.body && <span className="block truncate text-[11px] text-ink-500">{it.body}</span>}
+              </span>
+              <span className="shrink-0 text-[9.5px] tabular-nums text-ink-300">
+                {new Date(it.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </button>
+          ))}
+          {!actionCollapsed && actionRows.length > 6 && (
+            <div className="px-2.5 py-1 text-[10.5px] italic text-ink-300 font-display">
+              {t('convo.actionMore', { n: actionRows.length - 6 })}
+            </div>
+          )}
+        </div>
+      )}
+
       {query.trim() ? (
         // Search results — short list with its own layout; non-virtualized.
         <div className="flex-1 overflow-y-auto px-2.5 pb-[18px]">
@@ -399,6 +570,24 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
                 return <div className="px-3 py-4 text-[12px] text-ink-300 italic font-display">{t('convo.loading')}</div>
               }
               if (item.type === 'label') return sectionLabel(item.text)
+              if (item.type === 'wlabel') {
+                // 「Agent 对话」分区头 —— whisper 紫寄存器 + owner 锁语义。
+                return (
+                  <div className="flex items-center gap-1.5 px-2 pt-4 pb-1.5 text-[10px] font-bold tracking-[0.12em] uppercase text-whisper">
+                    {t('convo.agentChats')}
+                    <span className="text-[9px] opacity-70" title={t('convo.agentChatsOwnerOnly')}>🔒</span>
+                  </div>
+                )
+              }
+              if (item.type === 'wrow') {
+                return (
+                  <WhisperRow
+                    w={item.w}
+                    selected={selected === item.w.id}
+                    onClick={() => select(item.w.id)}
+                  />
+                )
+              }
               if (item.type === 'divider') {
                 // Hairline divider — fading double rule between Pinned + Rest.
                 return (

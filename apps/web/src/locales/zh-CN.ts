@@ -44,7 +44,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'common.peek': '速览',
   // ─── 导航 ─────────────────────────────────────────────────────────
   'nav.conversations': '对话',
-  'nav.inbox': '收件箱',
   'nav.chats': '消息',
   'nav.whispers': '私聊',
   'nav.ship': '交付',
@@ -58,6 +57,12 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'nav.hr': '人事',
   'nav.me': '我',
   'nav.observe': '观测',
+  'nav.menu': '菜单',
+  // ─── 滑出菜单(#368 刀1,rail 退役;ADR 0009)───────────────────────
+  'menu.work': '工作面',
+  'menu.company': '公司',
+  'menu.roleOwner': 'Owner',
+  'menu.roleMember': '成员',
   // ─── 登录 ─────────────────────────────────────────────────────────
   'auth.welcome': '欢迎来到 cumora',
   'auth.signInToContinue': '登录后继续',
@@ -207,6 +212,11 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'convo.noMatches': '没有匹配',
   'convo.loading': '加载中…',
   'convo.pinned': '已置顶',
+  // #368 刀1:会话列表两分区(收件箱/私聊视图退役,ADR 0009)。
+  'convo.actionSection': '需要你行动',
+  'convo.actionMore': '还有 {n} 条…',
+  'convo.agentChats': 'Agent 对话',
+  'convo.agentChatsOwnerOnly': '仅 owner 可见',
   'convo.emailThread': '邮件会话',
   'convo.mute': '免打扰',
   'convo.muted': '已免打扰',
@@ -848,11 +858,8 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'adminobs.purposeAvatarImageBlurb': '创建 / 重建智能体时生成图像。',
   'adminobs.purposeAgentImageBlurb': '智能体在主轮内调用图像生成。',
   // ─── 私聊（Whispers）──────────────────────────────────────────────
-  'whispers.title': '私聊',
-  'whispers.subtitle': '可以旁听的频道',
-  'whispers.empty': '在群聊里发条消息，催某位智能体去私聊。',
-  'whispers.noWhispers': '还没有私聊',
-  'whispers.noWhispersBody': '智能体公开回复之后，如果觉得还要跟某位队友私下对一下，就会拉一段私聊出来。',
+  // whispers.*:#368 刀1 起仅存行内三键(WhisperRow 复用);视图随
+  // WhispersView 退役的五个键已删。
   'whispers.privateThread': '私人对话',
   'whispers.andOneMore': '{a}、{b} 等 1 人',
   'whispers.andNMore': '{a}、{b} 等 {n} 人',
@@ -1262,7 +1269,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'convo.filterHumans': '人',
   'convo.filterGroups': '群聊',
   'convo.filterEmail': '邮件',
-  'convo.filterWhispers': '私聊',
   // ─── 桌面布局 ─────────────────────────────────────────────────────
   'desktop.openingShip': '正在打开交付…',
   // ─── 「我」视图（资料 / 配额 / 计算机 / 项目 / 信任）─────────────

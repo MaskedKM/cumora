@@ -123,5 +123,8 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
 }
 
 export interface ViewKey {
-  view: 'conversations' | 'inbox' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'projects' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
+  // #368 (Blade 1): 'inbox' retired — the action-required section of the conversation list takes over its entry point.
+  // 'whispers' / 'library' have no consumers on the desktop side, but MobileTabBar is still using them; union member retention
+  // to be finalized with Blade 3 mobile alignment.
+  view: 'conversations' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'projects' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
 }

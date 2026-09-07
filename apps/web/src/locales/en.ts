@@ -36,9 +36,8 @@ export const en = {
   'common.noData': 'No data.',
   'common.open': 'Open',
   'common.peek': 'Peek',
-  // ─── navigation: desktop rail + mobile tab bar ────────────────────
+  // ─── navigation: slide-out menu + mobile tab bar ──────────────────
   'nav.conversations': 'Conversations',
-  'nav.inbox': 'Inbox',
   'nav.chats': 'Chats',
   'nav.whispers': 'Whispers',
   'nav.ship': 'Ship',
@@ -52,6 +51,12 @@ export const en = {
   'nav.hr': 'HR',
   'nav.me': 'Me',
   'nav.observe': 'Observe',
+  'nav.menu': 'Menu',
+  // ─── slide-out menu (#368 cut 1; rail retired — ADR 0009) ────────
+  'menu.work': 'Work',
+  'menu.company': 'Company',
+  'menu.roleOwner': 'Owner',
+  'menu.roleMember': 'Member',
   // ─── sign-in ──────────────────────────────────────────────────────
   'auth.welcome': 'Welcome to cumora',
   'auth.signInToContinue': 'Sign in to continue',
@@ -203,6 +208,11 @@ export const en = {
   'convo.noMatches': 'No matches for',
   'convo.loading': 'Loading…',
   'convo.pinned': 'Pinned',
+  // #368 cut 1: two list sections (inbox/whispers views retired — ADR 0009).
+  'convo.actionSection': 'Needs your action',
+  'convo.actionMore': '{n} more…',
+  'convo.agentChats': 'Agent chats',
+  'convo.agentChatsOwnerOnly': 'Owner only',
   'convo.emailThread': 'Email thread',
   'convo.mute': 'Mute conversation',
   'convo.muted': 'Muted',
@@ -846,12 +856,8 @@ export const en = {
   'adminobs.purposeGenderBlurb': 'Avatar-pipeline gender pick.',
   'adminobs.purposeAvatarImageBlurb': 'Image gen at agent creation / regeneration.',
   'adminobs.purposeAgentImageBlurb': 'Image gen invoked by an agent mid-turn.',
-  // ─── whispers view ────────────────────────────────────────────────
-  'whispers.title': 'Whispers',
-  'whispers.subtitle': 'channels you can peek into',
-  'whispers.empty': 'Send a message in a group to nudge an agent to whisper.',
-  'whispers.noWhispers': 'No whispers yet',
-  'whispers.noWhispersBody': 'Whispers form when an agent decides — after their public reply — that they need to align with another teammate privately.',
+  // ─── whispers: only the three inline keys survive #368 cut 1 (the
+  // view retired; WhisperRow in the conversations list reuses these) ──
   'whispers.privateThread': 'private thread',
   'whispers.andOneMore': '{a}, {b} & 1 more',
   'whispers.andNMore': '{a}, {b} & {n} more',
@@ -1260,7 +1266,6 @@ export const en = {
   'convo.filterHumans': 'Humans',
   'convo.filterGroups': 'Groups',
   'convo.filterEmail': 'Email',
-  'convo.filterWhispers': 'Whispers',
   // ─── desktop layout ──────────────────────────────────────────────
   'desktop.openingShip': 'Opening Ship…',
   // ─── me view (profile / quota / computers / projects / trust) ─────

@@ -1,7 +1,7 @@
 // stores/inbox —— #264 人侧 Inbox 分级:条目 + 未读计数 + 按 type 静音。
 // WS inbox.new 由 NotificationToasts 订阅(弹条分级在那边),本店只管
-// 列表/计数/静音的拉取与操作;徽标(actionRequired+attention 未读)由
-// Rail 消费。
+// 列表/计数/静音的拉取与操作;分区徽标(actionRequired+attention 未读)
+// 由 ConversationsPane 的「需要你行动」分区消费(#368 刀1,原 Rail)。
 import { create } from 'zustand'
 import { api, type ApiInboxItem, type ApiInboxResponse } from '@/api/client'
 

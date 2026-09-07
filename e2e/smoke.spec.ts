@@ -159,7 +159,18 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
     { web: WEB, token: SESSION_TOKEN, company: COMPANY },
   )
   await page.goto(WEB)
-  await expect(page.locator('[aria-label="Conversations"]')).toBeVisible({ timeout: 30_000 })
+  // #368 刀1:rail 退役后,原 [aria-label="Conversations"] 图标钮不复存在
+  // ——登录成功的锚点改为会话列表头的 ☰ 菜单钮(常驻首屏)。
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible({ timeout: 30_000 })
+
+  // ── 4b) #368 刀1 导航面:菜单启动二级面 + B 看板快捷键(ADR 0009)──
+  await page.getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('button', { name: 'Calendar' }).click()
+  await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible()
+  await page.keyboard.press('b') // B = 对话 ↔ 看板
+  await expect(page.getByRole('heading', { name: 'Boards' })).toBeVisible()
+  await page.keyboard.press('b') // 再按 B 回对话,后续步骤依赖会话列表
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible()
 
   // ── 5) 打开 Atlas 的 DM,发消息 ──
   // DM 行无 aria-label(快照实测):行内是 img[alt=名] + 文本节点,用

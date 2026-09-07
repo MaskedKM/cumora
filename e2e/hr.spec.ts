@@ -188,8 +188,12 @@ test('hr: 触发评估 → echo Brain 交报告 → HR 页看到 done 轮次', a
     { web: WEB, token: SESSION_TOKEN, company: COMPANY },
   )
   await page.goto(WEB)
-  await expect(page.locator('[aria-label="Conversations"]')).toBeVisible({ timeout: 30_000 })
-  await page.locator('[aria-label="HR"]').click({ timeout: 15_000 })
+  // #368 刀1:rail 退役 —— 登录锚点改 ☰ 菜单钮,HR 面从滑出菜单进入(ADR 0009)。
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible({ timeout: 30_000 })
+  await page.getByRole('button', { name: 'Menu' }).click()
+  // exact:公司切换器「E2E HR Co」/菜单头像行「HR Human」都含 HR 子串,
+  // Playwright 默认子串匹配会三撞 —— 菜单项的可达名恰好是裸「HR」。
+  await page.getByRole('button', { name: 'HR', exact: true }).click({ timeout: 15_000 })
 
   // ── 7) 评估轮上屏:done 徽章 → 展开首行 → 载荷与输入快照可见 ──
   await expect(page.getByText('done', { exact: true })).toBeVisible({ timeout: 30_000 })
