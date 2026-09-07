@@ -3,8 +3,8 @@
 // AssigneePicker(经办人下拉)与 formatTime 助手。开关状态由 canvas 持有。
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AvatarMini } from '@/components/Avatar'
+import { ProjectLinkModal } from '@/components/ProjectLinkModal'
 import { Select } from '@/components/Select'
-import { WorkspaceLinkModal } from '@/components/WorkspaceLinkModal'
 import { useT } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAuth, useMe } from '@/stores/auth'
@@ -23,7 +23,7 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
   const t = useT()
   const byId = useParticipants((s) => s.byId)
   const meId = useMe()
-  // board_card 关联服务端要求 owner/admin(AddWorkspaceAssociation 分层),
+  // board_card 关联服务端要求 owner/admin(AddProjectAssociation 分层),
   // 前端同门(#338)。
   const role = useAuth((st) => st.companies.find((c) => c.id === st.activeCompanyId)?.role)
   const canManage = role === 'owner' || role === 'admin'
@@ -40,7 +40,7 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
   const [description, setDescription] = useState(card.description ?? '')
   const [draftComment, setDraftComment] = useState('')
   const [posting, setPosting] = useState(false)
-  const [linkingWs, setLinkingWs] = useState(false)
+  const [linkingProject, setLinkingProject] = useState(false)
 
   useEffect(() => {
     setTitle(card.title)
@@ -101,9 +101,9 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
           {canManage && (
             <button
               type="button"
-              onClick={() => setLinkingWs(true)}
+              onClick={() => setLinkingProject(true)}
               className="shrink-0 rounded-md px-2.5 py-1.5 text-sm text-ink-500 hover:bg-sky2-50 hover:text-skype-deep"
-              title={t('wsLink.title')}
+              title={t('projLink.title')}
             >⌗</button>
           )}
           <button
@@ -112,8 +112,8 @@ export function CardDetailModal({ boardId, card, columns, onClose }: {
             className="shrink-0 rounded-md px-2.5 py-1.5 text-sm text-ink-500 hover:bg-sky2-50 hover:text-skype-deep"
           >{t('common.close')}</button>
         </header>
-        {linkingWs && (
-          <WorkspaceLinkModal kind="board_card" targetId={card.id} onClose={() => setLinkingWs(false)} />
+        {linkingProject && (
+          <ProjectLinkModal kind="board_card" targetId={card.id} onClose={() => setLinkingProject(false)} />
         )}
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">

@@ -1,17 +1,17 @@
 import { useEffect } from 'react'
+import { api } from '@/api/client'
+import { Avatar } from '@/components/Avatar'
+import { IAgent, IAgents, IBoard, ICalendar, IChat, IDoc, IExit, IFile, 
+  IFolder, IMail,IObserve, IShip, IWhisper } from '@/components/icons'
+import { type MessageKey, useT } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useAuth, useMe } from '@/stores/auth'
-import { useConversations, isMuted } from '@/stores/conversations'
 import { useComputers } from '@/stores/computers'
+import { isMuted, useConversations } from '@/stores/conversations'
 import { useDevtools } from '@/stores/devtools'
 import { useInbox } from '@/stores/inbox'
 import { useParticipants } from '@/stores/participants'
-import { Avatar } from '@/components/Avatar'
-import { IChat, IWhisper, IAgent, IAgents, IBoard, IDoc, IFile, IMail,
-  IFolder, ICalendar, IObserve, IExit, IShip } from '@/components/icons'
-import { api } from '@/api/client'
-import { cn } from '@/lib/utils'
-import { useT, type MessageKey } from '@/lib/i18n'
 import type { Participant, ViewKey } from '@/types'
 
 // `label` is a message key rather than the string itself — the array is
@@ -25,7 +25,7 @@ const baseItems: Array<{ key: ViewKey['view']; Icon: typeof IChat; label: Messag
   { key: 'boards', Icon: IBoard, label: 'nav.boards' },
   { key: 'calendar', Icon: ICalendar, label: 'nav.calendar' },
   { key: 'documents', Icon: IDoc, label: 'nav.docs' },
-  { key: 'workspaces', Icon: IFolder, label: 'nav.workspaces' },
+  { key: 'projects', Icon: IFolder, label: 'nav.projects' },
   { key: 'skills', Icon: IFile, label: 'nav.skills' },
   { key: 'agents', Icon: IAgent, label: 'nav.agents' },
   { key: 'hr', Icon: IAgent, label: 'nav.hr' },

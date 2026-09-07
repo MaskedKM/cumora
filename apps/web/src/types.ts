@@ -123,5 +123,5 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
 }
 
 export interface ViewKey {
-  view: 'conversations' | 'inbox' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'workspaces' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
+  view: 'conversations' | 'inbox' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'projects' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
 }

@@ -34,7 +34,7 @@ const HrView = lazy(() => import('./HrView').then((m) => ({ default: m.HrView })
 const BoardsView = lazy(() => import('./BoardsView').then((m) => ({ default: m.BoardsView })))
 const CalendarView = lazy(() => import('./CalendarView').then((m) => ({ default: m.CalendarView })))
 const DocumentsView = lazy(() => import('./DocumentsView').then((m) => ({ default: m.DocumentsView })))
-const WorkspacesView = lazy(() => import('./WorkspacesView').then((m) => ({ default: m.WorkspacesView })))
+const ProjectsView = lazy(() => import('./ProjectsView').then((m) => ({ default: m.ProjectsView })))
 const SkillsView = lazy(() => import('./SkillsView').then((m) => ({ default: m.SkillsView }))) // #261 公司 Skills 库
 const ObservabilityView = lazy(() => import('./ObservabilityView').then((m) => ({ default: m.ObservabilityView })))
 const MeView = lazy(() => import('./MeView').then((m) => ({ default: m.MeView })))
@@ -130,7 +130,7 @@ export function DesktopApp() {
         {view === 'boards' && <Suspense fallback={<ViewFallback />}><BoardsView /></Suspense>}
         {view === 'calendar' && <Suspense fallback={<ViewFallback />}><CalendarView /></Suspense>}
         {view === 'documents' && <Suspense fallback={<ViewFallback />}><DocumentsView /></Suspense>}
-        {view === 'workspaces' && <Suspense fallback={<ViewFallback />}><WorkspacesView /></Suspense>}
+        {view === 'projects' && <Suspense fallback={<ViewFallback />}><ProjectsView /></Suspense>}
         {view === 'skills' && <Suspense fallback={<ViewFallback />}><SkillsView /></Suspense>}
         {view === 'shipping' && <Suspense fallback={<ViewFallback />}><ShippingView /></Suspense>}
         {view === 'observability' && devtoolsEnabled && <Suspense fallback={<ViewFallback />}><ObservabilityView /></Suspense>}

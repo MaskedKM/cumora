@@ -93,7 +93,6 @@ export function ChatHeader({
   void onConvene
   const c = useConversations((s) => s.list.find((x) => x.id === convoId))
   const byId = useParticipants((s) => s.byId)
-  // #338 双向入口:项目会话可挂工作区(project 关联服务端要求 owner/admin)
   const [editingTopic, setEditingTopic] = useState(false)
   const [topicDraft, setTopicDraft] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)

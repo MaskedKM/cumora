@@ -297,14 +297,6 @@ export const api = {
     http<ShippingFeatureDetail>(`/shipping/features/${encodeURIComponent(featureId)}/regressions`, { method: 'POST', body: JSON.stringify(input) }),
   updateShippingRegression: (featureId: string, regressionId: string, input: Record<string, unknown>) =>
     http<ShippingFeatureDetail>(`/shipping/features/${encodeURIComponent(featureId)}/regressions/${encodeURIComponent(regressionId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
-  createProject: (input: { name: string; description?: string; color?: string }) =>
-    http<{ id: string; name: string; description: string; color: string | null; status: string }>('/projects', {
-      method: 'POST', body: JSON.stringify(input),
-    }),
-  updateProject: (id: string, input: { name?: string; description?: string; color?: string | null }) =>
-    http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}`, {
-      method: 'PUT', body: JSON.stringify(input),
-    }),
   createCompany: (name: string) =>
     http<{ id: string; name: string; slug: string; role: string }>('/companies', {
       method: 'POST', body: JSON.stringify({ name }),
@@ -887,9 +879,7 @@ export const api = {
   deleteDocument: (id: string) =>
     http<{ ok: boolean }>(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /* ============== Team projects (shared real folders; #355) ============== */
-  listTeamProjects: () =>
-    http<Schemas['Project'][]>('/projects'),
+  /* ============== Projects (shared real folders; #355 域换轨 / #356 双方法归一) ============== */
   getProject: (id: string) =>
     http<ApiProjectDetail>(`/projects/${encodeURIComponent(id)}`),
   listProjectFiles: (id: string, path: string) =>
@@ -907,9 +897,14 @@ export const api = {
       { method: 'PUT', body: JSON.stringify({ body }) },
     ),
 
-  /* 管理面 mutation(#338 封装,#355 改名;unbind 随 ADR 0008 §6 退役) */
-  createTeamProject: (name: string, folderPath: string) =>
+  /* 管理面 mutation(#338 封装,#355 改名;unbind 随 ADR 0008 §6 退役;
+  #356:旧 createProject(设置页对象形态)/updateProject(无消费方)退役,
+  本段 createProject 为唯一新建面 —— folderPath 留空即在受管目录自动建盘
+  (ADR 0008 §3);deleteProject 为生命周期唯一出口(ADR 0008 §6)。) */
+  createProject: (name: string, folderPath?: string) =>
     http<Schemas['Project']>('/projects', { method: 'POST', body: JSON.stringify({ name, folderPath }) }),
+  deleteProject: (id: string) =>
+    http<{ ok: boolean; id: string; folderKept: string | null }>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   addProjectMember: (id: string, participantId: string) =>
     http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}/members`, {
       method: 'POST', body: JSON.stringify({ participantId }),
