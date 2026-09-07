@@ -4,7 +4,7 @@
 // machinery (used by notify.cjs / ipc.cjs around panel shows) and the
 // dock unread-dot icon painting.
 const { app, nativeImage } = require('electron')
-const { ICON_PATH } = require('./env.cjs')
+const { ICON } = require('./env.cjs')
 const state = require('./state.cjs')
 const { setTrayUnreadDot } = require('./tray.cjs')
 
@@ -71,12 +71,12 @@ const DOCK_UNREAD_DOT = {
   stroke: 18,
 }
 
-let dockCleanIcon = null
 let dockUnreadIcon = null
 
 function getDockCleanIcon() {
-  if (!dockCleanIcon) dockCleanIcon = nativeImage.createFromPath(ICON_PATH)
-  return dockCleanIcon
+  // #358: env.cjs decodes the icon once at require time and hands every
+  // consumer the same immutable NativeImage — nothing left to lazily cache.
+  return ICON
 }
 
 /** Paint the unread dot straight into an app-icon bitmap, in place.
@@ -140,7 +140,7 @@ function paintDockUnreadDot(buf, width, height) {
 
 function getDockUnreadIcon() {
   if (dockUnreadIcon) return dockUnreadIcon
-  const base = nativeImage.createFromPath(ICON_PATH)
+  const base = ICON
   const { width, height } = base.getSize()
   // No icon on disk (or an undecodable one) — hand back the empty image and let
   // setDockUnreadDot's isEmpty() guard skip the update, exactly as before.
