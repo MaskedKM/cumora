@@ -787,6 +787,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 招人/淘汰提案列表(owner/admin;可按状态过滤) */
+        get: operations["listHrProposals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/proposals/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 批准提案并执行(owner/admin;hire=同源建 agent 全流程,offboard=软删可复聘) */
+        post: operations["approveHrProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/proposals/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 拒绝提案(owner/admin;只留处置痕迹) */
+        post: operations["rejectHrProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3567,6 +3618,28 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        HrProposal: {
+            id: string;
+            /** @enum {string} */
+            kind: "hire" | "offboard";
+            /** @enum {string} */
+            status: "open" | "approved" | "rejected";
+            /** @description offboard 目标;hire 为 null */
+            agentId?: string | null;
+            /** @description hire 档案草稿(name/role/bio/systemPrompt/model/fastModel/headcountNote;engine 暂不入执行链) */
+            profile?: {
+                [key: string]: unknown;
+            } | null;
+            reason: string;
+            evaluationId?: string | null;
+            decidedBy?: string | null;
+            /** Format: date-time */
+            decidedAt?: string | null;
+            /** @description hire 执行产物(新 agent id) */
+            resultAgentId?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
         Whisper: {
             id: string;
             /** @enum {string} */
@@ -5641,6 +5714,102 @@ export interface operations {
             };
             /** @description 无此变更或不属本公司 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listHrProposals: {
+        parameters: {
+            query?: {
+                status?: "open" | "approved" | "rejected";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: components["schemas"]["HrProposal"][];
+                    };
+                };
+            };
+        };
+    };
+    approveHrProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrProposal"];
+                };
+            };
+            /** @description 无此提案或不属本公司 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提案已处置或执行冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rejectHrProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrProposal"];
+                };
+            };
+            /** @description 无此提案或不属本公司 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提案已处置 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

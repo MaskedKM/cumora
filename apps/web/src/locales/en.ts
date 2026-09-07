@@ -1950,4 +1950,13 @@ export const en = {
   'hr.field.systemPrompt': 'system prompt',
   'hr.field.bio': 'bio',
   'hr.field.role': 'title',
+  'hr.proposalsTitle': 'Hire / offboard proposals',
+  'hr.proposalsHint': 'Roster changes the HR Agent proposes — nothing executes until you approve. Hire runs the full onboarding pipeline; offboard is soft (rehirable).',
+  'hr.proposalsEmpty': '(No proposals yet.)',
+  'hr.proposalHire': 'hire',
+  'hr.proposalOffboard': 'offboard',
+  'hr.proposalApprove': 'Approve',
+  'hr.proposalReject': 'Reject',
+  'hr.proposalApproved': 'approved',
+  'hr.proposalRejected': 'rejected',
 } as const

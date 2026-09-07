@@ -1953,4 +1953,13 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'hr.field.systemPrompt': '系统提示词',
   'hr.field.bio': '简介',
   'hr.field.role': '头衔',
+  'hr.proposalsTitle': '招人 / 淘汰提案',
+  'hr.proposalsHint': 'HR Agent 提的花名册进出——你批准之前什么都不会发生。招人走完整入职管线;淘汰是软删可复聘。',
+  'hr.proposalsEmpty': '(还没有提案。)',
+  'hr.proposalHire': '招人',
+  'hr.proposalOffboard': '淘汰',
+  'hr.proposalApprove': '批准',
+  'hr.proposalReject': '拒绝',
+  'hr.proposalApproved': '已批准',
+  'hr.proposalRejected': '已拒绝',
 } as const

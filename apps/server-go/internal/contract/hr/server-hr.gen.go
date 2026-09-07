@@ -36,6 +36,15 @@ type ServerInterface interface {
 	// 评估轮详情(含 payload 与输入快照;owner/admin)
 	// (GET /api/hr/evaluations/{id})
 	GetHrEvaluation(w http.ResponseWriter, r *http.Request, id string)
+	// 招人/淘汰提案列表(owner/admin;可按状态过滤)
+	// (GET /api/hr/proposals)
+	ListHrProposals(w http.ResponseWriter, r *http.Request, params ListHrProposalsParams)
+	// 批准提案并执行(owner/admin;hire=同源建 agent 全流程,offboard=软删可复聘)
+	// (POST /api/hr/proposals/{id}/approve)
+	ApproveHrProposal(w http.ResponseWriter, r *http.Request, id string)
+	// 拒绝提案(owner/admin;只留处置痕迹)
+	// (POST /api/hr/proposals/{id}/reject)
+	RejectHrProposal(w http.ResponseWriter, r *http.Request, id string)
 	// owner 主观评分列表(owner/admin)
 	// (GET /api/hr/ratings)
 	ListHrRatings(w http.ResponseWriter, r *http.Request)
@@ -228,6 +237,101 @@ func (siw *ServerInterfaceWrapper) GetHrEvaluation(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListHrProposals operation middleware
+func (siw *ServerInterfaceWrapper) ListHrProposals(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListHrProposalsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "status", r.URL.Query(), &params.Status)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListHrProposals(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApproveHrProposal operation middleware
+func (siw *ServerInterfaceWrapper) ApproveHrProposal(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApproveHrProposal(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectHrProposal operation middleware
+func (siw *ServerInterfaceWrapper) RejectHrProposal(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectHrProposal(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListHrRatings operation middleware
 func (siw *ServerInterfaceWrapper) ListHrRatings(w http.ResponseWriter, r *http.Request) {
 
@@ -406,6 +510,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations", wrapper.ListHrEvaluations)
 	m.HandleFunc("POST "+options.BaseURL+"/api/hr/evaluations", wrapper.CreateHrEvaluation)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations/{id}", wrapper.GetHrEvaluation)
+	m.HandleFunc("GET "+options.BaseURL+"/api/hr/proposals", wrapper.ListHrProposals)
+	m.HandleFunc("POST "+options.BaseURL+"/api/hr/proposals/{id}/approve", wrapper.ApproveHrProposal)
+	m.HandleFunc("POST "+options.BaseURL+"/api/hr/proposals/{id}/reject", wrapper.RejectHrProposal)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/ratings", wrapper.ListHrRatings)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/hr/ratings/{agentId}", wrapper.PutHrRating)
 

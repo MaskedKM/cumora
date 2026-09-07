@@ -173,6 +173,19 @@ const (
 	HrEvaluationTriggerPeriodic HrEvaluationTrigger = "periodic"
 )
 
+// Defines values for HrProposalKind.
+const (
+	Hire     HrProposalKind = "hire"
+	Offboard HrProposalKind = "offboard"
+)
+
+// Defines values for HrProposalStatus.
+const (
+	HrProposalStatusApproved HrProposalStatus = "approved"
+	HrProposalStatusOpen     HrProposalStatus = "open"
+	HrProposalStatusRejected HrProposalStatus = "rejected"
+)
+
 // Defines values for InvitationRole.
 const (
 	InvitationRoleAdmin  InvitationRole = "admin"
@@ -497,6 +510,13 @@ const (
 	Member CreateInvitationJSONBodyRole = "member"
 )
 
+// Defines values for ListHrProposalsParamsStatus.
+const (
+	Approved ListHrProposalsParamsStatus = "approved"
+	Open     ListHrProposalsParamsStatus = "open"
+	Rejected ListHrProposalsParamsStatus = "rejected"
+)
+
 // Defines values for CreatePollJSONBodyMode.
 const (
 	CreatePollJSONBodyModeMulti  CreatePollJSONBodyMode = "multi"
@@ -535,10 +555,10 @@ const (
 
 // Defines values for FinishRunJSONBodyStatus.
 const (
-	FinishRunJSONBodyStatusCompleted FinishRunJSONBodyStatus = "completed"
-	FinishRunJSONBodyStatusFailed    FinishRunJSONBodyStatus = "failed"
-	FinishRunJSONBodyStatusRunning   FinishRunJSONBodyStatus = "running"
-	FinishRunJSONBodyStatusSkipped   FinishRunJSONBodyStatus = "skipped"
+	Completed FinishRunJSONBodyStatus = "completed"
+	Failed    FinishRunJSONBodyStatus = "failed"
+	Running   FinishRunJSONBodyStatus = "running"
+	Skipped   FinishRunJSONBodyStatus = "skipped"
 )
 
 // Defines values for StatusHeartbeatJSONBodyStatus.
@@ -1117,6 +1137,32 @@ type HrEvaluationStatus string
 
 // HrEvaluationTrigger defines model for HrEvaluation.Trigger.
 type HrEvaluationTrigger string
+
+// HrProposal defines model for HrProposal.
+type HrProposal struct {
+	// AgentId offboard 目标;hire 为 null
+	AgentId      *string        `json:"agentId"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	DecidedAt    *time.Time     `json:"decidedAt"`
+	DecidedBy    *string        `json:"decidedBy"`
+	EvaluationId *string        `json:"evaluationId"`
+	Id           string         `json:"id"`
+	Kind         HrProposalKind `json:"kind"`
+
+	// Profile hire 档案草稿(name/role/bio/systemPrompt/model/fastModel/headcountNote;engine 暂不入执行链)
+	Profile *map[string]interface{} `json:"profile"`
+	Reason  string                  `json:"reason"`
+
+	// ResultAgentId hire 执行产物(新 agent id)
+	ResultAgentId *string          `json:"resultAgentId"`
+	Status        HrProposalStatus `json:"status"`
+}
+
+// HrProposalKind defines model for HrProposal.Kind.
+type HrProposalKind string
+
+// HrProposalStatus defines model for HrProposal.Status.
+type HrProposalStatus string
 
 // HrRating defines model for HrRating.
 type HrRating struct {
@@ -2195,6 +2241,14 @@ type CreateHrEvaluationJSONBody struct {
 	// TargetAgentId 缺省=全员
 	TargetAgentId *string `json:"targetAgentId,omitempty"`
 }
+
+// ListHrProposalsParams defines parameters for ListHrProposals.
+type ListHrProposalsParams struct {
+	Status *ListHrProposalsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// ListHrProposalsParamsStatus defines parameters for ListHrProposals.
+type ListHrProposalsParamsStatus string
 
 // SetInboxMutesJSONBody defines parameters for SetInboxMutes.
 type SetInboxMutesJSONBody struct {

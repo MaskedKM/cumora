@@ -19,6 +19,7 @@ import (
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 	hrcontract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/hr"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/agents"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/sched"
 )
@@ -28,16 +29,19 @@ import (
 // nil 安全(测试/降级路径不触发)。
 type WakeFunc func(agentID, reason string, brief *sched.BackgroundBrief) int
 
-// Server:hr tag 的域实现(配置面 2 路由 + 评估面 3 路由 + CLI 面)。
+// Server:hr tag 的域实现(配置面 + 评估面 + 评分/变更/提案 + CLI 面)。
 type Server struct {
 	DB   *sql.DB
 	Wake WakeFunc
+	// Agents:#349 提案批准的执行载体(agents 域同源核心;main 构造后注入,
+	// 破坏 hr→agents 的构造环)。nil 安全(测试路径不批提案)。
+	Agents *agents.Server
 }
 
 var _ hrcontract.ServerInterface = (*Server)(nil)
 
-func Mount(mux *http.ServeMux, db *sql.DB, wake WakeFunc) *Server {
-	s := &Server{DB: db, Wake: wake}
+func Mount(mux *http.ServeMux, db *sql.DB, wake WakeFunc, agentsSvc *agents.Server) *Server {
+	s := &Server{DB: db, Wake: wake, Agents: agentsSvc}
 	_ = hrcontract.HandlerFromMux(s, mux)
 	return s
 }

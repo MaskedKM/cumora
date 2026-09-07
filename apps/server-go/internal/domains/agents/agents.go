@@ -44,10 +44,11 @@ type Server struct {
 var _ agentscontract.ServerInterface = (*Server)(nil)
 var _ participantscontract.ServerInterface = (*Server)(nil)
 
-func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen, syncAvatar devtools.AvatarGen) {
+func Mount(mux *http.ServeMux, db *sql.DB, avatarGen AvatarGen, syncAvatar devtools.AvatarGen) *Server {
 	s := &Server{DB: db, AvatarGen: avatarGen, SyncAvatar: syncAvatar, Computers: &computers.Server{DB: db}}
 	_ = agentscontract.HandlerFromMux(s, mux)
 	_ = participantscontract.HandlerFromMux(s, mux)
+	return s
 }
 
 /* ───────── 跨包委托(agents tag 的三条路由) ───────── */
@@ -259,6 +260,106 @@ func pickUniqueAgentID(ctx context.Context, db *sql.DB, baseName string) (string
 	return "", fmt.Errorf("no unique id")
 }
 
+// createAgentCore:建 agent 的可复用核心(#349 起供 hr 域提案批准路径
+// 同源调用)—— id 生成(含归因键防撞)、INSERT、全部入职副作用(#all-hands
+// 入组、IDENTITY/SOUL 档案、owner 自动 DM、头像生成)。HTTP 壳与本核
+// 同源,行为不再漂移。
+func (s *Server) CreateAgentCore(ctx context.Context, uid, tenant string, in AgentCreateInput) (string, error) {
+	if strings.TrimSpace(in.Name) == "" {
+		return "", ErrAgentInput{"name required"}
+	}
+	if len(strings.TrimSpace(in.SystemPrompt)) < 10 {
+		return "", ErrAgentInput{"systemPrompt required (at least 10 chars — describe the agent's style)"}
+	}
+	agentID, err := pickUniqueAgentID(ctx, s.DB, in.Name)
+	if err != nil {
+		// 9 候选全撞(TS 落到 INSERT duplicate)→ 同冲突语义(评审 F14)。
+		return "", ErrAgentConflict{"agent id collision — please retry"}
+	}
+	initial := in.Initial
+	if initial == "" {
+		initial = strings.ToUpper(string([]rune(in.Name)[0:1]))
+	}
+	avatarBg := in.AvatarBg
+	if avatarBg == "" {
+		avatarBg = defaultAvatarBg(agentID)
+	}
+	tools := in.Tools
+	if len(tools) == 0 {
+		tools = []string{"bash"}
+	}
+	toolsJSON, _ := json.Marshal(tools)
+	var modelArg, fastModelArg any
+	if in.Model != "" {
+		modelArg = in.Model
+	}
+	if in.FastModel != "" {
+		fastModelArg = in.FastModel
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO participants (id, kind, name, role, initial, avatar_bg, status, bio, tools, system_prompt, model, fast_model, company_id)
+		VALUES ($1, 'agent', $2, $3, $4, $5, 'avail', $6, $7::jsonb, $8, $9, $10, $11)`,
+		agentID, in.Name, in.Role, initial, avatarBg, in.Bio, string(toolsJSON), in.SystemPrompt, modelArg, fastModelArg, tenant)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "participants_agent_id_unique") {
+			return "", ErrAgentConflict{"agent id collision — please retry"}
+		}
+		return "", err
+	}
+	onboard.JoinAllHands(ctx, s.DB, tenant, agentID)
+	seedIdentitySoul(ctx, s.DB, tenant, agentID, in.Name, in.Role, in.Bio, in.SystemPrompt)
+	autoCreateDirect(ctx, s.DB, uid, tenant, agentID, in.Name)
+	if s.AvatarGen != nil {
+		go func() { s.AvatarGen(agentID, tenant) }()
+	}
+	return agentID, nil
+}
+
+// AgentCreateInput:CreateAgentCore 的入参(可空字符串=nil 语义)。
+type AgentCreateInput struct {
+	Name, Role, Bio, SystemPrompt string
+	Initial, AvatarBg             string
+	Model, FastModel              string
+	Tools                         []string
+}
+
+// ErrAgentInput / ErrAgentConflict:core 错误分类(HTTP 壳映射 400/409)。
+type ErrAgentInput struct{ Msg string }
+
+func (e ErrAgentInput) Error() string { return e.Msg }
+
+type ErrAgentConflict struct{ Msg string }
+
+func (e ErrAgentConflict) Error() string { return e.Msg }
+
+// OffboardAgentCore:offboard 的可复用核心(#349 同源);已 offboard /
+// 非 agent / 不存在 → 对应哨兵错误。
+var ErrAgentNotFound = errors.New("not found")
+var ErrAgentNotAgent = errors.New("cannot off-board non-agent participant")
+var ErrAgentAlreadyDeparted = errors.New("already off-boarded")
+
+func (s *Server) OffboardAgentCore(ctx context.Context, id, tenant string) error {
+	var kind string
+	var departedAt sql.NullTime
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
+		Scan(&kind, &departedAt); err != nil {
+		return ErrAgentNotFound
+	}
+	if kind != "agent" {
+		return ErrAgentNotAgent
+	}
+	if departedAt.Valid {
+		return ErrAgentAlreadyDeparted
+	}
+	if _, err := s.DB.ExecContext(ctx, `
+		UPDATE participants SET departed_at = NOW(), status = 'resting', status_updated_at = NOW()
+		  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Server) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
 	if !ok {
@@ -268,70 +369,49 @@ func (s *Server) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := decodeAgentBody(r)
-	if body.name == nil || *body.name == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "name required")
-		return
+	name, systemPrompt := "", ""
+	if body.name != nil {
+		name = *body.name
 	}
-	if body.systemPrompt == nil || len(strings.TrimSpace(*body.systemPrompt)) < 10 {
-		httpx.WriteError(w, http.StatusBadRequest,
-			"systemPrompt required (at least 10 chars — describe the agent's style)")
-		return
+	if body.systemPrompt != nil {
+		systemPrompt = *body.systemPrompt
 	}
-	agentID, err := pickUniqueAgentID(r.Context(), s.DB, *body.name)
-	if err != nil {
-		// 9 候选全撞(TS 落到 INSERT duplicate)→ 同 409 语义(评审 F14)。
-		httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
-		return
-	}
-	initial := ""
-	if body.initial != nil && *body.initial != "" {
-		initial = *body.initial
-	} else {
-		initial = strings.ToUpper(string([]rune(*body.name)[0:1]))
-	}
-	avatarBg := ""
-	if body.avatarBg != nil && *body.avatarBg != "" {
-		avatarBg = *body.avatarBg
-	} else {
-		avatarBg = defaultAvatarBg(agentID)
-	}
-	role := ""
+	role, bio, initial, avatarBg, model, fastModel := "", "", "", "", "", ""
 	if body.role != nil {
 		role = *body.role
 	}
-	bio := ""
 	if body.bio != nil {
 		bio = *body.bio
 	}
-	tools := body.tools
-	if !body.hasTools || len(tools) == 0 {
-		tools = []string{"bash"}
+	if body.initial != nil {
+		initial = *body.initial
 	}
-	toolsJSON, _ := json.Marshal(tools)
-	var modelArg, fastModelArg any
+	if body.avatarBg != nil {
+		avatarBg = *body.avatarBg
+	}
 	if body.model != nil {
-		modelArg = *body.model
+		model = *body.model
 	}
 	if body.fastModel != nil {
-		fastModelArg = *body.fastModel
+		fastModel = *body.fastModel
 	}
-	_, err = s.DB.ExecContext(r.Context(), `
-		INSERT INTO participants (id, kind, name, role, initial, avatar_bg, status, bio, tools, system_prompt, model, fast_model, company_id)
-		VALUES ($1, 'agent', $2, $3, $4, $5, 'avail', $6, $7::jsonb, $8, $9, $10, $11)`,
-		agentID, *body.name, role, initial, avatarBg, bio, string(toolsJSON), *body.systemPrompt, modelArg, fastModelArg, tenant)
+	agentID, err := s.CreateAgentCore(r.Context(), uid, tenant, AgentCreateInput{
+		Name: name, Role: role, Bio: bio, SystemPrompt: systemPrompt,
+		Initial: initial, AvatarBg: avatarBg, Model: model, FastModel: fastModel,
+		Tools: body.tools,
+	})
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "participants_agent_id_unique") {
-			httpx.WriteError(w, http.StatusConflict, "agent id collision — please retry")
-		} else {
+		var badInput ErrAgentInput
+		var conflict ErrAgentConflict
+		switch {
+		case errors.As(err, &badInput):
+			httpx.WriteError(w, http.StatusBadRequest, badInput.Msg)
+		case errors.As(err, &conflict):
+			httpx.WriteError(w, http.StatusConflict, conflict.Msg)
+		default:
 			httpx.WriteInternalError(w, r, err)
 		}
 		return
-	}
-	onboard.JoinAllHands(r.Context(), s.DB, tenant, agentID)
-	seedIdentitySoul(r.Context(), s.DB, tenant, agentID, *body.name, role, bio, *body.systemPrompt)
-	autoCreateDirect(r.Context(), s.DB, uid, tenant, agentID, *body.name)
-	if s.AvatarGen != nil {
-		go func() { s.AvatarGen(agentID, tenant) }()
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"id": agentID})
 }
@@ -461,25 +541,19 @@ func (s *Server) OffboardAgent(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return
 	}
-	var kind string
-	var departedAt sql.NullTime
-	if err := s.DB.QueryRowContext(r.Context(),
-		`SELECT kind, departed_at FROM participants WHERE id = $1 AND company_id = $2`, id, tenant).
-		Scan(&kind, &departedAt); err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not found")
+	switch err := s.OffboardAgentCore(r.Context(), id, tenant); err {
+	case nil:
+	case ErrAgentNotFound:
+		httpx.WriteError(w, http.StatusNotFound, err.Error())
 		return
-	}
-	if kind != "agent" {
-		httpx.WriteError(w, http.StatusBadRequest, "cannot off-board non-agent participant")
+	case ErrAgentNotAgent, ErrAgentAlreadyDeparted:
+		code := http.StatusBadRequest
+		if err == ErrAgentAlreadyDeparted {
+			code = http.StatusConflict
+		}
+		httpx.WriteError(w, code, err.Error())
 		return
-	}
-	if departedAt.Valid {
-		httpx.WriteError(w, http.StatusConflict, "already off-boarded")
-		return
-	}
-	if _, err := s.DB.ExecContext(r.Context(), `
-		UPDATE participants SET departed_at = NOW(), status = 'resting', status_updated_at = NOW()
-		  WHERE id = $1 AND company_id = $2`, id, tenant); err != nil {
+	default:
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

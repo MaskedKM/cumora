@@ -705,3 +705,180 @@ test('[mirror] hr: jobEdits 边界 — 超长拒收/bio·role 多字段/no-op �
   assert.equal(pr3[0].bio, 'does things') // 回滚的回滚 → 回到 v2
   release()
 })
+
+/* ───────── #349 招人/淘汰提案审批 ───────── */
+
+test('[mirror] hr: 提案落库 — 报告携 proposals 双 kind 落队列 open', async () => {
+  await seedComputer('cpu-hr-prop', ['claude'])
+  await seedAgent('ag-prop-1')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-prop' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const report = {
+    rounds: [],
+    proposals: [
+      { kind: 'hire', profile: { name: 'Wren Test', role: 'Frontend', systemPrompt: 'Ship polished UI with care.', headcountNote: 'frontend load is high' }, reason: 'frontend queue keeps stalling' },
+      { kind: 'offboard', agentId: 'ag-prop-1', reason: 'flat output for three rounds' },
+    ],
+  }
+  const res = await hrCli(['hr', 'report', created.json.id, JSON.stringify(report)])
+  assert.equal(res.json.ok, true, JSON.stringify(res.json).slice(0, 200))
+  assert.match(res.json.text, /2 proposal\(s\) filed/)
+  const list = await call('/hr/proposals')
+  assert.equal(list.status, 200)
+  assert.equal(list.json.rows.length, 2)
+  const hire = list.json.rows.find((p: any) => p.kind === 'hire')
+  const off = list.json.rows.find((p: any) => p.kind === 'offboard')
+  assert.equal(hire.status, 'open')
+  assert.equal(hire.profile.name, 'Wren Test')
+  assert.equal(hire.evaluationId, created.json.id)
+  assert.equal(off.status, 'open')
+  assert.equal(off.agentId, 'ag-prop-1')
+  // member 403
+  assert.equal((await memberMirror.call('/hr/proposals')).status, 403)
+  release()
+  // 清场:拒绝两条,后续用例不受在飞互斥影响
+  await call(`/hr/proposals/${hire.id}/reject`, { method: 'POST' })
+  await call(`/hr/proposals/${off.id}/reject`, { method: 'POST' })
+})
+
+test('[mirror] hr: 批准 hire — 同源建 agent 全副作用 + 提案终态', async () => {
+  await seedComputer('cpu-hr-prop2', ['claude'])
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-prop2' }) })
+  // #all-hands 频道 + 公司指针(直接种的公司无 onboard 流,JoinAllHands
+  // 依赖 all_hands_conversation_id,无指针时是 no-op)
+  await pool.query(
+    `INSERT INTO conversations (id, kind, title, members, company_id)
+     VALUES ('cv-allhands', 'group', '#all-hands', $1::jsonb, $2)`,
+    [JSON.stringify([USER]), COMPANY],
+  )
+  await pool.query(`UPDATE companies SET all_hands_conversation_id = 'cv-allhands' WHERE id = $1`, [COMPANY])
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const report = { proposals: [{ kind: 'hire', profile: { name: 'Otto Test', role: 'DevOps', systemPrompt: 'Keep the pipelines green.' }, reason: 'ops gap' }] }
+  assert.equal((await hrCli(['hr', 'report', created.json.id, JSON.stringify(report)])).json.ok, true)
+  release()
+  const list = await call('/hr/proposals')
+  const hire = list.json.rows[0]
+
+  // member 403;owner 批准 → 同源 createAgentCore 全副作用
+  assert.equal((await memberMirror.call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' })).status, 403)
+  const approve = await call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' })
+  assert.equal(approve.status, 200)
+  assert.equal(approve.json.status, 'approved')
+  const newAgent = approve.json.resultAgentId as string
+  assert.ok(newAgent && newAgent.startsWith('otto-test'), newAgent)
+  const { rows: pr } = await pool.query(
+    `SELECT kind, system_prompt, departed_at FROM participants WHERE id = $1 AND company_id = $2`, [newAgent, COMPANY],
+  )
+  assert.equal(pr.length, 1)
+  assert.equal(pr[0].kind, 'agent')
+  assert.equal(pr[0].system_prompt, 'Keep the pipelines green.')
+  assert.equal(pr[0].departed_at, null)
+  // 入职副作用:#all-hands 成员 + IDENTITY/SOUL + owner 自动 DM
+  const { rows: ah } = await pool.query(`
+    SELECT 1 AS ok FROM conversation_members cm
+      JOIN conversations c ON c.id = cm.conversation_id
+     WHERE cm.participant_id = $1 AND c.company_id = $2 AND c.title ILIKE '%all%' LIMIT 1`, [newAgent, COMPANY])
+  assert.equal(ah.length, 1, 'joined #all-hands')
+  const { rows: files } = await pool.query(
+    `SELECT path FROM agent_workspace WHERE agent_id = $1 AND path IN ('IDENTITY.md','SOUL.md')`, [newAgent],
+  )
+  assert.equal(files.length, 2, 'IDENTITY/SOUL seeded')
+  const { rows: dm } = await pool.query(`
+    SELECT 1 AS ok FROM conversations c
+     WHERE c.kind = 'direct' AND c.company_id = $1 AND c.members ? $2 AND jsonb_array_length(c.members) = 2`,
+    [COMPANY, newAgent])
+  assert.equal(dm.length, 1, 'auto DM created')
+  // 再批 → 409
+  assert.equal((await call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' })).status, 409)
+})
+
+test('[mirror] hr: 批准 offboard — 软删可复聘 + 拒绝路径', async () => {
+  await seedComputer('cpu-hr-prop3', ['claude'])
+  await seedAgent('ag-prop-victim')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-prop3' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const off = { proposals: [{ kind: 'offboard', agentId: 'ag-prop-victim', reason: 'flat output' }] }
+  const badFirst = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    proposals: [{ kind: 'hire', profile: { name: 'X', systemPrompt: 'short' }, reason: 'r' }],
+  })])
+  assert.equal(badFirst.json.ok, false) // 档案不合格 → 整体拒绝,轮仍开
+  assert.equal((await hrCli(['hr', 'report', created.json.id, JSON.stringify(off)])).json.ok, true)
+  release()
+
+  const list = await call('/hr/proposals')
+  assert.equal(list.json.rows.length, 1)
+  const proposal = list.json.rows[0]
+  const approve = await call(`/hr/proposals/${proposal.id}/approve`, { method: 'POST' })
+  assert.equal(approve.status, 200)
+  const { rows: pr } = await pool.query(`SELECT departed_at, status FROM participants WHERE id = 'ag-prop-victim'`)
+  assert.ok(pr[0].departed_at, 'departed_at set (soft delete)')
+  assert.equal(pr[0].status, 'resting')
+  // 复聘仍走既有端点(软删语义)
+  assert.equal((await call('/agents/ag-prop-victim/rehire', { method: 'POST' })).status, 200)
+
+  // 拒绝路径 + 状态过滤 + 未知 404
+  const release2 = await holdWake()
+  const created2 = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created2.status, 201)
+  assert.equal((await hrCli(['hr', 'report', created2.json.id, JSON.stringify({
+    proposals: [{ kind: 'offboard', agentId: 'ag-prop-victim', reason: 'again' }],
+  })])).json.ok, true)
+  release2()
+  const list2 = await call('/hr/proposals?status=open')
+  assert.equal(list2.json.rows.length, 1)
+  const victim = list2.json.rows[0]
+  assert.equal((await call(`/hr/proposals/${victim.id}/reject`, { method: 'POST' })).status, 200)
+  assert.equal((await call(`/hr/proposals/${victim.id}/reject`, { method: 'POST' })).status, 409)
+  assert.equal((await call('/hr/proposals/hrp-nope/approve', { method: 'POST' })).status, 404)
+})
+
+test('[mirror] hr: 提案并发与失败面 — 双 approve 只执行一次;执行失败保持 open', async () => {
+  await seedComputer('cpu-hr-prop4', ['claude'])
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-prop4' }) })
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  assert.equal((await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    proposals: [{ kind: 'hire', profile: { name: 'Racer Test', systemPrompt: 'Race safely and fast.' }, reason: 'load' }],
+  })])).json.ok, true)
+  release()
+  const list = await call('/hr/proposals')
+  const hire = list.json.rows[0]
+
+  // 并发双 approve:恰好一个 200,另一 409;只建一个 agent(评审 P0)
+  const [a, b] = await Promise.all([
+    call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' }),
+    call(`/hr/proposals/${hire.id}/approve`, { method: 'POST' }),
+  ])
+  const statuses = [a.status, b.status].sort()
+  assert.deepEqual(statuses, [200, 409], `expected one 200 one 409, got ${statuses}`)
+  const { rows: created2 } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM participants WHERE company_id = $1 AND name = 'Racer Test'`, [COMPANY],
+  )
+  assert.equal(created2[0].n, 1, 'exactly one agent created')
+
+  // 执行失败保持 open:offboard 目标已被并发路径离职 → 409,提案仍 open 可拒
+  await seedAgent('ag-prop-dead')
+  const release2 = await holdWake()
+  const created3 = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created3.status, 201)
+  assert.equal((await hrCli(['hr', 'report', created3.json.id, JSON.stringify({
+    proposals: [{ kind: 'offboard', agentId: 'ag-prop-dead', reason: 'stale' }],
+  })])).json.ok, true)
+  release2()
+  await pool.query(`UPDATE participants SET departed_at = NOW() WHERE id = 'ag-prop-dead' AND company_id = $1`, [COMPANY])
+  const deadList = await call('/hr/proposals?status=open')
+  const deadProp = deadList.json.rows[0]
+  const failApprove = await call(`/hr/proposals/${deadProp.id}/approve`, { method: 'POST' })
+  assert.equal(failApprove.status, 409)
+  assert.match(failApprove.json.error, /already gone/)
+  const still = await call('/hr/proposals?status=open')
+  assert.equal(still.json.rows.some((p: any) => p.id === deadProp.id), true, 'stays open after failed execution')
+  assert.equal((await call(`/hr/proposals/${deadProp.id}/reject`, { method: 'POST' })).status, 200)
+})

@@ -6,5 +6,6 @@ package hrcontract
 import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 
 type ListHrChangesParams = contract.ListHrChangesParams
+type ListHrProposalsParams = contract.ListHrProposalsParams
 
 const SessionBearerScopes = contract.SessionBearerScopes

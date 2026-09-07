@@ -4,7 +4,7 @@
 // (ADR 0007)。数据走页内局部 state(SkillsView 范式)——单页数据,不入
 // 共享 store。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { type ApiHrAgent, type ApiHrChange, type ApiHrEvaluation, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
+import { type ApiHrAgent, type ApiHrChange, type ApiHrEvaluation, type ApiHrProposal, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
 import { Select } from '@/components/Select'
 import { type MessageKey, useT } from '@/lib/i18n'
 import { useAuth } from '@/stores/auth'
@@ -130,6 +130,39 @@ export function HrView() {
   // 变更历史(#348):岗位层修改台账 + 一键回滚
   const [changes, setChanges] = useState<ApiHrChange[] | null>(null)
   const [reverting, setReverting] = useState<Set<string>>(new Set())
+
+  // 提案队列(#349):招人/淘汰的人审闸
+  const [proposals, setProposals] = useState<ApiHrProposal[] | null>(null)
+  const [deciding, setDeciding] = useState<Set<string>>(new Set())
+  const reloadProposals = useCallback(async () => {
+    try {
+      const { rows } = await api.listHrProposals()
+      setProposals(rows)
+    } catch (err) {
+      setEvalError(errText(err))
+    }
+  }, [])
+  useEffect(() => { void reloadProposals() }, [reloadProposals])
+
+  const decideProposal = async (id: string, action: 'approve' | 'reject') => {
+    if (deciding.has(id)) return
+    setDeciding((prev) => new Set(prev).add(id))
+    try {
+      if (action === 'approve') await api.approveHrProposal(id)
+      else await api.rejectHrProposal(id)
+      await reloadProposals()
+      setEvalError('')
+    } catch (err) {
+      setEvalError(errText(err))
+    } finally {
+      setDeciding((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
   const reloadChanges = useCallback(async () => {
     try {
       const { rows } = await api.listHrChanges()
@@ -167,13 +200,16 @@ export function HrView() {
   useEffect(() => { void reloadRatings() }, [reloadRatings])
 
   // 有未终态轮时低频轮询(报告落库后列表自己翻页;无在飞轮不空转)。
-  // 变更历史一并轮询 —— 报告可带 jobEdits,在飞轮收口时变更区要跟着落账。
+  // 变更历史与提案队列一并轮询 —— 报告可带 jobEdits/proposals,在飞轮
+  // 收口时两区都要跟着落账。
   const hasOpenRound = !!evals?.some((e) => e.status === 'pending' || e.status === 'running')
   useEffect(() => {
     if (!hasOpenRound) return
-    const timer = window.setInterval(() => { void reloadEvals(); void reloadChanges() }, 8000)
+    const timer = window.setInterval(() => {
+      void reloadEvals(); void reloadChanges(); void reloadProposals()
+    }, 8000)
     return () => window.clearInterval(timer)
-  }, [hasOpenRound, reloadEvals, reloadChanges])
+  }, [hasOpenRound, reloadEvals, reloadChanges, reloadProposals])
 
   const ratingValue = (agentId: string): { score: string; comment: string } =>
     ratingDraft[agentId] ?? { score: ratingsBy[agentId] ? String(ratingsBy[agentId].score) : '', comment: ratingsBy[agentId]?.comment ?? '' }
@@ -442,6 +478,67 @@ export function HrView() {
                 })}
                 {agents.length === 0 && <li className="text-[12.5px] opacity-50">{t('hr.ratingsEmpty')}</li>}
               </ul>
+            </div>
+
+            {/* 提案队列(#349):招人/淘汰的人审闸 */}
+            <div className="mb-6">
+              <label className="mb-1.5 block text-[13px] font-semibold">{t('hr.proposalsTitle')}</label>
+              <p className="mb-2 text-[12px] opacity-55">{t('hr.proposalsHint')}</p>
+              {proposals === null ? (
+                <div className="py-4 text-center text-[12.5px] opacity-50">{t('common.loading')}</div>
+              ) : proposals.length === 0 ? (
+                <p className="text-[12.5px] opacity-50">{t('hr.proposalsEmpty')}</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {proposals.map((pr) => {
+                    const isOpen = pr.status === 'open'
+                    const hireProfile = pr.kind === 'hire'
+                      ? (pr.profile as { name?: string; role?: string } | null)
+                      : null
+                    const label = pr.kind === 'hire'
+                      ? `${t('hr.proposalHire')}: ${hireProfile?.name ?? '?'}${hireProfile?.role ? ` (${hireProfile.role})` : ''}`
+                      : `${t('hr.proposalOffboard')}: ${participantsById[pr.agentId ?? '']?.name ?? pr.agentId ?? '?'}`
+                    return (
+                      <li key={pr.id} className="flex items-center gap-2 rounded-[10px] border border-ink-100 bg-white px-3 py-1.5 text-[12.5px]">
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[10.5px] font-bold uppercase"
+                          style={{
+                            background: pr.kind === 'hire' ? '#E6F6EE' : '#FDF3E7',
+                            color: pr.kind === 'hire' ? '#2E7D5B' : '#9A6B15',
+                          }}
+                        >{pr.kind === 'hire' ? t('hr.proposalHire') : t('hr.proposalOffboard')}</span>
+                        <span className="min-w-0 flex-1 truncate" title={pr.reason}>
+                          {label}{pr.reason ? ` — ${pr.reason}` : ''}
+                        </span>
+                        {isOpen ? (
+                          <span className="flex shrink-0 gap-1.5">
+                            <button
+                              type="button"
+                              disabled={deciding.has(pr.id)}
+                              onClick={() => { void decideProposal(pr.id, 'approve') }}
+                              className="rounded-lg bg-ink px-2.5 py-1 text-[11px] font-medium text-cloud transition hover:opacity-90 disabled:opacity-30"
+                            >
+                              {deciding.has(pr.id) ? '…' : t('hr.proposalApprove')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={deciding.has(pr.id)}
+                              onClick={() => { void decideProposal(pr.id, 'reject') }}
+                              className="rounded-lg border border-ink-200 px-2.5 py-1 text-[11px] font-medium transition hover:bg-cloud disabled:opacity-30"
+                            >
+                              {t('hr.proposalReject')}
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-[10.5px] font-bold uppercase opacity-60">
+                            {pr.status === 'approved' ? t('hr.proposalApproved') : t('hr.proposalRejected')}
+                          </span>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
 
             {/* 变更历史(#348):岗位层修改台账 + 一键回滚 */}
