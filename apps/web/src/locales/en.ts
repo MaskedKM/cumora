@@ -1944,7 +1944,7 @@ export const en = {
   'hr.ratingSave': 'Save',
   'hr.ratingsEmpty': '(No agents yet — hires land here.)',
   'hr.changesTitle': 'Job-level changes',
-  'hr.changesHint': 'Every prompt optimization the HR Agent applied, with one-click revert. Agents never hear about any of it.',
+  'hr.changesHint': 'Every prompt optimization the HR Agent applied, with one-click revert (latest 100; covers HR-sourced changes only). Agents never hear about any of it.',
   'hr.changesEmpty': '(No job-level changes yet.)',
   'hr.changesRevert': 'Revert',
   'hr.field.systemPrompt': 'system prompt',

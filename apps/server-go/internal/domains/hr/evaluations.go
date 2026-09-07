@@ -280,16 +280,22 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 		errText = ev
 	}
 	// #348:报告可携带 jobEdits(岗位层修改)—— 与收轮同事务应用;任一条
-	// 不合法整体回滚(轮保持打开,半套优化落库比不落库更糟)。
+	// 不合法整体回滚(轮保持打开,半套优化落库比不落库更糟)。失败轮
+	// 不许带 edits:failed = 评估未完成,何来优化建议(评审 P1 显式裁定)。
 	edits, err := jobEditsFrom(payload)
 	if err != nil {
 		return agent.Err(err.Error())
 	}
+	if status == "failed" && len(edits) > 0 {
+		return agent.Err("failed rounds cannot carry jobEdits — report without edits, or fix the failure")
+	}
 	var applied int
 	err = db.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
-		if err := applyJobEdits(ctx, tx, companyID, id, edits); err != nil {
+		n, err := applyJobEdits(ctx, tx, companyID, id, edits)
+		if err != nil {
 			return err
 		}
+		applied = n
 		res, err := tx.ExecContext(ctx, `
 			UPDATE hr_reports
 			   SET status = $3, payload = $4, error = NULLIF($5, ''),
@@ -302,7 +308,6 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 		if n, _ := res.RowsAffected(); n == 0 {
 			return errRoundClosed
 		}
-		applied = len(edits)
 		return nil
 	})
 	if err == errRoundClosed {

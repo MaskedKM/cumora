@@ -93,14 +93,6 @@ export function HrView() {
     }
   }, [])
 
-  // 有未终态轮时低频轮询(报告落库后列表自己翻页;无在飞轮不空转)
-  const hasOpenRound = !!evals?.some((e) => e.status === 'pending' || e.status === 'running')
-  useEffect(() => {
-    if (!hasOpenRound) return
-    const timer = window.setInterval(() => { void reloadEvals() }, 8000)
-    return () => window.clearInterval(timer)
-  }, [hasOpenRound, reloadEvals])
-
   const runEvaluation = async () => {
     if (evaluating) return
     setEvaluating(true)
@@ -173,6 +165,15 @@ export function HrView() {
     } catch { /* 评分区静默降级:评估区已有错误面 */ }
   }, [])
   useEffect(() => { void reloadRatings() }, [reloadRatings])
+
+  // 有未终态轮时低频轮询(报告落库后列表自己翻页;无在飞轮不空转)。
+  // 变更历史一并轮询 —— 报告可带 jobEdits,在飞轮收口时变更区要跟着落账。
+  const hasOpenRound = !!evals?.some((e) => e.status === 'pending' || e.status === 'running')
+  useEffect(() => {
+    if (!hasOpenRound) return
+    const timer = window.setInterval(() => { void reloadEvals(); void reloadChanges() }, 8000)
+    return () => window.clearInterval(timer)
+  }, [hasOpenRound, reloadEvals, reloadChanges])
 
   const ratingValue = (agentId: string): { score: string; comment: string } =>
     ratingDraft[agentId] ?? { score: ratingsBy[agentId] ? String(ratingsBy[agentId].score) : '', comment: ratingsBy[agentId]?.comment ?? '' }

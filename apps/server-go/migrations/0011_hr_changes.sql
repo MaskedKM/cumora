@@ -9,6 +9,10 @@
 -- agent_id 无 FK(0008/0009 先例:台账纯文本键,软删 departed 的 agent
 -- 其历史仍可读可回滚)。对被改 agent 全程无声:变更不产生任何消息/通知
 -- (HR 域不触会话面,ADR 0007)。
+-- 口径留痕(评审 P1):本表只覆盖 HR 来源的变更 —— owner 经 agents 域
+-- 直接改岗不入账;回滚按目标行 old_value 写回,若其 current 已被手动
+-- 改过会被覆盖(非逐版本链语义)。participants 三列可空,NULL 原值在
+-- 台账降级为空串。
 
 CREATE TABLE public.hr_changes (
     id text NOT NULL,

@@ -646,3 +646,62 @@ test('[mirror] hr: 变更回滚 — 写回旧值+回滚入历史+权限闸', asy
   assert.equal((await call('/hr/changes?agentId=nobody')).json.rows.length, 0)
   assert.equal((await call('/hr/changes/hrc-nope/revert', { method: 'POST' })).status, 404)
 })
+
+test('[mirror] hr: jobEdits 边界 — 超长拒收/bio·role 多字段/no-op 不计数/failed 轮拒 edits/revert-of-revert', async () => {
+  await seedComputer('cpu-hr-edge', ['claude'])
+  await seedAgentWithPrompt('ag-edge-1', 'p0')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-edge' }) })
+  const release = await holdWake()
+
+  // 超长 value(>32k UTF-16)→ 拒收,轮保持打开
+  let created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const tooLong = 'y'.repeat(32_001)
+  const over = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    jobEdits: [{ agentId: 'ag-edge-1', field: 'bio', value: tooLong }],
+  })])
+  assert.equal(over.json.ok, false)
+  assert.match(over.json.text, /exceeds/)
+
+  // bio + role 多字段 + no-op(systemPrompt 同值)→ 只计真实应用
+  const res = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    jobEdits: [
+      { agentId: 'ag-edge-1', field: 'bio', value: 'does things' },
+      { agentId: 'ag-edge-1', field: 'role', value: 'Senior Doer' },
+      { agentId: 'ag-edge-1', field: 'systemPrompt', value: 'p0' }, // no-op
+    ],
+  })])
+  assert.equal(res.json.ok, true, JSON.stringify(res.json).slice(0, 200))
+  assert.match(res.json.text, /2 job edit\(s\) applied/)
+  const { rows: pr1 } = await pool.query(`SELECT bio, role FROM participants WHERE id = 'ag-edge-1'`)
+  assert.equal(pr1[0].bio, 'does things')
+  assert.equal(pr1[0].role, 'Senior Doer')
+
+  // failed 轮带 jobEdits → 拒(失败轮不许改岗)
+  created = await call('/hr/evaluations', { method: 'POST', body: '{}' })
+  assert.equal(created.status, 201)
+  const failedEdits = await hrCli(['hr', 'report', created.json.id, JSON.stringify({
+    failed: true, error: 'boom', jobEdits: [{ agentId: 'ag-edge-1', field: 'bio', value: 'x' }],
+  })])
+  assert.equal(failedEdits.json.ok, false)
+  assert.match(failedEdits.json.text, /cannot carry jobEdits/)
+  // 轮保持打开:纯 failed 报告可收
+  assert.equal((await hrCli(['hr', 'report', created.json.id, '{"failed":true,"error":"boom"}'])).json.ok, true)
+
+  // revert-of-revert:回滚一次,再回滚那次回滚 → 字段回到 v2
+  const { rows: changes } = await pool.query(
+    `SELECT id, new_value FROM hr_changes WHERE company_id = $1 AND field = 'bio' ORDER BY created_at ASC LIMIT 1`,
+    [COMPANY],
+  )
+  const firstChange = changes[0].id as string
+  assert.equal((await call(`/hr/changes/${firstChange}/revert`, { method: 'POST' })).status, 200)
+  const { rows: pr2 } = await pool.query(`SELECT bio FROM participants WHERE id = 'ag-edge-1'`)
+  assert.equal(pr2[0].bio, '') // 回滚到 old(种子无 bio)
+  const list = await call('/hr/changes')
+  const revertRow = list.json.rows[0]
+  const reroll = await call(`/hr/changes/${revertRow.id}/revert`, { method: 'POST' })
+  assert.equal(reroll.status, 200)
+  const { rows: pr3 } = await pool.query(`SELECT bio FROM participants WHERE id = 'ag-edge-1'`)
+  assert.equal(pr3[0].bio, 'does things') // 回滚的回滚 → 回到 v2
+  release()
+})

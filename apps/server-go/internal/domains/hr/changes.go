@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/authn"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/contract"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/db"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -45,43 +47,51 @@ type jobEdit struct {
 
 // applyJobEdits:在给定事务里校验并应用岗位层修改(报告收轮同事务)。
 // 任一条不合法即整体拒绝(报告不落库,轮保持打开)—— 半套优化落库比
-// 不落库更糟。
-func applyJobEdits(ctx context.Context, tx *sql.Tx, companyID, evaluationID string, edits []jobEdit) error {
+// 不落库更糟。返回真实应用数(无变化的 no-op 不入台账也不计数)。
+func applyJobEdits(ctx context.Context, tx *sql.Tx, companyID, evaluationID string, edits []jobEdit) (int, error) {
+	applied := 0
 	for _, e := range edits {
 		col, ok := jobFields[e.Field]
 		if !ok {
-			return fmt.Errorf("jobEdits.field %q is not a job-level field (allowed: systemPrompt, bio, role)", e.Field)
+			return 0, fmt.Errorf("jobEdits.field %q is not a job-level field (allowed: systemPrompt, bio, role)", e.Field)
 		}
 		if agent.UTF16Len(e.Value) > jobValueCapUTF16 {
-			return fmt.Errorf("jobEdits value for %s exceeds %d UTF-16 units", e.Field, jobValueCapUTF16)
+			return 0, fmt.Errorf("jobEdits value for %s exceeds %d UTF-16 units", e.Field, jobValueCapUTF16)
 		}
 		var oldValue sql.NullString
 		err := tx.QueryRowContext(ctx, fmt.Sprintf(
 			`SELECT %s FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL LIMIT 1`,
 			col), e.AgentID, companyID).Scan(&oldValue)
 		if err != nil {
-			return fmt.Errorf("jobEdits target %q is not an active agent of this team", e.AgentID)
+			return 0, fmt.Errorf("jobEdits target %q is not an active agent of this team", e.AgentID)
 		}
 		prev := ""
 		if oldValue.Valid {
 			prev = oldValue.String
 		}
 		if prev == e.Value {
-			continue // 无变化不入台账
+			continue // 无变化不入台账(回执计数也不计)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-			`UPDATE participants SET %s = $3 WHERE id = $1 AND company_id = $2`, col),
-			e.AgentID, companyID, e.Value); err != nil {
-			return err
+		// UPDATE 保留 SELECT 的守卫谓词(评审 P1:READ COMMITTED 下
+		// SELECT→UPDATE 间他方提交 depart 的窗口真实存在)+ 零行即回滚。
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`UPDATE participants SET %s = $3 WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL`, col),
+			e.AgentID, companyID, e.Value)
+		if err != nil {
+			return 0, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return 0, fmt.Errorf("jobEdits target %q is no longer an active agent of this team", e.AgentID)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO hr_changes (id, company_id, agent_id, field, old_value, new_value, evaluation_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			"hrc-"+authn.NewToken()[:10], companyID, e.AgentID, col, prev, e.Value, evaluationID); err != nil {
-			return err
+			return 0, err
 		}
+		applied++
 	}
-	return nil
+	return applied, nil
 }
 
 func (s *Server) ListHrChanges(w http.ResponseWriter, r *http.Request, params contract.ListHrChangesParams) {
@@ -101,9 +111,26 @@ func (s *Server) ListHrChanges(w http.ResponseWriter, r *http.Request, params co
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		out = append(out, scanChangeRow(rows))
+		row := scanChangeRow(rows)
+		if row == nil {
+			continue // 扫描失败跳过该行,不产 null 违反契约(评审 P2)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": out})
+}
+
+// revertFieldCol:回滚列名反查(应用层白名单;DB CHECK 为第二道保险)。
+func revertFieldCol(field string) (string, bool) {
+	switch field {
+	case "system_prompt", "bio", "role":
+		return field, true
+	}
+	return "", false
 }
 
 func (s *Server) RevertHrChange(w http.ResponseWriter, r *http.Request, id string) {
@@ -111,41 +138,60 @@ func (s *Server) RevertHrChange(w http.ResponseWriter, r *http.Request, id strin
 	if !ok {
 		return
 	}
-	// field 经 0011 CHECK 白名单落库,列名内插安全
-	var agentID, field, oldValue string
-	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT agent_id, field, old_value FROM hr_changes
-		 WHERE id = $1 AND company_id = $2 LIMIT 1`, id, companyID).
-		Scan(&agentID, &field, &oldValue)
-	if err == sql.ErrNoRows {
-		httpx.WriteError(w, http.StatusNotFound, "no such change")
-		return
-	}
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	var prevValue string
-	err = s.DB.QueryRowContext(r.Context(),
-		`SELECT new_value FROM hr_changes WHERE id = $1 AND company_id = $2`, id, companyID).Scan(&prevValue)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
+	// 单事务双写(participants 写回 + 台账行)原子化,FOR UPDATE 串行化
+	// 并发回滚(评审 P0:吞错+非原子会静默断裂审计链)。
 	newID := "hrc-" + authn.NewToken()[:10]
-	_, _ = s.DB.ExecContext(r.Context(), `
-		UPDATE participants SET `+field+` = $3 WHERE id = $1 AND company_id = $2`,
-		agentID, companyID, oldValue)
-	_, _ = s.DB.ExecContext(r.Context(), `
-		INSERT INTO hr_changes (id, company_id, agent_id, field, old_value, new_value, reverted_change_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		newID, companyID, agentID, field, prevValue, oldValue, id)
+	var out struct {
+		agentID, field, oldValue, newValue string
+	}
+	err := db.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(r.Context(), `
+			SELECT agent_id, field, old_value, new_value FROM hr_changes
+			 WHERE id = $1 AND company_id = $2 LIMIT 1 FOR UPDATE`, id, companyID).
+			Scan(&out.agentID, &out.field, &out.oldValue, &out.newValue)
+		if err == sql.ErrNoRows {
+			return errNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, ok := revertFieldCol(out.field); !ok {
+			return fmt.Errorf("change row carries non job-level field %q", out.field)
+		}
+		res, err := tx.ExecContext(r.Context(), `
+			UPDATE participants SET `+out.field+` = $3
+		 WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL`,
+			out.agentID, companyID, out.oldValue)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// 行没了(硬删)或已离职:不落假台账行
+			return errNotFound
+		}
+		_, err = tx.ExecContext(r.Context(), `
+			INSERT INTO hr_changes (id, company_id, agent_id, field, old_value, new_value, reverted_change_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			newID, companyID, out.agentID, out.field, out.newValue, out.oldValue, id)
+		return err
+	})
+	if err == errNotFound {
+		httpx.WriteError(w, http.StatusNotFound, "no such change (or its agent is gone)")
+		return
+	}
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"id": newID, "agentId": agentID, "field": fieldCamel(field),
-		"oldValue": prevValue, "newValue": oldValue,
+		"id": newID, "agentId": out.agentID, "field": fieldCamel(out.field),
+		"oldValue": out.newValue, "newValue": out.oldValue,
 		"revertedChangeId": id, "createdAt": time.Now().UTC(),
 	})
 }
+
+// errNotFound:行缺失哨兵(区别于其它 SQL 错误)。
+var errNotFound = errors.New("not found")
 
 // scanChangeRow:列表/详情共用行扫描(payload 键名与 HrChange 契约一致,
 // field 回驼峰)。
