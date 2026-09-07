@@ -1149,7 +1149,7 @@ type HrProposal struct {
 	Id           string         `json:"id"`
 	Kind         HrProposalKind `json:"kind"`
 
-	// Profile hire 档案草稿(name/role/bio/systemPrompt/model/engine/headcountNote)
+	// Profile hire 档案草稿(name/role/bio/systemPrompt/model/fastModel/headcountNote;engine 暂不入执行链)
 	Profile *map[string]interface{} `json:"profile"`
 	Reason  string                  `json:"reason"`
 
