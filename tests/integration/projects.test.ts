@@ -197,5 +197,5 @@ test('delete: default project refused; member role refused; archived endpoint re
     body: JSON.stringify({ archive: true }),
   })
   assert.equal(arch.status, 410)
-  assert.match(String((await arch.json()).error), /retired/)
+  assert.match(String(((await arch.json()) as { error?: string }).error), /retired/)
 })
