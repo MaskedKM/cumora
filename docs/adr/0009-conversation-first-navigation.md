@@ -67,7 +67,7 @@ HTML 原型三轮试用迭代(`design-preview/chat-first-nav.html`,终态经用�
 - **移动端在刀 3 之前与桌面形态分叉**(MobileTabBar 仍是旧形态),属
   已知欠账。
 - `ViewKey` 清理顺车完成:`library` 在**桌面侧**是死键(无渲染分支、无 rail
-  入口),刀 1 移除;但移动端 `MobileTabBar` 仍是活消费方(MobileLibrary),
+  入口,刀 1 无需动作);但移动端 `MobileTabBar` 仍是活消费方(MobileLibrary),
   union 成员的最终移除随刀 3 落地。`convene` 上下文进入不受影响。
 - 命令面板(⌘K 式中央搜索)本轮不做,记余量——与滑出菜单不冲突,
   可作未来加速器。
