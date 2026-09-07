@@ -17,6 +17,7 @@ export type AgentInput = Schemas['AgentInput']
 export type ApiHrAgent = Schemas['HrAgent']
 export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
 export type ApiHrEvaluation = Schemas['HrEvaluation']
+export type ApiHrRating = Schemas['HrRating']
 /** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
 export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
 export type UploadCapabilities = Schemas['UploadCapabilities']
@@ -402,6 +403,12 @@ export const api = {
   listHrEvaluations: () => http<{ rows: ApiHrEvaluation[] }>('/hr/evaluations'),
   getHrEvaluation: (id: string) =>
     http<ApiHrEvaluation>(`/hr/evaluations/${encodeURIComponent(id)}`),
+  /** #347 owner 主观评分(upsert;score 1..5)。 */
+  listHrRatings: () => http<{ rows: ApiHrRating[] }>('/hr/ratings'),
+  putHrRating: (agentId: string, input: { score: number; comment?: string }) =>
+    http<ApiHrRating>(`/hr/ratings/${encodeURIComponent(agentId)}`, {
+      method: 'PUT', body: JSON.stringify(input),
+    }),
   getConversations: () => http<ApiConversation[]>('/conversations'),
   createGroup: (input: { title: string; members: string[]; subtitle?: string; projectId?: string | null }) =>
     http<{ id: string; members: string[]; projectId: string | null }>('/conversations', {

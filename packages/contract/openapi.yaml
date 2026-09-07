@@ -796,6 +796,41 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HrEvaluation' }
         '404': { description: 无此轮或不属本公司 }
+  /api/hr/ratings:
+    get:
+      tags: [hr]
+      operationId: listHrRatings
+      summary: owner 主观评分列表(owner/admin)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/HrRating' }
+  /api/hr/ratings/{agentId}:
+    put:
+      tags: [hr]
+      operationId: putHrRating
+      summary: upsert owner 主观评分(打分+评语;owner/admin)
+      parameters:
+        - { name: agentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HrRatingInput' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrRating' }
+        '400': { description: 未知目标或分数越界 }
   /api/agents:
     post:
       tags: [agents]
@@ -4069,6 +4104,20 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time, nullable: true }
+    HrRating:
+      type: object
+      required: [agentId, score, comment, updatedAt]
+      properties:
+        agentId: { type: string }
+        score: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        updatedAt: { type: string, format: date-time }
+    HrRatingInput:
+      type: object
+      required: [score]
+      properties:
+        score: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
     Whisper:
       type: object
       required: [id, kind, title, members, createdAt, updatedAt, msgCount]

@@ -1940,4 +1940,10 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'hr.st.running': '在跑',
   'hr.st.done': '完成',
   'hr.st.failed': '失败',
+  'hr.ratingsTitle': '老板评分',
+  'hr.ratingsHint': '你的主观校准信号——每个 agent 的当前打分与评语,会混入下一轮评估。',
+  'hr.ratingUnrated': '未评',
+  'hr.ratingCommentPlaceholder': '一句话评语…',
+  'hr.ratingSave': '保存',
+  'hr.ratingsEmpty': '(还没有 agent——招进来会出现在这里。)',
 } as const

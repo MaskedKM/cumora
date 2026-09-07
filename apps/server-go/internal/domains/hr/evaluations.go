@@ -307,16 +307,24 @@ type hrInputTarget struct {
 	triageTotal, triageActionable     int
 	cardsAssigned, deliveries, merged int
 	calActive, calDone, calCancelled  int
+	// #347 三路:owner 主观评分(0=未评)+ 同侪信号(双向)+ 近窗转录(有界)
+	ratingScore                int
+	ratingComment              string
+	climateToward, climateFelt []map[string]any
+	recentMessages             []map[string]any
 }
 
 func (t hrInputTarget) payload() map[string]any {
 	return map[string]any{
 		"agentId": t.agentID, "name": t.name, "role": t.role,
-		"runs":     map[string]any{"total": t.runsTotal, "failed": t.runsFailed, "tokens": t.runTokens, "costUsd": t.runCost, "lastRunAt": nullTime(t.lastRunAt)},
-		"llm":      map[string]any{"calls": t.llmCalls, "costUsd": t.llmCost},
-		"triage":   map[string]any{"total": t.triageTotal, "actionable": t.triageActionable},
-		"cards":    map[string]any{"assigned": t.cardsAssigned, "deliveries": t.deliveries, "mergedDeliveries": t.merged},
-		"calendar": map[string]any{"active": t.calActive, "done": t.calDone, "cancelled": t.calCancelled},
+		"runs":           map[string]any{"total": t.runsTotal, "failed": t.runsFailed, "tokens": t.runTokens, "costUsd": t.runCost, "lastRunAt": nullTime(t.lastRunAt)},
+		"llm":            map[string]any{"calls": t.llmCalls, "costUsd": t.llmCost},
+		"triage":         map[string]any{"total": t.triageTotal, "actionable": t.triageActionable},
+		"cards":          map[string]any{"assigned": t.cardsAssigned, "deliveries": t.deliveries, "mergedDeliveries": t.merged},
+		"calendar":       map[string]any{"active": t.calActive, "done": t.calDone, "cancelled": t.calCancelled},
+		"rating":         map[string]any{"score": t.ratingScore, "comment": t.ratingComment},
+		"climate":        map[string]any{"towardThem": t.climateToward, "theyFeel": t.climateFelt},
+		"recentMessages": t.recentMessages,
 	}
 }
 
@@ -333,7 +341,9 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	byID := map[string]*hrInputTarget{}
 	order := []string{}
 	for targetRows.Next() {
-		var t hrInputTarget
+		t := hrInputTarget{
+			climateToward: []map[string]any{}, climateFelt: []map[string]any{}, recentMessages: []map[string]any{},
+		}
 		if targetRows.Scan(&t.agentID, &t.name, &t.role) == nil {
 			byID[t.agentID] = &t
 			order = append(order, t.agentID)
@@ -466,16 +476,128 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		 WHERE assignee_id = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
 		 GROUP BY assignee_id, status`, idsArr, windowDaysArg)
 
+	// ── #347 三路:owner 主观评分 / 同侪信号(双向)/ 近窗转录(有界)──
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var score int
+			var comment string
+			if rows.Scan(&aid, &score, &comment) == nil {
+				if m, ok := byID[aid]; ok {
+					m.ratingScore, m.ratingComment = score, comment
+				}
+			}
+		}
+	}, `SELECT agent_id, score, comment FROM hr_ratings
+		 WHERE company_id = $1 AND agent_id = ANY($2::text[])`, companyID, idsArr)
+
+	// 同侪(评审 P0 修正):agent_climate.company_id 无任何生产写入方(恒
+	// DEFAULT 'personal'),按它过滤 = 生产恒空 —— 租户改经 participants
+	// 连接推导(自愈,免回填)。每目标查(两方向合计 ≤ climateCap 行),
+	// 消除全员轮的 N² 无界快照。
+	const climateCap = 40
+	for _, tid := range order {
+		rows, err := s.DB.QueryContext(ctx, `
+			SELECT ac.agent_id, ac.about_id, ac.affinity, ac.trust, ac.last_note
+			  FROM agent_climate ac
+			  JOIN participants p1 ON p1.id = ac.agent_id AND p1.company_id = $1
+			  JOIN participants p2 ON p2.id = ac.about_id AND p2.company_id = $1
+			 WHERE (ac.about_id = $2 AND ac.agent_id <> $2) OR (ac.agent_id = $2 AND ac.about_id <> $2)
+			 ORDER BY ac.updated_at DESC
+			 LIMIT $3`, companyID, tid, climateCap)
+		if err != nil {
+			slog.Warn("[hr] input lane query failed (lane degrades to zero)", "lane", "climate", "err", err)
+			continue
+		}
+		for rows.Next() {
+			var agentID, aboutID, note string
+			var affinity, trust float32
+			if rows.Scan(&agentID, &aboutID, &affinity, &trust, &note) != nil || agentID == aboutID {
+				continue
+			}
+			if aboutID == tid {
+				byID[tid].climateToward = append(byID[tid].climateToward, climateRow("from", agentID, affinity, trust, note))
+			} else {
+				byID[tid].climateFelt = append(byID[tid].climateFelt, climateRow("about", aboutID, affinity, trust, note))
+			}
+		}
+		rows.Close()
+	}
+
+	// 转录(评审 P1 修正):改每目标取数(LIMIT + id tie-breaker)—— 原
+	// 全局 800 截断在多目标轮会被话多的目标吃满,安静目标饿死为零。
+	// 单条截 400 UTF-16;全轮转录预算 transcriptBudget 单元,先到先得,
+	// 触顶即截该目标并在快照上置 transcriptsTruncated(Brain 可见口径)。
+	const perTargetMsgCap = 40
+	const bodyCap = 400
+	const transcriptBudget = 150_000 // UTF-16 单元
+	budgetLeft := transcriptBudget
+	transcriptsTruncated := false
+	for _, tid := range order {
+		rows, err := s.DB.QueryContext(ctx, `
+			SELECT m.conversation_id, c.kind, m.author_id, m.kind, m.body, m.created_at
+			  FROM conversation_members cm
+			  JOIN messages m ON m.conversation_id = cm.conversation_id
+			  JOIN conversations c ON c.id = m.conversation_id AND c.company_id = $1
+			 WHERE cm.participant_id = $2
+			   AND m.created_at > NOW() - ($3 || ' days')::interval
+			 ORDER BY m.created_at DESC, m.id DESC
+			 LIMIT $4`, companyID, tid, windowDaysArg, perTargetMsgCap)
+		if err != nil {
+			slog.Warn("[hr] input lane query failed (lane degrades to zero)", "lane", "transcripts", "err", err)
+			continue
+		}
+		list := []map[string]any{}
+		for rows.Next() {
+			var conversationID, convKind, authorID, msgKind, body string
+			var createdAt time.Time
+			if rows.Scan(&conversationID, &convKind, &authorID, &msgKind, &body, &createdAt) != nil {
+				continue
+			}
+			capped := httpx.UTF16Cap(body, bodyCap)
+			units := agent.UTF16Len(capped)
+			if units > budgetLeft {
+				transcriptsTruncated = true
+				break
+			}
+			budgetLeft -= units
+			// 时间正序输出(rows 是 DESC)
+			list = append([]map[string]any{{
+				"conversationId": conversationID, "conversationKind": convKind,
+				"authorId": authorID, "kind": msgKind,
+				"body": capped, "at": createdAt.UTC(),
+			}}, list...)
+		}
+		rows.Close()
+		byID[tid].recentMessages = list
+	}
+
 	targets := make([]map[string]any, 0, len(order))
 	for _, id := range order {
 		targets = append(targets, byID[id].payload())
 	}
-	return map[string]any{
+	snapshot := map[string]any{
 		"generatedAt": time.Now().UTC(),
 		"windowDays":  inputWindowDays,
-		"note":        "objective observation only (runs/llm/triage/boards/calendar); transcripts, peer signals and owner ratings arrive in a later blade",
-		"targets":     targets,
-	}, nil
+		"note": "four input lanes: objective observation (runs/llm/triage/boards/calendar), owner ratings (score 0 = unrated), " +
+			"peer signals (agent_climate both directions, 40 rows/target), bounded recent transcripts " +
+			"(40/target, 400 UTF-16 units/message, 150k-unit round budget)",
+		"targets": targets,
+	}
+	if transcriptsTruncated {
+		snapshot["transcriptsTruncated"] = true
+	}
+	return snapshot, nil
+}
+
+// climateRow:同侪信号行的两种朝向(towardThem 用 "from",theyFeel 用 "about")。
+func climateRow(dirKey, otherID string, affinity, trust float32, note string) map[string]any {
+	row := map[string]any{dirKey: otherID, "affinity": affinity, "trust": trust}
+	if note != "" {
+		row["note"] = note
+	}
+	return row
 }
 
 /* ───────── 小件 ───────── */
