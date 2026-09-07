@@ -58,7 +58,7 @@ INTROSPECTION:
 
 TEAM PROJECTS  (shared real folders; same membership as the human UI;
   mounted at team/<project-id>/ in your home when your computer is local):
-  workspace ls [--as <id>]
+  project ls [--as <id>]
   project read <project-id> <path> [--as <id>]
   project write <project-id> <path> <body> [--expected <nanos>] [--as <id>]
   project append <project-id> <path> <body> [--expected <nanos>] [--as <id>]

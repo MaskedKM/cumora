@@ -395,8 +395,6 @@ export const en = {
   'ws.dirtyConfirm': 'Discard unsaved changes?',
   'ws.tooLarge': 'File too large to open (2 MB cap)',
   'ws.notMember': 'You are not in this workspace\'s member scope',
-  'ws.unbound': 'This workspace is unbound — files are read-only history',
-  'ws.kindProject': 'project',
   'ws.kindBoardCard': 'board card',
   'ws.kindDocument': 'document',
 
@@ -411,8 +409,6 @@ export const en = {
   'ws.addLink': 'Link project / card / doc',
   'ws.targetIdPh': 'target id',
   'ws.removeLink': 'Remove link',
-  'ws.unbind': 'Unbind workspace',
-  'ws.unbindConfirm': 'Unbind this workspace? Files stay on disk; the workspace becomes read-only history.',
   'ws.upload': 'Upload file (25 MB cap)',
   'ws.filterPh': 'filter by name',
   'ws.close': 'Close',

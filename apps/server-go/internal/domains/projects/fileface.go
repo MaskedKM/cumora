@@ -156,7 +156,7 @@ func EnsureProjectFolders(ctx context.Context, db *sql.DB, companyID string) err
 func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string) (projRow, int, string) {
 	w, ok := loadProject(ctx, db, companyID, wsID)
 	if !ok {
-		return w, http.StatusNotFound, "workspace not found"
+		return w, http.StatusNotFound, "project not found"
 	}
 	if w.isDefault {
 		return w, 0, ""
@@ -189,7 +189,7 @@ func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string)
 		return w, http.StatusInternalServerError, "membership query failed"
 	}
 	if err != nil || !allowed {
-		return w, http.StatusForbidden, "not a member of this workspace"
+		return w, http.StatusForbidden, "not a member of this project"
 	}
 	return w, 0, ""
 }
@@ -253,7 +253,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	// 显式成员。slice 必须 make:删光成员后 nil 会序列化成 null,
@@ -437,7 +437,7 @@ func (s *Server) AddProjectMember(w http.ResponseWriter, r *http.Request, id str
 	}
 	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	var body struct {
@@ -482,7 +482,7 @@ func (s *Server) RemoveProjectMember(w http.ResponseWriter, r *http.Request, id 
 	}
 	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(),
@@ -534,7 +534,7 @@ func (s *Server) AddProjectAssociation(w http.ResponseWriter, r *http.Request, i
 	}
 	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	if !targetExists(r.Context(), s.DB, companyID, kind, targetID) {
@@ -590,7 +590,7 @@ func (s *Server) RemoveProjectAssociation(w http.ResponseWriter, r *http.Request
 	}
 	ws, ok := loadProject(r.Context(), s.DB, companyID, id)
 	if !ok {
-		httpx.WriteError(w, http.StatusNotFound, "workspace not found")
+		httpx.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 	res, err := s.DB.ExecContext(r.Context(), `

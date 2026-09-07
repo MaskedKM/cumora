@@ -302,14 +302,6 @@ export const api = {
     http<{ ok: boolean }>(`/projects/${encodeURIComponent(id)}`, {
       method: 'PUT', body: JSON.stringify(input),
     }),
-  archiveProject: (id: string, archive = true) =>
-    http<{ ok: boolean; status: string }>(`/projects/${encodeURIComponent(id)}/archive`, {
-      method: 'POST', body: JSON.stringify({ archive }),
-    }),
-  attachProject: (conversationId: string, projectId: string | null) =>
-    http<{ ok: boolean; projectId: string | null }>(`/conversations/${encodeURIComponent(conversationId)}/project`, {
-      method: 'POST', body: JSON.stringify({ projectId }),
-    }),
   createCompany: (name: string) =>
     http<{ id: string; name: string; slug: string; role: string }>('/companies', {
       method: 'POST', body: JSON.stringify({ name }),

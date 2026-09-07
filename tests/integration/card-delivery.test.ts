@@ -151,6 +151,8 @@ test('claim → start: worktree materialized on disk, delivery row visible immed
   assert.equal(cards[0].deliveries.length, 1)
   assert.equal(cards[0].deliveries[0].branch, `cumora/${cardId}`)
   assert.equal(cards[0].deliveries[0].prUrl, null)
+  // #355:台账键已改 projectId(实发契约对齐,评审 P1 补口)
+  assert.ok('projectId' in cards[0].deliveries[0], 'delivery row carries projectId key')
 
   // Idempotent: second start reuses, does not duplicate the row.
   const again = await cli(token, ['card', 'start', cardId])

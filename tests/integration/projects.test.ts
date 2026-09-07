@@ -121,6 +121,9 @@ test('list: merged collection — workspaces-family rows appear among projects; 
   const rows = await listProjects()
   const ids = rows.map((r) => r.id)
   assert.ok(ids.includes(ws.id), 'workspace-family row present in projects list (merged entity)')
+  // explicitMemberCount:#355 并入原列表语义的成员计数(HTTP 级断言,评审补口)
+  const created1 = rows.find((r) => r.id === ws.id) as { explicitMemberCount: number }
+  assert.equal(created1.explicitMemberCount, 1, 'creator is the one explicit member')
   assert.equal(rows[0].isDefault, true, 'default project pinned first')
   const defaults = rows.filter((r) => r.isDefault)
   assert.equal(defaults.length, 1)
@@ -198,4 +201,12 @@ test('delete: default project refused; member role refused; archive endpoint gon
     body: JSON.stringify({ archive: true }),
   })
   assert.equal(arch.status, 404)
+
+  // 第三条退役路由(会话挂靠改挂)同样 404 —— 删了没人看的面要有断言(#365 评审)
+  const attach = await fetchAs(OWNER, `${MIRROR_BASE}/api/conversations/cv-x/project`, {
+    method: 'POST',
+    headers: jsonHeaders(COMPANY),
+    body: JSON.stringify({ projectId: p.id }),
+  })
+  assert.equal(attach.status, 404)
 })

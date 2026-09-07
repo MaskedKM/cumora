@@ -494,7 +494,7 @@ func (s *Server) boardDeliveries(ctx context.Context, boardID string) map[string
 			continue
 		}
 		out[cardID] = append(out[cardID], map[string]any{
-			"id": id, "branch": branch, "workspaceId": wsID,
+			"id": id, "branch": branch, "projectId": wsID,
 			"prUrl": nullOr(prURL), "prState": nullOr(prState),
 			"createdBy": createdBy, "createdAt": ca.Time.UTC(), "updatedAt": ua.Time.UTC(),
 		})

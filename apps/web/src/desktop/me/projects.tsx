@@ -8,8 +8,7 @@ import { Section } from './shared'
 export function ProjectsTab() {
   const t = useT()
   const [projects, setProjects] = useState<ApiProject[]>([])
-  const [showArchived, setShowArchived] = useState(false)
-  const [creating, setCreating] = useState(false)
+    const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,13 +33,8 @@ export function ProjectsTab() {
     }
   }
 
-  const archive = async (id: string, archive: boolean) => {
-    try { await api.archiveProject(id, archive); refresh() }
-    catch (e) { console.warn('[projects] archive failed', e) }
-  }
 
-  const visible = showArchived ? projects : projects.filter((p) => p.status === 'active')
-  const archivedCount = projects.filter((p) => p.status === 'archived').length
+  const visible = projects
 
   return (
     <div className="space-y-6">
@@ -60,22 +54,16 @@ export function ProjectsTab() {
             const count = p.conversationCount
             return (
               <div key={p.id} className="bg-cloud rounded-[12px] p-4 flex items-center gap-4"
-                style={{ border: '1px solid var(--ink-100)', opacity: p.status === 'archived' ? 0.55 : 1 }}>
+                style={{ border: '1px solid var(--ink-100)' }}>
                 <div className="w-3 h-10 rounded-full shrink-0" style={{ background: p.color ?? 'var(--ink-200)' }} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <div className="font-semibold text-[14px] text-ink-900 truncate">{p.name}</div>
-                    {p.status === 'archived' && <span className="text-[10px] text-ink-300 uppercase tracking-wider">{t('me.archived')}</span>}
                   </div>
                   <div className="font-display italic text-[12px] text-ink-500 truncate">
                     {p.description || t('me.noDescription')}  ·  {count === 1 ? t('me.projectConvoCount', { n: count }) : t('me.projectConvoCountPlural', { n: count })}
                   </div>
                 </div>
-                <button
-                  onClick={() => archive(p.id, p.status !== 'archived')}
-                  className="px-3 py-1.5 rounded-[8px] text-[11.5px] font-semibold text-ink-700 bg-paper hover:bg-sky2-50 transition"
-                  style={{ border: '1px solid var(--ink-100)' }}
-                >{p.status === 'archived' ? t('me.restore') : t('me.archive')}</button>
               </div>
             )
           })}
@@ -122,14 +110,6 @@ export function ProjectsTab() {
               className="px-4 py-2 rounded-[10px] text-[12.5px] font-semibold text-skype-deep bg-cloud hover:bg-sky2-50 transition"
               style={{ border: '1px dashed var(--sky2-300)' }}
             >{t('me.newProject')}</button>
-            {archivedCount > 0 && (
-              <button
-                onClick={() => setShowArchived((v) => !v)}
-                className="text-[11.5px] text-ink-500 hover:text-skype-deep transition italic font-display"
-              >
-                {showArchived ? t('me.hideArchived') : t('me.showArchivedCount', { n: archivedCount })}
-              </button>
-            )}
           </div>
         )}
       </Section>

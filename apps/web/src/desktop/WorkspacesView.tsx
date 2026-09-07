@@ -159,8 +159,7 @@ export function WorkspacesView() {
         setEntries(null)
         setFilesError(
           e instanceof ApiError && e.status === 403 ? t('ws.notMember')
-            : e instanceof ApiError && e.status === 410 ? t('ws.unbound')
-              : e instanceof Error ? e.message : String(e),
+            : e instanceof Error ? e.message : String(e),
         )
       })
     return () => { cancelled = true }
@@ -694,7 +693,6 @@ export function WorkspacesView() {
                           onChange={(e) => setLinkKind(e.target.value as 'board_card' | 'document')}
                           className="rounded-md border border-ink-100 px-1.5 py-1 text-[11.5px] text-stone-700 outline-none"
                         >
-                          <option value="project">{t('ws.kindProject')}</option>
                           <option value="board_card">{t('ws.kindBoardCard')}</option>
                           <option value="document">{t('ws.kindDocument')}</option>
                         </select>
