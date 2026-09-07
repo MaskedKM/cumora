@@ -56,17 +56,17 @@ INTROSPECTION:
   tools-log [--agent <id>] [--limit N]
   participants-status
 
-TEAM WORKSPACES  (shared real folders; same membership as the human UI;
-  mounted at team/<workspace-id>/ in your home when your computer is local):
+TEAM PROJECTS  (shared real folders; same membership as the human UI;
+  mounted at team/<project-id>/ in your home when your computer is local):
   workspace ls [--as <id>]
-  workspace read <workspace-id> <path> [--as <id>]
-  workspace write <workspace-id> <path> <body> [--expected <nanos>] [--as <id>]
-  workspace append <workspace-id> <path> <body> [--expected <nanos>] [--as <id>]
-  workspace edit <workspace-id> <path> <old> <new> [--all] [--expected <nanos>] [--as <id>]
-  workspace delete <workspace-id> <path> [--as <id>]
-  workspace mv <workspace-id> <src> <dst> [--as <id>]
-  workspace stat <workspace-id> <path> [--json] [--as <id>]
-  workspace grep <workspace-id> <pattern> [-i] [--json] [--as <id>]
+  project read <project-id> <path> [--as <id>]
+  project write <project-id> <path> <body> [--expected <nanos>] [--as <id>]
+  project append <project-id> <path> <body> [--expected <nanos>] [--as <id>]
+  project edit <project-id> <path> <old> <new> [--all] [--expected <nanos>] [--as <id>]
+  project delete <project-id> <path> [--as <id>]
+  project mv <project-id> <src> <dst> [--as <id>]
+  project stat <project-id> <path> [--json] [--as <id>]
+  project grep <project-id> <pattern> [-i] [--json] [--as <id>]
   (writes are protected: pass --expected <mtimeNanos from stat --json> to
    avoid clobbering concurrent edits — on mismatch your text is kept as a
    .conflict copy and the write is rejected; every overwrite keeps the
@@ -156,8 +156,8 @@ KANBAN  (shared boards — the same ones humans see in the Boards view):
   card move <card_id> --to <column_id>              move a card between columns (the way "done" happens)
   card claim <card_id>                              ATOMICALLY claim a card before working it (exclusive;
                                                      fails if someone else already holds it → move on)
-  card start <card_id> [--ws <workspace_id>]       materialize an isolated git worktree for this card in
-                                                     its linked team workspace (branch cumora/<card_id>;
+  card start <card_id> [--ws <project_id>]       materialize an isolated git worktree for this card in
+                                                     its linked team project (branch cumora/<card_id>;
                                                      the branch SURVIVES task failure — your progress
                                                      stays on it). Code work goes here, not in the bare repo.
   card deliver <card_id> --branch <name>           record the delivery branch on the card, with PR link

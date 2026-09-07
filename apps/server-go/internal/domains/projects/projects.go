@@ -21,7 +21,6 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/projects"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -81,14 +80,15 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	// #354:每队默认区(团队文件)的自愈随主列表走 —— 并表后这就是"项目"
 	// 的列表面,全新 team 不能因未开过工作区视图就漏掉公共盘。
-	if err := workspaces.EnsureDefault(r.Context(), s.DB, tenant); err != nil {
+	if err := EnsureDefault(r.Context(), s.DB, tenant); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT id, name, description, color, status,
 		       created_at, archived_at, folder_path, is_default,
-		       (SELECT COUNT(*)::int FROM conversations WHERE project_id = projects.id)
+		       (SELECT COUNT(*)::int FROM conversations WHERE project_id = projects.id),
+		       (SELECT COUNT(*)::int FROM project_members WHERE project_id = projects.id)
 		  FROM projects
 		 WHERE company_id = $1
 		 ORDER BY is_default DESC, created_at DESC`, tenant)
@@ -104,8 +104,8 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		var archivedAt sql.NullTime
 		var isDefault bool
-		var convoCount int
-		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &folder, &isDefault, &convoCount); err != nil {
+		var convoCount, memberCount int
+		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &folder, &isDefault, &convoCount, &memberCount); err != nil {
 			continue
 		}
 		row := map[string]any{
@@ -113,7 +113,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 			"description": nullAny(description), "color": nullAny(color),
 			"status": status, "createdAt": httpx.ISOms(createdAt),
 			"folderPath": nullAny(folder), "isDefault": isDefault,
-			"conversationCount": convoCount,
+			"conversationCount": convoCount, "explicitMemberCount": memberCount,
 		}
 		if archivedAt.Valid {
 			row["archivedAt"] = httpx.ISOms(archivedAt.Time)
@@ -133,10 +133,13 @@ func nullAny(ns sql.NullString) any {
 }
 
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
-	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	// #355:建项目必带盘(ADR 0008 §3)—— 与原建工作区同级敏感,owner/admin
+	// 门随概念合并过来(原 CreateProject 的宽门是纯分组时代的语义)。
+	tenant, ok := requireRole(w, r, s.DB)
 	if !ok {
 		return
 	}
+	uid, _, _ := httpx.RequireCompany(w, r, s.DB)
 	body := decodeBody(r)
 	nameRaw, _ := bodyAny(body, "name")
 	descRaw, _ := bodyAny(body, "description")
@@ -215,7 +218,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	// 建区者即显式成员(CreateWorkspace 同款;否则未挂会话的创建人自己
 	// 不在成员域内,看不到刚建的盘 —— 评审 P2)。
 	if _, err := s.DB.ExecContext(r.Context(),
-		`INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+		`INSERT INTO project_members (project_id, participant_id, added_by) VALUES ($1, $2, $2)`,
 		id, uid); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -378,11 +381,11 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string
 	}
 	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(r.Context(),
-			`DELETE FROM workspace_members WHERE workspace_id = $1`, id); err != nil {
+			`DELETE FROM project_members WHERE project_id = $1`, id); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(r.Context(),
-			`DELETE FROM workspace_associations WHERE workspace_id = $1`, id); err != nil {
+			`DELETE FROM project_associations WHERE project_id = $1`, id); err != nil {
 			return err
 		}
 		res, err := tx.ExecContext(r.Context(),
@@ -402,7 +405,7 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
-	// conversations.project_id / card_deliveries.workspace_id 由 FK
+	// conversations.project_id / card_deliveries.project_id 由 FK
 	// ON DELETE SET NULL 自动置空;盘目录未删。
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "id": id, "folderKept": nullAny(folder),

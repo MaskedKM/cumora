@@ -24,7 +24,7 @@ import (
 	"github.com/MaskedKM/cumora/apps/server-go/internal/agent"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/costing"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/obs"
 
 	reg "github.com/MaskedKM/cumora/apps/server-go/internal/computers"
@@ -112,8 +112,8 @@ func (h *Server) LoadRoster(w http.ResponseWriter, r *http.Request) {
 	h.Svc.auth(h.Svc.handleRoster)(w, r)
 }
 
-func (h *Server) LoadWorkspaces(w http.ResponseWriter, r *http.Request) {
-	h.Svc.auth(h.Svc.handleWorkspaces)(w, r)
+func (h *Server) LoadProjects(w http.ResponseWriter, r *http.Request) {
+	h.Svc.auth(h.Svc.handleProjects)(w, r)
 }
 
 func (h *Server) ReportStatus(w http.ResponseWriter, r *http.Request) {
@@ -710,13 +710,13 @@ func (s *Service) handleRoster(w http.ResponseWriter, r *http.Request, agentID s
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"roster": roster})
 }
 
-// handleWorkspaces:#336 agent 可达团队工作区清单 —— daemon 挂载同步的
+// handleProjects:#336 agent 可达项目(含盘)清单 —— daemon 挂载同步的
 // 拉取面(每 agent 同步周期一次)。可达语义与 resolveAccess/CLI 面
 // 同构:默认区全员 ∪ 显式成员 ∪ 三类关联推导。folderPath 仅 computer
 // kind=local 返回(单盒 ADR 0005 同机挂载前提);vps 省略 → daemon 不
 // 建挂点,persona 落 CLI 态。kind 查不到(LEFT JOIN NULL)按 vps 处理
 // ——宁可少给路径,不虚构同机前提。
-func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
+func (s *Service) handleProjects(w http.ResponseWriter, r *http.Request, agentID string, _ *string) {
 	var companyID string
 	var kind sql.NullString
 	if err := s.DB.QueryRowContext(r.Context(),
@@ -732,13 +732,13 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 		return
 	}
 	// 默认区惰性自愈(与人侧列表同语义):全新 team 未开过 UI 也不能漏。
-	if err := workspaces.EnsureDefault(r.Context(), s.DB, companyID); err != nil {
+	if err := projects.EnsureDefault(r.Context(), s.DB, companyID); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	// 存量无盘项目惰性补盘(#354):NULL folder 打穿裸 string scan 会把整列
 	// 挂载清单变 500(评审 P0-2),先收敛再查。
-	if err := workspaces.EnsureProjectFolders(r.Context(), s.DB, companyID); err != nil {
+	if err := projects.EnsureProjectFolders(r.Context(), s.DB, companyID); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -747,15 +747,15 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 		  FROM projects w
 		 WHERE w.company_id = $1 AND (
 		   w.is_default
-		   OR EXISTS (SELECT 1 FROM workspace_members m
-		               WHERE m.workspace_id = w.id AND m.participant_id = $2)
+		   OR EXISTS (SELECT 1 FROM project_members m
+		               WHERE m.project_id = w.id AND m.participant_id = $2)
 		   OR EXISTS (SELECT 1 FROM conversations c
 		               WHERE c.project_id = w.id AND c.company_id = $1
 		                 AND EXISTS (SELECT 1 FROM conversation_members cm
 		                              WHERE cm.conversation_id = c.id
 		                                AND cm.participant_id = $2))
-		   OR EXISTS (SELECT 1 FROM workspace_associations a
-		               WHERE a.workspace_id = w.id AND a.company_id = $1
+		   OR EXISTS (SELECT 1 FROM project_associations a
+		               WHERE a.project_id = w.id AND a.company_id = $1
 		                 AND EXISTS (SELECT 1 FROM participants p
 		                              WHERE p.id = $2 AND p.company_id = $1
 		                                AND p.departed_at IS NULL)

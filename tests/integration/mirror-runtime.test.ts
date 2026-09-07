@@ -1032,17 +1032,17 @@ test('[mirror-runtime] /wake-stream: steer events ride the same stream', async (
   await Promise.all([streamDone, steerSeen])
 })
 
-// #336 /runtime/workspaces:daemon 挂载同步拉取面。可达语义 = 默认区
+// #336 /runtime/projects:daemon 挂载同步拉取面。可达语义 = 默认区
 // 全员 ∪ 显式成员 ∪ 关联推导(与 resolveAccess 同构);folderPath 仅
 // computer kind=local 返回(vps/无 computer → 省略,daemon 落 CLI 形态)。
 test('[mirror-runtime] /workspaces: 401 without token', async () => {
-  const res = await call('/runtime/workspaces', { method: 'GET' })
+  const res = await call('/runtime/projects', { method: 'GET' })
   assert.equal(res.status, 401)
 })
 
 test('[mirror-runtime] /workspaces: default workspace self-heals; no computer → no folderPath', async () => {
   const { agentId, companyId, token } = await seedAgent()
-  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  const res = await call('/runtime/projects', { method: 'GET', token })
   assert.equal(res.status, 200, JSON.stringify(res.body))
   assert.ok(Array.isArray(res.body))
   assert.equal(res.body.length, 1)
@@ -1076,11 +1076,11 @@ test('[mirror-runtime] /workspaces: local computer gets folderPath; membership g
     [mineWs, companyId],
   )
   await pool.query(
-    `INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`,
+    `INSERT INTO project_members (project_id, participant_id) VALUES ($1, $2)`,
     [mineWs, agentId],
   )
 
-  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  const res = await call('/runtime/projects', { method: 'GET', token })
   assert.equal(res.status, 200, JSON.stringify(res.body))
   const ids = res.body.map((w: any) => w.id)
   assert.ok(ids.includes(`ws-default-${companyId}`))
@@ -1099,7 +1099,7 @@ test('[mirror-runtime] /workspaces: vps computer → folderPath omitted', async 
     [computerId, companyId],
   )
   await pool.query(`UPDATE participants SET computer_id = $1 WHERE id = $2`, [computerId, agentId])
-  const res = await call('/runtime/workspaces', { method: 'GET', token })
+  const res = await call('/runtime/projects', { method: 'GET', token })
   assert.equal(res.status, 200, JSON.stringify(res.body))
   assert.equal(res.body.length, 1)
   assert.equal(res.body[0].folderPath, undefined, 'vps computer never receives folderPath')
@@ -1118,7 +1118,7 @@ async function seedWorkspaceFor(agentId: string, companyId: string): Promise<{ w
     `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'CLI', '', $3, FALSE)`,
     [wsId, companyId, folder],
   )
-  await pool.query(`INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`, [wsId, agentId])
+  await pool.query(`INSERT INTO project_members (project_id, participant_id) VALUES ($1, $2)`, [wsId, agentId])
   return { wsId, folder }
 }
 
@@ -1126,7 +1126,7 @@ test('[mirror-runtime] workspace CLI: write/append/edit/mv/stat/delete round-tri
   const { agentId, companyId, token } = await seedAgent()
   const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
   const run = async (...argv: string[]) => {
-    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['project', ...argv] } })
     assert.equal(res.status, 200)
     return { ok: res.body.ok, text: String(res.body.text ?? '') }
   }
@@ -1207,7 +1207,7 @@ test('[mirror-runtime] workspace CLI: grep matches, -i short flag, skips .cumora
   const { agentId, companyId, token } = await seedAgent()
   const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
   const run = async (...argv: string[]) => {
-    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['project', ...argv] } })
     assert.equal(res.status, 200)
     return { ok: res.body.ok, text: String(res.body.text ?? '') }
   }
@@ -1247,7 +1247,7 @@ test('[mirror-runtime] workspace CLI: CAS --expected (stale reject + conflict co
   const { agentId, companyId, token } = await seedAgent()
   const { wsId, folder } = await seedWorkspaceFor(agentId, companyId)
   const run = async (...argv: string[]) => {
-    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['workspace', ...argv] } })
+    const res = await call('/runtime/cli', { method: 'POST', token, body: { argv: ['project', ...argv] } })
     assert.equal(res.status, 200)
     return { ok: res.body.ok, text: String(res.body.text ?? '') }
   }

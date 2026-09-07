@@ -281,19 +281,19 @@ func (s *Server) GetComputerSkillBundle(w http.ResponseWriter, r *http.Request, 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"name": name, "files": files})
 }
 
-// ReportWorkspaceChanges:#337 daemon watcher 上报面 —— 挂载工作区文件
+// ReportProjectChanges:#337 daemon watcher 上报面 —— 挂载工作区文件
 // 变更(去抖批量)。device token 即凭据;工作区必须属于本机同公司
 // (跨租户上报 404)。处理走 sched.SyncWorkspaceFileState:对账已知态 →
-// 变化项快照 → 广播 workspace.files_changed。
-func (s *Server) ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request) {
+// 变化项快照 → 广播 project.files_changed。
+func (s *Server) ReportProjectChanges(w http.ResponseWriter, r *http.Request) {
 	_, companyID, ok := requireDevice(w, r, s.DB)
 	if !ok {
 		return
 	}
 	var payload struct {
 		Items []struct {
-			WorkspaceID string `json:"workspaceId"`
-			Path        string `json:"path"`
+			ProjectID string `json:"projectId"`
+			Path      string `json:"path"`
 		} `json:"items"`
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -312,8 +312,8 @@ func (s *Server) ReportWorkspaceChanges(w http.ResponseWriter, r *http.Request) 
 	// 按 workspace 聚合(清单行可能跨区),区信息一次查全。
 	grouped := map[string][]string{}
 	for _, it := range payload.Items {
-		if it.WorkspaceID != "" && it.Path != "" {
-			grouped[it.WorkspaceID] = append(grouped[it.WorkspaceID], it.Path)
+		if it.ProjectID != "" && it.Path != "" {
+			grouped[it.ProjectID] = append(grouped[it.ProjectID], it.Path)
 		}
 	}
 	changed := 0

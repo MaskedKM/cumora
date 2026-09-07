@@ -8,7 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	inbox "github.com/MaskedKM/cumora/apps/server-go/internal/domains/inbox"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"regexp"
 	"sort"
 	"strings"
@@ -1361,7 +1361,7 @@ func (s *Domain) requireCardAssignee(ctx context.Context, cardID, me string) str
 // 入口 = 卡片面板的 ⌗ 按钮,#338)。
 func (s *Domain) cardWorkspaceFolder(ctx context.Context, companyID, cardID, wsID string) (folder, ref, errMsg string) {
 	q := `SELECT ws.id, ws.folder_path
-	        FROM workspace_associations a JOIN projects ws ON ws.id = a.workspace_id
+	        FROM project_associations a JOIN projects ws ON ws.id = a.project_id
 	       WHERE a.target_kind = 'board_card' AND a.target_id = $1
 	         AND ws.company_id = $2 AND ws.folder_path IS NOT NULL`
 	args := []any{cardID, companyID}
@@ -1396,7 +1396,7 @@ func (s *Domain) cliCardStart(ctx context.Context, parsed agent.Parsed, me, comp
 		cardID = strings.TrimSpace(parsed.Positional()[1])
 	}
 	if cardID == "" {
-		return agent.Err("usage: card start <card_id> [--ws <workspace_id>]")
+		return agent.Err("usage: card start <card_id> [--ws <project_id>]")
 	}
 	home, err := resolveCardBoard(cardID)
 	if err != nil {
@@ -1412,13 +1412,13 @@ func (s *Domain) cliCardStart(ctx context.Context, parsed agent.Parsed, me, comp
 	if msg != "" {
 		return agent.Err(msg)
 	}
-	branch, relDir, already, werr := workspaces.MaterializeWorktree(ctx, folder, cardID)
+	branch, relDir, already, werr := projects.MaterializeWorktree(ctx, folder, cardID)
 	if werr != "" {
 		return agent.Err("card start failed — " + werr)
 	}
 	id := "dlv-" + agent.UUIDHex()[:12]
 	if _, err := s.DB.ExecContext(ctx,
-		`INSERT INTO card_deliveries (id, card_id, workspace_id, branch, created_by)
+		`INSERT INTO card_deliveries (id, card_id, project_id, branch, created_by)
 		 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (card_id, branch) DO NOTHING`,
 		id, cardID, wsRef, branch, me); err != nil {
 		return agent.ErrThrow(err)
@@ -1464,7 +1464,7 @@ func deliveryBranchOK(b string) bool {
 // 与 PR 落卡、人决定合并;平台不 block 列移动)。已存在的 (card, branch)
 // 行增量更新:不给的字段保旧。
 func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, companyID string, resolveCardBoard cardBoardResolver) agent.Result {
-	usage := "usage: card deliver <card_id> --branch <name> [--pr <https://…>] [--state open|merged|closed] [--ws <workspace_id>]"
+	usage := "usage: card deliver <card_id> --branch <name> [--pr <https://…>] [--state open|merged|closed] [--ws <project_id>]"
 	cardID := ""
 	if len(parsed.Positional()) > 1 {
 		cardID = strings.TrimSpace(parsed.Positional()[1])
@@ -1532,7 +1532,7 @@ func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, co
 			stV = state
 		}
 		if _, err := s.DB.ExecContext(ctx,
-			`INSERT INTO card_deliveries (id, card_id, workspace_id, branch, pr_url, pr_state, created_by)
+			`INSERT INTO card_deliveries (id, card_id, project_id, branch, pr_url, pr_state, created_by)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)
 			 ON CONFLICT (card_id, branch) DO UPDATE SET
 			   pr_url = COALESCE(EXCLUDED.pr_url, card_deliveries.pr_url),
@@ -1583,7 +1583,7 @@ func (s *Domain) cliCardDeliver(ctx context.Context, parsed agent.Parsed, me, co
 type CardDeliveryRow struct {
 	ID          string        `json:"id"`
 	Branch      string        `json:"branch"`
-	WorkspaceID string        `json:"workspace_id"`
+	WorkspaceID string        `json:"project_id"`
 	PrURL       string        `json:"pr_url"`
 	PrState     string        `json:"pr_state"`
 	CreatedBy   string        `json:"created_by"`
@@ -1593,7 +1593,7 @@ type CardDeliveryRow struct {
 
 func (s *Domain) cardDeliveries(ctx context.Context, cardID string) ([]CardDeliveryRow, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, branch, workspace_id, COALESCE(pr_url, ''), COALESCE(pr_state, ''),
+		`SELECT id, branch, project_id, COALESCE(pr_url, ''), COALESCE(pr_state, ''),
 		        created_by, created_at, updated_at
 		   FROM card_deliveries WHERE card_id = $1 ORDER BY created_at ASC`, cardID)
 	if err != nil {

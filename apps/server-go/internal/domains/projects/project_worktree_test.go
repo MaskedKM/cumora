@@ -1,7 +1,7 @@
 // worktree 与保留路径的内部测试(#265):真 git 树走 MaterializeWorktree
 // 全生命周期(全新切分支 → 幂等 → 目录被清后复挂既有分支 = 失败保分支),
 // CI alpine go job 无 git 时跳过(真断言在集成侧,bookworm 有 git)。
-package workspaces
+package projects
 
 import (
 	"context"

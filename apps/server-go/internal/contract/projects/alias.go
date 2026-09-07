@@ -5,4 +5,9 @@ package projectscontract
 
 import "github.com/MaskedKM/cumora/apps/server-go/internal/contract"
 
+type ListProjectFilesParams = contract.ListProjectFilesParams
+type ReadProjectFileParams = contract.ReadProjectFileParams
+type ReadProjectFileRawParams = contract.ReadProjectFileRawParams
+type WriteProjectFileParams = contract.WriteProjectFileParams
+
 const SessionBearerScopes = contract.SessionBearerScopes

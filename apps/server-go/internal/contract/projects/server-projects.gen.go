@@ -15,9 +15,6 @@ import (
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// 会话挂/摘项目
-	// (POST /api/conversations/{id}/project)
-	AttachProject(w http.ResponseWriter, r *http.Request, id string)
 	// 项目列表
 	// (GET /api/projects)
 	ListProjects(w http.ResponseWriter, r *http.Request)
@@ -27,12 +24,39 @@ type ServerInterface interface {
 	// 删除项目(#354,ADR 0008 §6 生命周期唯一出口)
 	// (DELETE /api/projects/{id})
 	DeleteProject(w http.ResponseWriter, r *http.Request, id string)
+	// 项目详情(盘路径仅特权成员可见;#355 起原工作区详情面)
+	// (GET /api/projects/{id})
+	GetProject(w http.ResponseWriter, r *http.Request, id string)
 	// 改项目
 	// (PUT /api/projects/{id})
 	UpdateProject(w http.ResponseWriter, r *http.Request, id string)
-	// 归档/恢复项目
-	// (POST /api/projects/{id}/archive)
-	ArchiveProject(w http.ResponseWriter, r *http.Request, id string)
+	// 关联(看板卡/文档;project-kind 已随概念合并退役
+	// (POST /api/projects/{id}/associations)
+	AddProjectAssociation(w http.ResponseWriter, r *http.Request, id string)
+	// 解除关联
+	// (DELETE /api/projects/{id}/associations/{kind}/{targetId})
+	RemoveProjectAssociation(w http.ResponseWriter, r *http.Request, id string, kind string, targetId string)
+	// 读文件
+	// (GET /api/projects/{id}/file)
+	ReadProjectFile(w http.ResponseWriter, r *http.Request, id string, params ReadProjectFileParams)
+	// 写文件(#337 起支持 CAS)
+	// (PUT /api/projects/{id}/file)
+	WriteProjectFile(w http.ResponseWriter, r *http.Request, id string, params WriteProjectFileParams)
+	// 盘内列目录(范围制)
+	// (GET /api/projects/{id}/files)
+	ListProjectFiles(w http.ResponseWriter, r *http.Request, id string, params ListProjectFilesParams)
+	// 加显式成员
+	// (POST /api/projects/{id}/members)
+	AddProjectMember(w http.ResponseWriter, r *http.Request, id string)
+	// 移除显式成员
+	// (DELETE /api/projects/{id}/members/{participantId})
+	RemoveProjectMember(w http.ResponseWriter, r *http.Request, id string, participantId string)
+	// #338 原始字节读(图片预览/下载;Content-Type 按扩展名猜)
+	// (GET /api/projects/{id}/raw)
+	ReadProjectFileRaw(w http.ResponseWriter, r *http.Request, id string, params ReadProjectFileRawParams)
+	// #338 multipart 上传二进制(单文件 25MB 帽;复用防逃逸/保留路径/写前快照)
+	// (POST /api/projects/{id}/upload)
+	UploadProjectFile(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -43,37 +67,6 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
-
-// AttachProject operation middleware
-func (siw *ServerInterfaceWrapper) AttachProject(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	// ------------- Path parameter "id" -------------
-	var id string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.AttachProject(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
 
 // ListProjects operation middleware
 func (siw *ServerInterfaceWrapper) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +139,37 @@ func (siw *ServerInterfaceWrapper) DeleteProject(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// GetProject operation middleware
+func (siw *ServerInterfaceWrapper) GetProject(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetProject(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateProject operation middleware
 func (siw *ServerInterfaceWrapper) UpdateProject(w http.ResponseWriter, r *http.Request) {
 
@@ -177,8 +201,8 @@ func (siw *ServerInterfaceWrapper) UpdateProject(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
-// ArchiveProject operation middleware
-func (siw *ServerInterfaceWrapper) ArchiveProject(w http.ResponseWriter, r *http.Request) {
+// AddProjectAssociation operation middleware
+func (siw *ServerInterfaceWrapper) AddProjectAssociation(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 
@@ -198,7 +222,341 @@ func (siw *ServerInterfaceWrapper) ArchiveProject(w http.ResponseWriter, r *http
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ArchiveProject(w, r, id)
+		siw.Handler.AddProjectAssociation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveProjectAssociation operation middleware
+func (siw *ServerInterfaceWrapper) RemoveProjectAssociation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "kind" -------------
+	var kind string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "kind", r.PathValue("kind"), &kind, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "kind", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "targetId" -------------
+	var targetId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "targetId", r.PathValue("targetId"), &targetId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "targetId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveProjectAssociation(w, r, id, kind, targetId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReadProjectFile operation middleware
+func (siw *ServerInterfaceWrapper) ReadProjectFile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReadProjectFileParams
+
+	// ------------- Optional query parameter "path" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReadProjectFile(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// WriteProjectFile operation middleware
+func (siw *ServerInterfaceWrapper) WriteProjectFile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params WriteProjectFileParams
+
+	// ------------- Optional query parameter "path" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "expectedMtimeNanos" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "expectedMtimeNanos", r.URL.Query(), &params.ExpectedMtimeNanos)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "expectedMtimeNanos", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.WriteProjectFile(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListProjectFiles operation middleware
+func (siw *ServerInterfaceWrapper) ListProjectFiles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProjectFilesParams
+
+	// ------------- Optional query parameter "path" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProjectFiles(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddProjectMember operation middleware
+func (siw *ServerInterfaceWrapper) AddProjectMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddProjectMember(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveProjectMember operation middleware
+func (siw *ServerInterfaceWrapper) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "participantId" -------------
+	var participantId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "participantId", r.PathValue("participantId"), &participantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "participantId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveProjectMember(w, r, id, participantId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReadProjectFileRaw operation middleware
+func (siw *ServerInterfaceWrapper) ReadProjectFileRaw(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReadProjectFileRawParams
+
+	// ------------- Required query parameter "path" -------------
+
+	if paramValue := r.URL.Query().Get("path"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "path"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReadProjectFileRaw(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadProjectFile operation middleware
+func (siw *ServerInterfaceWrapper) UploadProjectFile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadProjectFile(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -328,12 +686,20 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
-	m.HandleFunc("POST "+options.BaseURL+"/api/conversations/{id}/project", wrapper.AttachProject)
 	m.HandleFunc("GET "+options.BaseURL+"/api/projects", wrapper.ListProjects)
 	m.HandleFunc("POST "+options.BaseURL+"/api/projects", wrapper.CreateProject)
 	m.HandleFunc("DELETE "+options.BaseURL+"/api/projects/{id}", wrapper.DeleteProject)
+	m.HandleFunc("GET "+options.BaseURL+"/api/projects/{id}", wrapper.GetProject)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/projects/{id}", wrapper.UpdateProject)
-	m.HandleFunc("POST "+options.BaseURL+"/api/projects/{id}/archive", wrapper.ArchiveProject)
+	m.HandleFunc("POST "+options.BaseURL+"/api/projects/{id}/associations", wrapper.AddProjectAssociation)
+	m.HandleFunc("DELETE "+options.BaseURL+"/api/projects/{id}/associations/{kind}/{targetId}", wrapper.RemoveProjectAssociation)
+	m.HandleFunc("GET "+options.BaseURL+"/api/projects/{id}/file", wrapper.ReadProjectFile)
+	m.HandleFunc("PUT "+options.BaseURL+"/api/projects/{id}/file", wrapper.WriteProjectFile)
+	m.HandleFunc("GET "+options.BaseURL+"/api/projects/{id}/files", wrapper.ListProjectFiles)
+	m.HandleFunc("POST "+options.BaseURL+"/api/projects/{id}/members", wrapper.AddProjectMember)
+	m.HandleFunc("DELETE "+options.BaseURL+"/api/projects/{id}/members/{participantId}", wrapper.RemoveProjectMember)
+	m.HandleFunc("GET "+options.BaseURL+"/api/projects/{id}/raw", wrapper.ReadProjectFileRaw)
+	m.HandleFunc("POST "+options.BaseURL+"/api/projects/{id}/upload", wrapper.UploadProjectFile)
 
 	return m
 }

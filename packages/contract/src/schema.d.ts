@@ -447,7 +447,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** 项目详情(盘路径仅特权成员可见;#355 起原工作区详情面) */
+        get: operations["getProject"];
         /** 改项目 */
         put: operations["updateProject"];
         post?: never;
@@ -456,23 +457,6 @@ export interface paths {
          * @description 对话 SET NULL 保留、交付台账随卡片存活(FK SET NULL)、成员/关联清理;盘文件原地保留(不代删);默认项目拒删。
          */
         delete: operations["deleteProject"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/projects/{id}/archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 归档/恢复项目 */
-        post: operations["archiveProject"];
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -615,7 +599,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/computers/me/workspace-report": {
+    "/api/computers/me/project-report": {
         parameters: {
             query?: never;
             header?: never;
@@ -625,7 +609,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** #337 daemon watcher 上报挂载工作区文件变更(去抖批量;server 对账已知态→快照→广播) */
-        post: operations["reportWorkspaceChanges"];
+        post: operations["reportProjectChanges"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1005,23 +989,6 @@ export interface paths {
         put?: never;
         /** 已读 */
         post: operations["markRead"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/conversations/{id}/project": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 会话挂/摘项目 */
-        post: operations["attachProject"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1896,42 +1863,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 工作区列表(自动确保默认区) */
-        get: operations["listWorkspaces"];
-        put?: never;
-        /** 建区(绑真实文件夹,1:1) */
-        post: operations["createWorkspace"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 工作区详情(路径仅特权成员可见) */
-        get: operations["getWorkspace"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{id}/members": {
+    "/api/projects/{id}/members": {
         parameters: {
             query?: never;
             header?: never;
@@ -1941,14 +1873,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** 加显式成员 */
-        post: operations["addWorkspaceMember"];
+        post: operations["addProjectMember"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/members/{participantId}": {
+    "/api/projects/{id}/members/{participantId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1959,13 +1891,13 @@ export interface paths {
         put?: never;
         post?: never;
         /** 移除显式成员 */
-        delete: operations["removeWorkspaceMember"];
+        delete: operations["removeProjectMember"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/associations": {
+    "/api/projects/{id}/associations": {
         parameters: {
             query?: never;
             header?: never;
@@ -1974,15 +1906,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 关联三件套(项目/看板卡/文档) */
-        post: operations["addWorkspaceAssociation"];
+        /** 关联(看板卡/文档;project-kind 已随概念合并退役 */
+        post: operations["addProjectAssociation"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/associations/{kind}/{targetId}": {
+    "/api/projects/{id}/associations/{kind}/{targetId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1993,21 +1925,21 @@ export interface paths {
         put?: never;
         post?: never;
         /** 解除关联 */
-        delete: operations["removeWorkspaceAssociation"];
+        delete: operations["removeProjectAssociation"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/files": {
+    "/api/projects/{id}/files": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 范围制列目录 */
-        get: operations["listWorkspaceFiles"];
+        /** 盘内列目录(范围制) */
+        get: operations["listProjectFiles"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2016,7 +1948,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/file": {
+    "/api/projects/{id}/file": {
         parameters: {
             query?: never;
             header?: never;
@@ -2024,9 +1956,9 @@ export interface paths {
             cookie?: never;
         };
         /** 读文件 */
-        get: operations["readWorkspaceFile"];
+        get: operations["readProjectFile"];
         /** 写文件(#337 起支持 CAS) */
-        put: operations["writeWorkspaceFile"];
+        put: operations["writeProjectFile"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2034,7 +1966,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/upload": {
+    "/api/projects/{id}/upload": {
         parameters: {
             query?: never;
             header?: never;
@@ -2044,14 +1976,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** #338 multipart 上传二进制(单文件 25MB 帽;复用防逃逸/保留路径/写前快照) */
-        post: operations["uploadWorkspaceFile"];
+        post: operations["uploadProjectFile"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{id}/raw": {
+    "/api/projects/{id}/raw": {
         parameters: {
             query?: never;
             header?: never;
@@ -2059,26 +1991,9 @@ export interface paths {
             cookie?: never;
         };
         /** #338 原始字节读(图片预览/下载;Content-Type 按扩展名猜) */
-        get: operations["readWorkspaceFileRaw"];
+        get: operations["readProjectFileRaw"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{id}/unbind": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 安全解绑(不动文件) */
-        post: operations["unbindWorkspace"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2769,7 +2684,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/runtime/workspaces": {
+    "/runtime/projects": {
         parameters: {
             query?: never;
             header?: never;
@@ -2777,7 +2692,7 @@ export interface paths {
             cookie?: never;
         };
         /** agent 可达团队工作区清单(daemon 挂载同步用;folderPath 仅 computer kind=local 时返回) */
-        get: operations["loadWorkspaces"];
+        get: operations["loadProjects"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3380,6 +3295,8 @@ export interface components {
             folderPath: string | null;
             isDefault: boolean;
             conversationCount: number;
+            /** @description 显式成员数(推导成员不计;#355 并入原列表语义) */
+            explicitMemberCount: number;
         };
         QuotaWindow: {
             usedUsd: number;
@@ -3820,7 +3737,7 @@ export interface components {
         CardDelivery: {
             id: string;
             branch: string;
-            workspaceId: string;
+            projectId?: string;
             prUrl: string | null;
             /** @enum {string|null} */
             prState: "open" | "merged" | "closed" | null;
@@ -3929,15 +3846,7 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
-        WorkspaceSummary: {
-            id: string;
-            name: string;
-            isDefault: boolean;
-            /** Format: date-time */
-            createdAt: string;
-            explicitMemberCount: number;
-        };
-        WorkspaceMember: {
+        ProjectMember: {
             participantId: string;
             name: string;
             kind: string;
@@ -3946,27 +3855,24 @@ export interface components {
             /** @enum {string} */
             source: "explicit" | "implicit";
         };
-        WorkspaceAssociation: {
+        ProjectAssociation: {
             /** @enum {string} */
-            kind: "project" | "board_card" | "document";
+            kind: "board_card" | "document";
             targetId: string;
             /** Format: date-time */
             createdAt: string;
         };
-        WorkspaceDetail: {
+        ProjectDetail: {
             id: string;
             name: string;
             isDefault: boolean;
             /** Format: date-time */
             createdAt: string;
-            /** Format: date-time */
-            unboundAt: string | null;
-            unboundBy: string | null;
             folderPath?: string;
-            members: components["schemas"]["WorkspaceMember"][];
-            associations: components["schemas"]["WorkspaceAssociation"][];
+            members: components["schemas"]["ProjectMember"][];
+            associations: components["schemas"]["ProjectAssociation"][];
         };
-        WorkspaceFileEntry: {
+        ProjectFileEntry: {
             name: string;
             dir: boolean;
             size: number | null;
@@ -4905,6 +4811,28 @@ export interface operations {
             };
         };
     };
+    getProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDetail"];
+                };
+            };
+        };
+    };
     updateProject: {
         parameters: {
             query?: never;
@@ -4972,37 +4900,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    archiveProject: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    archive?: boolean;
-                };
-            };
-        };
-        responses: {
-            /** @description ok */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        ok?: boolean;
-                        status?: string;
-                    };
-                };
             };
         };
     };
@@ -5230,7 +5127,7 @@ export interface operations {
             };
         };
     };
-    reportWorkspaceChanges: {
+    reportProjectChanges: {
         parameters: {
             query?: never;
             header?: never;
@@ -5241,7 +5138,7 @@ export interface operations {
             content: {
                 "application/json": {
                     items: {
-                        workspaceId: string;
+                        projectId?: string;
                         path: string;
                     }[];
                 };
@@ -5985,37 +5882,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Ok"];
-                };
-            };
-        };
-    };
-    attachProject: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    projectId?: string | null;
-                };
-            };
-        };
-        responses: {
-            /** @description ok */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        ok?: boolean;
-                        projectId?: string | null;
-                    };
                 };
             };
         };
@@ -7840,83 +7706,7 @@ export interface operations {
             };
         };
     };
-    listWorkspaces: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description ok */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkspaceSummary"][];
-                };
-            };
-        };
-    };
-    createWorkspace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    name: string;
-                    folderPath: string;
-                };
-            };
-        };
-        responses: {
-            /** @description ok */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        id: string;
-                        name: string;
-                        folderPath: string;
-                        isDefault: boolean;
-                        /** Format: date-time */
-                        createdAt: string;
-                    };
-                };
-            };
-        };
-    };
-    getWorkspace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description ok */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkspaceDetail"];
-                };
-            };
-        };
-    };
-    addWorkspaceMember: {
+    addProjectMember: {
         parameters: {
             query?: never;
             header?: never;
@@ -7944,7 +7734,7 @@ export interface operations {
             };
         };
     };
-    removeWorkspaceMember: {
+    removeProjectMember: {
         parameters: {
             query?: never;
             header?: never;
@@ -7967,7 +7757,7 @@ export interface operations {
             };
         };
     };
-    addWorkspaceAssociation: {
+    addProjectAssociation: {
         parameters: {
             query?: never;
             header?: never;
@@ -7980,7 +7770,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    kind: "project" | "board_card" | "document";
+                    kind: "board_card" | "document";
                     targetId: string;
                 };
             };
@@ -7995,14 +7785,14 @@ export interface operations {
                     "application/json": {
                         ok: boolean;
                         /** @enum {string} */
-                        kind: "project" | "board_card" | "document";
+                        kind: "board_card" | "document";
                         targetId: string;
                     };
                 };
             };
         };
     };
-    removeWorkspaceAssociation: {
+    removeProjectAssociation: {
         parameters: {
             query?: never;
             header?: never;
@@ -8026,7 +7816,7 @@ export interface operations {
             };
         };
     };
-    listWorkspaceFiles: {
+    listProjectFiles: {
         parameters: {
             query?: {
                 path?: string;
@@ -8047,13 +7837,13 @@ export interface operations {
                 content: {
                     "application/json": {
                         path: string;
-                        entries: components["schemas"]["WorkspaceFileEntry"][];
+                        entries: components["schemas"]["ProjectFileEntry"][];
                     };
                 };
             };
         };
     };
-    readWorkspaceFile: {
+    readProjectFile: {
         parameters: {
             query?: {
                 path?: string;
@@ -8085,7 +7875,7 @@ export interface operations {
             };
         };
     };
-    writeWorkspaceFile: {
+    writeProjectFile: {
         parameters: {
             query?: {
                 path?: string;
@@ -8134,7 +7924,7 @@ export interface operations {
             };
         };
     };
-    uploadWorkspaceFile: {
+    uploadProjectFile: {
         parameters: {
             query?: never;
             header?: never;
@@ -8146,7 +7936,7 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": {
-                    /** @description 工作区内相对路径 */
+                    /** @description 盘内相对路径 */
                     path: string;
                     /** Format: binary */
                     file: string;
@@ -8181,7 +7971,7 @@ export interface operations {
             };
         };
     };
-    readWorkspaceFileRaw: {
+    readProjectFileRaw: {
         parameters: {
             query: {
                 path: string;
@@ -8206,32 +7996,6 @@ export interface operations {
                     "image/gif": string;
                     "image/webp": string;
                     "image/svg+xml": string;
-                };
-            };
-        };
-    };
-    unbindWorkspace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description ok */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        ok: boolean;
-                        /** Format: date-time */
-                        unboundAt: string;
-                    };
                 };
             };
         };
@@ -9359,7 +9123,7 @@ export interface operations {
             };
         };
     };
-    loadWorkspaces: {
+    loadProjects: {
         parameters: {
             query?: never;
             header?: never;

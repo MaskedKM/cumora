@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 )
 
 /* ───────── workspace(团队真实文件夹)───────── */
@@ -42,15 +42,15 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 	}
 	var allowed bool
 	err = s.DB.QueryRowContext(ctx, `
-		SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
+		SELECT 1 FROM project_members WHERE project_id = $1 AND participant_id = $2
 		UNION ALL
 		SELECT 1 FROM conversations c
 		 WHERE c.project_id = $1 AND c.company_id = $3
 		   AND EXISTS (SELECT 1 FROM conversation_members cm
 		                WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
 		UNION ALL
-		SELECT 1 FROM workspace_associations a
-		 WHERE a.workspace_id = $1 AND a.company_id = $3
+		SELECT 1 FROM project_associations a
+		 WHERE a.project_id = $1 AND a.company_id = $3
 		   AND EXISTS (SELECT 1 FROM participants p
 		                WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
 		   AND (
@@ -80,7 +80,7 @@ const cliMaxFileBytes = 2 * 1024 * 1024
 // ADR 0006 信任域边界),这是 CLI 层的最大努力防护。大小写不敏感
 // (#339 评审余量:macOS 大小写不敏感盘 .CUMORA 绕纯前缀检查)。
 func cliRejectReserved(rel string) string {
-	return workspaces.RejectReserved(rel)
+	return projects.RejectReserved(rel)
 }
 
 // cliCASCheck:#337 团队区写命令的可选 --expected <mtimeNanos> —— 失配
@@ -97,7 +97,7 @@ func cliCASCheck(folder, rel, expected, principal, challenger string) string {
 	}
 	if cur != v {
 		msg := fmt.Sprintf("stale write — current mtime %d ns ≠ expected %d ns; re-read and retry with --expected %d", cur, v, cur)
-		if conflict := workspaces.SaveConflictCopy(folder, rel, principal, challenger); conflict != "" {
+		if conflict := projects.SaveConflictCopy(folder, rel, principal, challenger); conflict != "" {
 			msg += "; your content saved to " + conflict
 		}
 		return msg
@@ -198,7 +198,7 @@ func (s *Service) cliEnsureDefaultWorkspace(ctx context.Context, tenant string) 
 	return err
 }
 
-func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cliResult {
+func (s *Service) cliCmdTeamProject(ctx context.Context, parsed cliParsed) cliResult {
 	op := ""
 	if len(parsed.positional) > 0 {
 		op = parsed.positional[0]
@@ -222,7 +222,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if err := s.cliEnsureDefaultWorkspace(ctx, tenant); err != nil {
 			return cliErrThrow(err)
 		}
-		if err := workspaces.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
+		if err := projects.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
 			return cliErrThrow(err)
 		}
 		rows, err := s.DB.QueryContext(ctx,
@@ -313,7 +313,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, body); errMsg != "" {
 			return cliErr(errMsg)
 		}
@@ -369,7 +369,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return cliErrThrow(err)
 		}
@@ -419,7 +419,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 				return cliErr(fail)
 			}
 		}
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if errMsg := cliWriteWorkspaceFile(folder, path, next); errMsg != "" {
 			return cliErr(errMsg)
 		}
@@ -464,7 +464,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErr("file not found")
 		}
 		// 删前留档:误删可从 .cumora/versions/ 恢复(#337)。
-		workspaces.SnapshotVersion(folder, path)
+		projects.SnapshotVersion(folder, path)
 		if st.IsDir() {
 			// 空目录才删(os.Remove 语义):非空目录保守拒绝,清空后再删。
 			if err := os.Remove(abs); err != nil {
@@ -528,7 +528,7 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 			return cliErrThrow(err)
 		}
 		// 移前留档:源位置的旧内容可恢复(#337)。
-		workspaces.SnapshotVersion(folder, relSrc)
+		projects.SnapshotVersion(folder, relSrc)
 		if err := os.Rename(absSrc, absDst); err != nil {
 			return cliErrThrow(err)
 		}

@@ -20,11 +20,11 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
-	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/projects"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/events"
 )
 
-// WSFileChange:workspace.files_changed 帧的清单行(与 ws-events 契约
+// WSFileChange:project.files_changed 帧的清单行(与 ws-events 契约
 // 的 changes.items 同形)。
 type WSFileChange struct {
 	Path       string `json:"path"`
@@ -60,7 +60,7 @@ func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string,
 	hset := map[string]interface{}{}
 	var hdel []string
 	for _, rel := range paths {
-		if workspaces.RejectReserved(rel) != "" {
+		if projects.RejectReserved(rel) != "" {
 			continue // 平台内部目录不进感知面
 		}
 		abs := filepath.Join(folder, filepath.FromSlash(rel))
@@ -85,7 +85,7 @@ func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string,
 				}
 			}
 		}
-		workspaces.SnapshotVersion(folder, rel)
+		projects.SnapshotVersion(folder, rel)
 		changes = append(changes, WSFileChange{Path: rel, MtimeNanos: nano, Size: size})
 		hset[rel] = strconv.FormatInt(nano, 10) + ":" + strconv.FormatInt(size, 10)
 	}
@@ -131,10 +131,10 @@ func SyncWorkspaceFileState(ctx context.Context, wsID, companyID, folder string,
 				"size": c.Size, "removed": c.Removed,
 			})
 		}
-		events.WorkspaceFilesChanged(ctx, events.WorkspaceFilesChangedEvent{
-			CompanyID:   companyID,
-			WorkspaceID: wsID,
-			Changes:     mapped,
+		events.ProjectFilesChanged(ctx, events.ProjectFilesChangedEvent{
+			CompanyID: companyID,
+			ProjectID: wsID,
+			Changes:   mapped,
 		})
 	}
 	return changes
