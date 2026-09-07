@@ -1342,6 +1342,9 @@ type Project struct {
 	CreatedAt         time.Time  `json:"createdAt"`
 	Description       string     `json:"description"`
 
+	// ExplicitMemberCount 显式成员数(推导成员不计;#355 并入原列表语义)
+	ExplicitMemberCount int `json:"explicitMemberCount"`
+
 	// FolderPath 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。
 	FolderPath *string       `json:"folderPath"`
 	Id         string        `json:"id"`
