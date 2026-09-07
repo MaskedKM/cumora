@@ -10,6 +10,9 @@ export function TitleBar() {
   const t = useT()
   const view = useApp((s) => s.view)
   const setView = useApp((s) => s.setView)
+  // 评审 P3-4(#372):scrim 只盖内容行,标题栏暴露在外 —— 这里换场必须
+  // 顺手关菜单,与 B 键路径(closeNavMenu 先行)保持一致。
+  const closeNavMenu = useApp((s) => s.closeNavMenu)
   // In Electron with hidden titleBarStyle on mac, native traffic lights land in this strip.
   // Reserve space on the left for them, and make the bar a draggable region.
   const dragStyle = isElectron
@@ -57,7 +60,7 @@ export function TitleBar() {
         {view !== 'conversations' && (
           <button
             type="button"
-            onClick={() => setView('conversations')}
+            onClick={() => { closeNavMenu(); setView('conversations') }}
             className="inline-flex h-7 items-center gap-1 rounded-lg border border-ink-200 bg-cloud px-2.5 text-[12.5px] text-ink-700 transition-colors hover:border-skype hover:bg-sky2-50 hover:text-skype-deep"
             style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
             aria-label={t('nav.conversations')}
@@ -68,9 +71,9 @@ export function TitleBar() {
         {/* #368 刀1:看板是唯一保留一键可达的非聊天面(ADR 0009)——标题栏
             常驻 + B 快捷键(DesktopApp 注册)。no-drag 让按钮在 Electron
             拖拽区里仍可点击。 */}
-        <button
-          type="button"
-          onClick={() => setView(view === 'boards' ? 'conversations' : 'boards')}
+          <button
+            type="button"
+            onClick={() => { closeNavMenu(); setView(view === 'boards' ? 'conversations' : 'boards') }}
           className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-ink-200 bg-cloud px-2.5 text-[12.5px] text-ink-700 transition-colors hover:border-skype hover:bg-sky2-50 hover:text-skype-deep"
           style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
           title={`${t('nav.boards')} (B)`}

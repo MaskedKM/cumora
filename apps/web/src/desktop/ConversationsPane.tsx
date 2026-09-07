@@ -302,6 +302,25 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
             <path d="M4 7h16M4 12h16M4 17h10" />
           </svg>
         </button>
+        {/* 评审 P2-1(#372):行动计数聚合胶囊挂列表头 —— 分区块头的计数只
+            在列表顶部可见,头部胶囊保证任何滚动/滤片态下待办信号不丢
+            (对话未读总数仍由 Unread 滤片徽标承载)。点按 = 展开分区。 */}
+        {actionCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setActionCollapsed(false)}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11.5px] font-semibold transition-colors hover:bg-[#FFEFEA]"
+            style={{ background: '#FFF6F5', borderColor: 'var(--coral-soft)', color: 'var(--coral-deep)' }}
+            title={t('convo.actionSection')}
+            aria-label={t('convo.actionSection')}
+          >
+            <span
+              className="grid h-4 min-w-4 place-items-center rounded-full px-1 text-[9.5px] font-bold"
+              style={{ background: 'var(--coral)', color: 'white' }}
+            >{actionCount}</span>
+            <span className="hidden sm:inline">{t('convo.actionSection')}</span>
+          </button>
+        )}
         <h1 className="font-display font-medium text-[20px] tracking-tight text-ink-900 leading-none flex-1 min-w-0 truncate whitespace-nowrap">
           {t('convo.title')}
           <svg
