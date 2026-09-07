@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cumora · 对话优先导航预览(刀1 + 刀2 形态)</title>
+<style>
+  :root {
+    --skype: #00A8F0; --skype-deep: #0078C8; --sky-50: #F2FAFE; --sky-100: #E1F3FD;
+    --coral: #FF7A6B; --coral-soft: #FFD9D2; --coral-deep: #C84E3F;
+    --gold: #F4B740; --gold-deep: #BA8418;
+    --whisper: #7B6CB0; --whisper-deep: #4E3F8C; --whisper-50: #F7F5FB; --whisper-100: #ECE7F5;
+    --avail: #6EC56A; --working: #F4B740; --thinking: #8A78C8; --resting: #B8C4D1;
+    --ink-900: #0A1B2E; --ink-700: #233A53; --ink-500: #5B7186; --ink-300: #94A8BC;
+    --ink-200: #C5D2DE; --ink-100: #E5ECF2; --paper: #FAFCFE; --cloud: #FFFFFF;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: linear-gradient(160deg, #D8E9F4, #C4D9EA 55%, #DCE9F2);
+    display: grid; place-items: center; padding: 24px; color: var(--ink-900);
+    -webkit-font-smoothing: antialiased;
+  }
+  .caption { width: min(1480px, calc(100vw - 48px)); margin: 0 auto 12px; display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  .caption h1 { font-size: 15px; font-weight: 600; color: var(--ink-700); }
+  .caption p { font-size: 12px; color: var(--ink-500); }
+  .caption .tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--sky-100); color: var(--skype-deep); font-weight: 600; }
+
+  .window {
+    width: min(1480px, calc(100vw - 48px));
+    height: calc(100vh - 96px); min-height: 620px;
+    background: var(--cloud); border-radius: 18px; overflow: hidden; position: relative;
+    box-shadow: 0 50px 100px -20px rgba(10,30,60,.25), 0 30px 60px -30px rgba(10,30,60,.3), 0 0 0 1px rgba(0,80,140,.06);
+    display: grid; grid-template-rows: 44px 1fr;
+  }
+
+  /* ── 标题栏 ─────────────────────────────── */
+  .titlebar {
+    display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    background: linear-gradient(180deg, #FDFEFF, #F4F9FC); border-bottom: 1px solid var(--ink-100);
+    position: relative; z-index: 40; user-select: none;
+  }
+  .traffic { display: flex; gap: 7px; padding: 0 4px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; }
+  .traffic i:nth-child(1) { background: #FF6057; } .traffic i:nth-child(2) { background: #FFBD2E; } .traffic i:nth-child(3) { background: #28C840; }
+  .tb-title { position: absolute; left: 50%; transform: translateX(-50%); font-size: 12.5px; color: var(--ink-500); letter-spacing: .2px; }
+  .tb-title b { color: var(--ink-700); font-weight: 600; }
+  .tb-spacer { flex: 1; }
+  .tb-btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px;
+    border: 1px solid var(--ink-200); border-radius: 8px; background: var(--cloud);
+    font-size: 12.5px; color: var(--ink-700); cursor: pointer; transition: all .15s;
+  }
+  .tb-btn:hover { border-color: var(--skype); color: var(--skype-deep); background: var(--sky-50); }
+  .tb-btn kbd {
+    font-family: inherit; font-size: 10.5px; color: var(--ink-300); border: 1px solid var(--ink-200);
+    border-radius: 5px; padding: 0 5px; line-height: 16px;
+  }
+  .tb-btn.danger:hover { border-color: var(--coral); color: var(--coral-deep); background: #FFF6F5; }
+
+  .body { position: relative; min-height: 0; display: flex; }
+
+  /* ── 会话列表 ───────────────────────────── */
+  .messenger { flex: 1; display: flex; min-width: 0; }
+  .list {
+    width: 328px; min-width: 328px; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, #F8FBFD, #EDF4F9); border-right: 1px solid var(--ink-100);
+  }
+  .list-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 10px; border: none; background: transparent;
+    display: grid; place-items: center; cursor: pointer; color: var(--ink-500); transition: all .15s;
+  }
+  .icon-btn:hover { background: var(--cloud); color: var(--skype-deep); box-shadow: 0 1px 4px rgba(10,30,60,.08); }
+  .icon-btn svg { width: 18px; height: 18px; }
+  .action-pill {
+    flex: 1; display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 10px;
+    background: #FFF6F5; border: 1px solid var(--coral-soft); border-radius: 10px; cursor: pointer;
+    font-size: 12.5px; font-weight: 600; color: var(--coral-deep); transition: all .15s;
+  }
+  .action-pill:hover { background: #FFEFEA; }
+  .action-pill .dot { min-width: 18px; height: 18px; border-radius: 99px; background: var(--coral); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+  .action-pill .chev { margin-left: auto; color: var(--coral-deep); opacity: .6; font-size: 10px; }
+  .action-pill.collapsed .chev { transform: rotate(-90deg); }
+
+  .list-scroll { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+  .sec-label {
+    display: flex; align-items: center; gap: 6px; padding: 12px 8px 5px;
+    font-size: 11px; font-weight: 700; letter-spacing: .4px; color: var(--ink-300);
+  }
+  .sec-label.wsp { color: var(--whisper); }
+  .sec-label .lock { font-size: 10px; opacity: .8; }
+
+  .row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 11px;
+    cursor: pointer; transition: background .12s; position: relative;
+  }
+  .row:hover { background: rgba(255,255,255,.75); }
+  .row.active { background: var(--cloud); box-shadow: 0 1px 6px rgba(10,30,60,.08); }
+  .row.active::before {
+    content: ""; position: absolute; left: -8px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 22px; border-radius: 0 3px 3px 0; background: var(--skype);
+  }
+  .row.wsp-row.active::before { background: var(--whisper); }
+  .row.action-row { padding: 7px 8px 7px 10px; border-left: 3px solid var(--coral); border-radius: 0 11px 11px 0; background: rgba(255,255,255,.55); margin: 2px 0; }
+  .row.action-row:hover { background: var(--cloud); }
+
+  .avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; position: relative; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 700; }
+  .avatar.sm { width: 22px; height: 22px; font-size: 10px; }
+  .avatar .st { position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid #F3F8FB; }
+  .row-text { flex: 1; min-width: 0; }
+  .row-name { display: flex; align-items: baseline; gap: 6px; }
+  .row-name b { font-size: 13.5px; font-weight: 600; color: var(--ink-900); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-name .sub { font-size: 10.5px; color: var(--ink-300); flex-shrink: 0; }
+  .row-name .who { font-size: 10.5px; color: var(--whisper-deep); flex-shrink: 0; }
+  .row-preview { font-size: 12px; color: var(--ink-500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .row-preview.unread { color: var(--ink-700); font-weight: 500; }
+  .badge {
+    min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px; background: var(--coral);
+    color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; align-self: flex-start; margin-top: 3px;
+  }
+  .badge.wsp-badge { background: var(--whisper); }
+  .time { font-size: 10.5px; color: var(--ink-300); align-self: flex-start; margin-top: 4px; flex-shrink: 0; }
+  .hash { width: 36px; height: 36px; border-radius: 10px; background: var(--ink-100); color: var(--ink-500); display: grid; place-items: center; font-size: 15px; font-weight: 700; flex-shrink: 0; }
+
+  /* ── 聊天 ─────────────────────────────── */
+  .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--paper); }
+  .chat-head { display: flex; align-items: center; gap: 11px; padding: 10px 18px; border-bottom: 1px solid var(--ink-100); background: var(--cloud); }
+  .chat-head .meta { flex: 1; min-width: 0; }
+  .chat-head .meta b { font-size: 15px; font-weight: 600; }
+  .chat-head .meta span { display: block; font-size: 11.5px; color: var(--ink-500); margin-top: 1px; }
+  .chat-head .meta .typing { color: var(--thinking); font-weight: 500; }
+  .msgs { flex: 1; overflow-y: auto; padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; }
+  .day { align-self: center; font-size: 11px; color: var(--ink-300); background: var(--ink-100); padding: 3px 12px; border-radius: 99px; }
+  .msg { display: flex; gap: 10px; max-width: 76%; }
+  .msg .bubble { padding: 9px 13px; border-radius: 14px; font-size: 13.5px; line-height: 1.55; }
+  .msg.other .bubble { background: var(--cloud); border: 1px solid var(--ink-100); border-top-left-radius: 4px; box-shadow: 0 1px 3px rgba(10,30,60,.04); }
+  .msg.mine { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.mine .bubble { background: linear-gradient(135deg, #E1F3FD, #CFF0FC); border: 1px solid #B5E5FA; border-top-right-radius: 4px; }
+  .msg .bubble .who { font-size: 11.5px; font-weight: 700; margin-bottom: 2px; }
+  .msg .bubble .time2 { display: block; font-size: 10px; color: var(--ink-300); margin-top: 4px; text-align: right; }
+  .doc-card {
+    display: flex; gap: 10px; align-items: center; background: var(--sky-50); border: 1px solid #BFE6F8;
+    border-radius: 11px; padding: 9px 12px; margin-top: 6px; cursor: pointer; transition: all .15s; width: 320px;
+  }
+  .doc-card:hover { border-color: var(--skype); background: var(--sky-100); }
+  .doc-ico { width: 34px; height: 34px; border-radius: 9px; background: var(--skype); color: #fff; display: grid; place-items: center; font-size: 16px; flex-shrink: 0; }
+  .doc-card b { font-size: 12.5px; display: block; }
+  .doc-card span { font-size: 11px; color: var(--ink-500); }
+  .composer { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--ink-100); background: var(--cloud); }
+  .composer input {
+    flex: 1; height: 38px; border: 1px solid var(--ink-200); border-radius: 11px; padding: 0 14px;
+    font-size: 13.5px; outline: none; font-family: inherit; background: var(--paper);
+  }
+  .composer input:focus { border-color: var(--skype); }
+  .send { width: 38px; height: 38px; border-radius: 11px; border: none; background: var(--skype); color: #fff; cursor: pointer; display: grid; place-items: center; font-size: 15px; }
+
+  /* ── 全屏二级视图(刀2 形态:点谁谁接管,左上返回,与看板同构) ── */
+  .view-screen { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--paper); animation: viewIn .18s ease; }
+  @keyframes viewIn { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+  .view-head { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--cloud); border-bottom: 1px solid var(--ink-100); }
+  .view-head b { font-size: 15px; }
+  .view-sub { font-size: 12px; color: var(--ink-300); }
+  .view-body { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  .fs2 { display: grid; gap: 18px; align-items: start; }
+  .fs2 > aside { background: var(--cloud); border: 1px solid var(--ink-100); border-radius: 13px; padding: 10px; }
+  .pane-label { font-size: 11px; font-weight: 700; color: var(--ink-300); letter-spacing: .4px; margin: 4px 0 8px; }
+
+  .month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .month .hd { text-align: center; font-size: 11px; font-weight: 700; color: var(--ink-300); padding: 4px 0; }
+  .month .cell { min-height: 88px; background: var(--cloud); border: 1px solid var(--ink-100); border-radius: 10px; padding: 6px 8px; }
+  .month .cell.off { background: transparent; border-color: transparent; }
+  .month .cell.today { border-color: var(--skype); box-shadow: 0 0 0 1px var(--skype); }
+  .month .cell .d { font-size: 11px; font-weight: 700; color: var(--ink-500); }
+  .month .cell.today .d { color: var(--skype-deep); }
+  .month .evc { display: block; margin-top: 4px; font-size: 10px; border-radius: 5px; padding: 2px 6px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .doc-row { padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+  .doc-row b { font-size: 12.5px; font-weight: 600; color: var(--ink-700); display: block; }
+  .doc-row span { font-size: 10.5px; color: var(--ink-300); }
+  .doc-row:hover { background: var(--paper); }
+  .doc-row.active { background: var(--sky-50); }
+  .doc-row.active b { color: var(--skype-deep); }
+
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .a-card { background: var(--cloud); border: 1px solid var(--ink-100); border-radius: 13px; padding: 14px; }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--cloud); border: 1px solid var(--ink-100); }
+  .tbl th { text-align: left; font-size: 11px; color: var(--ink-300); padding: 9px 14px; border-bottom: 1px solid var(--ink-100); background: var(--paper); }
+  .tbl td { padding: 10px 14px; border-bottom: 1px solid var(--ink-100); }
+
+  .abtn { font-size: 11.5px; font-weight: 600; border: none; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-family: inherit; }
+  .abtn.ok { background: var(--skype); color: #fff; }
+  .abtn.no { background: var(--cloud); color: var(--coral-deep); border: 1px solid var(--coral-soft); }
+
+  .tog { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border: 1px solid var(--ink-100); border-radius: 11px; margin-bottom: 8px; font-size: 12.5px; color: var(--ink-700); background: var(--cloud); }
+  .sw { width: 34px; height: 20px; border-radius: 99px; background: var(--skype); position: relative; flex-shrink: 0; }
+  .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .sw.off { background: var(--ink-200); }
+  .sw.off::after { right: auto; left: 2px; }
+  .ev { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--ink-100); border-radius: 11px; margin-bottom: 7px; }
+  .ev .bar { width: 4px; border-radius: 3px; flex-shrink: 0; }
+  .ev b { font-size: 12.5px; display: block; }
+  .ev span { font-size: 11px; color: var(--ink-500); }
+
+  .tree { font-size: 12.5px; line-height: 2; color: var(--ink-700); }
+  .tree .d { color: var(--ink-300); }
+  .tree .f::before { content: "📄 "; font-size: 11px; }
+  .tree .d::before { content: "📁 "; font-size: 11px; }
+  .chip { display: inline-block; font-size: 11px; font-family: ui-monospace, monospace; background: var(--ink-100); border-radius: 7px; padding: 3px 8px; color: var(--ink-700); margin-top: 10px; }
+
+  .ship-item, .agent-item, .hr-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--ink-100);
+    border-radius: 11px; margin-bottom: 7px;
+  }
+  .agent-item b { font-size: 13px; display: block; }
+  .agent-item span { font-size: 11px; color: var(--ink-500); }
+  .state { margin-left: auto; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 99px; }
+  .state.ok { background: #EBF7EA; color: #3E8A3A; } .state.warn { background: #FDF3DC; color: var(--gold-deep); }
+  .state.act { background: var(--whisper-100); color: var(--whisper-deep); }
+
+  .para { font-size: 13px; line-height: 1.75; color: var(--ink-700); margin-bottom: 12px; }
+  .doc-meta { display: flex; gap: 8px; margin-bottom: 14px; }
+  .doc-meta span { font-size: 11px; background: var(--ink-100); color: var(--ink-500); border-radius: 99px; padding: 3px 10px; }
+
+  .spark { display: flex; align-items: flex-end; gap: 4px; height: 84px; padding: 10px; background: var(--paper); border: 1px solid var(--ink-100); border-radius: 11px; margin-bottom: 12px; }
+  .spark i { flex: 1; background: linear-gradient(180deg, var(--skype), #8FD3F7); border-radius: 3px 3px 0 0; }
+
+  /* ── 全高滑出菜单(独立导航层,不再挂在侧栏角落) ── */
+  .scrim { position: absolute; inset: 0; z-index: 50; background: rgba(10,27,46,.30); animation: fade .16s ease; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .menu {
+    position: absolute; top: 0; left: 0; bottom: 0; z-index: 51; width: 300px;
+    background: var(--cloud); display: flex; flex-direction: column;
+    box-shadow: 24px 0 60px -18px rgba(10,30,60,.38), 1px 0 0 var(--ink-100);
+    animation: slideOut .2s ease;
+  }
+  @keyframes slideOut { from { transform: translateX(-44px); opacity: .4; } to { transform: none; opacity: 1; } }
+  .so-profile {
+    display: flex; align-items: center; gap: 12px; padding: 18px 16px 15px; cursor: pointer;
+    border-bottom: 1px solid var(--ink-100); transition: background .12s;
+  }
+  .so-profile:hover { background: var(--sky-50); }
+  .so-profile .who { flex: 1; min-width: 0; }
+  .so-profile .who b { font-size: 15.5px; display: block; }
+  .so-profile .who span { font-size: 11.5px; color: var(--ink-500); }
+  .so-arrow { color: var(--ink-300); font-size: 20px; line-height: 1; }
+  .so-scroll { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .so-divider { height: 1px; background: var(--ink-100); margin: 10px 14px; }
+  .so-exit {
+    display: flex; align-items: center; gap: 10px; padding: 13px 16px; border: none; border-top: 1px solid var(--ink-100);
+    background: none; color: var(--ink-500); font-size: 13px; font-family: inherit; cursor: pointer; text-align: left;
+  }
+  .so-exit:hover { background: #FFF6F5; color: var(--coral-deep); }
+  .menu-group { padding: 4px 8px 2px; }
+  .menu-group > span { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; color: var(--ink-300); padding: 6px 10px 4px; }
+  .menu-item {
+    display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 10px; border: none; background: none;
+    border-radius: 10px; cursor: pointer; font-size: 13.5px; color: var(--ink-900); font-family: inherit; text-align: left;
+  }
+  .menu-item:hover { background: var(--sky-50); color: var(--skype-deep); }
+  .menu-item .mi { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; font-size: 16px; background: var(--sky-100); flex-shrink: 0; }
+  .menu-item .sub { margin-left: auto; font-size: 10px; color: var(--ink-300); }
+  .menu-item .pend { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; background: var(--coral); color: #fff; font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
+  /* 公司组 = 配置层:紧凑行 + 弱化图标,和工作面拉开视觉层级 */
+  .menu-group.dim .menu-item { padding: 7px 10px; font-size: 12.5px; color: var(--ink-500); }
+  .menu-group.dim .menu-item .mi { width: 26px; height: 26px; border-radius: 8px; font-size: 13px; background: var(--paper); border: 1px solid var(--ink-100); }
+  .menu-group.dim .menu-item:hover { color: var(--skype-deep); }
+
+  /* ── 看板全屏 ──────────────────────────── */
+  .boards { flex: 1; display: flex; min-width: 0; background: var(--paper); }
+  .boards-list { width: 248px; min-width: 248px; border-right: 1px solid var(--ink-100); background: var(--cloud); display: flex; flex-direction: column; }
+  .boards-list .bk-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
+  .bk-head b { font-size: 16px; flex: 1; }
+  .bk-row { display: flex; align-items: center; gap: 9px; padding: 8px 14px; cursor: pointer; font-size: 13px; color: var(--ink-700); border-left: 3px solid transparent; }
+  .bk-row:hover { background: var(--paper); }
+  .bk-row.active { background: var(--sky-50); border-left-color: var(--skype); color: var(--skype-deep); font-weight: 600; }
+  .bk-row .cnt { margin-left: auto; font-size: 11px; color: var(--ink-300); }
+  .kanban { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .kb-head { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--cloud); border-bottom: 1px solid var(--ink-100); }
+  .back-btn {
+    display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px; border-radius: 9px;
+    border: 1px solid var(--ink-200); background: var(--cloud); cursor: pointer; font-size: 12.5px; color: var(--ink-700);
+  }
+  .back-btn:hover { border-color: var(--skype); color: var(--skype-deep); }
+  .kb-cols { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 16px 20px; overflow-x: auto; }
+  .kb-col { min-width: 200px; }
+  .kb-col > h3 { font-size: 12px; font-weight: 700; color: var(--ink-500); letter-spacing: .3px; display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
+  .kb-col > h3 .n { background: var(--ink-100); border-radius: 99px; padding: 1px 8px; font-size: 10.5px; color: var(--ink-500); }
+  .card-k {
+    background: var(--cloud); border: 1px solid var(--ink-100); border-radius: 12px; padding: 11px 12px; margin-bottom: 9px;
+    box-shadow: 0 1px 3px rgba(10,30,60,.04); cursor: pointer; transition: all .15s;
+  }
+  .card-k:hover { border-color: var(--skype-300, #8FD3F7); transform: translateY(-1px); box-shadow: 0 6px 16px -6px rgba(10,30,60,.18); }
+  .card-k b { font-size: 12.5px; display: block; margin-bottom: 6px; line-height: 1.4; }
+  .card-k .tags { display: flex; align-items: center; gap: 6px; }
+  .card-k .tag2 { font-size: 10px; padding: 2px 7px; border-radius: 6px; background: var(--ink-100); color: var(--ink-500); }
+  .card-k .tag2.pri { background: var(--whisper-100); color: var(--whisper-deep); }
+  .card-k .assignee { margin-left: auto; display: flex; }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="caption">
+  <h1><span class="tag">预览</span> 对话优先导航 — 刀1(导航重构)+ 刀2(二级面抽屉化)终态</h1>
+  <p>可交互:点 ☰ 左侧滑出菜单 · 菜单项/头像行/文档卡 = 全屏接管,左上「‹ 返回对话」回聊天 · 顶栏「看板」或按 B · Esc 层层退回</p>
+</div>
+
+<div class="window" id="win">
+  <!-- ── 标题栏 ── -->
+  <div class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <span class="tb-title"><b>cumora</b> — Nova(PM)</span>
+    <div class="tb-spacer"></div>
+    <button class="tb-btn" id="btnBoards" title="看板(唯一常驻非聊天入口,快捷键 B)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      看板 <kbd>B</kbd>
+    </button>
+  </div>
+
+  <div class="body">
+    <!-- ── 看板全屏(接管态) ── -->
+    <div class="boards" id="boardsScreen" hidden>
+      <aside class="boards-list">
+        <div class="bk-head">
+          <b>看板</b>
+          <button class="icon-btn" title="新建板">＋</button>
+        </div>
+        <div class="bk-row active">📋 主线看板 <span class="cnt">6</span></div>
+        <div class="bk-row">🧪 稳定性专项 <span class="cnt">3</span></div>
+        <div class="bk-row">📚 文档迁移 <span class="cnt">2</span></div>
+        <div class="bk-row">🤖 HR 巡检 <span class="cnt">1</span></div>
+      </aside>
+      <div class="kanban">
+        <div class="kb-head">
+          <button class="back-btn" id="btnBack">‹ 返回对话</button>
+          <b style="font-size:15px">主线看板</b>
+          <span style="font-size:12px;color:var(--ink-300)">项目:cumora 主仓</span>
+        </div>
+        <div class="kb-cols">
+          <div class="kb-col">
+            <h3>待领 <span class="n">2</span></h3>
+            <div class="card-k"><b>#368 e2e 冒烟插桩稳定性</b><div class="tags"><span class="tag2">QA</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#6EC56A,#3E8A3A)">V</span></span></div></div>
+            <div class="card-k"><b>#369 CONTEXT.md 术语核对</b><div class="tags"><span class="tag2">写作</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#94A8BC,#5B7186)">S</span></span></div></div>
+          </div>
+          <div class="kb-col">
+            <h3>进行中 <span class="n">2</span></h3>
+            <div class="card-k"><b>#367 runner 重试链路加固</b><div class="tags"><span class="tag2 pri">后端</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#FF7A6B,#C84E3F)">B</span><span class="avatar sm" style="background:linear-gradient(135deg,#F4B740,#BA8418)">O</span></span></div></div>
+            <div class="card-k"><b>#366 ProjectsView 空态</b><div class="tags"><span class="tag2 pri">前端</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#00A8F0,#0078C8)">W</span></span></div></div>
+          </div>
+          <div class="kb-col">
+            <h3>待评审 <span class="n">1</span></h3>
+            <div class="card-k"><b>#365 workspace→project 全线改名</b><div class="tags"><span class="tag2">评审</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#8A78C8,#4E3F8C)">A</span></span></div></div>
+          </div>
+          <div class="kb-col">
+            <h3>已交付 <span class="n">1</span></h3>
+            <div class="card-k"><b>#364 HR 提案审批链</b><div class="tags"><span class="tag2">人事</span><span class="assignee"><span class="avatar sm" style="background:linear-gradient(135deg,#6EC56A,#3E8A3A)">✓</span></span></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── messenger 本体 ── -->
+    <div class="messenger" id="messenger">
+      <aside class="list">
+        <div class="list-head">
+          <button class="icon-btn" id="btnMenu" title="菜单(工作面 / 公司 / 我)" aria-label="菜单">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+          </button>
+          <div class="action-pill" id="actionPill" title="收件箱退役后的形态:高优分区常驻列表顶">
+            <span class="dot">2</span> 需要你行动 <span class="chev">▾</span>
+          </div>
+          <button class="icon-btn" title="新对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </button>
+        </div>
+        <div class="list-scroll" id="listScroll">
+          <!-- 高优分区(InboxView 退役 → 列表分区) -->
+          <div id="actionSec">
+            <div class="sec-label">📌 需要你行动</div>
+            <div class="row action-row" data-chat="bram">
+              <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#C84E3F)">B<span class="st" style="background:var(--working)"></span></span>
+              <div class="row-text">
+                <div class="row-name"><b>Bram 请求评审</b><span class="time" style="margin:0">2 分钟前</span></div>
+                <div class="row-preview unread">PR #367 runner 重试链路 — 评审通过即合并</div>
+              </div>
+            </div>
+            <div class="row action-row" data-chat="vera">
+              <span class="avatar" style="background:linear-gradient(135deg,#6EC56A,#3E8A3A)">V<span class="st" style="background:var(--avail)"></span></span>
+              <div class="row-text">
+                <div class="row-name"><b>Vera · QA 报告</b><span class="time" style="margin:0">1 小时前</span></div>
+                <div class="row-preview unread">回归 12/12 绿,一处 flake 待你确认处置</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sec-label">频道</div>
+          <div class="row" data-chat="ch1">
+            <span class="hash">#</span>
+            <div class="row-text">
+              <div class="row-name"><b>产品例会</b></div>
+              <div class="row-preview unread">Nova:周会纪要已归档,冲突项标了 📌</div>
+            </div>
+            <span class="badge">3</span><span class="time">10:24</span>
+          </div>
+          <div class="row" data-chat="ch2">
+            <span class="hash">#</span>
+            <div class="row-text">
+              <div class="row-name"><b>交付广播</b></div>
+              <div class="row-preview">Otto:desktop-v0.4.7 已发布,携带 HR 战役六刃</div>
+            </div>
+            <span class="time">09:02</span>
+          </div>
+          <div class="row" data-chat="ch3">
+            <span class="hash">#</span>
+            <div class="row-text">
+              <div class="row-name"><b>值班</b></div>
+              <div class="row-preview">Sage:轮值表已更新到第 37 周</div>
+            </div>
+            <span class="time">昨天</span>
+          </div>
+
+          <div class="sec-label">私信</div>
+          <div class="row active" data-chat="nova">
+            <span class="avatar" style="background:linear-gradient(135deg,#00A8F0,#0078C8)">N<span class="st" style="background:var(--working)"></span></span>
+            <div class="row-text">
+              <div class="row-name"><b>Nova</b><span class="sub">PM</span></div>
+              <div class="row-preview">PRD 已按你的批注改完,可以过一遍</div>
+            </div>
+            <span class="time">14:31</span>
+          </div>
+          <div class="row" data-chat="atlas">
+            <span class="avatar" style="background:linear-gradient(135deg,#8A78C8,#4E3F8C)">A<span class="st" style="background:var(--avail)"></span></span>
+            <div class="row-text">
+              <div class="row-name"><b>Atlas</b><span class="sub">Tech Lead</span></div>
+              <div class="row-preview unread">评审意见留在 #365 了,两处命名再想想</div>
+            </div>
+            <span class="badge">1</span><span class="time">13:58</span>
+          </div>
+          <div class="row" data-chat="wren">
+            <span class="avatar" style="background:linear-gradient(135deg,#4FC2F4,#0078C8)">W<span class="st" style="background:var(--thinking)"></span></span>
+            <div class="row-text">
+              <div class="row-name"><b>Wren</b><span class="sub">前端</span></div>
+              <div class="row-preview">思考中…</div>
+            </div>
+            <span class="time">13:40</span>
+          </div>
+
+          <!-- Agent 对话分区(WhispersView 退役 → owner 专属列表分区) -->
+          <div class="sec-label wsp">🤝 Agent 对话 <span class="lock" title="仅 owner 可见">🔒</span></div>
+          <div class="row wsp-row" data-chat="wsp1">
+            <span class="avatar" style="background:linear-gradient(135deg,#7B6CB0,#4E3F8C)">N·I</span>
+            <div class="row-text">
+              <div class="row-name"><b>Nova ↔ Iris</b><span class="who">agent 私聊</span></div>
+              <div class="row-preview">Iris:空态插画第三稿,紫灰基调</div>
+            </div>
+            <span class="badge wsp-badge">5</span><span class="time">14:02</span>
+          </div>
+          <div class="row wsp-row" data-chat="wsp2">
+            <span class="avatar" style="background:linear-gradient(135deg,#B08BC8,#7B6CB0)">B·W</span>
+            <div class="row-text">
+              <div class="row-name"><b>Bram ↔ Wren</b><span class="who">agent 私聊</span></div>
+              <div class="row-preview">Bram:表单组件的 props 对齐一下</div>
+            </div>
+            <span class="time">11:47</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 聊天 -->
+      <main class="chat">
+        <div class="chat-head">
+          <span class="avatar" style="background:linear-gradient(135deg,#00A8F0,#0078C8);width:38px;height:38px">N<span class="st" style="background:var(--working)"></span></span>
+          <div class="meta">
+            <b>Nova <span style="font-size:11.5px;color:var(--ink-300);font-weight:500">· PM</span></b>
+            <span class="typing">正在思考 — 整理你的第三点批注…</span>
+          </div>
+          <button class="icon-btn" title="会话信息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          </button>
+          <button class="icon-btn" title="发起现场合议(Convene)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+          </button>
+        </div>
+        <div class="msgs">
+          <span class="day">今天</span>
+          <div class="msg other">
+            <span class="avatar" style="background:linear-gradient(135deg,#00A8F0,#0078C8)">N</span>
+            <div class="bubble">
+              <div class="who" style="color:var(--skype-deep)">Nova</div>
+              PRD 我按你昨天的批注全部改完了,三处冲突在文里标了 📌,其他按原文收敛。
+              <div class="doc-card" data-view="docs">
+                <span class="doc-ico">📄</span>
+                <div><b>PRD — 项目视图 v3</b><span>12 页 · 刚更新 · Bram 也订阅了</span></div>
+              </div>
+              <span class="time2">14:28</span>
+            </div>
+          </div>
+          <div class="msg mine">
+            <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#F4B740)">郑</span>
+            <div class="bubble">
+              标 📌 的三处我看完了。第 2 处(空态文案)还是想当面聊聊,你拉个现场合议?
+              <span class="time2">14:30</span>
+            </div>
+          </div>
+          <div class="msg other">
+            <span class="avatar" style="background:linear-gradient(135deg,#00A8F0,#0078C8)">N</span>
+            <div class="bubble">
+              <div class="who" style="color:var(--skype-deep)">Nova</div>
+              好,我把 Wren 也叫上,她正在做这块的空态(卡片 #366)。合议链接稍后发这里。
+              <span class="time2">14:31</span>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <button class="icon-btn" title="附件">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <input placeholder="发消息给 Nova…" id="composerInput">
+          <button class="send">➤</button>
+        </div>
+      </main>
+
+    </div>
+
+    <!-- 全屏二级视图:所有菜单项点开即接管内容区,左上返回 -->
+    <div class="view-screen" id="viewScreen" hidden>
+      <div class="view-head">
+        <button class="back-btn" id="viewBack">‹ 返回对话</button>
+        <b id="viewTitle">—</b>
+        <span class="view-sub" id="viewSub"></span>
+      </div>
+      <div class="view-body" id="viewBody"></div>
+    </div>
+
+    <!-- 全高滑出菜单:你 → 工作面(主) → 公司(次) → 退出 -->
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="menu" id="menu" hidden>
+      <div class="so-profile" data-view="me" title="个人设置 — Profile / 用量 / 信任 / 偏好 / 本地栈">
+        <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#F4B740)">郑<span class="st" style="background:var(--avail)"></span></span>
+        <div class="who"><b>郑瑞杰</b><span>Owner · 8 席团队 · 在线</span></div>
+        <span class="so-arrow">›</span>
+      </div>
+      <div class="so-scroll">
+        <div class="menu-group">
+          <span>工作面</span>
+          <button class="menu-item" data-view="calendar"><span class="mi">📅</span>日历<span class="sub">本周 4 项</span></button>
+          <button class="menu-item" data-view="docs"><span class="mi">📄</span>文档<span class="sub">3 更新</span></button>
+          <button class="menu-item" data-view="projects"><span class="mi">📁</span>项目<span class="sub">2 活跃</span></button>
+          <button class="menu-item" data-view="shipping"><span class="mi">🚢</span>交付<span class="sub">v0.4.7</span></button>
+        </div>
+        <div class="so-divider"></div>
+        <div class="menu-group dim">
+          <span>公司</span>
+          <button class="menu-item" data-view="agents"><span class="mi">🤖</span>智能体<span class="sub">8 席</span></button>
+          <button class="menu-item" data-view="skills"><span class="mi">⚡</span>技能库<span class="sub">14</span></button>
+          <button class="menu-item" data-view="hr"><span class="mi">🧑‍💼</span>人事<span class="pend">2</span></button>
+          <button class="menu-item" data-view="observability"><span class="mi">📈</span>观测<span class="sub">devtools</span></button>
+        </div>
+      </div>
+      <button class="so-exit" id="btnExit" title="退出登录">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        退出登录
+      </button>
+    </aside>
+  </div>
+</div>
+
+<script>
+  const $ = (s) => document.querySelector(s)
+  const menu = $('#menu'), scrim = $('#scrim')
+  const viewScreen = $('#viewScreen'), viewTitle = $('#viewTitle'), viewSub = $('#viewSub'), viewBody = $('#viewBody')
+  const boards = $('#boardsScreen'), messenger = $('#messenger')
+
+  /* 汉堡菜单 */
+  function openMenu() { menu.hidden = false; scrim.hidden = false }
+  function closeMenu() { menu.hidden = true; scrim.hidden = true }
+  $('#btnMenu').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden ? openMenu() : closeMenu() })
+  scrim.addEventListener('click', closeMenu)
+
+  /* 全屏二级视图模板(刀2:点谁谁接管内容区,与看板同构) */
+  const views = {
+    calendar: { title: '日历', sub: '2026 年 9 月 · 本周 4 项', html: `
+      <div class="fs2" style="grid-template-columns:minmax(0,1fr) 300px">
+        <div class="month">
+          ${['一', '二', '三', '四', '五', '六', '日'].map((d) => `<span class="hd">${d}</span>`).join('')}
+          <div class="cell off"></div>${[...Array(30)].map((_, i) => {
+            const d = i + 1
+            const evs = {
+              7: ['15:30 现场合议 · 空态文案', 'var(--skype)'],
+              9: ['10:00 周会 · 产品例会', 'var(--gold)'],
+              11: ['QA 回归 · #367', 'var(--skype)'],
+              14: ['18:00 #367 评审截止', 'var(--coral)'],
+              21: ['发布窗口 v0.4.8', 'var(--skype)'],
+              25: ['HR 例行巡检 · 第 13 轮', 'var(--whisper)'],
+            }[d]
+            return `<div class="cell${d === 7 ? ' today' : ''}"><span class="d">${d}</span>${evs ? `<span class="evc" style="background:${evs[1]}">${evs[0]}</span>` : ''}</div>`
+          }).join('')}
+        </div>
+        <aside>
+          <div class="pane-label">9 月 7 日 · 今天</div>
+          <div class="ev"><span class="bar" style="background:var(--skype)"></span><div><b>15:30 现场合议 · 空态文案</b><span>Nova / Wren / 你 · 本会话发起</span></div></div>
+          <div class="ev"><span class="bar" style="background:var(--gold)"></span><div><b>16:30 Bram 1:1</b><span>PR #367 后续安排</span></div></div>
+          <div class="ev"><span class="bar" style="background:var(--coral)"></span><div><b>18:00 卡片 #369 截止</b><span>CONTEXT.md 术语核对 · Sage</span></div></div>
+          <div class="pane-label" style="margin-top:16px">本周概览</div>
+          <div class="ev"><span class="bar" style="background:var(--whisper)"></span><div><b>4 项日程</b><span>2 场合议 · 1 周会 · 1 截止</span></div></div>
+        </aside>
+      </div>` },
+    docs: { title: '文档', sub: 'cumora 主仓 · 12 篇', html: `
+      <div class="fs2" style="grid-template-columns:260px minmax(0,1fr)">
+        <aside>
+          <div class="pane-label">项目 · cumora 主仓</div>
+          <div class="doc-row active"><b>📄 PRD — 项目视图 v3</b><span>Nova · 刚更新</span></div>
+          <div class="doc-row"><b>📄 QA 回归报告 #367</b><span>Vera · 1 小时前</span></div>
+          <div class="doc-row"><b>📄 周会纪要 W37</b><span>Sage · 昨天</span></div>
+          <div class="doc-row"><b>📄 术语表</b><span>Sage · 周二</span></div>
+          <div class="doc-row"><b>📄 ADR 0008 项目吸收工作区</b><span>Atlas · 上周</span></div>
+        </aside>
+        <div>
+          <h2 style="font-size:20px;margin-bottom:8px">PRD — 项目视图 v3</h2>
+          <div class="doc-meta"><span>Nova 著</span><span>12 页</span><span>刚更新</span><span>关联卡片 #366</span></div>
+          <p class="para"><b>三处冲突标 📌:① 空态插画基调</b> — Iris 主张紫灰(呼应 Agent 对话分区),你此前倾向天空蓝。</p>
+          <p class="para"><b>② 空态文案口吻</b> — 「还没有项目」还是「建一个项目,让 agent 开工」。</p>
+          <p class="para"><b>③ 默认排序</b> — 按最近活跃还是按名称。其余批注已按原文收敛,Bram 补充的交付门槛一节并入第 4 章。</p>
+          <div class="pane-label">协作者</div>
+          <div class="ev"><span class="bar" style="background:var(--skype)"></span><div><b>Nova(著)· Bram · Wren</b><span>在线协同 · yjs</span></div></div>
+        </div>
+      </div>` },
+    projects: { title: '项目', sub: '2 个 · 每项目一个真实文件夹', html: `
+      <div class="fs2" style="grid-template-columns:260px minmax(0,1fr)">
+        <aside>
+          <div class="pane-label">项目</div>
+          <div class="doc-row active"><b>📁 cumora 主仓</b><span>8 成员 · 活跃</span></div>
+          <div class="doc-row"><b>📁 团队文件</b><span>全员 · 默认 · 置顶</span></div>
+          <div class="doc-row"><b>＋ 新建项目</b><span>自动创建文件夹</span></div>
+        </aside>
+        <div>
+          <div class="pane-label">挂载点 ~/team/prj_main/ · 成员读写</div>
+          <div class="tree" style="font-size:13px">
+            <div class="d">apps/web/src/desktop</div>
+            <div class="f">DesktopApp.tsx <span style="color:var(--ink-300)">· 2 小时前</span></div>
+            <div class="f">Rail.tsx <span style="color:var(--ink-300)">· 待刀1 退役</span></div>
+            <div class="d">server-go</div>
+            <div class="d">docs/adr</div>
+            <div class="f">0008-project-absorbs-workspace.md</div>
+            <div class="d">.cumora/worktrees/367</div>
+            <div class="f">branch cumora/367 <span style="color:var(--ink-300)">· Bram 领取中</span></div>
+            <div class="f">CONTEXT.md</div>
+          </div>
+          <span class="chip">关联会话 3 · 关联卡片 6 · 文档 12</span>
+        </div>
+      </div>` },
+    shipping: { title: '交付', sub: '最近 30 天', html: `
+      <table class="tbl">
+        <tr><th>交付物</th><th>类型</th><th>分支</th><th>评审</th><th>状态</th><th>时间</th></tr>
+        <tr><td><b>PR #367 runner 重试链路</b></td><td>卡片交付</td><td>cumora/367</td><td>Atlas</td><td><span class="state warn">待评审</span></td><td>今天</td></tr>
+        <tr><td><b>desktop-v0.4.7</b></td><td>发布</td><td>—</td><td>—</td><td><span class="state ok">已发布</span></td><td>09-02</td></tr>
+        <tr><td><b>PR #365 workspace→project 改名</b></td><td>卡片交付</td><td>cumora/365</td><td>Atlas</td><td><span class="state ok">已合并</span></td><td>09-05</td></tr>
+        <tr><td><b>PR #364 提案审批链</b></td><td>卡片交付</td><td>cumora/364</td><td>Atlas</td><td><span class="state ok">已合并</span></td><td>09-04</td></tr>
+      </table>` },
+    agents: { title: '智能体', sub: '8 席 · 7 在线 · 无人数上限', html: `
+      <div class="card-grid">
+        ${[
+          ['N', 'Nova', 'PM · 四帽', 'linear-gradient(135deg,#00A8F0,#0078C8)', '工作中', 'warn'],
+          ['I', 'Iris', '设计', 'linear-gradient(135deg,#FF9DE8,#C84E9F)', '在线', 'ok'],
+          ['A', 'Atlas', 'Tech Lead · 只评不写', 'linear-gradient(135deg,#8A78C8,#4E3F8C)', '在线', 'ok'],
+          ['B', 'Bram', '后端', 'linear-gradient(135deg,#FF7A6B,#C84E3F)', '工作中', 'warn'],
+          ['W', 'Wren', '前端', 'linear-gradient(135deg,#4FC2F4,#0078C8)', '思考中', 'act'],
+          ['V', 'Vera', 'QA', 'linear-gradient(135deg,#6EC56A,#3E8A3A)', '在线', 'ok'],
+          ['O', 'Otto', 'DevOps', 'linear-gradient(135deg,#F4B740,#BA8418)', '在线', 'ok'],
+          ['S', 'Sage', '技术写作', 'linear-gradient(135deg,#94A8BC,#5B7186)', '在线', 'ok'],
+        ].map(([ini, name, role, bg, st, cls]) => `
+          <div class="a-card">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+              <span class="avatar" style="background:${bg}">${ini}<span class="st" style="background:var(--avail)"></span></span>
+              <div style="min-width:0"><b style="font-size:13.5px;display:block">${name}</b><span style="font-size:11px;color:var(--ink-500)">${role}</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="state ${cls}" style="margin:0">${st}</span>
+              <span style="font-size:10px;padding:2px 7px;border-radius:6px;background:var(--ink-100);color:var(--ink-500)">claude</span>
+            </div>
+          </div>`).join('')}
+      </div>` },
+    skills: { title: '技能库', sub: '14 个公司技能', html: `
+      <div class="card-grid">
+        ${[
+          ['🔍', 'research', '多源检索 · 引用归一', '全员'],
+          ['🧪', 'code-review', '评审流水线 · P0–P3 分级', 'Atlas / Wren'],
+          ['📝', 'adr-draft', 'ADR 起草六段式', 'Sage / Atlas'],
+          ['🚢', 'release', '版本门 + 原子切 symlink', 'Otto'],
+          ['🧑‍💼', 'hr-round', '巡检轮次驱动', 'HR Agent'],
+          ['🐞', 'diagnose', '判型法:代码 vs 链路', 'Bram / Vera'],
+        ].map(([ico, name, desc, who]) => `
+          <div class="a-card">
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px"><span style="font-size:22px">${ico}</span><b style="font-size:13.5px">${name}</b></div>
+            <span style="font-size:11.5px;color:var(--ink-500);display:block;margin-bottom:9px">${desc}</span>
+            <span style="font-size:10px;padding:2px 7px;border-radius:6px;background:var(--ink-100);color:var(--ink-500)">${who}</span>
+          </div>`).join('')}
+      </div>` },
+    hr: { title: '人事', sub: 'HR Agent · 例行 168h + 事件钩子', html: `
+      <div class="pane-label">待审批提案(2)</div>
+      <div class="a-card" style="max-width:640px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+          <span class="avatar" style="background:linear-gradient(135deg,#7B6CB0,#4E3F8C)">HR</span>
+          <div><b style="font-size:13.5px">提案 #41 · 新增第 9 席(数据工程师)</b><span style="display:block;font-size:11px;color:var(--ink-500)">依据:WIP>1 连续 6 天 · 自动触发</span></div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="abtn ok">批准</button><button class="abtn no">驳回</button><button class="abtn" style="background:var(--paper);border:1px solid var(--ink-200);color:var(--ink-500)">看依据</button></div>
+      </div>
+      <div class="a-card" style="max-width:640px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+          <span class="avatar" style="background:linear-gradient(135deg,#7B6CB0,#4E3F8C)">HR</span>
+          <div><b style="font-size:13.5px">提案 #40 · Wren 岗位词调整</b><span style="display:block;font-size:11px;color:var(--ink-500)">岗位层自主 · 可回滚 · 仅 owner 可见</span></div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="abtn ok">批准</button><button class="abtn no">驳回</button></div>
+      </div>
+      <div class="pane-label">轮次历史</div>
+      <table class="tbl" style="max-width:640px">
+        <tr><th>轮次</th><th>触发</th><th>时间</th><th>结果</th></tr>
+        <tr><td>第 12 轮</td><td>例行</td><td>09-06</td><td><span class="state ok">无动作</span></td></tr>
+        <tr><td>第 11 轮</td><td>事件 · 卡片停更</td><td>09-04</td><td><span class="state warn">提案 #40</span></td></tr>
+        <tr><td>第 10 轮</td><td>例行</td><td>08-30</td><td><span class="state ok">无动作</span></td></tr>
+      </table>` },
+    observability: { title: '观测', sub: 'devtools 已开启', html: `
+      <div class="card-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-bottom:16px">
+        <div class="a-card"><span style="font-size:11px;color:var(--ink-300)">API p95</span><b style="font-size:22px;display:block;margin:4px 0">182ms</b><span style="font-size:11px;color:var(--avail)">环比 −4%</span></div>
+        <div class="a-card"><span style="font-size:11px;color:var(--ink-300)">WS 活跃连接</span><b style="font-size:22px;display:block;margin:4px 0">7 / 8</b><span style="font-size:11px;color:var(--ink-500)">8 席中 7 席在线</span></div>
+        <div class="a-card"><span style="font-size:11px;color:var(--ink-300)">agent 轮次错误率</span><b style="font-size:22px;display:block;margin:4px 0">0.3%</b><span style="font-size:11px;color:var(--ink-500)">阈值 5% 内 · 正常</span></div>
+      </div>
+      <div class="pane-label">请求速率(近 1h)</div>
+      <div class="spark" style="height:120px">${[...Array(48)].map(() => `<i style="height:${28 + Math.random() * 68 | 0}%"></i>`).join('')}</div>
+      <div class="pane-label">最近事件</div>
+      <div class="ev"><span class="bar" style="background:var(--skype)"></span><div><b>cards.go 慢查询告警已消除</b><span>影子表上线后 3.09ms → 0.80ms</span></div></div>
+      <div class="ev"><span class="bar" style="background:var(--gold)"></span><div><b>yjs 合帧批次均值 150ms</b><span>authorId 分组落库正常</span></div></div>` },
+    me: { title: '我', sub: '郑瑞杰 · Owner', html: `
+      <div class="fs2" style="grid-template-columns:230px minmax(0,1fr)">
+        <aside>
+          <div class="pane-label">设置分区</div>
+          <div class="doc-row active"><b>👤 身份与会话</b></div>
+          <div class="doc-row"><b>📊 用量配额</b></div>
+          <div class="doc-row"><b>💻 设备与守护进程</b></div>
+          <div class="doc-row"><b>🛡️ 自治信任</b></div>
+          <div class="doc-row"><b>⚙️ 偏好</b></div>
+          <div class="doc-row"><b>📦 本地栈控制台</b></div>
+        </aside>
+        <div>
+          <div class="a-card" style="max-width:560px;display:flex;gap:14px;align-items:center;margin-bottom:16px">
+            <span class="avatar" style="background:linear-gradient(135deg,#FF7A6B,#F4B740);width:52px;height:52px;font-size:18px">郑<span class="st" style="background:var(--avail)"></span></span>
+            <div><b style="font-size:16px">郑瑞杰</b><span style="display:block;font-size:12px;color:var(--ink-500)">zheng@example.com · Owner · 会话 2 台</span></div>
+          </div>
+          <div class="pane-label">偏好(节选)</div>
+          <div class="tog" style="max-width:560px">语言 · 简体中文<span class="sw"></span></div>
+          <div class="tog" style="max-width:560px">消息提示音<span class="sw"></span></div>
+          <div class="tog" style="max-width:560px">开发者工具(devtools)<span class="sw off"></span></div>
+        </div>
+      </div>` },
+  }
+
+  function openView(key) {
+    const v = views[key]; if (!v) return
+    viewTitle.textContent = v.title
+    viewSub.textContent = v.sub ?? ''
+    viewBody.innerHTML = v.html
+    closeBoards()
+    viewScreen.hidden = false
+    messenger.hidden = true
+  }
+  function closeView() { viewScreen.hidden = true; messenger.hidden = false }
+
+  document.querySelectorAll('[data-view]').forEach((el) => {
+    el.addEventListener('click', () => { closeMenu(); openView(el.dataset.view) })
+  })
+  $('#viewBack').addEventListener('click', closeView)
+
+  /* 看板全屏接管 */
+  function openBoards() { closeMenu(); closeView(); boards.hidden = false; messenger.hidden = true }
+  function closeBoards() { boards.hidden = true; messenger.hidden = false }
+  $('#btnBoards').addEventListener('click', () => boards.hidden ? openBoards() : closeBoards())
+  $('#btnBack').addEventListener('click', closeBoards)
+
+  /* 高优分区折叠 */
+  $('#actionPill').addEventListener('click', () => {
+    const sec = $('#actionSec')
+    sec.hidden = !sec.hidden
+    $('#actionPill').classList.toggle('collapsed', sec.hidden)
+  })
+
+  /* 列表行点选(演示态) */
+  document.querySelectorAll('.row[data-chat]').forEach((row) => {
+    row.addEventListener('click', () => {
+      document.querySelectorAll('.row').forEach((r) => r.classList.remove('active'))
+      row.classList.add('active')
+    })
+  })
+
+  /* 键盘:B 进出看板,Esc 层层退回 */
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!menu.hidden) closeMenu()
+      else if (!viewScreen.hidden) closeView()
+      else if (!boards.hidden) closeBoards()
+    }
+    if ((e.key === 'b' || e.key === 'B') && document.activeElement !== $('#composerInput')) {
+      boards.hidden ? openBoards() : closeBoards()
+    }
+  })
+</script>
+</body>
+</html>
