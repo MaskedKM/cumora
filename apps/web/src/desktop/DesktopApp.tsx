@@ -5,9 +5,10 @@ import { isElectron } from '@/lib/runtime'
 import { useResizableWidth } from '@/lib/useResizableWidth'
 import { useApp } from '@/stores/app'
 import { useDevtools } from '@/stores/devtools'
+import { useWhispers } from '@/stores/whispers'
 import { ChatPane } from './ChatPane'
 import { ConversationsPane } from './ConversationsPane'
-import { Rail } from './Rail'
+import { NavMenu } from './NavMenu'
 import { TitleBar } from './TitleBar'
 
 // Right-slot panes (thread / info / artifact peeks) open only on user
@@ -19,15 +20,16 @@ const ThreadDrawer = lazy(() => import('./ThreadDrawer').then((m) => ({ default:
 const DocumentPeekPane = lazy(() => import('./DocumentPeekPane').then((m) => ({ default: m.DocumentPeekPane })))
 const BoardPeekPane = lazy(() => import('./BoardPeekPane').then((m) => ({ default: m.BoardPeekPane })))
 const CalendarPeekPane = lazy(() => import('./CalendarPeekPane').then((m) => ({ default: m.CalendarPeekPane })))
+// WhisperRoom —— 纯 agent 会话的聊天面(原 WhispersView 的右栏,#368 刀1 起
+// 由会话列表「Agent 对话」分区直选、占用与 ChatPane 同一个中栏槽位)。
+const WhisperRoom = lazy(() => import('@/components/WhisperRoom').then((m) => ({ default: m.WhisperRoom })))
 
-// Rail-switchable views load as their own chunks (#218). Conversations is
+// Menu-launched views load as their own chunks (#218). Conversations is
 // the landing view and stays eager — ChatPane + ConversationsPane ARE the
 // first paint, so deferring them would trade a real flash for nothing.
-// Every other view (BoardsView, ObservabilityView, MeView…) is fetched on
-// first rail switch and then cached; a one-time centered placeholder
+// Every other view (BoardsView, CalendarView, MeView…) is fetched on first
+// launch from the NavMenu and then cached; a one-time centered placeholder
 // (ViewFallback) covers the fetch.
-const WhispersView = lazy(() => import('./WhispersView').then((m) => ({ default: m.WhispersView })))
-const InboxView = lazy(() => import('./InboxView').then((m) => ({ default: m.InboxView }))) // #264 人侧 Inbox
 const ConveneView = lazy(() => import('./ConveneView').then((m) => ({ default: m.ConveneView })))
 const AgentsView = lazy(() => import('./AgentsView').then((m) => ({ default: m.AgentsView })))
 const HrView = lazy(() => import('./HrView').then((m) => ({ default: m.HrView }))) // #345 HR Agent 配置面
@@ -40,7 +42,7 @@ const ObservabilityView = lazy(() => import('./ObservabilityView').then((m) => (
 const MeView = lazy(() => import('./MeView').then((m) => ({ default: m.MeView })))
 const ShippingView = lazy(() => import('./ShippingView').then((m) => ({ default: m.ShippingView })))
 
-/** Centered placeholder while a rail-view chunk loads — same shape the
+/** Centered placeholder while a view chunk loads — same shape the
  *  shipping view already used, now shared by every lazy view. */
 function ViewFallback() {
   const t = useT()
@@ -53,6 +55,12 @@ function ConversationsLayout() {
   const documentOpen = useApp((s) => s.openDocumentId !== null)
   const boardOpen = useApp((s) => s.openBoardId !== null)
   const calendarOpen = useApp((s) => s.openCalendarEventId !== null)
+  // 选中项若是纯 agent 会话(「Agent 对话」分区),中栏渲染 WhisperRoom 而
+  // 非 ChatPane —— 选中 id 复用 selectedConversationId(whisper id 在
+  // conversations store 中不存在,App.tsx 的已读标记 effect 自然跳过)。
+  const selected = useApp((s) => s.selectedConversationId)
+  const whispers = useWhispers((s) => s.list)
+  const whisperSelected = selected !== null && whispers.some((w) => w.id === selected)
   // Thread + info + artifact peeks compete for the same right slot. Opening one closes the
   // other implicitly via the store action (see openThreadView /
   // openAgentInfo / artifact peek actions). Render thread if both somehow
@@ -67,7 +75,9 @@ function ConversationsLayout() {
       style={{ gridTemplateColumns: rightOpen ? `${width}px minmax(0, 1fr) ${rightColumn}` : `${width}px minmax(0, 1fr)` }}
     >
       <ConversationsPane onResizeStart={onResizeStart} />
-      <ChatPane />
+      {whisperSelected && selected
+        ? <Suspense fallback={<ViewFallback />}><WhisperRoom pairId={selected} /></Suspense>
+        : <ChatPane />}
       {threadOpen
         ? <Suspense fallback={<ViewFallback />}><ThreadDrawer /></Suspense>
         : documentOpen
@@ -98,6 +108,22 @@ export function DesktopApp() {
     if (view === 'observability' && devtoolsLoaded && !devtoolsEnabled) setView('conversations')
   }, [devtoolsEnabled, devtoolsLoaded, setView, view])
 
+  // #368 刀1:B = 看板 ↔ 对话(唯一常驻非聊天面的快捷键,ADR 0009)。
+  // 输入框聚焦/带修饰键时不动 —— 与 ⌘K 同一款全局键纪律。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key !== 'b' && e.key !== 'B') return
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      e.preventDefault()
+      useApp.getState().closeNavMenu()
+      setView(useApp.getState().view === 'boards' ? 'conversations' : 'boards')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setView])
+
   // In Electron, fill the full window. In browser, render as a "windowed app" card.
   const wrap = isElectron
     ? {
@@ -119,11 +145,11 @@ export function DesktopApp() {
       style={wrap}
     >
       <TitleBar />
-      <div className="grid h-full min-h-0 overflow-hidden" style={{ gridTemplateColumns: '72px minmax(0, 1fr)' }}>
-        <Rail />
+      {/* #368 刀1:rail(72px 图标栏)退役 —— 内容区单列,所有二级面改经
+          NavMenu(全高滑出)/ 标题栏看板钮进入(ADR 0009)。NavMenu 与 scrim
+          以绝对定位覆盖本行。 */}
+      <div className="relative grid h-full min-h-0 overflow-hidden" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
         {view === 'conversations' && <ConversationsLayout />}
-        {view === 'inbox' && <Suspense fallback={<ViewFallback />}><InboxView /></Suspense>}
-        {view === 'whispers' && <Suspense fallback={<ViewFallback />}><WhispersView /></Suspense>}
         {view === 'convene' && <Suspense fallback={<ViewFallback />}><ConveneView /></Suspense>}
         {view === 'agents' && <Suspense fallback={<ViewFallback />}><AgentsView /></Suspense>}
         {view === 'hr' && <Suspense fallback={<ViewFallback />}><HrView /></Suspense>}
@@ -135,6 +161,7 @@ export function DesktopApp() {
         {view === 'shipping' && <Suspense fallback={<ViewFallback />}><ShippingView /></Suspense>}
         {view === 'observability' && devtoolsEnabled && <Suspense fallback={<ViewFallback />}><ObservabilityView /></Suspense>}
         {view === 'me' && <Suspense fallback={<ViewFallback />}><MeView /></Suspense>}
+        <NavMenu />
       </div>
       {/* Email composer drawer — globally rendered so opening it works
           from any view (sidebar Compose CTA, EmailCard reply button). */}

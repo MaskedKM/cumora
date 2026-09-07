@@ -5,6 +5,12 @@ interface AppState {
   view: ViewKey['view']
   setView: (v: ViewKey['view']) => void
 
+  /** #368 刀1:左侧全高滑出菜单的开关(触发钮在会话列表头 ☰)。 */
+  navMenuOpen: boolean
+  openNavMenu: () => void
+  closeNavMenu: () => void
+  toggleNavMenu: () => void
+
   selectedConversationId: string | null
   selectConversation: (id: string | null) => void
   setSelectedIfNone: (id: string) => void
@@ -91,6 +97,11 @@ interface AppState {
 export const useApp = create<AppState>((set) => ({
   view: 'conversations',
   setView: (v) => set({ view: v }),
+
+  navMenuOpen: false,
+  openNavMenu: () => set({ navMenuOpen: true }),
+  closeNavMenu: () => set({ navMenuOpen: false }),
+  toggleNavMenu: () => set((s) => ({ navMenuOpen: !s.navMenuOpen })),
 
   // Starts unselected — the real conversations list arrives async from the
   // server. Seeding with a mock id here used to fire a 404 messages fetch
