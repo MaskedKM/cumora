@@ -340,14 +340,22 @@ export function HrView() {
   }
 
   const saveAuto = async () => {
+    // 客户端闸(评审 P2-2):空串 Number()→0 会静默关停对应项、NaN→
+    // null 会被后端当缺键跳过 —— 两者都拦成本地报错,不发放请求。
+    const nums = {
+      intervalHours: Number(autoDraft.interval),
+      overdueDays: Number(autoDraft.overdue),
+      spendUsd: Number(autoDraft.spend),
+      errorRate: Number(autoDraft.errorRate),
+    }
+    const entries = Object.entries(nums) as [keyof typeof nums, number][]
+    if (Object.values(autoDraft).some((v) => v.trim() === '') || entries.some(([, n]) => !Number.isFinite(n))) {
+      setAutoError(t('hr.autoInvalidNumber'))
+      return
+    }
     setAutoSaving(true); setAutoError('')
     try {
-      const row = await api.putHrAutoRunConfig({
-        intervalHours: Number(autoDraft.interval),
-        overdueDays: Number(autoDraft.overdue),
-        spendUsd: Number(autoDraft.spend),
-        errorRate: Number(autoDraft.errorRate),
-      })
+      const row = await api.putHrAutoRunConfig(nums)
       setAuto(row)
     } catch (err) {
       setAutoError(errText(err))
@@ -367,7 +375,7 @@ export function HrView() {
       for (const ev of res.events) parts.push(t('hr.autoScanEvent', { agent: participantsById[ev.agentId]?.name ?? ev.agentId, reason: ev.reason }))
       if (parts.length === 0) parts.push(t('hr.autoScanIdle'))
       setTickNote(parts.join(' · '))
-      await reloadEvals()
+      await Promise.all([reloadEvals(), reloadAuto()])
     } catch (err) {
       setTickNote(errText(err))
     } finally {

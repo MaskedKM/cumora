@@ -1953,6 +1953,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'hr.autoScanPeriodic': '已入队例行轮',
   'hr.autoScanEvent': '已入队事件轮:{agent}({reason})',
   'hr.autoScanIdle': '暂无到期 —— 无钩子命中',
+  'hr.autoInvalidNumber': '四项都必须是明确的数字(0 合法,表示关闭)。',
   'hr.ratingsTitle': '老板评分',
   'hr.ratingsHint': '你的主观校准信号——每个 agent 的当前打分与评语,会混入下一轮评估。',
   'hr.ratingUnrated': '未评',

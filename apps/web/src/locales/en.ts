@@ -1950,6 +1950,7 @@ export const en = {
   'hr.autoScanPeriodic': 'routine round queued',
   'hr.autoScanEvent': 'event round queued: {agent} ({reason})',
   'hr.autoScanIdle': 'nothing due — no hook hit',
+  'hr.autoInvalidNumber': 'All four values must be explicit numbers (0 is valid and means off).',
   'hr.ratingsTitle': 'Owner ratings',
   'hr.ratingsHint': 'Your subjective calibration signal — current score and note per agent, mixed into the next evaluation round.',
   'hr.ratingUnrated': 'Not rated',

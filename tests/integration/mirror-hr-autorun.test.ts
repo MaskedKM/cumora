@@ -410,6 +410,49 @@ test('[autorun] 全员轮覆盖各目标 — 近期全员轮后事件钩子按�
   assert.ok(t.json.skipped.includes('cooldown:ag-cover-1'), `expected cooldown skip, got ${JSON.stringify(t.json.skipped)}`)
 })
 
+
+test('[autorun] 单目标近轮不推迟全员例行(评审 P2-1)— 周期照常入队', async () => {
+  await assignHrComputer()
+  await seedAgent('ag-single-1')
+  await seedAgent('ag-single-2')
+  // 23h 前的手动单目标轮:只覆盖该 agent,不该把全员例行挡 24h
+  await pool.query(
+    `INSERT INTO hr_reports (id, company_id, target_agent_id, trigger_kind, status, created_at)
+     VALUES ('hre-single-recent', $1, 'ag-single-1', 'manual', 'done', NOW() - interval '23 hours')`,
+    [COMPANY],
+  )
+  await pool.query(`UPDATE hr_agents SET auto_last_run_at = NOW() - interval '9 days' WHERE company_id = $1`, [COMPANY])
+  let res: any
+  await wakeFramesDuring(async () => { res = await tick() })
+  assert.equal(res.json.periodicFired, true, 'single-target round must not postpone the full-roster routine')
+  const { rows } = await pool.query(
+    `SELECT trigger_kind FROM hr_reports WHERE company_id = $1 AND id <> 'hre-single-recent'`,
+    [COMPANY],
+  )
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].trigger_kind, 'periodic')
+})
+
+test('[autorun] 全员近轮全挡(评审 P1 落空不停扫)— periodic-cooldown 与目标 cooldown 同报,零新轮', async () => {
+  await assignHrComputer()
+  await seedAgent('ag-full-1')
+  await seedOverdueCard('card-full-blk', 'ag-full-1', 5)
+  // 23h 前的全员轮:挡周期(全员互去抖)也挡事件目标(全员覆盖各目标)
+  await pool.query(
+    `INSERT INTO hr_reports (id, company_id, target_agent_id, trigger_kind, status, created_at)
+     VALUES ('hre-full-blk', $1, NULL, 'manual', 'done', NOW() - interval '23 hours')`,
+    [COMPANY],
+  )
+  await pool.query(`UPDATE hr_agents SET auto_last_run_at = NOW() - interval '9 days' WHERE company_id = $1`, [COMPANY])
+  const t = await tick()
+  assert.equal(t.json.periodicFired, false)
+  assert.ok(t.json.skipped.includes('periodic-cooldown'), `periodic skip recorded, got ${JSON.stringify(t.json.skipped)}`)
+  assert.ok(t.json.skipped.includes('cooldown:ag-full-1'), `hook scanned (not starved) then target-debounced, got ${JSON.stringify(t.json.skipped)}`)
+  assert.equal(t.json.events.length, 0)
+  const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM hr_reports WHERE company_id = $1`, [COMPANY])
+  assert.equal(rows[0].n, 1, 'no new rounds while the full-roster round still covers everyone')
+})
+
 test('[autorun] member 触发 tick 403;admin 可读配置', async () => {
   assert.equal((await memberMirror.call('/hr/autorun/tick', { method: 'POST' })).status, 403)
   assert.equal((await adminMirror.call('/hr/autorun')).status, 200)

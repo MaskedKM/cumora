@@ -173,9 +173,9 @@ func (s *Server) PutHrAutoRunConfig(w http.ResponseWriter, r *http.Request) {
 
 /* ───────── tick 核心(worker 与强制端点共用)───────── */
 
-// roundCoveredRecently:去抖查询 —— target 空 = 任意近期轮都算覆盖
-// (周期全员轮的闸);target 非空 = 指向它的轮或全员轮算覆盖(同目标)。
-// 含失败轮:防 Brain 连败/daemon 长离线时每 tick 重试的热循环。
+// roundCoveredRecently:事件目标的同目标去抖 —— 指向该 agent 的轮或
+// 全员轮在窗内创建过即算覆盖(全员轮覆盖所有目标)。含失败轮:防 Brain
+// 连败/daemon 长离线时每 tick 重试的热循环。
 func (s *Server) roundCoveredRecently(ctx context.Context, companyID, target string) bool {
 	var one bool
 	err := s.DB.QueryRowContext(ctx, `
@@ -185,6 +185,20 @@ func (s *Server) roundCoveredRecently(ctx context.Context, companyID, target str
 		   AND ($3 = '' OR target_agent_id IS NULL OR target_agent_id = $3)
 		 LIMIT 1`,
 		companyID, strconv.Itoa(autorunCooldownHours), target).Scan(&one)
+	return err == nil
+}
+
+// fullCoveredRecently:周期全员轮的去抖 —— 仅被近期全员轮(target IS
+// NULL)挡;单目标轮只覆盖该 agent,不推迟全员例行(评审 P2:否则手动
+// 评一人可把例行全员评挡 24h)。含失败轮,理由同上。
+func (s *Server) fullCoveredRecently(ctx context.Context, companyID string) bool {
+	var one bool
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT 1 FROM hr_reports
+		 WHERE company_id = $1 AND target_agent_id IS NULL
+		   AND created_at > NOW() - ($2 || ' hours')::interval
+		 LIMIT 1`,
+		companyID, strconv.Itoa(autorunCooldownHours)).Scan(&one)
 	return err == nil
 }
 
@@ -302,28 +316,32 @@ func (s *Server) runAutoTick(ctx context.Context, companyID string) map[string]a
 		return skip("round-in-flight")
 	}
 
-	// 周期例行:到期(上次例行 + 周期)且任意近期轮未覆盖全员。
+	// 周期例行:到期(上次例行 + 周期)。全员轮只被近期全员轮去抖
+	// (fullCoveredRecently,评审 P2);被去抖挡住时只记 skip 不早退 ——
+	// 钩子扫描继续,目标级去抖自会防重复(评审 P1:挡周期 ≠ 停扫钩子,
+	// 否则例行到期撞上任意近轮可让三钩子停扫最长 24h)。
 	now := time.Now()
 	if cfg.intervalHours > 0 && !now.Before(cfg.lastRunAt.Add(time.Duration(cfg.intervalHours)*time.Hour)) {
-		if s.roundCoveredRecently(ctx, companyID, "") {
-			return skip("periodic-cooldown")
-		}
-		_, err := s.startRound(ctx, companyID, "", "periodic", "", "")
-		switch {
-		case err == nil:
-			periodicFired = true
-			// 到期点前进(auto_last_run_at=NOW):入队成功即算本轮例行
-			// 已发生 —— daemon 离线致轮 failed 的场景由 24h 去抖挡住
-			// 每 tick 重试,一周后自然再试。
-			_, _ = s.DB.ExecContext(ctx,
-				`UPDATE hr_agents SET auto_last_run_at = NOW() WHERE company_id = $1`, companyID)
-		case err == errRoundInFlight:
-			return skip("round-in-flight")
-		case err == errDaemonOffline:
-			return skip("daemon-offline")
-		default:
-			slog.Warn("[hr] autorun periodic start failed", "company", companyID, "err", err)
-			return skip("periodic-error")
+		if s.fullCoveredRecently(ctx, companyID) {
+			skipped = append(skipped, "periodic-cooldown")
+		} else {
+			_, err := s.startRound(ctx, companyID, "", "periodic", "", "")
+			switch {
+			case err == nil:
+				periodicFired = true
+				// 到期点前进(auto_last_run_at=NOW):入队成功即算本轮例行
+				// 已发生 —— daemon 离线致轮 failed 的场景由 24h 去抖挡住
+				// 每 tick 重试,一周后自然再试。
+				_, _ = s.DB.ExecContext(ctx,
+					`UPDATE hr_agents SET auto_last_run_at = NOW() WHERE company_id = $1`, companyID)
+			case err == errRoundInFlight:
+				skipped = append(skipped, "round-in-flight")
+			case err == errDaemonOffline:
+				skipped = append(skipped, "daemon-offline")
+			default:
+				slog.Warn("[hr] autorun periodic start failed", "company", companyID, "err", err)
+				skipped = append(skipped, "periodic-error")
+			}
 		}
 	}
 
