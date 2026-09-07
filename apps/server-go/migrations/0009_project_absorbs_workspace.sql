@@ -2,7 +2,9 @@
 --
 -- workspace 行转项目行时**沿用原 id** —— 挂载锚 team/<id>、board_card/
 -- document 关联、card_deliveries 全部零迁移。表与列的改名/DROP 留给
--- 刀 2(workspaces 死表本轮保留为回滚窗,读取路径全部切走)。
+-- 刀 2(workspaces 死表本轮保留)。回滚窗的边界(如实):旧二进制读不到
+-- 期间新建的 projects 行;期间 DeleteProject 清掉的子账不可逆(回滚后
+-- 该 workspace 呈无成员空壳)。
 --
 -- 数据语义(ADR 0008 §5/§6/§8):
 --   * projects 升格:folder_path(存量无盘项目 = NULL,运行时惰性补盘)
@@ -42,7 +44,16 @@ SELECT w.id, w.company_id, w.name, '', w.folder_path, w.is_default, w.created_at
 -- 4) project-kind 关联清退(board_card/document 保留)
 DELETE FROM public.workspace_associations WHERE target_kind = 'project';
 
--- 5) 成员/关联表 FK 重挂 projects(原指 workspaces;数据已在 3) 迁入,
+-- 5) 死行子账清退:旧版解绑只软标 unbound_at 不删子行(0007 台账更是
+--    明文保留),而 3) 不迁死行 —— 引用死行的 members/associations 必须
+--    先清,否则新 FK 校验存量即炸(评审 P0 实测:ADD CONSTRAINT 逐行校验)。
+--    解绑工作区已无任何读路径引用,清账不损可追溯面。
+DELETE FROM workspace_members
+ WHERE workspace_id IN (SELECT id FROM workspaces WHERE unbound_at IS NOT NULL);
+DELETE FROM workspace_associations
+ WHERE workspace_id IN (SELECT id FROM workspaces WHERE unbound_at IS NOT NULL);
+
+-- 6) 成员/关联表 FK 重挂 projects(原指 workspaces;数据已在 3) 迁入,
 --    行值不变;ON DELETE CASCADE 语义原样保留 —— 删项目清账)
 ALTER TABLE public.workspace_members
     DROP CONSTRAINT workspace_members_workspace_id_fkey;
@@ -56,8 +67,12 @@ ALTER TABLE public.workspace_associations
     ADD CONSTRAINT workspace_associations_project_fk FOREIGN KEY (workspace_id)
         REFERENCES public.projects (id) ON DELETE CASCADE;
 
--- 6) 交付台账:引用 nullable 化 + FK 改指 projects(删项目 → SET NULL)
+-- 7) 交付台账:引用 nullable 化 + 死引用 NULL 化(须在 DROP NOT NULL 之后,
+--    否则 NULL 化自身违约)+ FK 改指 projects(删项目 → SET NULL)
 ALTER TABLE public.card_deliveries ALTER COLUMN workspace_id DROP NOT NULL;
+
+UPDATE public.card_deliveries SET workspace_id = NULL
+ WHERE workspace_id IN (SELECT id FROM workspaces WHERE unbound_at IS NOT NULL);
 
 ALTER TABLE public.card_deliveries
     DROP CONSTRAINT card_deliveries_workspace_fk;

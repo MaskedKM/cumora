@@ -736,6 +736,12 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
+	// 存量无盘项目惰性补盘(#354):NULL folder 打穿裸 string scan 会把整列
+	// 挂载清单变 500(评审 P0-2),先收敛再查。
+	if err := workspaces.EnsureProjectFolders(r.Context(), s.DB, companyID); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT w.id, w.name, w.is_default, w.folder_path
 		  FROM projects w
@@ -779,12 +785,13 @@ func (s *Service) handleWorkspaces(w http.ResponseWriter, r *http.Request, agent
 	var items []wsItem
 	for rows.Next() {
 		var it wsItem
-		if err := rows.Scan(&it.ID, &it.Name, &it.IsDefault, &it.FolderPath); err != nil {
+		var folder sql.NullString
+		if err := rows.Scan(&it.ID, &it.Name, &it.IsDefault, &folder); err != nil {
 			httpx.WriteInternalError(w, r, err)
 			return
 		}
-		if !local {
-			it.FolderPath = ""
+		if local {
+			it.FolderPath = folder.String
 		}
 		items = append(items, it)
 	}

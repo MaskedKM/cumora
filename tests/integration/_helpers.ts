@@ -99,7 +99,6 @@ const TABLES_TO_WIPE: readonly string[] = [
   'agent_log',
   'workspace_associations',
   'workspace_members',
-  'projects',
   'workspaces',
   'projects',
   'company_skills',

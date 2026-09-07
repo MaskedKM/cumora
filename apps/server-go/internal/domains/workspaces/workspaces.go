@@ -68,13 +68,15 @@ type wsRow struct {
 
 func loadWorkspace(ctx context.Context, db *sql.DB, companyID, id string) (wsRow, bool) {
 	var w wsRow
+	var folder sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT id, company_id, name, folder_path, is_default, created_at
 		  FROM projects WHERE id = $1 AND company_id = $2`, id, companyID).
-		Scan(&w.id, &w.companyID, &w.name, &w.folderPath, &w.isDefault, &w.createdAt)
+		Scan(&w.id, &w.companyID, &w.name, &folder, &w.isDefault, &w.createdAt)
 	if err != nil {
 		return w, false
 	}
+	w.folderPath = folder.String
 	return w, true
 }
 
@@ -114,11 +116,52 @@ func EnsureDefault(ctx context.Context, db *sql.DB, companyID string) error {
 	return nil
 }
 
+// EnsureProjectFolders:#354 存量无盘项目惰性补盘(ADR 0008 §3)。migration
+// 是单事务纯 SQL(无 shell),建不了目录 —— 无盘项目落 folder_path NULL,
+// 由读路径(人侧列表/agent 挂载清单/CLI 面)首次到达时收敛为受管目录
+// <uploads 根>/projects/<id>。条件更新保证并发安全;评审 P0-2:不补盘则
+// NULL 会打穿三处裸 string scan(挂载清单整列 500)。
+func EnsureProjectFolders(ctx context.Context, db *sql.DB, companyID string) error {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM projects WHERE company_id = $1 AND folder_path IS NULL`, companyID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		folder := filepath.Join(config.UploadsDir(), "projects", id)
+		if abs, err := filepath.Abs(folder); err == nil {
+			folder = abs
+		}
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			return fmt.Errorf("project folder: %w", err)
+		}
+		if real, err := filepath.EvalSymlinks(folder); err == nil {
+			folder = real
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPDATE projects SET folder_path = $2 WHERE id = $1 AND folder_path IS NULL`, id, folder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // resolveAccess:默认区全员;否则显式成员 ∪ 挂靠会话成员 ∪ 关联目标活跃
 // 参与者(board_card=assignee+mentions/document=creator+collaborators)。
 // #354(ADR 0008 §5):project-kind 关联退役,"项目下会话成员"改为顶层
 // 直推导(挂靠本项目的会话之成员);推导统一走 conversation_members 表
 // —— 原 implicitMembers 的 legacy members jsonb 分叉随之消灭。
+// departed 闸门有意只罩关联分支:挂靠推导以"还在会话里"为界(退群即出
+// 域),离职者留在 conversation_members 是会话面的清理债,不在文件面拦
+// (#343 评审确认的有意放宽)。
 func resolveAccess(ctx context.Context, db *sql.DB, uid, companyID, wsID string) (wsRow, int, string) {
 	w, ok := loadWorkspace(ctx, db, companyID, wsID)
 	if !ok {
@@ -291,6 +334,10 @@ func (s *Server) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := EnsureDefault(r.Context(), s.DB, companyID); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if err := EnsureProjectFolders(r.Context(), s.DB, companyID); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}

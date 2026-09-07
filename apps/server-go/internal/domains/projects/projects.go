@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,9 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/projects"
 	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -75,6 +79,12 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// #354:每队默认区(团队文件)的自愈随主列表走 —— 并表后这就是"项目"
+	// 的列表面,全新 team 不能因未开过工作区视图就漏掉公共盘。
+	if err := workspaces.EnsureDefault(r.Context(), s.DB, tenant); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT id, name, description, color, status,
 		       created_at, archived_at, folder_path, is_default,
@@ -123,7 +133,7 @@ func nullAny(ns sql.NullString) any {
 }
 
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
-	_, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -193,6 +203,20 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO projects (id, company_id, name, description, color, folder_path, is_default)
 		 VALUES ($1, $2, $3, $4, $5, $6, FALSE)`,
 		id, tenant, name, description, colorArg, folder); err != nil {
+		// 自填盘并发撞 folder 唯一索引:409 而非 500(评审 P2)。
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			httpx.WriteError(w, http.StatusConflict, "folder already bound to a project")
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	// 建区者即显式成员(CreateWorkspace 同款;否则未挂会话的创建人自己
+	// 不在成员域内,看不到刚建的盘 —— 评审 P2)。
+	if _, err := s.DB.ExecContext(r.Context(),
+		`INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+		id, uid); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
@@ -254,29 +278,10 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (s *Server) ArchiveProject(w http.ResponseWriter, r *http.Request, id string) {
-	tenant, ok := requireRole(w, r, s.DB)
-	if !ok {
-		return
-	}
-	archive := true
-	if v, has := bodyAny(decodeBody(r), "archive"); has && v == false {
-		archive = false
-	}
-	var stmt string
-	if archive {
-		stmt = `UPDATE projects SET status = 'archived', archived_at = NOW() WHERE id = $1 AND company_id = $2`
-	} else {
-		stmt = `UPDATE projects SET status = 'active', archived_at = NULL WHERE id = $1 AND company_id = $2`
-	}
-	if _, err := s.DB.ExecContext(r.Context(), stmt, id, tenant); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	status := "active"
-	if archive {
-		status = "archived"
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+	// #354(ADR 0008 §6):归档概念退役 —— 生命周期无终点、仅删除。端点活体
+	// 至刀 2 随路由族退役,期间恒 410 指路(与 unbind 同款对称处置)。
+	httpx.WriteError(w, http.StatusGone,
+		"archive retired (ADR 0008) — projects have no terminal state; delete is the only exit")
 }
 
 func (s *Server) AttachProject(w http.ResponseWriter, r *http.Request, id string) {

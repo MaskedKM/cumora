@@ -23,12 +23,14 @@ import (
 // cliWorkspaceResolve:core.ts resolveWorkspaceAccess 的 CLI 面 —— 默认区
 // 全员;显式成员/关联;错误文案与 TS WorkspaceError 逐字对齐。
 func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID string) (folderPath, name, id string, errMsg string) {
-	var fp, n string
+	var n string
+	var fpS sql.NullString
 	var isDefault bool
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT folder_path, name, is_default FROM projects
 		  WHERE company_id = $1 AND id = $2`, tenant, wsID,
-	).Scan(&fp, &n, &isDefault)
+	).Scan(&fpS, &n, &isDefault)
+	fp := fpS.String
 	if err == sql.ErrNoRows {
 		return "", "", "", "workspace not found"
 	}
@@ -218,6 +220,9 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 	switch op {
 	case "ls":
 		if err := s.cliEnsureDefaultWorkspace(ctx, tenant); err != nil {
+			return cliErrThrow(err)
+		}
+		if err := workspaces.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
 			return cliErrThrow(err)
 		}
 		rows, err := s.DB.QueryContext(ctx,
