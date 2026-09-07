@@ -715,6 +715,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr/ratings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** owner 主观评分列表(owner/admin) */
+        get: operations["listHrRatings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/ratings/{agentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** upsert owner 主观评分(打分+评语;owner/admin) */
+        put: operations["putHrRating"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3464,6 +3498,17 @@ export interface components {
             /** Format: date-time */
             finishedAt?: string | null;
         };
+        HrRating: {
+            agentId: string;
+            score: number;
+            comment: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        HrRatingInput: {
+            score: number;
+            comment?: string;
+        };
         Whisper: {
             id: string;
             /** @enum {string} */
@@ -5386,6 +5431,61 @@ export interface operations {
             };
             /** @description 无此轮或不属本公司 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listHrRatings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: components["schemas"]["HrRating"][];
+                    };
+                };
+            };
+        };
+    };
+    putHrRating: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["HrRatingInput"];
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrRating"];
+                };
+            };
+            /** @description 未知目标或分数越界 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

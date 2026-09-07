@@ -1937,4 +1937,10 @@ export const en = {
   'hr.st.running': 'running',
   'hr.st.done': 'done',
   'hr.st.failed': 'failed',
+  'hr.ratingsTitle': 'Owner ratings',
+  'hr.ratingsHint': 'Your subjective calibration signal — current score and note per agent, mixed into the next evaluation round.',
+  'hr.ratingUnrated': 'Not rated',
+  'hr.ratingCommentPlaceholder': 'one-line note…',
+  'hr.ratingSave': 'Save',
+  'hr.ratingsEmpty': '(No agents yet — hires land here.)',
 } as const

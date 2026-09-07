@@ -1090,6 +1090,20 @@ type HrEvaluationStatus string
 // HrEvaluationTrigger defines model for HrEvaluation.Trigger.
 type HrEvaluationTrigger string
 
+// HrRating defines model for HrRating.
+type HrRating struct {
+	AgentId   string    `json:"agentId"`
+	Comment   string    `json:"comment"`
+	Score     int       `json:"score"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// HrRatingInput defines model for HrRatingInput.
+type HrRatingInput struct {
+	Comment *string `json:"comment,omitempty"`
+	Score   int     `json:"score"`
+}
+
 // Id defines model for Id.
 type Id struct {
 	Id string `json:"id"`
@@ -2703,6 +2717,9 @@ type PutHrAgentConfigJSONRequestBody = HrAgentConfigInput
 
 // CreateHrEvaluationJSONRequestBody defines body for CreateHrEvaluation for application/json ContentType.
 type CreateHrEvaluationJSONRequestBody CreateHrEvaluationJSONBody
+
+// PutHrRatingJSONRequestBody defines body for PutHrRating for application/json ContentType.
+type PutHrRatingJSONRequestBody = HrRatingInput
 
 // SetInboxMutesJSONRequestBody defines body for SetInboxMutes for application/json ContentType.
 type SetInboxMutesJSONRequestBody SetInboxMutesJSONBody

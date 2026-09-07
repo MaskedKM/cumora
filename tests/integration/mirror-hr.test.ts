@@ -434,3 +434,80 @@ test('[mirror] hr: CLI 身份闸 — 普通 agent / 异司 HR 均不可用', asy
   assert.equal(bad.json.ok, false)
   await hrCli(['hr', 'report', evalId, '{"failed":true,"error":"cleanup"}'])
 })
+
+/* ───────── #347 评分 CRUD + 三路装配(转录/同侪/评分)───────── */
+
+test('[mirror] hr: 评分 CRUD — owner upsert / 越界与未知 400 / member 403', async () => {
+  await seedAgent('ag-rate-1')
+  assert.equal((await memberMirror.call('/hr/ratings')).status, 403)
+  assert.equal(
+    (await memberMirror.call('/hr/ratings/ag-rate-1', { method: 'PUT', body: JSON.stringify({ score: 4 }) })).status, 403,
+  )
+  for (const bad of [{ score: 0 }, { score: 6 }, {}]) {
+    const res = await call('/hr/ratings/ag-rate-1', { method: 'PUT', body: JSON.stringify(bad) })
+    assert.equal(res.status, 400, `score ${JSON.stringify(bad)} must 400`)
+  }
+  assert.equal(
+    (await call('/hr/ratings/nope', { method: 'PUT', body: JSON.stringify({ score: 4 }) })).status, 400,
+  )
+  const put1 = await call('/hr/ratings/ag-rate-1', { method: 'PUT', body: JSON.stringify({ score: 4, comment: 'solid' }) })
+  assert.equal(put1.status, 200)
+  assert.equal(put1.json.score, 4)
+  assert.equal(put1.json.comment, 'solid')
+  // upsert = 替换当前评分
+  const put2 = await call('/hr/ratings/ag-rate-1', { method: 'PUT', body: JSON.stringify({ score: 2, comment: '' }) })
+  assert.equal(put2.json.score, 2)
+  const list = await call('/hr/ratings')
+  assert.equal(list.status, 200)
+  assert.equal(list.json.rows.length, 1)
+  assert.equal(list.json.rows[0].score, 2)
+  assert.equal(list.json.rows[0].comment, '')
+})
+
+test('[mirror] hr: 输入补全 — 转录/同侪/评分三路进快照(非零咬合)', async () => {
+  await seedComputer('cpu-hr-enrich', ['claude'])
+  await seedAgent('ag-enrich-1')
+  await seedAgent('ag-enrich-2')
+  await call('/hr', { method: 'PUT', body: JSON.stringify({ computerId: 'cpu-hr-enrich', engine: 'claude' }) })
+  // 转录:agent 间私聊一条(members jsonb 触发器自动落 conversation_members)
+  await pool.query(
+    `INSERT INTO conversations (id, kind, title, members, company_id)
+     VALUES ('cv-enrich', 'direct', '', $1, $2)`,
+    [JSON.stringify(['ag-enrich-1', 'ag-enrich-2']), COMPANY],
+  )
+  await pool.query(
+    `INSERT INTO messages (id, conversation_id, author_id, kind, body, sequence, company_id)
+     VALUES ('m-enrich', 'cv-enrich', 'ag-enrich-2', 'text', 'peer says hi', 1, $1)`,
+    [COMPANY],
+  )
+  // 同侪:peer → target 的 affinity/trust
+  await pool.query(
+    `INSERT INTO agent_climate (agent_id, about_id, company_id, affinity, trust, last_note)
+     VALUES ('ag-enrich-2', 'ag-enrich-1', $1, 0.5, 0.7, 'reliable')`,
+    [COMPANY],
+  )
+  // 评分:owner 打 4
+  await call('/hr/ratings/ag-enrich-1', { method: 'PUT', body: JSON.stringify({ score: 4, comment: 'steady' }) })
+
+  const release = await holdWake()
+  const created = await call('/hr/evaluations', {
+    method: 'POST', body: JSON.stringify({ targetAgentId: 'ag-enrich-1' }),
+  })
+  assert.equal(created.status, 201)
+  const ctx = await hrCli(['hr', 'context', created.json.id])
+  assert.equal(ctx.json.ok, true)
+  const lane = (JSON.parse(ctx.json.text).targets ?? []).find((t: any) => t.agentId === 'ag-enrich-1')
+  assert.ok(lane, 'target lane present')
+  // 转录路
+  assert.ok(Array.isArray(lane.recentMessages) && lane.recentMessages.length >= 1, 'recentMessages non-empty')
+  assert.ok(lane.recentMessages.some((m: any) => String(m.body).includes('peer says hi')))
+  // 同侪路(towardThem:别人对目标)
+  assert.equal(lane.climate.towardThem.length, 1)
+  assert.equal(lane.climate.towardThem[0].from, 'ag-enrich-2')
+  assert.equal(lane.climate.towardThem[0].trust, 0.7)
+  // 评分路
+  assert.equal(lane.rating.score, 4)
+  assert.equal(lane.rating.comment, 'steady')
+  release()
+  await hrCli(['hr', 'report', created.json.id, '{"failed":true,"error":"cleanup"}'])
+})

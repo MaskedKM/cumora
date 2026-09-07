@@ -307,16 +307,24 @@ type hrInputTarget struct {
 	triageTotal, triageActionable     int
 	cardsAssigned, deliveries, merged int
 	calActive, calDone, calCancelled  int
+	// #347 三路:owner 主观评分(0=未评)+ 同侪信号(双向)+ 近窗转录(有界)
+	ratingScore                int
+	ratingComment              string
+	climateToward, climateFelt []map[string]any
+	recentMessages             []map[string]any
 }
 
 func (t hrInputTarget) payload() map[string]any {
 	return map[string]any{
 		"agentId": t.agentID, "name": t.name, "role": t.role,
-		"runs":     map[string]any{"total": t.runsTotal, "failed": t.runsFailed, "tokens": t.runTokens, "costUsd": t.runCost, "lastRunAt": nullTime(t.lastRunAt)},
-		"llm":      map[string]any{"calls": t.llmCalls, "costUsd": t.llmCost},
-		"triage":   map[string]any{"total": t.triageTotal, "actionable": t.triageActionable},
-		"cards":    map[string]any{"assigned": t.cardsAssigned, "deliveries": t.deliveries, "mergedDeliveries": t.merged},
-		"calendar": map[string]any{"active": t.calActive, "done": t.calDone, "cancelled": t.calCancelled},
+		"runs":           map[string]any{"total": t.runsTotal, "failed": t.runsFailed, "tokens": t.runTokens, "costUsd": t.runCost, "lastRunAt": nullTime(t.lastRunAt)},
+		"llm":            map[string]any{"calls": t.llmCalls, "costUsd": t.llmCost},
+		"triage":         map[string]any{"total": t.triageTotal, "actionable": t.triageActionable},
+		"cards":          map[string]any{"assigned": t.cardsAssigned, "deliveries": t.deliveries, "mergedDeliveries": t.merged},
+		"calendar":       map[string]any{"active": t.calActive, "done": t.calDone, "cancelled": t.calCancelled},
+		"rating":         map[string]any{"score": t.ratingScore, "comment": t.ratingComment},
+		"climate":        map[string]any{"towardThem": t.climateToward, "theyFeel": t.climateFelt},
+		"recentMessages": t.recentMessages,
 	}
 }
 
@@ -333,7 +341,9 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	byID := map[string]*hrInputTarget{}
 	order := []string{}
 	for targetRows.Next() {
-		var t hrInputTarget
+		t := hrInputTarget{
+			climateToward: []map[string]any{}, climateFelt: []map[string]any{}, recentMessages: []map[string]any{},
+		}
 		if targetRows.Scan(&t.agentID, &t.name, &t.role) == nil {
 			byID[t.agentID] = &t
 			order = append(order, t.agentID)
@@ -466,6 +476,82 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 		 WHERE assignee_id = ANY($1::text[]) AND created_at > NOW() - ($2 || ' days')::interval
 		 GROUP BY assignee_id, status`, idsArr, windowDaysArg)
 
+	// ── #347 三路:owner 主观评分 / 同侪信号(双向)/ 近窗转录(有界)──
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var aid string
+			var score int
+			var comment string
+			if rows.Scan(&aid, &score, &comment) == nil {
+				if m, ok := byID[aid]; ok {
+					m.ratingScore, m.ratingComment = score, comment
+				}
+			}
+		}
+	}, `SELECT agent_id, score, comment FROM hr_ratings
+		 WHERE company_id = $1 AND agent_id = ANY($2::text[])`, companyID, idsArr)
+
+	collect(func(rows *sql.Rows) {
+		for rows.Next() {
+			var agentID, aboutID, note string
+			var affinity, trust float32
+			if rows.Scan(&agentID, &aboutID, &affinity, &trust, &note) != nil {
+				continue
+			}
+			if agentID == aboutID {
+				continue
+			}
+			if m, ok := byID[aboutID]; ok {
+				m.climateToward = append(m.climateToward, climateRow("from", agentID, affinity, trust, note))
+			}
+			if m, ok := byID[agentID]; ok {
+				m.climateFelt = append(m.climateFelt, climateRow("about", aboutID, affinity, trust, note))
+			}
+		}
+	}, `SELECT agent_id, about_id, affinity, trust, last_note FROM agent_climate
+		 WHERE company_id = $1 AND (about_id = ANY($2::text[]) OR agent_id = ANY($2::text[]))`,
+		companyID, idsArr)
+
+	// 转录:目标为成员的会话近窗消息(含 agent 间私聊),整查封顶 800 行,
+	// 每目标保最新 40 条、单条截 400 UTF-16 单元,输出翻成时间正序。
+	collect(func(rows *sql.Rows) {
+		const perTargetCap = 40
+		const bodyCap = 400
+		lists := map[string][]map[string]any{}
+		for rows.Next() {
+			var tid, conversationID, convKind, authorID, msgKind, body string
+			var createdAt time.Time
+			if rows.Scan(&tid, &conversationID, &convKind, &authorID, &msgKind, &body, &createdAt) != nil {
+				continue
+			}
+			if _, ok := byID[tid]; !ok {
+				continue
+			}
+			lists[tid] = append(lists[tid], map[string]any{
+				"conversationId": conversationID, "conversationKind": convKind,
+				"authorId": authorID, "kind": msgKind,
+				"body": httpx.UTF16Cap(body, bodyCap), "at": createdAt.UTC(),
+			})
+		}
+		for tid, list := range lists {
+			if len(list) > perTargetCap {
+				list = list[:perTargetCap]
+			}
+			for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+				list[i], list[j] = list[j], list[i]
+			}
+			byID[tid].recentMessages = list
+		}
+	}, `SELECT cm.participant_id, m.conversation_id, c.kind, m.author_id, m.kind, m.body, m.created_at
+		  FROM conversation_members cm
+		  JOIN messages m ON m.conversation_id = cm.conversation_id
+		  JOIN conversations c ON c.id = m.conversation_id AND c.company_id = $1
+		 WHERE cm.participant_id = ANY($2::text[])
+		   AND m.created_at > NOW() - ($3 || ' days')::interval
+		 ORDER BY m.created_at DESC
+		 LIMIT 800`, companyID, idsArr, windowDaysArg)
+
 	targets := make([]map[string]any, 0, len(order))
 	for _, id := range order {
 		targets = append(targets, byID[id].payload())
@@ -473,9 +559,18 @@ func (s *Server) assembleInputs(ctx context.Context, companyID, target string) (
 	return map[string]any{
 		"generatedAt": time.Now().UTC(),
 		"windowDays":  inputWindowDays,
-		"note":        "objective observation only (runs/llm/triage/boards/calendar); transcripts, peer signals and owner ratings arrive in a later blade",
+		"note":        "four input lanes: objective observation (runs/llm/triage/boards/calendar), owner ratings (score 0 = unrated), peer signals (agent_climate both directions), bounded recent transcripts (40/target, 400 UTF-16 units/message)",
 		"targets":     targets,
 	}, nil
+}
+
+// climateRow:同侪信号行的两种朝向(towardThem 用 "from",theyFeel 用 "about")。
+func climateRow(dirKey, otherID string, affinity, trust float32, note string) map[string]any {
+	row := map[string]any{dirKey: otherID, "affinity": affinity, "trust": trust}
+	if note != "" {
+		row["note"] = note
+	}
+	return row
 }
 
 /* ───────── 小件 ───────── */

@@ -4,7 +4,7 @@
 // (ADR 0007)。数据走页内局部 state(SkillsView 范式)——单页数据,不入
 // 共享 store。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { type ApiHrAgent, type ApiHrEvaluation, api, type HrAgentConfigInput } from '@/api/client'
+import { type ApiHrAgent, type ApiHrEvaluation, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
 import { Select } from '@/components/Select'
 import { type MessageKey, useT } from '@/lib/i18n'
 import { useAuth } from '@/stores/auth'
@@ -120,6 +120,41 @@ export function HrView() {
       setExpanded((prev) => ({ ...prev, [id]: detail }))
     } catch (err) {
       setEvalError(errText(err))
+    }
+  }
+
+  // 评分面(#347):owner 主观打分/评语,进入下一轮评估输入
+  const [ratingsBy, setRatingsBy] = useState<Record<string, ApiHrRating>>({})
+  const [ratingDraft, setRatingDraft] = useState<Record<string, { score: string; comment: string }>>({})
+  const [savingRating, setSavingRating] = useState('')
+  const reloadRatings = useCallback(async () => {
+    try {
+      const { rows } = await api.listHrRatings()
+      setRatingsBy(Object.fromEntries(rows.map((r) => [r.agentId, r])))
+    } catch { /* 评分区静默降级:评估区已有错误面 */ }
+  }, [])
+  useEffect(() => { void reloadRatings() }, [reloadRatings])
+
+  const ratingValue = (agentId: string): { score: string; comment: string } =>
+    ratingDraft[agentId] ?? { score: ratingsBy[agentId] ? String(ratingsBy[agentId].score) : '', comment: ratingsBy[agentId]?.comment ?? '' }
+
+  const saveRating = async (agentId: string) => {
+    const v = ratingValue(agentId)
+    const score = Number(v.score)
+    if (!Number.isInteger(score) || score < 1 || score > 5) return
+    setSavingRating(agentId)
+    try {
+      const saved = await api.putHrRating(agentId, { score, comment: v.comment })
+      setRatingsBy((prev) => ({ ...prev, [agentId]: saved }))
+      setRatingDraft((prev) => {
+        const next = { ...prev }
+        delete next[agentId]
+        return next
+      })
+    } catch (err) {
+      setEvalError(errText(err))
+    } finally {
+      setSavingRating('')
     }
   }
 
@@ -311,6 +346,51 @@ export function HrView() {
                   ))}
                 </ul>
               )}
+            </div>
+
+            {/* 评分面(#347):四路输入的主观校准信号,进入下一轮评估装配 */}
+            <div className="mb-6">
+              <label className="mb-1.5 block text-[13px] font-semibold">{t('hr.ratingsTitle')}</label>
+              <p className="mb-2 text-[12px] opacity-55">{t('hr.ratingsHint')}</p>
+              <ul className="space-y-1.5">
+                {agents.map((a) => {
+                  const v = ratingValue(a.id)
+                  const saved = ratingsBy[a.id]
+                  const dirty = (v.score || '') !== (saved ? String(saved.score) : '') || v.comment !== (saved?.comment ?? '')
+                  return (
+                    <li key={a.id} className="flex items-center gap-2 rounded-[10px] border border-ink-100 bg-white px-3 py-1.5 text-[12.5px]">
+                      <span className="min-w-24 truncate">{a.name}</span>
+                      <div className="w-20">
+                        <Select
+                          ariaLabel={`${t('hr.ratingsTitle')} ${a.name}`}
+                          value={v.score}
+                          onValueChange={(score) => setRatingDraft((prev) => ({ ...prev, [a.id]: { ...ratingValue(a.id), score } }))}
+                          options={[
+                            { value: '', label: t('hr.ratingUnrated') },
+                            ...[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: String(n) })),
+                          ]}
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        value={v.comment}
+                        placeholder={t('hr.ratingCommentPlaceholder')}
+                        onChange={(e) => setRatingDraft((prev) => ({ ...prev, [a.id]: { ...ratingValue(a.id), comment: e.target.value } }))}
+                        className="min-w-0 flex-1 rounded-[8px] border border-ink-100 px-2 py-1 text-[12px] outline-none focus:border-skype"
+                      />
+                      <button
+                        type="button"
+                        disabled={!dirty || !v.score || savingRating === a.id}
+                        onClick={() => { void saveRating(a.id) }}
+                        className="rounded-lg bg-ink px-3 py-1 text-[11.5px] font-medium text-cloud transition hover:opacity-90 disabled:opacity-30"
+                      >
+                        {savingRating === a.id ? '…' : t('hr.ratingSave')}
+                      </button>
+                    </li>
+                  )
+                })}
+                {agents.length === 0 && <li className="text-[12.5px] opacity-50">{t('hr.ratingsEmpty')}</li>}
+              </ul>
             </div>
 
             {/* prompt:HR 的评判标准,仅 owner/admin 可改 */}
