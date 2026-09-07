@@ -451,7 +451,11 @@ export interface paths {
         /** 改项目 */
         put: operations["updateProject"];
         post?: never;
-        delete?: never;
+        /**
+         * 删除项目(#354,ADR 0008 §6 生命周期唯一出口)
+         * @description 对话 SET NULL 保留、交付台账随卡片存活(FK SET NULL)、成员/关联清理;盘文件原地保留(不代删);默认项目拒删。
+         */
+        delete: operations["deleteProject"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3372,6 +3376,9 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             archivedAt: string | null;
+            /** @description 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。 */
+            folderPath: string | null;
+            isDefault: boolean;
             conversationCount: number;
         };
         QuotaWindow: {
@@ -4873,6 +4880,8 @@ export interface operations {
                     name: string;
                     description?: string;
                     color?: string;
+                    /** @description 可选自填已有文件夹(缺省在受管目录自动建空盘,ADR 0008 §3)。 */
+                    folderPath?: string;
                 };
             };
         };
@@ -4889,6 +4898,8 @@ export interface operations {
                         description: string;
                         color: string | null;
                         status: string;
+                        folderPath: string;
+                        isDefault: boolean;
                     };
                 };
             };
@@ -4921,6 +4932,46 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Ok"];
                 };
+            };
+        };
+    };
+    deleteProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok: boolean;
+                        id: string;
+                        folderKept: string | null;
+                    };
+                };
+            };
+            /** @description 默认项目不可删 / 非管理员 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

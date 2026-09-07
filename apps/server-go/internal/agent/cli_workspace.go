@@ -23,21 +23,19 @@ import (
 // cliWorkspaceResolve:core.ts resolveWorkspaceAccess 的 CLI 面 —— 默认区
 // 全员;显式成员/关联;错误文案与 TS WorkspaceError 逐字对齐。
 func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID string) (folderPath, name, id string, errMsg string) {
-	var fp, n string
-	var unboundAt sql.NullTime
+	var n string
+	var fpS sql.NullString
 	var isDefault bool
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT folder_path, name, is_default, unbound_at FROM workspaces
+		`SELECT folder_path, name, is_default FROM projects
 		  WHERE company_id = $1 AND id = $2`, tenant, wsID,
-	).Scan(&fp, &n, &isDefault, &unboundAt)
+	).Scan(&fpS, &n, &isDefault)
+	fp := fpS.String
 	if err == sql.ErrNoRows {
 		return "", "", "", "workspace not found"
 	}
 	if err != nil {
 		return "", "", "", "workspace lookup failed"
-	}
-	if unboundAt.Valid {
-		return "", "", "", "workspace is unbound"
 	}
 	if isDefault {
 		return fp, n, wsID, ""
@@ -46,16 +44,17 @@ func (s *Service) cliWorkspaceResolve(ctx context.Context, tenant, me, wsID stri
 	err = s.DB.QueryRowContext(ctx, `
 		SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND participant_id = $2
 		UNION ALL
+		SELECT 1 FROM conversations c
+		 WHERE c.project_id = $1 AND c.company_id = $3
+		   AND EXISTS (SELECT 1 FROM conversation_members cm
+		                WHERE cm.conversation_id = c.id AND cm.participant_id = $2)
+		UNION ALL
 		SELECT 1 FROM workspace_associations a
 		 WHERE a.workspace_id = $1 AND a.company_id = $3
 		   AND EXISTS (SELECT 1 FROM participants p
 		                WHERE p.id = $2 AND p.company_id = $3 AND p.departed_at IS NULL)
 		   AND (
-		     (a.target_kind = 'project' AND EXISTS (
-		        SELECT 1 FROM conversations c
-		         WHERE c.project_id = a.target_id AND c.company_id = $3
-		           AND EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.participant_id = $2)))
-		     OR (a.target_kind = 'board_card' AND EXISTS (
+		     (a.target_kind = 'board_card' AND EXISTS (
 		        SELECT 1 FROM board_cards bc JOIN boards b ON b.id = bc.board_id
 		         WHERE bc.id = a.target_id AND b.company_id = $3
 		           AND (bc.assignee_id = $2 OR bc.mentions @> to_jsonb($2::text))))
@@ -177,7 +176,7 @@ func cliAssertInside(root, abs string) string {
 func (s *Service) cliEnsureDefaultWorkspace(ctx context.Context, tenant string) error {
 	var one int
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT 1 FROM workspaces WHERE company_id = $1 AND is_default LIMIT 1`, tenant).Scan(&one)
+		`SELECT 1 FROM projects WHERE company_id = $1 AND is_default LIMIT 1`, tenant).Scan(&one)
 	if err == nil {
 		return nil
 	}
@@ -193,8 +192,8 @@ func (s *Service) cliEnsureDefaultWorkspace(ctx context.Context, tenant string) 
 		return err
 	}
 	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO workspaces (id, company_id, name, folder_path, is_default)
-		 VALUES ($1, $2, $3, $4, TRUE) ON CONFLICT DO NOTHING`,
+		`INSERT INTO projects (id, company_id, name, description, folder_path, is_default)
+		 VALUES ($1, $2, $3, '', $4, TRUE) ON CONFLICT DO NOTHING`,
 		"ws-default-"+tenant, tenant, "Team files", folderReal)
 	return err
 }
@@ -223,9 +222,12 @@ func (s *Service) cliCmdTeamWorkspace(ctx context.Context, parsed cliParsed) cli
 		if err := s.cliEnsureDefaultWorkspace(ctx, tenant); err != nil {
 			return cliErrThrow(err)
 		}
+		if err := workspaces.EnsureProjectFolders(ctx, s.DB, tenant); err != nil {
+			return cliErrThrow(err)
+		}
 		rows, err := s.DB.QueryContext(ctx,
-			`SELECT id, name, is_default, created_at FROM workspaces
-			  WHERE company_id = $1 AND unbound_at IS NULL ORDER BY created_at ASC`, tenant)
+			`SELECT id, name, is_default, created_at FROM projects
+			  WHERE company_id = $1 ORDER BY created_at ASC`, tenant)
 		if err != nil {
 			return cliErrThrow(err)
 		}

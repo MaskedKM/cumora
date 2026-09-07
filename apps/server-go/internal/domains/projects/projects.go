@@ -1,5 +1,6 @@
 // domains/projects —— 项目域(#68 补齐):列表/创建/更新(owner/admin)/
-// 归档开关/会话挂接。行为对齐 router.ts 1661–1759。
+// 会话挂接;#354(ADR 0008)起吸收工作区:项目=一摊工作的唯一容器
+// (对话挂靠+文件夹),归档退役、删除成为唯一生命周期出口。
 package projects
 
 import (
@@ -7,12 +8,20 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/MaskedKM/cumora/apps/server-go/internal/config"
 	contract "github.com/MaskedKM/cumora/apps/server-go/internal/contract/projects"
+	dbpkg "github.com/MaskedKM/cumora/apps/server-go/internal/db"
+	"github.com/MaskedKM/cumora/apps/server-go/internal/domains/workspaces"
 	"github.com/MaskedKM/cumora/apps/server-go/internal/httpx"
 )
 
@@ -70,13 +79,19 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// #354:每队默认区(团队文件)的自愈随主列表走 —— 并表后这就是"项目"
+	// 的列表面,全新 team 不能因未开过工作区视图就漏掉公共盘。
+	if err := workspaces.EnsureDefault(r.Context(), s.DB, tenant); err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT id, name, description, color, status,
-		       created_at, archived_at,
+		       created_at, archived_at, folder_path, is_default,
 		       (SELECT COUNT(*)::int FROM conversations WHERE project_id = projects.id)
 		  FROM projects
 		 WHERE company_id = $1
-		 ORDER BY status ASC, created_at DESC`, tenant)
+		 ORDER BY is_default DESC, created_at DESC`, tenant)
 	if err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
@@ -85,17 +100,19 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, name, status string
-		var description, color sql.NullString
+		var description, color, folder sql.NullString
 		var createdAt time.Time
 		var archivedAt sql.NullTime
+		var isDefault bool
 		var convoCount int
-		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &convoCount); err != nil {
+		if err := rows.Scan(&id, &name, &description, &color, &status, &createdAt, &archivedAt, &folder, &isDefault, &convoCount); err != nil {
 			continue
 		}
 		row := map[string]any{
 			"id": id, "name": name,
 			"description": nullAny(description), "color": nullAny(color),
 			"status": status, "createdAt": httpx.ISOms(createdAt),
+			"folderPath": nullAny(folder), "isDefault": isDefault,
 			"conversationCount": convoCount,
 		}
 		if archivedAt.Valid {
@@ -116,7 +133,7 @@ func nullAny(ns sql.NullString) any {
 }
 
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
-	_, tenant, ok := httpx.RequireCompany(w, r, s.DB)
+	uid, tenant, ok := httpx.RequireCompany(w, r, s.DB)
 	if !ok {
 		return
 	}
@@ -136,19 +153,76 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "name required")
 		return
 	}
+	// #354(ADR 0008 §3)盘强制必绑:默认在受管目录自动建空盘(零额外输入);
+	// body.folderPath 可自填已有路径(绑代码 repo 场景)——校验语义与建工作区
+	// 同款(存在目录 + realpath + 一文件夹至多一项目)。
+	folder := ""
+	if fpRaw, has := bodyAny(body, "folderPath"); has {
+		folder = strings.TrimSpace(httpx.JSStringOrNullish(fpRaw))
+	}
+	if folder != "" {
+		real, err := filepath.EvalSymlinks(folder)
+		if err != nil {
+			httpx.WriteError(w, http.StatusNotFound, "folder not found")
+			return
+		}
+		if st, serr := os.Stat(real); serr != nil || !st.IsDir() {
+			httpx.WriteError(w, http.StatusBadRequest, "folderPath must be a directory")
+			return
+		}
+		var bound string
+		_ = s.DB.QueryRowContext(r.Context(),
+			`SELECT id FROM projects WHERE folder_path = $1 LIMIT 1`, real).Scan(&bound)
+		if bound != "" {
+			httpx.WriteError(w, http.StatusConflict, "folder already bound to a project")
+			return
+		}
+		folder = real
+	}
 	id := "p-" + randHex10()
+	if folder == "" {
+		auto := filepath.Join(config.UploadsDir(), "projects", id)
+		if abs, err := filepath.Abs(auto); err == nil {
+			auto = abs
+		}
+		if err := os.MkdirAll(auto, 0o755); err != nil {
+			httpx.WriteInternalError(w, r, err)
+			return
+		}
+		if real, err := filepath.EvalSymlinks(auto); err == nil {
+			folder = real
+		} else {
+			folder = auto
+		}
+	}
 	var colorArg any
 	if s, ok := color.(string); ok {
 		colorArg = s
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
-		`INSERT INTO projects (id, company_id, name, description, color) VALUES ($1, $2, $3, $4, $5)`,
-		id, tenant, name, description, colorArg); err != nil {
+		`INSERT INTO projects (id, company_id, name, description, color, folder_path, is_default)
+		 VALUES ($1, $2, $3, $4, $5, $6, FALSE)`,
+		id, tenant, name, description, colorArg, folder); err != nil {
+		// 自填盘并发撞 folder 唯一索引:409 而非 500(评审 P2)。
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			httpx.WriteError(w, http.StatusConflict, "folder already bound to a project")
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	// 建区者即显式成员(CreateWorkspace 同款;否则未挂会话的创建人自己
+	// 不在成员域内,看不到刚建的盘 —— 评审 P2)。
+	if _, err := s.DB.ExecContext(r.Context(),
+		`INSERT INTO workspace_members (workspace_id, participant_id, added_by) VALUES ($1, $2, $2)`,
+		id, uid); err != nil {
 		httpx.WriteInternalError(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id": id, "name": name, "description": description, "color": colorArg, "status": "active",
+		"folderPath": folder, "isDefault": false,
 	})
 }
 
@@ -204,29 +278,10 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (s *Server) ArchiveProject(w http.ResponseWriter, r *http.Request, id string) {
-	tenant, ok := requireRole(w, r, s.DB)
-	if !ok {
-		return
-	}
-	archive := true
-	if v, has := bodyAny(decodeBody(r), "archive"); has && v == false {
-		archive = false
-	}
-	var stmt string
-	if archive {
-		stmt = `UPDATE projects SET status = 'archived', archived_at = NOW() WHERE id = $1 AND company_id = $2`
-	} else {
-		stmt = `UPDATE projects SET status = 'active', archived_at = NULL WHERE id = $1 AND company_id = $2`
-	}
-	if _, err := s.DB.ExecContext(r.Context(), stmt, id, tenant); err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	status := "active"
-	if archive {
-		status = "archived"
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+	// #354(ADR 0008 §6):归档概念退役 —— 生命周期无终点、仅删除。端点活体
+	// 至刀 2 随路由族退役,期间恒 410 指路(与 unbind 同款对称处置)。
+	httpx.WriteError(w, http.StatusGone,
+		"archive retired (ADR 0008) — projects have no terminal state; delete is the only exit")
 }
 
 func (s *Server) AttachProject(w http.ResponseWriter, r *http.Request, id string) {
@@ -292,6 +347,66 @@ func (s *Server) AttachProject(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "projectId": projectID})
+}
+
+// DeleteProject:#354(ADR 0008 §6)项目删除 —— 生命周期的唯一出口
+// (归档/解绑已退役)。级联语义:对话经 FK ON DELETE SET NULL 保留、交付
+// 台账经 FK SET NULL 随卡片存活(0007 可追溯意图的延续)、成员/关联行
+// 清理;盘文件原地保留(平台不代删真实文件,受管目录可手动清理)。
+// is_default 项目(团队文件公共盘)不可删。
+func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request, id string) {
+	tenant, ok := requireRole(w, r, s.DB)
+	if !ok {
+		return
+	}
+	var isDefault bool
+	var folder sql.NullString
+	err := s.DB.QueryRowContext(r.Context(),
+		`SELECT is_default, folder_path FROM projects WHERE id = $1 AND company_id = $2 LIMIT 1`,
+		id, tenant).Scan(&isDefault, &folder)
+	if err == sql.ErrNoRows {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	if isDefault {
+		httpx.WriteError(w, http.StatusForbidden, "the default project (team files) cannot be deleted")
+		return
+	}
+	if err := dbpkg.WithTx(r.Context(), s.DB, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(r.Context(),
+			`DELETE FROM workspace_members WHERE workspace_id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(r.Context(),
+			`DELETE FROM workspace_associations WHERE workspace_id = $1`, id); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(r.Context(),
+			`DELETE FROM projects WHERE id = $1 AND company_id = $2`, id, tenant)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	}); err != nil {
+		if err == sql.ErrNoRows {
+			httpx.WriteError(w, http.StatusNotFound, "not found")
+			return
+		}
+		httpx.WriteInternalError(w, r, err)
+		return
+	}
+	// conversations.project_id / card_deliveries.workspace_id 由 FK
+	// ON DELETE SET NULL 自动置空;盘目录未删。
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "id": id, "folderKept": nullAny(folder),
+	})
 }
 
 func randHex10() string {

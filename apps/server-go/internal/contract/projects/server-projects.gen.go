@@ -24,6 +24,9 @@ type ServerInterface interface {
 	// 建项目
 	// (POST /api/projects)
 	CreateProject(w http.ResponseWriter, r *http.Request)
+	// 删除项目(#354,ADR 0008 §6 生命周期唯一出口)
+	// (DELETE /api/projects/{id})
+	DeleteProject(w http.ResponseWriter, r *http.Request, id string)
 	// 改项目
 	// (PUT /api/projects/{id})
 	UpdateProject(w http.ResponseWriter, r *http.Request, id string)
@@ -103,6 +106,37 @@ func (siw *ServerInterfaceWrapper) CreateProject(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateProject(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteProject operation middleware
+func (siw *ServerInterfaceWrapper) DeleteProject(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteProject(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -297,6 +331,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/api/conversations/{id}/project", wrapper.AttachProject)
 	m.HandleFunc("GET "+options.BaseURL+"/api/projects", wrapper.ListProjects)
 	m.HandleFunc("POST "+options.BaseURL+"/api/projects", wrapper.CreateProject)
+	m.HandleFunc("DELETE "+options.BaseURL+"/api/projects/{id}", wrapper.DeleteProject)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/projects/{id}", wrapper.UpdateProject)
 	m.HandleFunc("POST "+options.BaseURL+"/api/projects/{id}/archive", wrapper.ArchiveProject)
 

@@ -116,7 +116,7 @@ test('owner creates a workspace bound to a real folder and becomes its first exp
   assert.equal(ws.isDefault, false)
 
   const { rows } = await pool.query<{ company_id: string; folder_path: string }>(
-    `SELECT company_id, folder_path FROM workspaces WHERE id = $1`,
+    `SELECT company_id, folder_path FROM projects WHERE id = $1`,
     [ws.id],
   )
   assert.equal(rows[0].company_id, COMPANY)
@@ -379,7 +379,7 @@ async function seedBoardCard(opts: { assignee: string | null; mentions: string[]
   await pool.query(
     `INSERT INTO board_cards (id, board_id, column_id, title, position, assignee_id, mentions, created_by)
      VALUES ('card-ws', 'b-ws', 'col-ws', 'Deliver', 0, $1, $2::jsonb, $3)
-     ON CONFLICT DO NOTHING`,
+     ON CONFLICT (id) DO UPDATE SET assignee_id = EXCLUDED.assignee_id, mentions = EXCLUDED.mentions`,
     [opts.assignee, JSON.stringify(opts.mentions), opts.creator],
   )
 }
@@ -427,21 +427,28 @@ async function detailJson(workspaceId: string, user: string = OWNER): Promise<{
   }
 }
 
-test('project association: conversation members become implicit members and the scope follows membership', async () => {
+// #354(ADR 0008 §5):project-kind 关联退役,"项目下会话成员"改为顶层
+// 直推导(挂靠本项目的会话之 conversation_members 成员)。
+test('attached conversations: members implicit via direct derivation; scope follows membership (#354)', async () => {
   await seedProjectWithConversation([MEMBER, AGENT])
   const { id } = await createWorkspaceJson()
-  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
+  // retired kind is refused outright
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 400)
 
-  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // implicit via the project's conversation
+  // attach the conversation to the project (= this workspace, one entity now)
+  await pool.query(`UPDATE conversations SET project_id = $1 WHERE id = 'cv-ws'`, [id])
+  await pool.query(`INSERT INTO conversation_members (conversation_id, participant_id)
+                    VALUES ('cv-ws', $1), ('cv-ws', $2) ON CONFLICT DO NOTHING`, [MEMBER, AGENT])
+
+  assert.equal(await writeAs(id, 'a.txt', MEMBER), 200) // implicit via the attached conversation
 
   const detail = await detailJson(id)
   const sources = new Map(detail.members.map((m) => [m.participantId, m.source]))
   assert.equal(sources.get(OWNER), 'explicit')
   assert.equal(sources.get(MEMBER), 'implicit')
   assert.equal(sources.get(AGENT), 'implicit')
-  assert.deepEqual(detail.associations.map((a) => `${a.kind}:${a.targetId}`), ['project:p-ws'])
 
-  await pool.query(`UPDATE conversations SET members = '["AGENT"]'::jsonb WHERE id = 'cv-ws'`)
+  await pool.query(`DELETE FROM conversation_members WHERE conversation_id = 'cv-ws' AND participant_id = $1`, [MEMBER])
   assert.equal(await writeAs(id, 'b.txt', MEMBER), 403) // left the conversation → out of scope
 })
 
@@ -505,16 +512,17 @@ test('document association: creator + collaborators implicit; collaborator edits
 })
 
 test('association lifecycle: kind whitelist, unknown target, duplicate, delete revokes implicit access', async () => {
-  await seedProjectWithConversation([MEMBER])
+  await seedBoardCard({ assignee: MEMBER, mentions: [], creator: OWNER })
   const { id } = await createWorkspaceJson()
 
   assert.equal((await associate(id, 'conversation', 'cv-ws')).status, 400)
-  assert.equal((await associate(id, 'project', 'nope')).status, 404)
-  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
-  assert.equal((await associate(id, 'project', 'p-ws')).status, 409)
+  assert.equal((await associate(id, 'project', 'p-ws')).status, 400) // retired kind (#354), whitelist first
+  assert.equal((await associate(id, 'board_card', 'nope')).status, 404)
+  assert.equal((await associate(id, 'board_card', 'card-ws')).status, 201)
+  assert.equal((await associate(id, 'board_card', 'card-ws')).status, 409)
   assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
-  const del = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+  const del = await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/board_card/card-ws`, {
     method: 'DELETE',
     headers: jsonHeaders(COMPANY),
   })
@@ -524,7 +532,7 @@ test('association lifecycle: kind whitelist, unknown target, duplicate, delete r
   assert.deepEqual((await detailJson(id)).associations, [])
   assert.equal(
     (
-      await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
+      await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/board_card/card-ws`, {
         method: 'DELETE',
         headers: jsonHeaders(COMPANY),
       })
@@ -539,26 +547,34 @@ test('association rights: project and board_card need owner/admin, document does
   await seedDocument('doc-ws', OWNER, [])
   const { id } = await createWorkspaceJson()
 
-  assert.equal((await associate(id, 'project', 'p-ws', MEMBER)).status, 403)
+  assert.equal((await associate(id, 'project', 'p-ws', MEMBER)).status, 400) // retired kind rejects before the role gate (#354)
   assert.equal((await associate(id, 'board_card', 'card-ws', MEMBER)).status, 403)
   assert.equal((await associate(id, 'document', 'doc-ws', MEMBER)).status, 201)
 })
 
 test('cross-company isolation: associations only see same-company targets', async () => {
-  await seedProjectWithConversation([MEMBER])
+  await seedBoardCard({ assignee: null, mentions: [], creator: OWNER })
   const dirB = await mkdtemp(join(tmpRoot, 'bound-b-'))
   const bCreate = await createWorkspace({ user: OUTSIDER, company: COMPANY_B, folderPath: dirB })
   assert.equal(bCreate.status, 201)
   const bId = ((await bCreate.json()) as { id: string }).id
   await pool.query(
-    `INSERT INTO projects (id, company_id, name) VALUES ('p-b', $1, 'B Project') ON CONFLICT DO NOTHING`,
-    [COMPANY_B],
+    `INSERT INTO boards (id, company_id, title, created_by) VALUES ('b-b', $1, 'B Board', $2) ON CONFLICT DO NOTHING`,
+    [COMPANY_B, OUTSIDER],
+  )
+  await pool.query(
+    `INSERT INTO board_columns (id, board_id, title, position) VALUES ('col-b', 'b-b', 'T', 0) ON CONFLICT DO NOTHING`,
+  )
+  await pool.query(
+    `INSERT INTO board_cards (id, board_id, column_id, title, position, mentions, created_by)
+     VALUES ('card-b', 'b-b', 'col-b', 'B Card', 0, '[]'::jsonb, $1) ON CONFLICT DO NOTHING`,
+    [OUTSIDER],
   )
 
-  assert.equal((await associate(bId, 'project', 'p-ws', OUTSIDER, COMPANY_B)).status, 404) // A's project invisible to B
+  assert.equal((await associate(bId, 'board_card', 'card-ws', OUTSIDER, COMPANY_B)).status, 404) // A's card invisible to B
   const { id } = await createWorkspaceJson()
-  assert.equal((await associate(id, 'project', 'p-b')).status, 404) // B's project invisible to A
-  assert.equal((await associate(id, 'project', 'p-ws')).status, 201) // same-company works
+  assert.equal((await associate(id, 'board_card', 'card-b')).status, 404) // B's card invisible to A
+  assert.equal((await associate(id, 'board_card', 'card-ws')).status, 201) // same-company works
 })
 
 // ---------- Default workspace (#30) ----------
@@ -625,70 +641,41 @@ async function unbind(workspaceId: string, user: string = OWNER): Promise<Respon
   return fetchAs(user, `${MIRROR_BASE}/api/workspaces/${workspaceId}/unbind`, { method: 'POST', headers: jsonHeaders(COMPANY) })
 }
 
-test('safe unbind: files untouched, all access refused, associations visible as inert history', async () => {
+// #354(ADR 0008 §6):解绑退役 —— 端点活体至刀 2,恒 410 指路项目删除。
+test('unbind retired (#354): always 410, nothing ends, files untouched', async () => {
   await writeFile(join(boundDir, 'keep.txt'), 'precious', 'utf8')
   const { id } = await createWorkspaceJson()
   await addMember(id, MEMBER)
   assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
-  assert.equal((await unbind(id)).status, 200)
+  const res = await unbind(id)
+  assert.equal(res.status, 410)
+  assert.match(String(((await res.json()) as { error?: string }).error), /retired/)
 
-  // Not a single file touched
+  // retirement ≠ deletion: the project lives on, files and access untouched
   assert.equal(await readFile(join(boundDir, 'keep.txt'), 'utf8'), 'precious')
   assert.equal(await readFile(join(boundDir, 'a.txt'), 'utf8'), 'x')
-
-  // All access refused (410) for every file surface
-  assert.equal(await writeAs(id, 'b.txt', MEMBER), 410)
-  assert.equal(
-    (await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/file${q('keep.txt')}`, { headers: jsonHeaders(COMPANY) })).status,
-    410,
-  )
-  assert.equal((await fetchAs(MEMBER, `${memberBase}/api/workspaces/${id}/files`, { headers: jsonHeaders(COMPANY) })).status, 410)
-
-  // Hidden from the list; the detail shows the unbound state
-  const list = (await (await fetchAs(OWNER, `${ownerBase}/api/workspaces`, { headers: jsonHeaders(COMPANY) })).json()) as Array<{
-    id: string
-  }>
-  assert.ok(!list.some((r) => r.id === id))
-  const detail = (await (
-    await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}`, { headers: jsonHeaders(COMPANY) })
-  ).json()) as { unboundAt: string; unboundBy: string }
-  assert.ok(detail.unboundAt)
-  assert.equal(detail.unboundBy, OWNER)
-
-  // Mutations refused; idempotency explicit
-  assert.equal((await unbind(id)).status, 409)
-  assert.equal((await addMember(id, AGENT)).status, 410)
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 200)
 })
 
-test('implicit access via associations ends at unbind; association create is 410; default never unbinds', async () => {
-  await seedProjectWithConversation([MEMBER])
+test('implicit access survives the retired unbind; default gets the same 410 (#354)', async () => {
+  await seedBoardCard({ assignee: MEMBER, mentions: [], creator: OWNER })
   const { id } = await createWorkspaceJson()
-  assert.equal((await associate(id, 'project', 'p-ws')).status, 201)
+  assert.equal((await associate(id, 'board_card', 'card-ws')).status, 201)
   assert.equal(await writeAs(id, 'a.txt', MEMBER), 200)
 
-  assert.equal((await unbind(id)).status, 200)
-  assert.equal(await writeAs(id, 'b.txt', MEMBER), 410) // implicit membership inert
-  assert.equal((await detailJson(id)).associations.length, 1) // still visible as history
-  assert.equal((await associate(id, 'board_card', 'nope')).status, 410) // guard precedes target lookup
-  // the audit record cannot be silently rewritten post-unbind
-  assert.equal(
-    (
-      await fetchAs(OWNER, `${ownerBase}/api/workspaces/${id}/associations/project/p-ws`, {
-        method: 'DELETE',
-        headers: jsonHeaders(COMPANY),
-      })
-    ).status,
-    410,
-  )
+  assert.equal((await unbind(id)).status, 410)
+  assert.equal(await writeAs(id, 'b.txt', MEMBER), 200) // nothing ended — no terminal state anymore
+  assert.equal((await detailJson(id)).associations.length, 1)
+  assert.equal((await associate(id, 'board_card', 'nope')).status, 404) // normal guard chain
 
   const defId = await defaultWorkspaceId()
-  assert.equal((await unbind(defId)).status, 403)
+  assert.equal((await unbind(defId)).status, 410) // same retirement — no special case
 })
 
-test('only owner/admin can unbind', async () => {
+test('unbind refuses non-admins even in retirement (#354)', async () => {
   const { id } = await createWorkspaceJson()
-  assert.equal((await unbind(id, MEMBER)).status, 403)
+  assert.equal((await unbind(id, MEMBER)).status, 403) // role gate fires before the 410
 })
 
 // #338 multipart 上传 + 原始字节读:round-trip 字节一致 / 25MB 帽 / 防

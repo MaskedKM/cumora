@@ -413,6 +413,9 @@ paths:
                 name: { type: string }
                 description: { type: string }
                 color: { type: string }
+                folderPath:
+                  type: string
+                  description: 可选自填已有文件夹(缺省在受管目录自动建空盘,ADR 0008 §3)。
       responses:
         '201':
           description: ok
@@ -420,14 +423,37 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, name, description, color, status]
+                required: [id, name, description, color, status, folderPath, isDefault]
                 properties:
                   id: { type: string }
                   name: { type: string }
                   description: { type: string }
                   color: { type: string, nullable: true }
                   status: { type: string }
+                  folderPath: { type: string }
+                  isDefault: { type: boolean }
   /api/projects/{id}:
+    delete:
+      tags: [projects]
+      operationId: deleteProject
+      summary: 删除项目(#354,ADR 0008 §6 生命周期唯一出口)
+      description: 对话 SET NULL 保留、交付台账随卡片存活(FK SET NULL)、成员/关联清理;盘文件原地保留(不代删);默认项目拒删。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, folderKept]
+                properties:
+                  ok: { type: boolean }
+                  id: { type: string }
+                  folderKept: { type: string, nullable: true }
+        '403': { description: 默认项目不可删 / 非管理员 }
+        '404': { description: not found }
     put:
       tags: [projects]
       operationId: updateProject
@@ -3939,7 +3965,7 @@ components:
         clientId: { type: string }
     Project:
       type: object
-      required: [id, name, description, color, status, createdAt, archivedAt, conversationCount]
+      required: [id, name, description, color, status, createdAt, archivedAt, folderPath, isDefault, conversationCount]
       properties:
         id: { type: string }
         name: { type: string }
@@ -3948,6 +3974,11 @@ components:
         status: { type: string, enum: [active, archived] }
         createdAt: { type: string, format: date-time }
         archivedAt: { type: string, nullable: true, format: date-time }
+        folderPath:
+          type: string
+          nullable: true
+          description: 项目绑定的真实文件夹(ADR 0008 §3;存量无盘项目补盘前为 null)。
+        isDefault: { type: boolean }
         conversationCount: { type: integer }
     QuotaWindow:
       type: object

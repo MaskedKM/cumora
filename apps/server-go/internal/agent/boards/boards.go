@@ -1361,9 +1361,9 @@ func (s *Domain) requireCardAssignee(ctx context.Context, cardID, me string) str
 // 入口 = 卡片面板的 ⌗ 按钮,#338)。
 func (s *Domain) cardWorkspaceFolder(ctx context.Context, companyID, cardID, wsID string) (folder, ref, errMsg string) {
 	q := `SELECT ws.id, ws.folder_path
-	        FROM workspace_associations a JOIN workspaces ws ON ws.id = a.workspace_id
+	        FROM workspace_associations a JOIN projects ws ON ws.id = a.workspace_id
 	       WHERE a.target_kind = 'board_card' AND a.target_id = $1
-	         AND ws.company_id = $2 AND ws.unbound_at IS NULL`
+	         AND ws.company_id = $2 AND ws.folder_path IS NOT NULL`
 	args := []any{cardID, companyID}
 	if wsID != "" {
 		q += ` AND ws.id = $3`

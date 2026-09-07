@@ -1066,13 +1066,13 @@ test('[mirror-runtime] /workspaces: local computer gets folderPath; membership g
   // 自建区:未加成员 → 不可达
   const otherWs = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Secret', '/tmp/not-yours')`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Secret', '', '/tmp/not-yours', FALSE)`,
     [otherWs, companyId],
   )
   // 自建区:显式成员 → 可达且带 folderPath
   const mineWs = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'Mine', '/tmp/mine')`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'Mine', '', '/tmp/mine', FALSE)`,
     [mineWs, companyId],
   )
   await pool.query(
@@ -1115,7 +1115,7 @@ async function seedWorkspaceFor(agentId: string, companyId: string): Promise<{ w
   const folder = await mkdtemp(join(tmpdir(), 'ws-cli-'))
   const wsId = `ws-${randomUUID().slice(0, 8)}`
   await pool.query(
-    `INSERT INTO workspaces (id, company_id, name, folder_path) VALUES ($1, $2, 'CLI', $3)`,
+    `INSERT INTO projects (id, company_id, name, description, folder_path, is_default) VALUES ($1, $2, 'CLI', '', $3, FALSE)`,
     [wsId, companyId, folder],
   )
   await pool.query(`INSERT INTO workspace_members (workspace_id, participant_id) VALUES ($1, $2)`, [wsId, agentId])
@@ -1257,8 +1257,12 @@ test('[mirror-runtime] workspace CLI: CAS --expected (stale reject + conflict co
   // stat 拿 mtimeNanos;挂载侧(模拟另一写者)直改盘上文件。
   let r = await run('stat', wsId, 'doc.md', '--json')
   const before = JSON.parse(r.text).mtimeNanos as string
-  const { writeFile: fsWrite, readdir: fsReaddir, readFile: fsReadFile } = await import('node:fs/promises')
+  const { writeFile: fsWrite, readdir: fsReaddir, readFile: fsReadFile, utimes } = await import('node:fs/promises')
   await fsWrite(join(folder, 'doc.md'), 'concurrent edit')
+  // CI fs 的 mtime 粒度可能粗到"写前后同 tick 同值",stale 检测面会静默
+  // 失效(#361 CI 实锤)—— 用 utimes 显式给并发写者留下不同的 mtime,
+  // CAS 用例对时序零依赖。
+  await utimes(join(folder, 'doc.md'), new Date(), new Date(Date.now() + 5000))
 
   // CAS 失配:拒写 + 挑战者内容进 .conflict 副本。
   r = await run('write', wsId, 'doc.md', 'my new content', '--expected', String(before))
