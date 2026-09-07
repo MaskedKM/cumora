@@ -1257,8 +1257,12 @@ test('[mirror-runtime] workspace CLI: CAS --expected (stale reject + conflict co
   // stat 拿 mtimeNanos;挂载侧(模拟另一写者)直改盘上文件。
   let r = await run('stat', wsId, 'doc.md', '--json')
   const before = JSON.parse(r.text).mtimeNanos as string
-  const { writeFile: fsWrite, readdir: fsReaddir, readFile: fsReadFile } = await import('node:fs/promises')
+  const { writeFile: fsWrite, readdir: fsReaddir, readFile: fsReadFile, utimes } = await import('node:fs/promises')
   await fsWrite(join(folder, 'doc.md'), 'concurrent edit')
+  // CI fs 的 mtime 粒度可能粗到"写前后同 tick 同值",stale 检测面会静默
+  // 失效(#361 CI 实锤)—— 用 utimes 显式给并发写者留下不同的 mtime,
+  // CAS 用例对时序零依赖。
+  await utimes(join(folder, 'doc.md'), new Date(), new Date(Date.now() + 5000))
 
   // CAS 失配:拒写 + 挑战者内容进 .conflict 副本。
   r = await run('write', wsId, 'doc.md', 'my new content', '--expected', String(before))
