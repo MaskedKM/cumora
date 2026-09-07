@@ -121,7 +121,7 @@ test('[integration] free users cannot accept an invite into a fourth company', a
   assert.match(body.error ?? '', /at most 3 companies/)
 })
 
-test('[integration] free workspaces cannot create an eleventh active agent', async () => {
+test('[integration] agent 数无 tier 闸(#357:BYOA 零边际成本,10 席限额随 cloud pod 时代退役)', async () => {
   await seedCompanyWithOwner('co-agent-limit', FREE_USER_ID)
   await seedActiveAgents('co-agent-limit', 10)
 
@@ -135,10 +135,9 @@ test('[integration] free workspaces cannot create an eleventh active agent', asy
       systemPrompt: 'A test agent prompt long enough.',
     }),
   })
-  const body = await res.json() as { error?: string }
 
-  assert.equal(res.status, 403)
-  assert.match(body.error ?? '', /at most 10 active agents/)
+  // 第 11 个 agent 建得成 —— tierAgents 闸已删,数多少由 owner 自己的引擎/预算决定。
+  assert.equal(res.status, 201)
 })
 
 test('[integration] free workspaces cannot accept a sixth human member', async () => {

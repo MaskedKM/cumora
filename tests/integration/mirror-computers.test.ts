@@ -53,12 +53,12 @@ test('[mirror] pair: redeem + starter team seeding + discovery', async () => {
   assert.equal(paired.json.companyId, COMPANY)
   assert.ok(paired.json.deviceToken.length > 20)
 
-  // starter team:4 agents 落到该机,默认引擎 = engines[0]
+  // starter team:8 agents(#357 八席满编)落到该机,默认引擎 = engines[0]
   const agents = await pool.query(
     `SELECT id, name, computer_id, engine FROM participants WHERE company_id = $1 AND kind = 'agent'`,
     [COMPANY],
   )
-  assert.equal(agents.rows.length, 4)
+  assert.equal(agents.rows.length, 8)
   for (const a of agents.rows) {
     assert.equal(a.computer_id, paired.json.computerId)
     assert.equal(a.engine, 'codex')
@@ -70,12 +70,12 @@ test('[mirror] pair: redeem + starter team seeding + discovery', async () => {
     [COMPANY],
   )
   assert.equal(everyone.rows.length, 1)
-  assert.equal(everyone.rows[0].members.length, 5)
+  assert.equal(everyone.rows[0].members.length, 9)
   const dms = await pool.query(
     `SELECT count(*)::int AS n FROM conversations WHERE company_id = $1 AND kind = 'direct'`,
     [COMPANY],
   )
-  assert.equal(dms.rows[0].n, 4)
+  assert.equal(dms.rows[0].n, 8)
   // one-shot 时间戳
   const stamps = await pool.query(`SELECT starter_seeded_at, starter_dms_seeded_at, all_hands_seeded_at FROM companies WHERE id = $1`, [COMPANY])
   assert.ok(stamps.rows[0].starter_seeded_at)
@@ -88,7 +88,7 @@ test('[mirror] pair: redeem + starter team seeding + discovery', async () => {
   })
   assert.equal(discovered.status, 200)
   const list = (await discovered.json()) as any[]
-  assert.equal(list.length, 4)
+  assert.equal(list.length, 8)
   // 坏令牌 401
   const bad = await fetch(`${baseUrl}/api/computers/me/agents`, {
     headers: { authorization: 'Bearer nope' },

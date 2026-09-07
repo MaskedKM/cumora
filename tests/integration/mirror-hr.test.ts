@@ -5,7 +5,7 @@
  * 覆盖:GET 兜底置备(存量公司)/CreateCompany 钩子置备(新公司)、
  * owner/admin 读写 vs member 403、部分更新语义(prompt / computer+engine
  * 解析 / 空串清空)、花名册零泄漏(participants/openDirect/createGroup)、
- * 套餐闸不受 hr_agents 行影响(free 满 10 建第 11 个仍拒)。
+ * 套餐席位闸已随 #357 退役(hr 行在也不占 participants 名册)。
  */
 import { test, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -168,19 +168,20 @@ test('[mirror] hr: 花名册零泄漏 — participants/openDirect/createGroup �
   assert.ok(grp.status >= 400, `createGroup with HR must fail, got ${grp.status}`)
 })
 
-test('[mirror] hr: 套餐闸不受影响 — free 满 10 建第 11 个仍拒,hr 行在也不占名额', async () => {
+test('[mirror] hr: 席位闸已退役(#357)— 建第 11 个成功,hr 行在也不占名册', async () => {
   for (let i = 1; i <= 10; i++) await seedAgent(`ag-quota-${i}`)
   await call('/hr') // hr_agents 行存在
   const created = await call('/agents', {
     method: 'POST',
-    body: JSON.stringify({ name: 'Number 11', systemPrompt: 'should be rejected by tier gate' }),
+    body: JSON.stringify({ name: 'Number 11', systemPrompt: 'tier gate retired with the cloud pod tier' }),
   })
-  assert.equal(created.status, 403)
-  // 计数只看 participants:hr 行在,名册仍是 10 agent(+owner 人类行)
+  // tierAgents 闸已删(BYOA 零边际成本):第 11 个建得成。
+  assert.equal(created.status, 201)
+  // 计数只看 participants:hr 行在,名册是 11 agent(+owner 人类行),hr 不入册。
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS n FROM participants WHERE company_id = $1 AND kind = 'agent'`, [COMPANY],
   )
-  assert.equal(rows[0].n, 10)
+  assert.equal(rows[0].n, 11)
 })
 
 test('[mirror] hr: CreateCompany 钩子 — 新公司建即置备(不经 GET 兜底)', async () => {

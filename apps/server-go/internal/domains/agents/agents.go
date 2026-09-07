@@ -219,40 +219,6 @@ func slugifyAgentName(name string) string {
 	return slug
 }
 
-// companyPlanTier:属主 tier,回退最早加入 owner 角色成员(评审 F2:
-// 与 invitations 域 F1 同源;不得取调用者或全体成员最优)。
-func companyPlanTier(ctx context.Context, db *sql.DB, companyID string) string {
-	var tier sql.NullString
-	_ = db.QueryRowContext(ctx, `
-		SELECT COALESCE(owner_user.tier, owner_member.tier, 'free')
-		  FROM companies c
-		  LEFT JOIN users owner_user ON owner_user.id = c.owner_user_id
-		  LEFT JOIN LATERAL (
-		    SELECT u.tier
-		      FROM company_members cm
-		      JOIN users u ON u.id = cm.user_id
-		     WHERE cm.company_id = c.id AND cm.role = 'owner' AND u.tier IS NOT NULL
-		     ORDER BY cm.joined_at ASC
-		     LIMIT 1
-		  ) owner_member ON TRUE
-		 WHERE c.id = $1`, companyID).Scan(&tier)
-	if tier.Valid {
-		return tier.String
-	}
-	return "free"
-}
-
-func tierAgents(t string) int {
-	switch t {
-	case "pro":
-		return 20
-	case "max":
-		return 50
-	default:
-		return 10
-	}
-}
-
 func randSuffix6() string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 4)
@@ -309,17 +275,6 @@ func (s *Server) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if body.systemPrompt == nil || len(strings.TrimSpace(*body.systemPrompt)) < 10 {
 		httpx.WriteError(w, http.StatusBadRequest,
 			"systemPrompt required (at least 10 chars — describe the agent's style)")
-		return
-	}
-	// tier 限(free=10/pro=20/max=50);tier 属公司不属调用者(评审 F2)。
-	tier := companyPlanTier(r.Context(), s.DB, tenant)
-	var agentCount int
-	_ = s.DB.QueryRowContext(r.Context(),
-		`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
-		tenant).Scan(&agentCount)
-	if agentCount >= tierAgents(tier) {
-		httpx.WriteError(w, http.StatusForbidden,
-			fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
 		return
 	}
 	agentID, err := pickUniqueAgentID(r.Context(), s.DB, *body.name)
@@ -552,17 +507,6 @@ func (s *Server) RehireAgent(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	if !departedAt.Valid {
 		httpx.WriteError(w, http.StatusConflict, "agent is not off-boarded")
-		return
-	}
-	// tier 限:rehire 同 create 的闸(tier 属公司,评审 F2)。
-	tier := companyPlanTier(r.Context(), s.DB, tenant)
-	var agentCount int
-	_ = s.DB.QueryRowContext(r.Context(),
-		`SELECT COUNT(*) FROM participants WHERE company_id = $1 AND kind = 'agent' AND departed_at IS NULL`,
-		tenant).Scan(&agentCount)
-	if agentCount >= tierAgents(tier) {
-		httpx.WriteError(w, http.StatusForbidden,
-			fmt.Sprintf("%s tier teams can have at most %d active agents", tier, tierAgents(tier)))
 		return
 	}
 	if _, err := s.DB.ExecContext(r.Context(), `

@@ -217,7 +217,7 @@ test('[mirror-skills] write face is privileged (member → 403, read stays 200)'
 })
 
 test('[mirror-skills] computer distribution: list + bundle by hash + tenant gate', async () => {
-  // 配对会种 4 个 starter agent 到该机——分发清单的公司集合来自它们。
+  // 配对会种 8 个 starter agent(#357 八席)到该机——分发清单的公司集合来自它们。
   const code = (await call('/computers', { method: 'POST', body: '{}' })).json.code
   const paired = await call('/computers/pair', {
     method: 'POST',
