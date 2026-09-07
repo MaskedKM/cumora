@@ -16,6 +16,9 @@ export type AgentInput = Schemas['AgentInput']
 // #345 HR Agent(编外隐形人事代理)配置面;#346 评估面。
 export type ApiHrAgent = Schemas['HrAgent']
 export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
+export type ApiHrAutoRunStatus = Schemas['HrAutoRunStatus']
+export type ApiHrAutoRunTickResult = Schemas['HrAutoRunTickResult']
+export type HrAutoRunConfigInput = Schemas['HrAutoRunConfigInput']
 export type ApiHrEvaluation = Schemas['HrEvaluation']
 export type ApiHrRating = Schemas['HrRating']
 export type ApiHrChange = Schemas['HrChange']
@@ -396,6 +399,12 @@ export const api = {
   listHrEvaluations: () => http<{ rows: ApiHrEvaluation[] }>('/hr/evaluations'),
   getHrEvaluation: (id: string) =>
     http<ApiHrEvaluation>(`/hr/evaluations/${encodeURIComponent(id)}`),
+  /** #350 自动运行配置(周期+三钩子阈值;每项 0=关)。 */
+  getHrAutoRun: () => http<ApiHrAutoRunStatus>('/hr/autorun'),
+  putHrAutoRunConfig: (input: HrAutoRunConfigInput) =>
+    http<ApiHrAutoRunStatus>('/hr/autorun', { method: 'PUT', body: JSON.stringify(input) }),
+  /** 强制跑一轮自动评估扫描(不等 60s worker)。 */
+  triggerHrAutoRunTick: () => http<ApiHrAutoRunTickResult>('/hr/autorun/tick', { method: 'POST' }),
   /** #347 owner 主观评分(upsert;score 1..5)。 */
   listHrRatings: () => http<{ rows: ApiHrRating[] }>('/hr/ratings'),
   putHrRating: (agentId: string, input: { score: number; comment?: string }) =>

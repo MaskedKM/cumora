@@ -528,6 +528,10 @@ spawnChild('go-server', GO_BIN, [], {
     // 24h)。安全:GC 只删 >1h 且无 DB 引用的文件,而 CUMORA_UPLOADS_DIR
     // 是每-run 新生的空目录——worker 对本套件的真实上传件是 no-op。
     EMAIL_GC_INTERVAL_MS: '1000',
+    // #350:HR 自动运行 worker 关停(ENABLE_SCANNER 同哲学)——测试经
+    // POST /api/hr/autorun/tick 强制到期驱动,且免得 60s 扫描在别的 hr
+    // 测试中途入队自动轮抢走 hr_reports 的在飞互斥。
+    HR_AUTORUN_INTERVAL_MS: '0',
   },
 })
 if (!(await waitFor(GO_BASE, 30_000))) {

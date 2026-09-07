@@ -1,4 +1,5 @@
-// evaluations —— #346 手动评估全链的 server 半边。
+// evaluations —— #346 手动评估全链的 server 半边(#350 起手动/自动共用
+// startRound 入队管线,本文件只留手动 HTTP 壳与 CLI 面)。
 //
 // 触发(POST /api/hr/evaluations):在飞互斥(部分唯一索引兜底)→ 客观
 // 观测快照装配落 input_snapshot → 唤醒 hr-<companyId>(brief 即任务书,
@@ -45,89 +46,129 @@ func (s *Server) CreateHrEvaluation(w http.ResponseWriter, r *http.Request) {
 	if body.TargetAgentID != nil {
 		target = strings.TrimSpace(*body.TargetAgentID)
 	}
-
-	cfgRow, ok := loadOrProvision(r.Context(), s.DB, companyID)
-	if !ok {
-		httpx.WriteInternalError(w, r, fmt.Errorf("hr_agents row missing for company %s", companyID))
-		return
-	}
-	if !cfgRow.computerID.Valid || !cfgRow.engine.Valid {
+	id, err := s.startRound(r.Context(), companyID, target, "manual", "", uid)
+	switch {
+	case err == nil:
+	case errors.Is(err, errHrUnassigned):
 		httpx.WriteError(w, http.StatusBadRequest, "assign a computer and engine to the HR Agent before triggering evaluations")
 		return
-	}
-	if target != "" {
-		var exists bool
-		_ = s.DB.QueryRowContext(r.Context(),
-			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL LIMIT 1`,
-			target, companyID).Scan(&exists)
-		if !exists {
-			httpx.WriteError(w, http.StatusBadRequest, "unknown target agent")
-			return
-		}
-	}
-	// 陈旧在飞收尸:daemon 整机死亡留下的悬置轮(>30min)自动 failed,
-	// 让本次触发可通过;新鲜在飞仍由唯一索引拦成 409。
-	_, _ = s.DB.ExecContext(r.Context(), `
-		UPDATE hr_reports
-		   SET status = 'failed', error = 'superseded: in-flight round stale over 30min',
-		       updated_at = NOW(), finished_at = NOW()
-		 WHERE company_id = $1 AND status IN ('pending', 'running')
-		   AND updated_at < NOW() - INTERVAL '30 minutes'`, companyID)
-
-	snapshot, err := s.assembleInputs(r.Context(), companyID, target)
-	if err != nil {
+	case errors.Is(err, errUnknownTarget):
+		httpx.WriteError(w, http.StatusBadRequest, "unknown target agent")
+		return
+	case errors.Is(err, errRoundInFlight):
+		httpx.WriteError(w, http.StatusConflict, "an evaluation round is already in flight for this team")
+		return
+	case errors.Is(err, errDaemonOffline):
+		httpx.WriteError(w, http.StatusServiceUnavailable,
+			"HR daemon offline — reconnect its computer, then retrigger")
+		return
+	default:
 		httpx.WriteInternalError(w, r, err)
 		return
-	}
-	snapJSON, err := json.Marshal(snapshot)
-	if err != nil {
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	id := "hre-" + authn.NewToken()[:10]
-	_, err = s.DB.ExecContext(r.Context(), `
-		INSERT INTO hr_reports (id, company_id, target_agent_id, trigger_kind, status, input_snapshot, created_by)
-		VALUES ($1, $2, NULLIF($3, ''), 'manual', 'pending', $4, NULLIF($5, ''))`,
-		id, companyID, target, snapJSON, uid)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			httpx.WriteError(w, http.StatusConflict, "an evaluation round is already in flight for this team")
-			return
-		}
-		httpx.WriteInternalError(w, r, err)
-		return
-	}
-	if s.Wake != nil {
-		delivered := s.Wake("hr-"+companyID, "hr-eval", &sched.BackgroundBrief{
-			Source: "hr-eval",
-			Title:  "HR evaluation round " + id,
-			Ref:    id,
-			Body: fmt.Sprintf(
-				"An HR evaluation round (%s) has been triggered by the owner. Steps: "+
-					"(1) fetch your inputs: `cumora hr context %s` "+
-					"(2) evaluate the target agent(s) per your standing instructions "+
-					"(3) submit the structured report as a single JSON object: "+
-					"`cumora hr report %s '<json>'`. The round closes when the report lands.",
-				id, id, id),
-		})
-		// brief 走 Redis PUBLISH 一次性投递,HR 无 inbox 持久兜底(非
-		// participant)——0 接收者 = daemon 离线,任务书已丢。本轮直接
-		// failed 放行重触发,不留 30min 悬置锁。
-		if delivered == 0 {
-			_, _ = s.DB.ExecContext(r.Context(), `
-				UPDATE hr_reports SET status = 'failed',
-				       error = 'HR daemon offline — reconnect its computer, then retrigger',
-				       updated_at = NOW(), finished_at = NOW()
-				 WHERE id = $1 AND status = 'pending'`, id)
-			httpx.WriteError(w, http.StatusServiceUnavailable,
-				"HR daemon offline — reconnect its computer, then retrigger")
-			return
-		}
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id": id, "trigger": "manual", "status": "pending",
 		"targetAgentId": nilIfEmpty(target), "createdAt": time.Now().UTC(), "updatedAt": time.Now().UTC(),
 	})
+}
+
+/* ───────── 入队管线(手动/自动共用,#350 起无第二套)───────── */
+
+// startRound 哨兵:两触发面(handler HTTP 映射 / autorun tick 观测)共用。
+var (
+	errHrUnassigned  = errors.New("hr computer unassigned")
+	errUnknownTarget = errors.New("unknown target agent")
+	errRoundInFlight = errors.New("round in flight")
+	errDaemonOffline = errors.New("hr daemon offline")
+	errHrRowMissing  = errors.New("hr_agents row missing")
+)
+
+// sweepStaleRounds:daemon 整机死亡留下的悬置轮(>30min)自动 failed,
+// 让后续触发可通过;新鲜在飞仍由唯一索引拦(409/skip)。
+func sweepStaleRounds(ctx context.Context, db *sql.DB, companyID string) {
+	_, _ = db.ExecContext(ctx, `
+		UPDATE hr_reports
+		   SET status = 'failed', error = 'superseded: in-flight round stale over 30min',
+		       updated_at = NOW(), finished_at = NOW()
+		 WHERE company_id = $1 AND status IN ('pending', 'running')
+		   AND updated_at < NOW() - INTERVAL '30 minutes'`, companyID)
+}
+
+// startRound:评估轮入队全管线 —— 指派闸 → 目标校验 → 陈旧收尸 → 快照
+// 装配落行 → 唤醒(brief 即任务书)。trigger ∈ manual/periodic/event
+// (#350 自动运行与手动共用此面);reason 仅 event 轮携钩子来源说明;
+// createdBy 空 = 自动触发。返回轮 id;失败走哨兵,调用方各自映射。
+func (s *Server) startRound(ctx context.Context, companyID, target, trigger, reason, createdBy string) (string, error) {
+	cfgRow, ok := loadOrProvision(ctx, s.DB, companyID)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errHrRowMissing, companyID)
+	}
+	if !cfgRow.computerID.Valid || !cfgRow.engine.Valid {
+		return "", errHrUnassigned
+	}
+	if target != "" {
+		var exists bool
+		_ = s.DB.QueryRowContext(ctx,
+			`SELECT 1 FROM participants WHERE id = $1 AND company_id = $2 AND kind = 'agent' AND departed_at IS NULL LIMIT 1`,
+			target, companyID).Scan(&exists)
+		if !exists {
+			return "", errUnknownTarget
+		}
+	}
+	sweepStaleRounds(ctx, s.DB, companyID)
+
+	snapshot, err := s.assembleInputs(ctx, companyID, target)
+	if err != nil {
+		return "", err
+	}
+	snapJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	id := "hre-" + authn.NewToken()[:10]
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO hr_reports (id, company_id, target_agent_id, trigger_kind, status, input_snapshot, created_by)
+		VALUES ($1, $2, NULLIF($3, ''), $4, 'pending', $5, NULLIF($6, ''))`,
+		id, companyID, target, trigger, snapJSON, createdBy)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return "", errRoundInFlight
+		}
+		return "", err
+	}
+	if s.Wake != nil {
+		why := "it was triggered by the owner"
+		switch trigger {
+		case "periodic":
+			why = "the routine evaluation period has elapsed"
+		case "event":
+			why = "an event hook fired (" + reason + ")"
+		}
+		delivered := s.Wake("hr-"+companyID, "hr-eval", &sched.BackgroundBrief{
+			Source: "hr-eval",
+			Title:  "HR evaluation round " + id,
+			Ref:    id,
+			Body: fmt.Sprintf(
+				"An HR evaluation round (%s) is ready — %s. Steps: "+
+					"(1) fetch your inputs: `cumora hr context %s` "+
+					"(2) evaluate the target agent(s) per your standing instructions "+
+					"(3) submit the structured report as a single JSON object: "+
+					"`cumora hr report %s '<json>'`. The round closes when the report lands.",
+				id, why, id, id),
+		})
+		// brief 走 Redis PUBLISH 一次性投递,HR 无 inbox 持久兜底(非
+		// participant)——0 接收者 = daemon 离线,任务书已丢。本轮直接
+		// failed 放行重触发,不留 30min 悬置锁。
+		if delivered == 0 {
+			_, _ = s.DB.ExecContext(ctx, `
+				UPDATE hr_reports SET status = 'failed',
+				       error = 'HR daemon offline — reconnect its computer, then retrigger',
+				       updated_at = NOW(), finished_at = NOW()
+				 WHERE id = $1 AND status = 'pending'`, id)
+			return id, errDaemonOffline
+		}
+	}
+	return id, nil
 }
 
 func (s *Server) ListHrEvaluations(w http.ResponseWriter, r *http.Request) {
@@ -246,10 +287,12 @@ func (s *Server) cliContext(ctx context.Context, companyID string, pos []string)
 		return agent.Err("evaluation round has no input snapshot")
 	}
 	// 生命周期兑现(评审 P1-3):Brain 取输入即视为开跑 —— pending → running
-	// (幂等;终态轮不改)。
+	// (幂等;终态轮不改)。#350 补刀:'pending' 闭合引号自 #346 起缺失,
+	// 语法错被丢弃 → 翻转从未生效(终态语义未破:report 面的
+	// IN ('pending','running') 守卫独立承担);#350 集成测试逮住。
 	_, _ = s.DB.ExecContext(ctx, `
 		UPDATE hr_reports SET status = 'running', updated_at = NOW()
-		 WHERE id = $1 AND company_id = $2 AND status = 'pending`,
+		 WHERE id = $1 AND company_id = $2 AND status = 'pending'`,
 		strings.TrimSpace(pos[1]), companyID)
 	return agent.OK(string(snapshot))
 }

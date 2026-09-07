@@ -895,6 +895,43 @@ paths:
               schema: { $ref: '#/components/schemas/HrProposal' }
         '404': { description: 无此提案或不属本公司 }
         '409': { description: 提案已处置 }
+  /api/hr/autorun:
+    get:
+      tags: [hr]
+      operationId: getHrAutoRun
+      summary: 自动运行配置读(周期+三钩子阈值;owner/admin)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrAutoRunStatus' }
+    put:
+      tags: [hr]
+      operationId: putHrAutoRunConfig
+      summary: 自动运行配置写(owner/admin;部分更新,0=关对应项)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HrAutoRunConfigInput' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrAutoRunStatus' }
+        '400': { description: 越界值或空体 }
+  /api/hr/autorun/tick:
+    post:
+      tags: [hr]
+      operationId: triggerHrAutoRunTick
+      summary: 手动跑一轮自动评估扫描(owner/admin;生产由 60s worker 周期执行,此端点强制到期)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrAutoRunTickResult' }
   /api/agents:
     post:
       tags: [agents]
@@ -4066,6 +4103,44 @@ components:
         systemPrompt: { type: string }
         computerId: { type: string }
         engine: { type: string }
+    HrAutoRunStatus:
+      type: object
+      required: [intervalHours, overdueDays, spendUsd, errorRate, lastPeriodicAt, nextPeriodicAt, updatedAt]
+      properties:
+        intervalHours: { type: integer, description: 周期例行间隔小时(默认 168=每周;0=关) }
+        overdueDays: { type: integer, description: 事件钩子①已指派看板卡停更天数阈值(0=关) }
+        spendUsd: { type: number, description: 事件钩子②近 24h LLM spend 美元阈值(0=关) }
+        errorRate: { type: number, description: 事件钩子③近 24h 错误率阈值,0–1 区间(0=关;另需 ≥5 次运行样本) }
+        lastPeriodicAt: { type: string, format: date-time, nullable: true }
+        nextPeriodicAt: { type: string, format: date-time, nullable: true, description: 下次例行到期时刻(interval=0 时为 null;实际入队另受在飞互斥与 24h 同目标去抖约束) }
+        updatedAt: { type: string, format: date-time }
+    HrAutoRunConfigInput:
+      type: object
+      description: 部分更新;每项 0=关;intervalHours≤2160、overdueDays≤365、errorRate 在 0–1 区间
+      properties:
+        intervalHours: { type: integer }
+        overdueDays: { type: integer }
+        spendUsd: { type: number }
+        errorRate: { type: number }
+    HrAutoRunTickResult:
+      type: object
+      required: [periodicFired, events, skipped]
+      properties:
+        periodicFired: { type: boolean, description: 本次扫描是否入队了周期例行轮(全员) }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/HrAutoRunEvent' }
+        skipped:
+          type: array
+          items: { type: string }
+          description: 未入队原因(hook 未命中/在飞/去抖窗内等,供 HR 页与测试观测)
+    HrAutoRunEvent:
+      type: object
+      required: [id, agentId, reason]
+      properties:
+        id: { type: string, description: 评估轮 id }
+        agentId: { type: string }
+        reason: { type: string, enum: [overdue-card, spend-over, error-rate] }
     HrEvaluation:
       type: object
       required: [id, trigger, status, targetAgentId, createdAt, updatedAt]

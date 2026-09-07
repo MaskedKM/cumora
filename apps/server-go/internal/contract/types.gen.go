@@ -151,6 +151,13 @@ const (
 	Zcode  EngineId = "zcode"
 )
 
+// Defines values for HrAutoRunEventReason.
+const (
+	ErrorRate   HrAutoRunEventReason = "error-rate"
+	OverdueCard HrAutoRunEventReason = "overdue-card"
+	SpendOver   HrAutoRunEventReason = "spend-over"
+)
+
 // Defines values for HrChangeField.
 const (
 	Bio          HrChangeField = "bio"
@@ -1089,6 +1096,57 @@ type HrAgentConfigInput struct {
 	ComputerId   *string `json:"computerId,omitempty"`
 	Engine       *string `json:"engine,omitempty"`
 	SystemPrompt *string `json:"systemPrompt,omitempty"`
+}
+
+// HrAutoRunConfigInput 部分更新;每项 0=关;intervalHours≤2160、overdueDays≤365、errorRate 在 0–1 区间
+type HrAutoRunConfigInput struct {
+	ErrorRate     *float32 `json:"errorRate,omitempty"`
+	IntervalHours *int     `json:"intervalHours,omitempty"`
+	OverdueDays   *int     `json:"overdueDays,omitempty"`
+	SpendUsd      *float32 `json:"spendUsd,omitempty"`
+}
+
+// HrAutoRunEvent defines model for HrAutoRunEvent.
+type HrAutoRunEvent struct {
+	AgentId string `json:"agentId"`
+
+	// Id 评估轮 id
+	Id     string               `json:"id"`
+	Reason HrAutoRunEventReason `json:"reason"`
+}
+
+// HrAutoRunEventReason defines model for HrAutoRunEvent.Reason.
+type HrAutoRunEventReason string
+
+// HrAutoRunStatus defines model for HrAutoRunStatus.
+type HrAutoRunStatus struct {
+	// ErrorRate 事件钩子③近 24h 错误率阈值
+	ErrorRate float32 `json:"errorRate"`
+
+	// IntervalHours 周期例行间隔小时(默认 168=每周;0=关)
+	IntervalHours  int        `json:"intervalHours"`
+	LastPeriodicAt *time.Time `json:"lastPeriodicAt"`
+
+	// NextPeriodicAt 下次例行到期时刻(interval=0 时为 null;实际入队另受在飞互斥与 24h 同目标去抖约束)
+	NextPeriodicAt *time.Time `json:"nextPeriodicAt"`
+
+	// OverdueDays 事件钩子①已指派看板卡停更天数阈值(0=关)
+	OverdueDays int `json:"overdueDays"`
+
+	// SpendUsd 事件钩子②近 24h LLM spend 美元阈值(0=关)
+	SpendUsd  float32   `json:"spendUsd"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// HrAutoRunTickResult defines model for HrAutoRunTickResult.
+type HrAutoRunTickResult struct {
+	Events []HrAutoRunEvent `json:"events"`
+
+	// PeriodicFired 本次扫描是否入队了周期例行轮(全员)
+	PeriodicFired bool `json:"periodicFired"`
+
+	// Skipped 未入队原因(hook 未命中/在飞/去抖窗内等,供 HR 页与测试观测)
+	Skipped []string `json:"skipped"`
 }
 
 // HrChange defines model for HrChange.
@@ -2779,6 +2837,9 @@ type SendEmailJSONRequestBody SendEmailJSONBody
 
 // PutHrAgentConfigJSONRequestBody defines body for PutHrAgentConfig for application/json ContentType.
 type PutHrAgentConfigJSONRequestBody = HrAgentConfigInput
+
+// PutHrAutoRunConfigJSONRequestBody defines body for PutHrAutoRunConfig for application/json ContentType.
+type PutHrAutoRunConfigJSONRequestBody = HrAutoRunConfigInput
 
 // CreateHrEvaluationJSONRequestBody defines body for CreateHrEvaluation for application/json ContentType.
 type CreateHrEvaluationJSONRequestBody CreateHrEvaluationJSONBody

@@ -21,6 +21,15 @@ type ServerInterface interface {
 	// HR Agent 配置写(owner/admin;prompt/computer/engine)
 	// (PUT /api/hr)
 	PutHrAgentConfig(w http.ResponseWriter, r *http.Request)
+	// 自动运行配置读(周期+三钩子阈值;owner/admin)
+	// (GET /api/hr/autorun)
+	GetHrAutoRun(w http.ResponseWriter, r *http.Request)
+	// 自动运行配置写(owner/admin;部分更新,0=关对应项)
+	// (PUT /api/hr/autorun)
+	PutHrAutoRunConfig(w http.ResponseWriter, r *http.Request)
+	// 手动跑一轮自动评估扫描(owner/admin;生产由 60s worker 周期执行,此端点强制到期)
+	// (POST /api/hr/autorun/tick)
+	TriggerHrAutoRunTick(w http.ResponseWriter, r *http.Request)
 	// 岗位层变更历史(owner/admin;可按 agent 过滤)
 	// (GET /api/hr/changes)
 	ListHrChanges(w http.ResponseWriter, r *http.Request, params ListHrChangesParams)
@@ -93,6 +102,66 @@ func (siw *ServerInterfaceWrapper) PutHrAgentConfig(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutHrAgentConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHrAutoRun operation middleware
+func (siw *ServerInterfaceWrapper) GetHrAutoRun(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHrAutoRun(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutHrAutoRunConfig operation middleware
+func (siw *ServerInterfaceWrapper) PutHrAutoRunConfig(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutHrAutoRunConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TriggerHrAutoRunTick operation middleware
+func (siw *ServerInterfaceWrapper) TriggerHrAutoRunTick(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, SessionBearerScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TriggerHrAutoRunTick(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -505,6 +574,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr", wrapper.GetHrAgent)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/hr", wrapper.PutHrAgentConfig)
+	m.HandleFunc("GET "+options.BaseURL+"/api/hr/autorun", wrapper.GetHrAutoRun)
+	m.HandleFunc("PUT "+options.BaseURL+"/api/hr/autorun", wrapper.PutHrAutoRunConfig)
+	m.HandleFunc("POST "+options.BaseURL+"/api/hr/autorun/tick", wrapper.TriggerHrAutoRunTick)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/changes", wrapper.ListHrChanges)
 	m.HandleFunc("POST "+options.BaseURL+"/api/hr/changes/{id}/revert", wrapper.RevertHrChange)
 	m.HandleFunc("GET "+options.BaseURL+"/api/hr/evaluations", wrapper.ListHrEvaluations)

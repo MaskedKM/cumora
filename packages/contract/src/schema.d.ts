@@ -822,6 +822,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hr/autorun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 自动运行配置读(周期+三钩子阈值;owner/admin) */
+        get: operations["getHrAutoRun"];
+        /** 自动运行配置写(owner/admin;部分更新,0=关对应项) */
+        put: operations["putHrAutoRunConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hr/autorun/tick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 手动跑一轮自动评估扫描(owner/admin;生产由 60s worker 周期执行,此端点强制到期) */
+        post: operations["triggerHrAutoRunTick"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -3484,6 +3519,46 @@ export interface components {
             computerId?: string;
             engine?: string;
         };
+        HrAutoRunStatus: {
+            /** @description 周期例行间隔小时(默认 168=每周;0=关) */
+            intervalHours: number;
+            /** @description 事件钩子①已指派看板卡停更天数阈值(0=关) */
+            overdueDays: number;
+            /** @description 事件钩子②近 24h LLM spend 美元阈值(0=关) */
+            spendUsd: number;
+            /** @description 事件钩子③近 24h 错误率阈值 */
+            errorRate: number;
+            /** Format: date-time */
+            lastPeriodicAt: string | null;
+            /**
+             * Format: date-time
+             * @description 下次例行到期时刻(interval=0 时为 null;实际入队另受在飞互斥与 24h 同目标去抖约束)
+             */
+            nextPeriodicAt: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description 部分更新;每项 0=关;intervalHours≤2160、overdueDays≤365、errorRate 在 0–1 区间 */
+        HrAutoRunConfigInput: {
+            intervalHours?: number;
+            overdueDays?: number;
+            spendUsd?: number;
+            errorRate?: number;
+        };
+        HrAutoRunTickResult: {
+            /** @description 本次扫描是否入队了周期例行轮(全员) */
+            periodicFired: boolean;
+            events: components["schemas"]["HrAutoRunEvent"][];
+            /** @description 未入队原因(hook 未命中/在飞/去抖窗内等,供 HR 页与测试观测) */
+            skipped: string[];
+        };
+        HrAutoRunEvent: {
+            /** @description 评估轮 id */
+            id: string;
+            agentId: string;
+            /** @enum {string} */
+            reason: "overdue-card" | "spend-over" | "error-rate";
+        };
         HrEvaluation: {
             id: string;
             /** @enum {string} */
@@ -5711,6 +5786,77 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getHrAutoRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrAutoRunStatus"];
+                };
+            };
+        };
+    };
+    putHrAutoRunConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["HrAutoRunConfigInput"];
+            };
+        };
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrAutoRunStatus"];
+                };
+            };
+            /** @description 越界值或空体 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    triggerHrAutoRunTick: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HrAutoRunTickResult"];
+                };
             };
         };
     };
