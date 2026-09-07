@@ -4,7 +4,7 @@
 // (ADR 0007)。数据走页内局部 state(SkillsView 范式)——单页数据,不入
 // 共享 store。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { type ApiHrAgent, type ApiHrChange, type ApiHrEvaluation, type ApiHrProposal, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
+import { type ApiHrAgent, type ApiHrAutoRunStatus, type ApiHrAutoRunTickResult, type ApiHrChange, type ApiHrEvaluation, type ApiHrProposal, type ApiHrRating, api, type HrAgentConfigInput } from '@/api/client'
 import { Select } from '@/components/Select'
 import { type MessageKey, useT } from '@/lib/i18n'
 import { useAuth } from '@/stores/auth'
@@ -23,6 +23,14 @@ const EVAL_STATUS_KEYS: Record<string, MessageKey> = {
   running: 'hr.st.running',
   done: 'hr.st.done',
   failed: 'hr.st.failed',
+}
+
+// 评估轮触发来源 → i18n 键(#350:周期例行/事件钩子的自动轮与手动轮同列,
+// 徽章区分来源即"自动运行历史")。
+const EVAL_TRIGGER_KEYS: Record<string, MessageKey> = {
+  manual: 'hr.trg.manual',
+  periodic: 'hr.trg.periodic',
+  event: 'hr.trg.event',
 }
 
 // 变更字段 → i18n 键(同上,显式映射)。
@@ -66,6 +74,29 @@ export function HrView() {
   const [evalError, setEvalError] = useState('')
   const [evals, setEvals] = useState<ApiHrEvaluation[] | null>(null)
   const [expanded, setExpanded] = useState<Record<string, ApiHrEvaluation>>({})
+
+  // 自动运行面(#350):周期例行 + 三事件钩子的阈值配置与下次例行时间。
+  const [auto, setAuto] = useState<ApiHrAutoRunStatus | null>(null)
+  const [autoDraft, setAutoDraft] = useState<{ interval: string; overdue: string; spend: string; errorRate: string }>({
+    interval: '', overdue: '', spend: '', errorRate: '',
+  })
+  const [autoSaving, setAutoSaving] = useState(false)
+  const [autoError, setAutoError] = useState('')
+  const [ticking, setTicking] = useState(false)
+  const [tickNote, setTickNote] = useState('')
+
+  const reloadAuto = useCallback(async () => {
+    try {
+      const row = await api.getHrAutoRun()
+      setAuto(row)
+      setAutoDraft({
+        interval: String(row.intervalHours),
+        overdue: String(row.overdueDays),
+        spend: String(row.spendUsd),
+        errorRate: String(row.errorRate),
+      })
+    } catch { /* 置备兜底在后端;读失败静默保持空卡 */ }
+  }, [])
 
   const computersById = useComputers((s) => s.byId)
   const computers = Object.values(computersById).sort((a, b) => a.name.localeCompare(b.name))
@@ -257,6 +288,7 @@ export function HrView() {
   }, [])
 
   useEffect(() => { void reload() }, [reload])
+  useEffect(() => { void reloadAuto() }, [reloadAuto])
   useEffect(() => { void reloadEvals() }, [reloadEvals])
   useEffect(() => {
     if (!savedFlash) return
@@ -304,6 +336,50 @@ export function HrView() {
       setError(errText(err))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const saveAuto = async () => {
+    // 客户端闸(评审 P2-2):空串 Number()→0 会静默关停对应项、NaN→
+    // null 会被后端当缺键跳过 —— 两者都拦成本地报错,不发放请求。
+    const nums = {
+      intervalHours: Number(autoDraft.interval),
+      overdueDays: Number(autoDraft.overdue),
+      spendUsd: Number(autoDraft.spend),
+      errorRate: Number(autoDraft.errorRate),
+    }
+    const entries = Object.entries(nums) as [keyof typeof nums, number][]
+    if (Object.values(autoDraft).some((v) => v.trim() === '') || entries.some(([, n]) => !Number.isFinite(n))) {
+      setAutoError(t('hr.autoInvalidNumber'))
+      return
+    }
+    setAutoSaving(true); setAutoError('')
+    try {
+      const row = await api.putHrAutoRunConfig(nums)
+      setAuto(row)
+    } catch (err) {
+      setAutoError(errText(err))
+    } finally {
+      setAutoSaving(false)
+    }
+  }
+
+  // 立即扫描:结果一句话回报(入队了几轮/跳过原因),并刷新轮次列表 ——
+  // 自动轮与手动轮同列,刷新即可见"自动运行历史"。
+  const scanNow = async () => {
+    setTicking(true); setTickNote('')
+    try {
+      const res: ApiHrAutoRunTickResult = await api.triggerHrAutoRunTick()
+      const parts: string[] = []
+      if (res.periodicFired) parts.push(t('hr.autoScanPeriodic'))
+      for (const ev of res.events) parts.push(t('hr.autoScanEvent', { agent: participantsById[ev.agentId]?.name ?? ev.agentId, reason: ev.reason }))
+      if (parts.length === 0) parts.push(t('hr.autoScanIdle'))
+      setTickNote(parts.join(' · '))
+      await Promise.all([reloadEvals(), reloadAuto()])
+    } catch (err) {
+      setTickNote(errText(err))
+    } finally {
+      setTicking(false)
     }
   }
 
@@ -403,6 +479,11 @@ export function HrView() {
                               : 'var(--skype-deep)',
                           }}
                         >{t(EVAL_STATUS_KEYS[ev.status] ?? 'hr.st.pending')}</span>
+                        {ev.trigger !== 'manual' && (
+                          <span className="inline-block rounded-full bg-ink-50 px-2 py-0.5 text-[10.5px] font-semibold uppercase opacity-70">
+                            {t(EVAL_TRIGGER_KEYS[ev.trigger] ?? 'hr.trg.periodic')}
+                          </span>
+                        )}
                         <span className="opacity-70">
                           {ev.targetAgentId
                             ? `${t('hr.targetLabel')}: ${participantsById[ev.targetAgentId]?.name ?? ev.targetAgentId}`
@@ -430,6 +511,81 @@ export function HrView() {
                     </li>
                   ))}
                 </ul>
+              )}
+            </div>
+
+            {/* 自动运行面(#350):周期例行 + 事件钩子阈值;下次例行时间可见 */}
+            <div className="mb-6">
+              <h2 className="mb-2 text-[13px] font-semibold">{t('hr.autoTitle')}</h2>
+              {auto === null ? (
+                <div className="py-4 text-center text-[12.5px] opacity-50">{t('common.loading')}</div>
+              ) : (
+                <>
+                  <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12.5px]">
+                    <dt className="opacity-55">{t('hr.autoNext')}</dt>
+                    <dd>{auto.nextPeriodicAt
+                      ? new Date(auto.nextPeriodicAt).toLocaleString()
+                      : t('hr.autoOff')}</dd>
+                    <dt className="opacity-55">{t('hr.autoLast')}</dt>
+                    <dd>{auto.lastPeriodicAt ? new Date(auto.lastPeriodicAt).toLocaleString() : '—'}</dd>
+                  </dl>
+                  <p className="mb-2 text-[12px] opacity-55">{t('hr.autoHint')}</p>
+                  {autoError && <div className="mb-2 text-[12px] text-red-700">{autoError}</div>}
+                  <div className="mb-3 grid max-w-xl grid-cols-2 gap-2">
+                    <label className="text-[12px]">
+                      <span className="mb-0.5 block opacity-60">{t('hr.autoInterval')}</span>
+                      <input
+                        className="w-full rounded-lg border border-ink-100 px-2 py-1.5 text-[12.5px]"
+                        inputMode="numeric"
+                        value={autoDraft.interval}
+                        onChange={(e) => setAutoDraft((d) => ({ ...d, interval: e.target.value }))}
+                      />
+                    </label>
+                    <label className="text-[12px]">
+                      <span className="mb-0.5 block opacity-60">{t('hr.autoOverdue')}</span>
+                      <input
+                        className="w-full rounded-lg border border-ink-100 px-2 py-1.5 text-[12.5px]"
+                        inputMode="numeric"
+                        value={autoDraft.overdue}
+                        onChange={(e) => setAutoDraft((d) => ({ ...d, overdue: e.target.value }))}
+                      />
+                    </label>
+                    <label className="text-[12px]">
+                      <span className="mb-0.5 block opacity-60">{t('hr.autoSpend')}</span>
+                      <input
+                        className="w-full rounded-lg border border-ink-100 px-2 py-1.5 text-[12.5px]"
+                        inputMode="decimal"
+                        value={autoDraft.spend}
+                        onChange={(e) => setAutoDraft((d) => ({ ...d, spend: e.target.value }))}
+                      />
+                    </label>
+                    <label className="text-[12px]">
+                      <span className="mb-0.5 block opacity-60">{t('hr.autoErrorRate')}</span>
+                      <input
+                        className="w-full rounded-lg border border-ink-100 px-2 py-1.5 text-[12.5px]"
+                        inputMode="decimal"
+                        value={autoDraft.errorRate}
+                        onChange={(e) => setAutoDraft((d) => ({ ...d, errorRate: e.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={autoSaving}
+                      onClick={() => { void saveAuto() }}
+                      className="rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold text-white disabled:opacity-50"
+                      style={{ background: 'var(--skype-deep)' }}
+                    >{t('hr.autoSave')}</button>
+                    <button
+                      type="button"
+                      disabled={ticking}
+                      onClick={() => { void scanNow() }}
+                      className="rounded-full border border-ink-200 px-3.5 py-1.5 text-[12.5px] font-semibold disabled:opacity-50"
+                    >{t('hr.autoScan')}</button>
+                    {tickNote && <span className="text-[12px] opacity-70">{tickNote}</span>}
+                  </div>
+                </>
               )}
             </div>
 

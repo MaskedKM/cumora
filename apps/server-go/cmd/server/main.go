@@ -237,6 +237,9 @@ func main() {
 		return runtimeSvc.Sched.WakeOneCount(agentID, reason, nil, nil, &sched.WakeOpts{BackgroundBrief: brief})
 	}, domagentsSrv)
 	runtimeSvc.HrCli = domhrSrv.Cli
+	// #350 自动运行 worker(60s 扫可运行公司;HR_AUTORUN_INTERVAL_MS=0
+	// 关 —— 集成 SUT 即此形态,测试走强制 tick 端点)
+	domhrSrv.StartAutoRunScheduler(ctxBoot)
 	devtools.Mount(coreRouter, pool)
 	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
 	// users/waitlist/stats/observability-llm 子面留待完整化票。
