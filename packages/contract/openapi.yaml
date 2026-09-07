@@ -864,6 +864,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HrChange' }
         '404': { description: 无此变更或不属本公司 }
+  /api/hr/proposals:
+    get:
+      tags: [hr]
+      operationId: listHrProposals
+      summary: 招人/淘汰提案列表(owner/admin;可按状态过滤)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, approved, rejected] } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows]
+                properties:
+                  rows:
+                    type: array
+                    items: { $ref: '#/components/schemas/HrProposal' }
+  /api/hr/proposals/{id}/approve:
+    post:
+      tags: [hr]
+      operationId: approveHrProposal
+      summary: 批准提案并执行(owner/admin;hire=同源建 agent 全流程,offboard=软删可复聘)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrProposal' }
+        '404': { description: 无此提案或不属本公司 }
+        '409': { description: 提案已处置或执行冲突 }
+  /api/hr/proposals/{id}/reject:
+    post:
+      tags: [hr]
+      operationId: rejectHrProposal
+      summary: 拒绝提案(owner/admin;只留处置痕迹)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HrProposal' }
+        '404': { description: 无此提案或不属本公司 }
+        '409': { description: 提案已处置 }
   /api/agents:
     post:
       tags: [agents]
@@ -4162,6 +4211,21 @@ components:
         newValue: { type: string }
         evaluationId: { type: string, nullable: true, description: 依据的评估轮;手动回滚产生的行为 null }
         revertedChangeId: { type: string, nullable: true, description: 本行是回滚时 → 被回滚的目标行 }
+        createdAt: { type: string, format: date-time }
+    HrProposal:
+      type: object
+      required: [id, kind, status, reason, createdAt]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [hire, offboard] }
+        status: { type: string, enum: [open, approved, rejected] }
+        agentId: { type: string, nullable: true, description: offboard 目标;hire 为 null }
+        profile: { type: object, additionalProperties: true, nullable: true, description: hire 档案草稿(name/role/bio/systemPrompt/model/engine/headcountNote) }
+        reason: { type: string }
+        evaluationId: { type: string, nullable: true }
+        decidedBy: { type: string, nullable: true }
+        decidedAt: { type: string, format: date-time, nullable: true }
+        resultAgentId: { type: string, nullable: true, description: hire 执行产物(新 agent id) }
         createdAt: { type: string, format: date-time }
     Whisper:
       type: object

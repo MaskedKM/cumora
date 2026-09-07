@@ -290,12 +290,19 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 		return agent.Err("failed rounds cannot carry jobEdits — report without edits, or fix the failure")
 	}
 	var applied int
+	var proposals int
 	err = db.WithTx(ctx, s.DB, func(tx *sql.Tx) error {
 		n, err := applyJobEdits(ctx, tx, companyID, id, edits)
 		if err != nil {
 			return err
 		}
 		applied = n
+		if err := recordProposals(ctx, tx, companyID, id, payload["proposals"]); err != nil {
+			return err
+		}
+		if rawList, ok := payload["proposals"].([]any); ok {
+			proposals = len(rawList)
+		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE hr_reports
 			   SET status = $3, payload = $4, error = NULLIF($5, ''),
@@ -316,7 +323,7 @@ func (s *Server) cliReport(ctx context.Context, companyID string, pos []string, 
 	if err != nil {
 		return agent.Err(err.Error())
 	}
-	return agent.OK(fmt.Sprintf("recorded: %s (%s, %d job edit(s) applied)", id, status, applied))
+	return agent.OK(fmt.Sprintf("recorded: %s (%s, %d job edit(s) applied, %d proposal(s) filed)", id, status, applied, proposals))
 }
 
 // errRoundClosed:收轮 UPDATE 零行的哨兵(区别于其它 SQL 错误)。

@@ -19,6 +19,7 @@ export type HrAgentConfigInput = Schemas['HrAgentConfigInput']
 export type ApiHrEvaluation = Schemas['HrEvaluation']
 export type ApiHrRating = Schemas['HrRating']
 export type ApiHrChange = Schemas['HrChange']
+export type ApiHrProposal = Schemas['HrProposal']
 /** 上传结果:MessageAttachment + 服务端必回的 url(发送消息的入参允许 mock 无 url)。 */
 export type ApiAttachment = Schemas['MessageAttachment'] & { url: string }
 export type UploadCapabilities = Schemas['UploadCapabilities']
@@ -416,6 +417,13 @@ export const api = {
   /** 回滚一次岗位层变更(回滚本身入历史)。 */
   revertHrChange: (id: string) =>
     http<ApiHrChange>(`/hr/changes/${encodeURIComponent(id)}/revert`, { method: 'POST' }),
+  /** #349 招人/淘汰提案(可按状态过滤)。 */
+  listHrProposals: (status?: 'open' | 'approved' | 'rejected') =>
+    http<{ rows: ApiHrProposal[] }>(`/hr/proposals${status ? `?status=${status}` : ''}`),
+  approveHrProposal: (id: string) =>
+    http<ApiHrProposal>(`/hr/proposals/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+  rejectHrProposal: (id: string) =>
+    http<ApiHrProposal>(`/hr/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
   getConversations: () => http<ApiConversation[]>('/conversations'),
   createGroup: (input: { title: string; members: string[]; subtitle?: string; projectId?: string | null }) =>
     http<{ id: string; members: string[]; projectId: string | null }>('/conversations', {

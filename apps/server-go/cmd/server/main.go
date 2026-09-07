@@ -230,14 +230,14 @@ func main() {
 	// 事件、纯 agent 房偷看;头像钩子经 domagents 注入 runtime 面)。
 	uploads.Mount(coreRouter, pool)
 	projects.Mount(coreRouter, pool)
-	domagents.Mount(coreRouter, pool,
+	domagentsSrv := domagents.Mount(coreRouter, pool,
 		func(agentID, tenant string) { _, _ = runtimeSvc.GenerateAgentAvatar(ctxBoot, agentID, tenant) },
 		runtimeSvc.GenerateAgentAvatar)
 	domhrSrv := domhr.Mount(coreRouter, pool, func(agentID, reason string, brief *sched.BackgroundBrief) int {
 		// #346:评估触发唤醒(brief 即任务书,随 wake 载荷一次性下发;
 		// 返回接收数供 0 接收者回收轮次)
 		return runtimeSvc.Sched.WakeOneCount(agentID, reason, nil, nil, &sched.WakeOpts{BackgroundBrief: brief})
-	})
+	}, domagentsSrv)
 	runtimeSvc.HrCli = domhrSrv.Cli
 	devtools.Mount(coreRouter, pool)
 	// admin 面(#112):settings 读写+Cerebellum 密钥遮蔽+/me 门探+引擎并集;
