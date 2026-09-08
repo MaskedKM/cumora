@@ -2,15 +2,16 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { AnimatePresence, motion, useTransform, type MotionValue } from 'framer-motion'
 import { useApp } from '@/stores/app'
 import { useT } from '@/lib/i18n'
+import { useWhispers } from '@/stores/whispers'
 import { MobileChatList } from './MobileChatList'
 import { MobileChat, MobileChatInfo } from './MobileChat'
-import { MobileTabBar } from './MobileTabBar'
-import { MobileWhispersList, MobileWhisperRoom } from './MobileWhispers'
+import { MobileWhisperRoom } from './MobileWhispers'
 import { MobileConvene } from './MobileConvene'
-import { MobileLibrary } from './MobileLibrary'
+import { MobileLibrary, type LibTab } from './MobileLibrary'
 import { MobileAgents } from './MobileAgents'
 import { MobileMe } from './MobileMe'
 import { BoardPeekContent, CalendarEventPeekContent } from '@/components/ArtifactPeekContent'
+import { IBack } from '@/components/icons'
 import { useDocuments } from '@/stores/documents'
 import { IDoc } from '@/components/icons'
 import { initPushNotifications } from '@/lib/push'
@@ -100,7 +101,9 @@ function MobileDocumentPeek({ documentId, onClose }: { documentId: string; onClo
 export function MobileApp() {
   const t = useT()
   const view = useApp((s) => s.view)
+  const setView = useApp((s) => s.setView)
   const convoId = useApp((s) => s.selectedConversationId)
+  const select = useApp((s) => s.selectConversation)
   const stack = useApp((s) => s.mobileStack)
   const pushStack = useApp((s) => s.pushMobileStack)
   const documentId = useApp((s) => s.openDocumentId)
@@ -115,14 +118,25 @@ export function MobileApp() {
   // overlay (MobileParticipantInfo) below.
   const infoParticipantId = useApp((s) => s.infoAgentId)
   const closeAgentInfo = useApp((s) => s.closeAgentInfo)
-  const [whisperId, setWhisperId] = useState<string | null>(null)
+  // #370 刀3(ADR 0009):纯 agent 会话由主列表「Agent 对话」分区直选,
+  // 选中 id 复用 selectedConversationId(与桌面同款语义);聊天覆盖层据
+  // 此换渲染 MobileWhisperRoom。
+  const whispers = useWhispers((s) => s.list)
+  const whisperSelected = convoId !== null && whispers.some((w) => w.id === convoId)
+
+  // 看板直达:列表头看板钮 / 菜单看板项 → 资料库看板页(nonce 让重复
+  // 点击同目标也能重新生效)。
+  const [libraryReq, setLibraryReq] = useState<{ tab: LibTab; n: number } | null>(null)
+  const openBoards = () => {
+    setLibraryReq((r) => ({ tab: 'boards', n: (r?.n ?? 0) + 1 }))
+    setView('library')
+  }
 
   // Edge-swipe-back gestures for deep screens. Hooks are called
   // unconditionally (the per-page motion.div is conditional, but the
   // hooks need to be stable across renders).
   const chatSwipe = useSwipeBackProps(() => pushStack('list'))
   const infoSwipe = useSwipeBackProps(() => pushStack('chat'))
-  const whisperSwipe = useSwipeBackProps(() => setWhisperId(null))
   const participantSwipe = useSwipeBackProps(() => closeAgentInfo())
 
   // Parallax — when a top layer (chat / info / whisper room) is
@@ -134,7 +148,6 @@ export function MobileApp() {
   // background slides in as the foreground slides out, no extra
   // wiring needed.
   const listPeekX = useParallax(chatSwipe.x)
-  const whisperListPeekX = useParallax(whisperSwipe.x)
   const artifactKey = documentId
     ? `doc-${documentId}`
     : boardId
@@ -154,12 +167,6 @@ export function MobileApp() {
   useEffect(() => {
     void initPushNotifications()
   }, [])
-
-  // hide tab bar in deep flows
-  const showTabBar =
-    !(view === 'conversations' && (stack === 'chat' || stack === 'info')) &&
-    !(view === 'whispers' && whisperId !== null) &&
-    !infoParticipantId
 
   return (
     <div className="relative z-10 h-[100dvh] w-screen flex flex-col bg-paper">
@@ -203,7 +210,7 @@ export function MobileApp() {
                   willChange: 'transform',
                 }}
               >
-                <MobileChatList />
+                <MobileChatList onOpenBoards={openBoards} />
               </motion.div>
               {/* Chat / Info overlays. Explicit `zIndex: 1` +
                   inline opaque background guarantees they sit
@@ -223,7 +230,9 @@ export function MobileApp() {
                     transition={slideTransition}
                     {...chatSwipe.props}
                     style={{ ...chatSwipe.props.style, background: 'var(--paper)', zIndex: 1 }}>
-                    <MobileChat />
+                    {whisperSelected && convoId
+                      ? <MobileWhisperRoom pairId={convoId} onBack={() => select(null)} />
+                      : <MobileChat />}
                   </motion.div>
                 )}
                 {/* Info card sits ABOVE the chat (zIndex 2). */}
@@ -241,39 +250,6 @@ export function MobileApp() {
             </motion.div>
           )}
 
-          {/* WHISPERS view — same pattern: whisper list is always
-              the background; whisper room slides in on top with the
-              list parallaxing as it goes. */}
-          {view === 'whispers' && (
-            <motion.div key="wh-root" className="absolute inset-0"
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              transition={fadeTransition}>
-              <ViewBoundary name="Whispers">
-              <motion.div
-                className="absolute inset-0 isolate"
-                style={{
-                  x: whisperId !== null ? whisperListPeekX : 0,
-                  zIndex: 0,
-                  willChange: 'transform',
-                }}
-              >
-                <MobileWhispersList onSelect={setWhisperId} />
-              </motion.div>
-              <AnimatePresence>
-                {whisperId !== null && (
-                  <motion.div key={`wh-room-${whisperId}`} className="absolute inset-0"
-                    initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
-                    transition={slideTransition}
-                    {...whisperSwipe.props}
-                    style={{ ...whisperSwipe.props.style, background: 'var(--paper)', zIndex: 1 }}>
-                    <MobileWhisperRoom pairId={whisperId} onBack={() => setWhisperId(null)} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-              </ViewBoundary>
-            </motion.div>
-          )}
-
           {/* CONVENE view — reachable from chat header, shows empty state on its own */}
           {view === 'convene' && (
             <motion.div key="convene" className="absolute inset-0"
@@ -283,12 +259,16 @@ export function MobileApp() {
             </motion.div>
           )}
 
-          {/* LIBRARY view — documents, boards, calendar */}
+          {/* LIBRARY view — documents, boards, calendar(#370 刀3:菜单进入,
+              顶部返回头与桌面 ViewShell 同语义) */}
           {view === 'library' && (
             <motion.div key="library" className="absolute inset-0"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
-              <ViewBoundary name="Library"><MobileLibrary /></ViewBoundary>
+              <ViewBoundary name="Library">
+                <MobileViewBack />
+                <MobileLibrary initialTab={libraryReq?.tab ?? 'documents'} tabNonce={libraryReq?.n ?? 0} />
+              </ViewBoundary>
             </motion.div>
           )}
 
@@ -297,7 +277,10 @@ export function MobileApp() {
             <motion.div key="shipping" className="absolute inset-0"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
-              <ViewBoundary name="Ship"><Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('mapp.openingShip')}</div>}><ShippingWorkspace compact /></Suspense></ViewBoundary>
+              <ViewBoundary name="Ship">
+                <MobileViewBack />
+                <Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('mapp.openingShip')}</div>}><ShippingWorkspace compact /></Suspense>
+              </ViewBoundary>
             </motion.div>
           )}
 
@@ -306,7 +289,10 @@ export function MobileApp() {
             <motion.div key="agents" className="absolute inset-0"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
-              <ViewBoundary name="Agents"><MobileAgents /></ViewBoundary>
+              <ViewBoundary name="Agents">
+                <MobileViewBack />
+                <MobileAgents />
+              </ViewBoundary>
             </motion.div>
           )}
 
@@ -315,13 +301,14 @@ export function MobileApp() {
             <motion.div key="me" className="absolute inset-0"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
-              <ViewBoundary name="Me"><MobileMe /></ViewBoundary>
+              <ViewBoundary name="Me">
+                <MobileViewBack />
+                <MobileMe />
+              </ViewBoundary>
             </motion.div>
           )}
         </AnimatePresence>
       </main>
-
-      {showTabBar && <MobileTabBar />}
       <AnimatePresence>
         {artifactKey && (
           <motion.div
@@ -361,6 +348,29 @@ export function MobileApp() {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+/** #370 刀3:菜单进入的二级面统一返回头 —— 与桌面 ViewShell 的
+ *  「‹ 返回对话」同语义(移动端含安全区顶距)。 */
+function MobileViewBack() {
+  const t = useT()
+  const setView = useApp((s) => s.setView)
+  return (
+    <div
+      className="flex items-center gap-2 border-b border-ink-100 bg-cloud px-3 py-2"
+      style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}
+    >
+      <button
+        type="button"
+        onClick={() => setView('conversations')}
+        className="inline-flex h-8 items-center gap-1 rounded-lg border border-ink-200 bg-cloud px-2.5 text-[13px] text-ink-700 active:bg-sky2-50"
+        aria-label={t('menu.backToChats')}
+      >
+        <IBack className="w-4 h-4" />
+        {t('menu.backToChats')}
+      </button>
     </div>
   )
 }

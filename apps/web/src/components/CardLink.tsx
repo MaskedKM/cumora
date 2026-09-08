@@ -49,7 +49,9 @@ export function CardLink({ id: rawId }: { id: string }) {
         void loadCard(id)
           .then(open)
           .catch(() => {
-            if (view !== 'conversations') setView('boards')
+            // #373 余量收口:死卡不再无响应 —— 桌面落到看板全屏(用户能
+            // 看到卡确已不存在);移动端维持原静默(无看板全屏面,历史行为)。
+            if (!isMobile && view === 'conversations') setView('boards')
           })
       }}
       className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-sky2-100 bg-sky2-50 px-2 py-0.5 text-[13px] font-semibold text-skype-deep no-underline transition hover:border-sky2-200 hover:bg-[#EAF7FD]"

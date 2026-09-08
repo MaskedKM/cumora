@@ -124,7 +124,7 @@ export type Message = Omit<Schemas['Message'], 'sequence' | 'createdAt'> & {
 
 export interface ViewKey {
   // #368 (Blade 1): 'inbox' retired — the action-required section of the conversation list takes over its entry point.
-  // 'whispers' / 'library' have no consumers on the desktop side, but MobileTabBar is still using them; union member retention
-  // to be finalized with Blade 3 mobile alignment.
-  view: 'conversations' | 'whispers' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'projects' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
+  // #370 (Blade 3): 'whispers' retired — pure agent conversations are hosted by the "Agent chats" section of the conversation list on both mobile and desktop.
+  // 'library' has no desktop consumer, but the mobile menu sheet still enters it.
+  view: 'conversations' | 'convene' | 'agents' | 'hr' | 'boards' | 'calendar' | 'documents' | 'projects' | 'skills' | 'shipping' | 'observability' | 'me' | 'library'
 }

@@ -111,6 +111,31 @@ export function NavMenu() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open, close])
 
+  // #373 余量收口:开启态 focus trap —— Tab/Shift+Tab 在面板内循环,
+  // 不再游走到蒙层下方的页面(关闭态已由 visibility:hidden 兜底)。
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const nav = navRef.current
+      if (!nav) return
+      const focusables = Array.from(
+        nav.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+      ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null)
+      if (focusables.length === 0) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (e.shiftKey) {
+        if (!active || active === first || !nav.contains(active)) { e.preventDefault(); last.focus() }
+      } else if (!active || active === last || !nav.contains(active)) {
+        e.preventDefault(); first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   // The profile row's avatar is the SIGNED-IN user (same resolution chain the
   // old Rail top avatar used) — Gravatar shows once participants load, with a
   // minimal ad-hoc fallback to avoid a placeholder flash.

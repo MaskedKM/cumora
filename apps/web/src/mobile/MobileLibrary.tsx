@@ -18,7 +18,7 @@ import { EventEditor } from '@/components/EventEditor'
 import { cn } from '@/lib/utils'
 import { useT, type MessageKey, useTLabel } from '@/lib/i18n'
 
-type LibTab = 'documents' | 'boards' | 'calendar'
+export type LibTab = 'documents' | 'boards' | 'calendar'
 
 const TABS: Array<{ key: LibTab; label: string; Icon: typeof IDoc }> = [
   { key: 'documents', label: 'Documents', Icon: IDoc },
@@ -32,10 +32,18 @@ const TAB_LABEL_KEY: Record<LibTab, MessageKey> = {
   calendar: 'moblib.tabCalendar',
 }
 
-export function MobileLibrary() {
+export function MobileLibrary({ initialTab = 'documents', tabNonce = 0 }: {
+  /** #370 刀3:看板直达 —— 列表头看板钮/菜单项经 MobileApp 传入目标页;
+   *  nonce 变化即重设(重复点击同目标也能重新生效)。 */
+  initialTab?: LibTab
+  tabNonce?: number
+}) {
   // i18n: prefer the translated key, fall back to the inline English.
   const tLabel = useTLabel()
-  const [tab, setTab] = useState<LibTab>('documents')
+  const [tab, setTab] = useState<LibTab>(initialTab)
+  useEffect(() => {
+    setTab(initialTab)
+  }, [initialTab, tabNonce])
   const create = useDocuments((s) => s.create)
   const createBoard = useBoards((s) => s.createBoard)
   const openDocumentPeek = useApp((s) => s.openDocumentPeek)

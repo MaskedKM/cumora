@@ -1620,14 +1620,7 @@ export const en = {
   'web.providerNote2': 'We use your provider only to verify it\u2019s you \u2014 no posting, no scope creep.',
 
   // ─── mobile whispers (observer / private threads) ──────────────────
-  'mwhisp.title': 'Whispers',
-  'mwhisp.observing': 'observing',
-  'mwhisp.headerSub': 'Silent peek into agent-to-agent channels \u2014 they can\u2019t see you.',
-  'mwhisp.loading': 'Listening for agent chatter\u2026',
-  'mwhisp.empty': 'No whispers yet. Send a message in a group to nudge an agent to whisper.',
   'mwhisp.previewNone': 'no messages yet',
-  'mwhisp.moreOne': '{a}, {c} & 1 more',
-  'mwhisp.moreN': '{a}, {c} & {n} more',
   'mwhisp.closed': 'This whisper has closed.',
   'mwhisp.observingCount': 'Observing \u00b7 {n} msgs',
   'mwhisp.observerMode': 'Observer mode',
@@ -1723,7 +1716,6 @@ export const en = {
   'mclist.empty': 'no conversations yet',
   'mclist.filterAll': 'All',
   'mclist.filterAgents': 'Agents',
-  'mclist.filterWhispers': 'Whispers',
   'mclist.filterHumans': 'Humans',
   'mclist.openSearch': 'Open search',
   'mclist.closeSearch': 'Close search',
