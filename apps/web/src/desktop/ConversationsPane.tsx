@@ -188,6 +188,7 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
   const inboxMutedTypes = useInbox((s) => s.mutedTypes)
   const navMenuOpen = useApp((s) => s.navMenuOpen)
   const [actionCollapsed, setActionCollapsed] = useState(false)
+  const [actionExpanded, setActionExpanded] = useState(false)
   const [mutesOpen, setMutesOpen] = useState(false)
   useEffect(() => { void useInbox.getState().load() }, [])
   // 「Agent 对话」分区(WhispersView 退役):owner 专属,数据源
@@ -509,7 +510,7 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
               </div>
             )}
           </div>
-          {!actionCollapsed && actionRows.slice(0, 6).map((it) => (
+          {!actionCollapsed && (actionExpanded ? actionRows : actionRows.slice(0, 6)).map((it) => (
             <button
               key={it.id}
               type="button"
@@ -530,9 +531,16 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
             </button>
           ))}
           {!actionCollapsed && actionRows.length > 6 && (
-            <div className="px-2.5 py-1 text-[10.5px] italic text-ink-300 font-display">
-              {t('convo.actionMore', { n: actionRows.length - 6 })}
-            </div>
+            // #372 评审 P3-1:截断行从纯展示改为可展开 —— 第 7+ 条不再无路径。
+            <button
+              type="button"
+              onClick={() => setActionExpanded((v) => !v)}
+              className="w-full px-2.5 py-1 text-left text-[10.5px] italic text-ink-300 font-display hover:text-skype-deep transition-colors"
+            >
+              {actionExpanded
+                ? t('convo.actionCollapseMore')
+                : t('convo.actionMore', { n: actionRows.length - 6 })}
+            </button>
           )}
         </div>
       )}

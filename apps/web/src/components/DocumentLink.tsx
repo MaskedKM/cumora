@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useApp } from '@/stores/app'
 import { useDocuments } from '@/stores/documents'
 import { useResolvedDocumentId } from '@/lib/useArtifactId'
+import { useIsMobile } from '@/lib/utils'
 import { IFile } from './icons'
 
 export function DocumentLink({ id: rawId }: { id: string }) {
@@ -14,6 +15,7 @@ export function DocumentLink({ id: rawId }: { id: string }) {
   const loaded = useDocuments((s) => s.loaded)
   const loadDocuments = useDocuments((s) => s.load)
   const doc = useDocuments((s) => s.list.find((d) => d.id === id))
+  const isMobile = useIsMobile()
   const label = doc?.title?.trim() || id
 
   useEffect(() => {
@@ -27,7 +29,9 @@ export function DocumentLink({ id: rawId }: { id: string }) {
         e.preventDefault()
         e.stopPropagation()
         selectDocument(id)
-        if (view === 'conversations') openDocumentPeek(id)
+        // #369 刀2(ADR 0009):桌面聊天内文档卡 = 全屏文档视图;移动端 peek
+        // 机制保留至刀3(#370)对齐。
+        if (view === 'conversations' && isMobile) openDocumentPeek(id)
         else setView('documents')
       }}
       className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-sky2-100 bg-sky2-50 px-2 py-0.5 text-[13px] font-semibold text-skype-deep no-underline transition hover:border-sky2-200 hover:bg-sky2-100"

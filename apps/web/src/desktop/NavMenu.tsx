@@ -2,7 +2,7 @@
 // 垂直层级:头像行(我)→ 工作面组 → 公司组(弱化)→ 退出钉底。权限闸随项:
 // 人事 = owner/admin(服务端同闸),观测 = devtools;私聊不在此列 —— 它已并入
 // 会话列表的「Agent 对话」分区(WhispersView 退役)。
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/api/client'
 import { Avatar } from '@/components/Avatar'
 import { IAgent, IAgents, ICalendar, IDoc, IExit, IFile, IFolder, IObserve, IShip } from '@/components/icons'
@@ -46,6 +46,9 @@ function MenuButton({ item, dim, badge }: { item: Item; dim?: boolean; badge?: n
         dim ? 'text-[12.5px] text-ink-500 py-1.5' : 'text-[13.5px] text-ink-900',
         active ? 'bg-sky2-50 text-skype-deep' : 'hover:bg-sky2-50 hover:text-skype-deep',
       )}
+      // 显式 aria-label(#372 评审 P3-2):可达名与徽标内容解耦 —— HR 待批
+      // 徽标出现时名字仍是裸「HR」,e2e 的 exact 锚点不会失配。
+      aria-label={t(item.label)}
     >
       <span
         className={cn(
@@ -80,6 +83,12 @@ export function NavMenu() {
   // Any paired computer running an outdated daemon → gold dot on the avatar
   // (migrated from Rail): the upgrade nudge stays visible app-wide.
   const daemonOutdated = useComputers((s) => Object.values(s.byId).some((c) => c.daemonOutdated))
+  // #372 评审 P3-3:开菜单时把焦点收到面板上(键盘用户不至于仍停在列表),
+  // 关闭态由 visibility:hidden 兜底(Tab 不再进入不可见菜单)。
+  const navRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (open) navRef.current?.focus()
+  }, [open])
 
   // 待批提案数:每次开菜单现拉一次(owner/admin 且菜单开着才请求)——不轮询,
   // 打开即最新,与 HrView 的轮询面互不干扰。
@@ -139,12 +148,19 @@ export function NavMenu() {
         style={{ background: 'rgba(10, 27, 46, 0.30)' }}
       />
       <nav
+        ref={navRef}
+        tabIndex={-1}
         className={cn(
-          'absolute inset-y-0 left-0 z-50 flex w-[300px] flex-col bg-cloud transition-transform duration-200 ease-out',
-          open ? 'translate-x-0' : '-translate-x-full pointer-events-none',
+          'absolute inset-y-0 left-0 z-50 flex w-[300px] flex-col bg-cloud outline-none',
+          open ? 'translate-x-0 visible' : '-translate-x-full invisible pointer-events-none',
         )}
-        style={{ boxShadow: '24px 0 60px -18px rgba(10, 30, 60, 0.38), 1px 0 0 var(--ink-100)' }}
+        style={{
+          // visibility 参与过渡:关闭时在位移结束才隐藏、开启时立即可见。
+          transition: 'transform 200ms ease-out, visibility 200ms',
+          boxShadow: '24px 0 60px -18px rgba(10, 30, 60, 0.38), 1px 0 0 var(--ink-100)',
+        }}
         aria-label={t('nav.menu')}
+        aria-hidden={!open}
       >
         {/* Profile row — the single entry to the Me view (rail had two). */}
         <button

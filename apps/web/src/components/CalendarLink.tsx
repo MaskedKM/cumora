@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useApp } from '@/stores/app'
 import { useCalendar } from '@/stores/calendar'
 import { useResolvedCalendarId } from '@/lib/useArtifactId'
+import { useIsMobile } from '@/lib/utils'
 import { ICalendar } from './icons'
 
 export function CalendarLink({ id: rawId }: { id: string }) {
@@ -13,6 +14,7 @@ export function CalendarLink({ id: rawId }: { id: string }) {
   const loadingEventId = useCalendar((s) => s.loadingEventId)
   const loadEvent = useCalendar((s) => s.loadEvent)
   const event = useCalendar((s) => s.events.find((e) => e.id === id) ?? null)
+  const isMobile = useIsMobile()
   const label = event?.title?.trim() || id
   const didRequestCalendar = useRef(false)
 
@@ -29,7 +31,10 @@ export function CalendarLink({ id: rawId }: { id: string }) {
       onClick={(e) => {
         e.preventDefault()
         e.stopPropagation()
-        if (view === 'conversations') openCalendarEventPeek(id)
+        // #369 刀2(ADR 0009):桌面 = 全屏日历(月份视图,事件已在 store);
+        // 移动端 peek 保留至刀3。CalendarLink 无选中态可带 —— 日历视图自己
+        // 从 store 渲染事件。
+        if (view === 'conversations' && isMobile) openCalendarEventPeek(id)
         else setView('calendar')
       }}
       className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-sky2-100 bg-[#F5FBFF] px-2 py-0.5 text-[13px] font-semibold text-skype-deep no-underline transition hover:border-sky2-200 hover:bg-[#EAF7FD]"
