@@ -63,6 +63,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'menu.company': '公司',
   'menu.roleOwner': 'Owner',
   'menu.roleMember': '成员',
+  'menu.backToChats': '返回对话',
   // ─── 登录 ─────────────────────────────────────────────────────────
   'auth.welcome': '欢迎来到 cumora',
   'auth.signInToContinue': '登录后继续',
@@ -215,6 +216,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   // #368 刀1:会话列表两分区(收件箱/私聊视图退役,ADR 0009)。
   'convo.actionSection': '需要你行动',
   'convo.actionMore': '还有 {n} 条…',
+  'convo.actionCollapseMore': '收起',
   'convo.agentChats': 'Agent 对话',
   'convo.agentChatsOwnerOnly': '仅 owner 可见',
   'convo.emailThread': '邮件会话',

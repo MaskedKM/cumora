@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useApp } from '@/stores/app'
 import { useBoards } from '@/stores/boards'
 import { useResolvedBoardId } from '@/lib/useArtifactId'
+import { useIsMobile } from '@/lib/utils'
 import { IBoard } from './icons'
 
 export function BoardLink({ id: rawId }: { id: string }) {
@@ -15,6 +16,7 @@ export function BoardLink({ id: rawId }: { id: string }) {
   const loadingList = useBoards((s) => s.loadingList)
   const summary = useBoards((s) => s.list.find((b) => b.id === id))
   const snapshot = useBoards((s) => s.snapshots[id])
+  const isMobile = useIsMobile()
   const label = snapshot?.title?.trim() || summary?.title?.trim() || id
   const didRequestList = useRef(false)
 
@@ -32,7 +34,8 @@ export function BoardLink({ id: rawId }: { id: string }) {
         e.preventDefault()
         e.stopPropagation()
         selectBoard(id)
-        if (view === 'conversations') openBoardPeek(id)
+        // #369 刀2(ADR 0009):桌面 = 全屏看板;移动端 peek 保留至刀3。
+        if (view === 'conversations' && isMobile) openBoardPeek(id)
         else setView('boards')
       }}
       className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-sky2-100 bg-sky2-50 px-2 py-0.5 text-[13px] font-semibold text-skype-deep no-underline transition hover:border-sky2-200 hover:bg-[#EAF7FD]"

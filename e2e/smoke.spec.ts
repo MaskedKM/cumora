@@ -167,6 +167,9 @@ test('smoke: 登录 → 给 atlas 发消息 → 收到回复', async ({ page }) 
   await page.getByRole('button', { name: 'Menu' }).click()
   await page.getByRole('button', { name: 'Calendar' }).click()
   await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible()
+  // #369 刀2:Esc 在二级视图 = 返回对话(壳层逐级退回)。
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible()
   await page.keyboard.press('b') // B = 对话 ↔ 看板
   await expect(page.getByRole('heading', { name: 'Boards' })).toBeVisible()
   await page.keyboard.press('b') // 再按 B 回对话,后续步骤依赖会话列表

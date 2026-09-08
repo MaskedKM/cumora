@@ -102,7 +102,9 @@ export function AgentEditor({ agent, onClose }: Props) {
 
   // Esc to close
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // preventDefault:#369 刀2 —— 弹层消费 Esc,防被全局视图返回误吞
+    // (否则二级视图里半填的表单会连视图一起丢)。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])

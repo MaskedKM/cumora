@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '@/lib/i18n'
 import { useResolvedBoardId, useResolvedCalendarId, useResolvedCardId, useResolvedDocumentId } from '@/lib/useArtifactId'
-import { parseBlocks, parseBody } from '@/lib/utils'
+import { parseBlocks, parseBody, useIsMobile } from '@/lib/utils'
 import { useApp } from '@/stores/app'
 import { useBoards } from '@/stores/boards'
 import { useCalendar } from '@/stores/calendar'
@@ -83,6 +83,10 @@ export function DocumentArtifactCard({ id: rawId, conversationId }: { id: string
   const doc = useDocuments((s) => s.list.find((d) => d.id === id) ?? null)
   const byId = useParticipants((s) => s.byId)
   const openDocumentPeek = useApp((s) => s.openDocumentPeek)
+  // #369 刀2(ADR 0009):桌面聊天内产物卡 = 全屏对应视图;移动端 peek 至刀3。
+  const setView = useApp((s) => s.setView)
+  const view = useApp((s) => s.view)
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     if (!loaded) void loadDocuments()
@@ -95,7 +99,8 @@ export function DocumentArtifactCard({ id: rawId, conversationId }: { id: string
 
   const open = () => {
     selectDocument(id)
-    openDocumentPeek(id)
+    if (view === 'conversations' && isMobile) openDocumentPeek(id)
+    else setView('documents')
   }
 
   return (
@@ -164,6 +169,10 @@ export function BoardArtifactCard({ id: rawId }: { id: string }) {
   const snapshot = useBoards((s) => s.snapshots[id])
   const selectBoard = useBoards((s) => s.selectBoard)
   const openBoardPeek = useApp((s) => s.openBoardPeek)
+  // #369 刀2:同 DocumentArtifactCard —— 桌面全屏,移动端 peek 至刀3。
+  const setView = useApp((s) => s.setView)
+  const view = useApp((s) => s.view)
+  const isMobile = useIsMobile()
   const summary = list.find((b) => b.id === id) ?? null
   const didRequestList = useRef(false)
   const requestedBoardId = useRef<string | null>(null)
@@ -190,7 +199,8 @@ export function BoardArtifactCard({ id: rawId }: { id: string }) {
 
   const open = () => {
     selectBoard(id)
-    openBoardPeek(id)
+    if (view === 'conversations' && isMobile) openBoardPeek(id)
+    else setView('boards')
   }
 
   return (
@@ -252,6 +262,10 @@ export function CardArtifactCard({ id: rawId }: { id: string }) {
   const loadCard = useBoards((s) => s.loadCard)
   const selectBoard = useBoards((s) => s.selectBoard)
   const openBoardPeek = useApp((s) => s.openBoardPeek)
+  // #369 刀2:同 DocumentArtifactCard —— 桌面全屏,移动端 peek 至刀3。
+  const setView = useApp((s) => s.setView)
+  const view = useApp((s) => s.view)
+  const isMobile = useIsMobile()
   const byId = useParticipants((s) => s.byId)
   const [failed, setFailed] = useState(false)
   const didRequestCard = useRef(false)
@@ -269,15 +283,19 @@ export function CardArtifactCard({ id: rawId }: { id: string }) {
   const location = lookup ? `${lookup.board.title} -> ${lookup.column.title}` : id
 
   const open = () => {
+    const openResolved = (boardId: string) => {
+      if (view === 'conversations' && isMobile) openBoardPeek(boardId, id)
+      else setView('boards')
+    }
     if (lookup) {
       selectBoard(lookup.board.id)
-      openBoardPeek(lookup.board.id, id)
+      openResolved(lookup.board.id)
       return
     }
     void loadCard(id)
       .then((resolved) => {
         selectBoard(resolved.board.id)
-        openBoardPeek(resolved.board.id, id)
+        openResolved(resolved.board.id)
       })
       .catch(() => setFailed(true))
   }
@@ -345,6 +363,10 @@ export function CalendarArtifactCard({ id: rawId }: { id: string }) {
   const event = useCalendar((s) => s.events.find((e) => e.id === id) ?? null)
   const byId = useParticipants((s) => s.byId)
   const openCalendarEventPeek = useApp((s) => s.openCalendarEventPeek)
+  // #369 刀2:同 DocumentArtifactCard —— 桌面全屏,移动端 peek 至刀3。
+  const setView = useApp((s) => s.setView)
+  const view = useApp((s) => s.view)
+  const isMobile = useIsMobile()
   const [failed, setFailed] = useState(false)
   const didRequestCalendar = useRef(false)
 
@@ -365,7 +387,10 @@ export function CalendarArtifactCard({ id: rawId }: { id: string }) {
   return (
     <button
       type="button"
-      onClick={() => openCalendarEventPeek(id)}
+      onClick={() => {
+        if (view === 'conversations' && isMobile) openCalendarEventPeek(id)
+        else setView('calendar')
+      }}
       className="mt-2 group block w-full max-w-[min(100%,580px)] text-left rounded-[12px] border border-ink-100 bg-cloud overflow-hidden transition hover:border-sky2-200 hover:shadow-[0_16px_34px_-24px_rgba(0,168,240,0.20)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky2-200"
       aria-label={`Open calendar event ${title}`}
     >

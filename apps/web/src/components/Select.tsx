@@ -67,6 +67,8 @@ export function Select<T extends string = string>({
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // preventDefault:#369 刀2 —— 弹层消费 Esc,防被全局视图返回误吞。
+        event.preventDefault()
         setOpen(false)
         setAnimateMenu(false)
       }

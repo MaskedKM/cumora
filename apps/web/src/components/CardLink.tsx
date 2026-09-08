@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useApp } from '@/stores/app'
 import { useBoards } from '@/stores/boards'
 import { useResolvedCardId } from '@/lib/useArtifactId'
+import { useIsMobile } from '@/lib/utils'
 import { IBoard } from './icons'
 import type { BoardCardLookup } from '@/types'
 
@@ -16,6 +17,7 @@ export function CardLink({ id: rawId }: { id: string }) {
   const loadCard = useBoards((s) => s.loadCard)
   const loadingCardId = useBoards((s) => s.loadingCardId)
   const lookup = useBoards((s) => s.cardLookups[id])
+  const isMobile = useIsMobile()
   const didRequestCard = useRef(false)
 
   useEffect(() => {
@@ -29,7 +31,8 @@ export function CardLink({ id: rawId }: { id: string }) {
 
   const open = (resolved: BoardCardLookup) => {
     selectBoard(resolved.board.id)
-    if (view === 'conversations') openBoardPeek(resolved.board.id, id)
+    // #369 刀2(ADR 0009):桌面 = 全屏看板(板已选中);移动端 peek 至刀3。
+    if (view === 'conversations' && isMobile) openBoardPeek(resolved.board.id, id)
     else setView('boards')
   }
 

@@ -57,6 +57,7 @@ export const en = {
   'menu.company': 'Company',
   'menu.roleOwner': 'Owner',
   'menu.roleMember': 'Member',
+  'menu.backToChats': 'Back to chats',
   // ─── sign-in ──────────────────────────────────────────────────────
   'auth.welcome': 'Welcome to cumora',
   'auth.signInToContinue': 'Sign in to continue',
@@ -211,6 +212,7 @@ export const en = {
   // #368 cut 1: two list sections (inbox/whispers views retired — ADR 0009).
   'convo.actionSection': 'Needs your action',
   'convo.actionMore': '{n} more…',
+  'convo.actionCollapseMore': 'Show less',
   'convo.agentChats': 'Agent chats',
   'convo.agentChatsOwnerOnly': 'Owner only',
   'convo.emailThread': 'Email thread',

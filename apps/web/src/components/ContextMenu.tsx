@@ -49,7 +49,9 @@ export function ContextMenu({ x, y, items, onClose, _isChild }: Props) {
     // skip both, so a click on a child item doesn't read as "outside the
     // parent" and slam the whole stack shut before the leaf handler runs.
     if (_isChild) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // preventDefault:弹层消费 Esc 时声明已消费 —— #369 刀2 全局视图返回
+    // Esc 以 defaultPrevented 为闸,不吞关弹层的语义。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node | null
       if (!target) return

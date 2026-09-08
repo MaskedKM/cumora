@@ -181,7 +181,9 @@ function ContextMenu({ x, y, items, onClose }: {
 }) {
   useEffect(() => {
     const onDown = () => onClose()
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // preventDefault:#369 刀2 全局 Esc(视图返回)以 defaultPrevented 为闸,
+    // 弹层关自己时必须声明"这发 Esc 已消费"(与 Combobox/cardModal 同款)。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
     return () => {
