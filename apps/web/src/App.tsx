@@ -20,7 +20,7 @@ import { bootConversations, isMuted, useConversations } from '@/stores/conversat
 import { bootMessagesStream, useMessages } from '@/stores/messages'
 import { bootParticipants, useParticipants } from '@/stores/participants'
 import { usePrefs } from '@/stores/preferences'
-import { bootWhispers, useWhispers } from '@/stores/whispers'
+import { bootWhispers } from '@/stores/whispers'
 import { WebShell } from '@/web/WebShell'
 
 // Route-level code splitting (#144b): the three UI shells (desktop /
@@ -64,7 +64,6 @@ function isAdminContext(): boolean {
 function AuthedApp() {
   const isMobile = useIsMobile()
   const convoId = useApp((s) => s.selectedConversationId)
-  const view = useApp((s) => s.view)
   // Free tier is BYOA-only: gate the app behind pairing a computer until one
   // exists. The gate clears automatically when a non-cloud computer comes
   // online (WS computers.status → store → re-render). Wait for the computers
@@ -160,11 +159,6 @@ function AuthedApp() {
       void useConversations.getState().reload()
     }).catch(() => { /* swallow */ })
   }, [convoId, selectedConvoExists])
-
-  // Lazy-refresh whisper list when entering whispers view
-  useEffect(() => {
-    if (view === 'whispers') useWhispers.getState().loadList()
-  }, [view])
 
   // Cross-component "open updater" channel — MeView's "Check for
   // updates" button posts this event to ask AuthedApp to open the

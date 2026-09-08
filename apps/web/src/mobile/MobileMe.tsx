@@ -83,7 +83,7 @@ export function MobileMe() {
       <div
         className="text-center pt-6 pb-6 px-5 border-b border-ink-100"
         style={{
-          paddingTop: 'max(env(safe-area-inset-top), 24px)',
+          paddingTop: '24px',
           // Soft sky wash — the previous coral radial read as a bright
           // red bloom behind the avatar and overpowered the page. A
           // gentle sky tint reads as "a quiet morning" instead.

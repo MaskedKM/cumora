@@ -1623,14 +1623,7 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'web.providerNote2': '我们仅使用您的登录提供方来验证身份 —— 不会代发内容，不会扩大权限。',
 
   // ─── 移动端私语（观察者 / 私密会话） ──────────────────────────────
-  'mwhisp.title': '私语',
-  'mwhisp.observing': '观察中',
-  'mwhisp.headerSub': '静默查看智能体之间的会话 —— 它们看不到您。',
-  'mwhisp.loading': '正在监听智能体对话…',
-  'mwhisp.empty': '暂无私语。在群组中发条消息，推动智能体开始私聊。',
   'mwhisp.previewNone': '暂无消息',
-  'mwhisp.moreOne': '{a}、{c} 等 1 人',
-  'mwhisp.moreN': '{a}、{c} 等 {n} 人',
   'mwhisp.closed': '该私语已关闭。',
   'mwhisp.observingCount': '观察中 · {n} 条消息',
   'mwhisp.observerMode': '观察者模式',
@@ -1726,7 +1719,6 @@ export const zhCN: Partial<Record<keyof typeof en, string>> = {
   'mclist.empty': '暂无会话',
   'mclist.filterAll': '全部',
   'mclist.filterAgents': '智能体',
-  'mclist.filterWhispers': '私聊',
   'mclist.filterHumans': '人类',
   'mclist.openSearch': '打开搜索',
   'mclist.closeSearch': '关闭搜索',

@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
+import { api, type ApiInboxItem } from '@/api/client'
 import { useApp } from '@/stores/app'
-import { useMe } from '@/stores/auth'
+import { useAuth, useMe } from '@/stores/auth'
 import { useConversations, isMuted } from '@/stores/conversations'
+import { useInbox } from '@/stores/inbox'
 import { useMessages } from '@/stores/messages'
 import { useParticipants } from '@/stores/participants'
-import { Avatar, CloudLogo } from '@/components/Avatar'
+import { useWhispers } from '@/stores/whispers'
+import { Avatar } from '@/components/Avatar'
 import { PreviewText } from '@/components/PreviewText'
 import { HiveAvatar } from '@/components/HiveAvatar'
 import { HumanBadge } from '@/components/HumanBadge'
-import { ISearch } from '@/components/icons'
+import { IAgent, IAgents, IBoard, IDoc, IExit, ISearch, IShip } from '@/components/icons'
 import { GroupCreator } from '@/components/GroupCreator'
-import { api } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Pressable } from './Pressable'
 import { useLongPress } from './useLongPress'
@@ -22,11 +24,14 @@ import { Virtuoso } from 'react-virtuoso'
 import type { Conversation, Participant } from '@/types'
 import { translate, useLocaleStore, useT, type MessageKey } from '@/lib/i18n'
 
-const filters: ReadonlyArray<'All' | 'Agents' | 'Whispers' | 'Humans'> = ['All', 'Agents', 'Whispers', 'Humans']
+// #370 刀3(ADR 0009):「私聊」滤片随 whispers 视图退役 —— 纯 agent 会话
+// 由「Agent 对话」列表分区承载(数据源 /peek/agent-chats),不再是一个
+// 要切进去的过滤器(服务端 /conversations 从不返回 whisper 行,该滤片
+// 本就空转)。
+const filters: ReadonlyArray<'All' | 'Agents' | 'Humans'> = ['All', 'Agents', 'Humans']
 const filterKey = (f: typeof filters[number]) =>
   f === 'All' ? 'mclist.filterAll'
   : f === 'Agents' ? 'mclist.filterAgents'
-  : f === 'Whispers' ? 'mclist.filterWhispers'
   : 'mclist.filterHumans'
 type Filter = (typeof filters)[number]
 
@@ -409,9 +414,10 @@ function convoMenuItems(
   return items
 }
 
-export function MobileChatList() {
+export function MobileChatList({ onOpenLibraryTab }: { onOpenLibraryTab: (tab: 'documents' | 'boards' | 'calendar') => void }) {
   const t = useT()
   const select = useApp((s) => s.selectConversation)
+  const setView = useApp((s) => s.setView)
   const list = useConversations((s) => s.list)
   const byId = useParticipants((s) => s.byId)
   const meId = useMe()
@@ -419,6 +425,25 @@ export function MobileChatList() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQ, setSearchQ] = useState('')
   const [actionFor, setActionFor] = useState<{ c: Conversation; coords: { x: number; y: number } } | null>(null)
+  // ── #370 刀3:菜单 sheet + 两分区(对齐桌面 ConversationsPane 语义)──
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [actionExpanded, setActionExpanded] = useState(false)
+  const [agentExpanded, setAgentExpanded] = useState(false)
+  const isOwner = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.role === 'owner')
+  const whispers = useWhispers((s) => s.list)
+  const inboxItems = useInbox((s) => s.items)
+  const inboxCounts = useInbox((s) => s.counts)
+  const actionCount = inboxCounts.actionRequired + inboxCounts.attention
+  const actionRows = inboxItems
+    .filter((it) => it.severity !== 'info')
+    .sort((a, b) => Number(a.read) - Number(b.read) || b.createdAt.localeCompare(a.createdAt))
+  const openActionItem = (it: ApiInboxItem) => {
+    if (!it.read) void useInbox.getState().markRead(it.id)
+    if (it.linkKind === 'conversation' && it.linkId) select(it.linkId)
+    else if (it.linkKind === 'board') onOpenLibraryTab('boards')
+    else if (it.linkKind === 'calendar') onOpenLibraryTab('calendar')
+    // observability:移动端无观测面 —— 仅标已读,不误导性跳资料库(评审 P3-1)。
+  }
   // GroupCreator is opened from a long-press → "Create group with {name}…"
   // on a direct chat (mirrors the desktop right-click pattern). When
   // non-null, the modal is open; `initialPicked` pre-seeds the other person.
@@ -472,9 +497,10 @@ export function MobileChatList() {
 
   const q = searchQ.trim().toLowerCase()
   const filtered = list.filter((c) => {
-    if (c.kind === 'whisper') {
-      if (filter !== 'Whispers' && filter !== 'All') return false
-    } else if (filter === 'Agents') {
+    // 服务端 /conversations 从不返回 whisper 行(纯 agent 会话只在
+    // /peek/agent-chats);这行是防御性排除,与桌面主列表同款。
+    if (c.kind === 'whisper') return false
+    if (filter === 'Agents') {
       if (!(c.kind === 'direct' && c.tag !== 'human')) return false
     } else if (filter === 'Humans') {
       if (c.tag !== 'human') return false
@@ -505,16 +531,33 @@ export function MobileChatList() {
   })
 
   return (
-    <section className="flex flex-col h-full bg-paper">
+    <section className="relative flex flex-col h-full bg-paper">
       <div
         className="sticky top-0 z-10 bg-paper/95 backdrop-blur-md"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}
       >
         <div className="px-4 pt-2 pb-3 flex items-center gap-2.5">
-          <CloudLogo size={26} />
-          <h1 className="font-display font-medium text-[26px] tracking-tight text-ink-900 leading-none">
+          {/* #370 刀3(ADR 0009):☰ = 菜单 sheet(tab 栏退役后的二级面入口)。 */}
+          <Pressable
+            onClick={() => setMenuOpen(true)}
+            className="w-9 h-9 rounded-full grid place-items-center text-ink-700 bg-cloud border border-ink-100"
+            aria-label={t('nav.menu')}
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+              <path d="M4 7h16M4 12h16M4 17h10" />
+            </svg>
+          </Pressable>
+          <h1 className="font-display font-medium text-[24px] tracking-tight text-ink-900 leading-none">
             Cumora
           </h1>
+          {/* 看板 = 唯一常驻非聊天入口(与桌面同款定位),直达资料库看板页。 */}
+          <Pressable
+            onClick={() => onOpenLibraryTab('boards')}
+            className="w-9 h-9 rounded-full grid place-items-center text-ink-700 bg-cloud border border-ink-100"
+            aria-label={t('nav.boards')}
+          >
+            <IBoard className="w-[17px] h-[17px]" />
+          </Pressable>
           <Pressable
             onClick={() => { setSearchOpen((v) => !v); if (searchOpen) setSearchQ('') }}
             className={cn(
@@ -584,6 +627,50 @@ export function MobileChatList() {
           onScrollerReady={setScroller}
         >
           <div className="pb-2">
+            {/* 「需要你行动」分区(#370 刀3,对齐桌面;搜索态隐藏 = 桌面同款)。 */}
+            {!(searchOpen && q) && actionRows.length > 0 && (
+              <div className="px-4 pt-2 pb-1">
+                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-ink-300">
+                  {t('convo.actionSection')}
+                  {actionCount > 0 && (
+                    <span
+                      className="grid h-[16px] min-w-[16px] place-items-center rounded-full px-1 text-[9.5px] font-bold"
+                      style={{ background: 'var(--coral)', color: 'white' }}
+                    >{actionCount}</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { void useInbox.getState().markAllRead() }}
+                    className="ml-auto text-[10px] font-semibold text-ink-300"
+                    aria-label={t('inbox.readAll')}
+                  >✓</button>
+                </div>
+                {(actionExpanded ? actionRows : actionRows.slice(0, 3)).map((it) => (
+                  <Pressable
+                    key={it.id}
+                    onClick={() => openActionItem(it)}
+                    className="mt-1.5 flex w-full items-start gap-2 rounded-[10px] border-l-[3px] bg-white/70 px-2.5 py-2 text-left"
+                    style={{ borderLeftColor: it.read ? 'transparent' : it.severity === 'action_required' ? 'var(--coral)' : 'var(--skype)' }}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold text-ink-900">{it.title}</span>
+                      {it.body && <span className="block truncate text-[11px] text-ink-500">{it.body}</span>}
+                    </span>
+                    <span className="shrink-0 text-[9.5px] tabular-nums text-ink-300">
+                      {new Date(it.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </Pressable>
+                ))}
+                {actionRows.length > 3 && (
+                  <Pressable
+                    onClick={() => setActionExpanded((v) => !v)}
+                    className="mt-1 px-1 text-[11px] italic text-ink-300 font-display"
+                  >
+                    {actionExpanded ? t('convo.actionCollapseMore') : t('convo.actionMore', { n: actionRows.length - 3 })}
+                  </Pressable>
+                )}
+              </div>
+            )}
             <PinnedRow
               pinned={pinned}
               onSelect={select}
@@ -618,6 +705,50 @@ export function MobileChatList() {
                 />
               ) : null}
             </div>
+            {/* 「Agent 对话」分区(#370 刀3,owner 闸;whispers 视图/tab 退役,
+                纯 agent 会话并入主列表,数据源 /peek/agent-chats;搜索态
+                与非 All 滤片隐藏 = 桌面同款)。 */}
+            {!(searchOpen && q) && filter === 'All' && isOwner && whispers.length > 0 && (
+              <div className="px-4 pt-2 pb-3">
+                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-whisper">
+                  {t('convo.agentChats')}
+                  <span className="text-[9px] opacity-70" title={t('convo.agentChatsOwnerOnly')}>🔒</span>
+                </div>
+                {(agentExpanded ? whispers : whispers.slice(0, 20)).map((w) => {
+                  const ms = w.members.map((id) => byId[id]).filter((p): p is Participant => Boolean(p))
+                  if (ms.length < 2) return null
+                  const isGroup = w.kind === 'group' || ms.length > 2
+                  return (
+                    <Pressable
+                      key={w.id}
+                      onClick={() => select(w.id)}
+                      className="mt-1.5 flex w-full items-center gap-2.5 rounded-[12px] px-1.5 py-2 text-left"
+                    >
+                      <HiveAvatar ps={ms} size={38} ringColor="var(--paper)" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13.5px] font-semibold text-ink-900">
+                          {isGroup
+                            ? (w.title || `${ms[0].name}, ${ms[1].name} …`)
+                            : (<>{ms[0].name} <span className="text-[11px] text-whisper">↔</span> {ms[1].name}</>)}
+                        </span>
+                        <span className="block truncate text-[11.5px] text-ink-500 font-display italic">
+                          {w.about ?? t('whispers.privateThread')}
+                          <span className="not-italic text-ink-300"> · {w.msgCount}</span>
+                        </span>
+                      </span>
+                    </Pressable>
+                  )
+                })}
+                {whispers.length > 20 && (
+                  <Pressable
+                    onClick={() => setAgentExpanded((v) => !v)}
+                    className="mt-1 px-1 text-[11px] italic text-ink-300 font-display"
+                  >
+                    {agentExpanded ? t('convo.actionCollapseMore') : t('convo.actionMore', { n: whispers.length - 20 })}
+                  </Pressable>
+                )}
+              </div>
+            )}
           </div>
         </PullToRefresh>
       </div>
@@ -648,6 +779,77 @@ export function MobileChatList() {
           onClose={() => setCreating(null)}
         />
       )}
+
+      {/* ── 菜单 sheet(#370 刀3,MobileTabBar 退役后的二级面入口)──
+          右滑覆盖层与 app 的 push/pop 语言一致;条目 = 有移动面的二级面:
+          资料库(文档/看板/日历)/交付/智能体/我 + 退出钉底。hr/观测/
+          技能库/项目暂无移动面,不在菜单虚构入口(记 #370 余量)。 */}
+      <AnimatePresence>
+        {menuOpen && (
+          <>
+            <motion.div
+              key="menu-scrim"
+              className="absolute inset-0 z-40"
+              style={{ background: 'rgba(10, 27, 46, 0.30)' }}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setMenuOpen(false)}
+            />
+            <motion.nav
+              key="menu-panel"
+              className="absolute inset-y-0 left-0 z-50 flex w-[82%] max-w-[320px] flex-col bg-cloud"
+              style={{ boxShadow: '18px 0 50px -16px rgba(10, 30, 60, 0.35)' }}
+              initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 38 }}
+              aria-label={t('nav.menu')}
+            >
+              <div className="flex-1 overflow-y-auto px-3 py-4">
+                <div className="px-2.5 pb-1 text-[10.5px] font-bold tracking-[0.05em] text-ink-300">{t('menu.work')}</div>
+                <MenuRow label={t('nav.library')} onClick={() => { setMenuOpen(false); onOpenLibraryTab('documents') }}><IDoc className="w-[17px] h-[17px]" /></MenuRow>
+                <MenuRow label={t('nav.boards')} onClick={() => { setMenuOpen(false); onOpenLibraryTab('boards') }}><IBoard className="w-[17px] h-[17px]" /></MenuRow>
+                <MenuRow label={t('nav.ship')} onClick={() => { setView('shipping'); setMenuOpen(false) }}><IShip className="w-[17px] h-[17px]" /></MenuRow>
+                <div className="mx-2.5 my-2 h-px bg-ink-100" />
+                <div className="px-2.5 pb-1 text-[10.5px] font-bold tracking-[0.05em] text-ink-300">{t('menu.company')}</div>
+                <MenuRow label={t('nav.agents')} onClick={() => { setView('agents'); setMenuOpen(false) }}><IAgent className="w-[17px] h-[17px]" /></MenuRow>
+                <MenuRow label={t('nav.me')} onClick={() => { setView('me'); setMenuOpen(false) }}><IAgents className="w-[17px] h-[17px]" /></MenuRow>
+              </div>
+              <MenuRow
+                label={t('common.signOut')}
+                onClick={async () => {
+                  try { await api.authLogout() } catch (e) { console.warn('[signout] server call failed', e) }
+                  useAuth.getState().clear()
+                  location.reload()
+                }}
+                danger
+              >
+                <IExit className="w-[15px] h-[15px]" />
+              </MenuRow>
+            </motion.nav>
+          </>
+        )}
+      </AnimatePresence>
     </section>
+  )
+}
+
+function MenuRow({ label, onClick, danger, children }: {
+  label: string
+  onClick: () => void
+  danger?: boolean
+  children?: React.ReactNode
+}) {
+  return (
+    <Pressable
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-[12px] px-3 py-3 text-left text-[14px] font-medium',
+        danger ? 'text-ink-500' : 'text-ink-900',
+      )}
+      aria-label={label}
+    >
+      <span className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-[9px]', danger ? 'bg-paper border border-ink-100 text-ink-500' : 'bg-sky2-100 text-skype-deep')}>
+        {children}
+      </span>
+      <span className="truncate">{label}</span>
+    </Pressable>
   )
 }
