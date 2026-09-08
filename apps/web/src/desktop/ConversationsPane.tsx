@@ -535,6 +535,7 @@ export function ConversationsPane({ onResizeStart }: { onResizeStart?: (e: React
             <button
               type="button"
               onClick={() => setActionExpanded((v) => !v)}
+              aria-expanded={actionExpanded}
               className="w-full px-2.5 py-1 text-left text-[10.5px] italic text-ink-300 font-display hover:text-skype-deep transition-colors"
             >
               {actionExpanded

@@ -203,7 +203,8 @@ export function UpdaterDialog({ open, onClose }: DialogProps) {
 
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // preventDefault:#369 刀2 —— 弹层消费 Esc,防被全局视图返回误吞。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])

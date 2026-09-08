@@ -242,7 +242,8 @@ export function EmailComposer() {
   // Esc closes the drawer.
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    // preventDefault:#369 刀2 —— 全局抽屉消费 Esc,防被全局视图返回误吞。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); close() } }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, close])
