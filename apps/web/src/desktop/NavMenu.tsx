@@ -126,9 +126,12 @@ export function NavMenu() {
       const first = focusables[0]
       const last = focusables[focusables.length - 1]
       const active = document.activeElement as HTMLElement | null
+      // 容器自身(tabIndex=-1,开菜单后的默认焦点)视同「在面板外」——
+      // 否则浏览器默认 Tab 会从容器跳到其后 DOM 序的元素(蒙层下方页面)。
+      const outside = !active || active === nav || !nav.contains(active)
       if (e.shiftKey) {
-        if (!active || active === first || !nav.contains(active)) { e.preventDefault(); last.focus() }
-      } else if (!active || active === last || !nav.contains(active)) {
+        if (outside || active === first) { e.preventDefault(); last.focus() }
+      } else if (outside || active === last) {
         e.preventDefault(); first.focus()
       }
     }

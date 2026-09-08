@@ -414,7 +414,7 @@ function convoMenuItems(
   return items
 }
 
-export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
+export function MobileChatList({ onOpenLibraryTab }: { onOpenLibraryTab: (tab: 'documents' | 'boards' | 'calendar') => void }) {
   const t = useT()
   const select = useApp((s) => s.selectConversation)
   const setView = useApp((s) => s.setView)
@@ -428,18 +428,21 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
   // ── #370 刀3:菜单 sheet + 两分区(对齐桌面 ConversationsPane 语义)──
   const [menuOpen, setMenuOpen] = useState(false)
   const [actionExpanded, setActionExpanded] = useState(false)
+  const [agentExpanded, setAgentExpanded] = useState(false)
   const isOwner = useAuth((s) => s.companies.find((c) => c.id === s.activeCompanyId)?.role === 'owner')
   const whispers = useWhispers((s) => s.list)
   const inboxItems = useInbox((s) => s.items)
+  const inboxCounts = useInbox((s) => s.counts)
+  const actionCount = inboxCounts.actionRequired + inboxCounts.attention
   const actionRows = inboxItems
     .filter((it) => it.severity !== 'info')
     .sort((a, b) => Number(a.read) - Number(b.read) || b.createdAt.localeCompare(a.createdAt))
   const openActionItem = (it: ApiInboxItem) => {
     if (!it.read) void useInbox.getState().markRead(it.id)
     if (it.linkKind === 'conversation' && it.linkId) select(it.linkId)
-    else if (it.linkKind === 'board') onOpenBoards()
-    else if (it.linkKind === 'calendar') setView('library')
-    else if (it.linkKind === 'observability') setView('library')
+    else if (it.linkKind === 'board') onOpenLibraryTab('boards')
+    else if (it.linkKind === 'calendar') onOpenLibraryTab('calendar')
+    // observability:移动端无观测面 —— 仅标已读,不误导性跳资料库(评审 P3-1)。
   }
   // GroupCreator is opened from a long-press → "Create group with {name}…"
   // on a direct chat (mirrors the desktop right-click pattern). When
@@ -549,7 +552,7 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
           </h1>
           {/* 看板 = 唯一常驻非聊天入口(与桌面同款定位),直达资料库看板页。 */}
           <Pressable
-            onClick={onOpenBoards}
+            onClick={() => onOpenLibraryTab('boards')}
             className="w-9 h-9 rounded-full grid place-items-center text-ink-700 bg-cloud border border-ink-100"
             aria-label={t('nav.boards')}
           >
@@ -624,17 +627,23 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
           onScrollerReady={setScroller}
         >
           <div className="pb-2">
-            {/* 「需要你行动」分区(#370 刀3,对齐桌面;InboxView 家族已无移动面)。 */}
-            {actionRows.length > 0 && (
+            {/* 「需要你行动」分区(#370 刀3,对齐桌面;搜索态隐藏 = 桌面同款)。 */}
+            {!(searchOpen && q) && actionRows.length > 0 && (
               <div className="px-4 pt-2 pb-1">
                 <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-ink-300">
                   {t('convo.actionSection')}
-                  {actionRows.length > 0 && (
+                  {actionCount > 0 && (
                     <span
                       className="grid h-[16px] min-w-[16px] place-items-center rounded-full px-1 text-[9.5px] font-bold"
                       style={{ background: 'var(--coral)', color: 'white' }}
-                    >{actionRows.length}</span>
+                    >{actionCount}</span>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => { void useInbox.getState().markAllRead() }}
+                    className="ml-auto text-[10px] font-semibold text-ink-300"
+                    aria-label={t('inbox.readAll')}
+                  >✓</button>
                 </div>
                 {(actionExpanded ? actionRows : actionRows.slice(0, 3)).map((it) => (
                   <Pressable
@@ -697,14 +706,15 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
               ) : null}
             </div>
             {/* 「Agent 对话」分区(#370 刀3,owner 闸;whispers 视图/tab 退役,
-                纯 agent 会话并入主列表,数据源 /peek/agent-chats)。 */}
-            {isOwner && whispers.length > 0 && (
+                纯 agent 会话并入主列表,数据源 /peek/agent-chats;搜索态
+                与非 All 滤片隐藏 = 桌面同款)。 */}
+            {!(searchOpen && q) && filter === 'All' && isOwner && whispers.length > 0 && (
               <div className="px-4 pt-2 pb-3">
                 <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-whisper">
                   {t('convo.agentChats')}
                   <span className="text-[9px] opacity-70" title={t('convo.agentChatsOwnerOnly')}>🔒</span>
                 </div>
-                {whispers.slice(0, 20).map((w) => {
+                {(agentExpanded ? whispers : whispers.slice(0, 20)).map((w) => {
                   const ms = w.members.map((id) => byId[id]).filter((p): p is Participant => Boolean(p))
                   if (ms.length < 2) return null
                   const isGroup = w.kind === 'group' || ms.length > 2
@@ -729,6 +739,14 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
                     </Pressable>
                   )
                 })}
+                {whispers.length > 20 && (
+                  <Pressable
+                    onClick={() => setAgentExpanded((v) => !v)}
+                    className="mt-1 px-1 text-[11px] italic text-ink-300 font-display"
+                  >
+                    {agentExpanded ? t('convo.actionCollapseMore') : t('convo.actionMore', { n: whispers.length - 20 })}
+                  </Pressable>
+                )}
               </div>
             )}
           </div>
@@ -786,8 +804,8 @@ export function MobileChatList({ onOpenBoards }: { onOpenBoards: () => void }) {
             >
               <div className="flex-1 overflow-y-auto px-3 py-4">
                 <div className="px-2.5 pb-1 text-[10.5px] font-bold tracking-[0.05em] text-ink-300">{t('menu.work')}</div>
-                <MenuRow label={t('nav.library')} onClick={() => { setView('library'); setMenuOpen(false) }}><IDoc className="w-[17px] h-[17px]" /></MenuRow>
-                <MenuRow label={t('nav.boards')} onClick={() => { setMenuOpen(false); onOpenBoards() }}><IBoard className="w-[17px] h-[17px]" /></MenuRow>
+                <MenuRow label={t('nav.library')} onClick={() => { setMenuOpen(false); onOpenLibraryTab('documents') }}><IDoc className="w-[17px] h-[17px]" /></MenuRow>
+                <MenuRow label={t('nav.boards')} onClick={() => { setMenuOpen(false); onOpenLibraryTab('boards') }}><IBoard className="w-[17px] h-[17px]" /></MenuRow>
                 <MenuRow label={t('nav.ship')} onClick={() => { setView('shipping'); setMenuOpen(false) }}><IShip className="w-[17px] h-[17px]" /></MenuRow>
                 <div className="mx-2.5 my-2 h-px bg-ink-100" />
                 <div className="px-2.5 pb-1 text-[10.5px] font-bold tracking-[0.05em] text-ink-300">{t('menu.company')}</div>

@@ -76,7 +76,7 @@ export function MobileLibrary({ initialTab = 'documents', tabNonce = 0 }: {
   return (
     <section className="relative flex flex-col h-full bg-paper">
       <div className="sticky top-0 z-10 backdrop-blur-md bg-paper/95"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}>
+        style={{ paddingTop: '12px' }}>
         <div className="px-4 pt-2 pb-2">
           <h1 className="font-display font-medium text-[26px] tracking-tight text-ink-900 leading-none">
             Library

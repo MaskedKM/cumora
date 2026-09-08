@@ -74,7 +74,7 @@ export function MobileAgents() {
   return (
     <section className="flex flex-col h-full overflow-hidden bg-paper">
       <div className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)', background: 'rgba(250, 252, 254, 0.95)' }}>
+        style={{ paddingTop: '12px', background: 'rgba(250, 252, 254, 0.95)' }}>
         <div className="px-4 pt-2 pb-3">
           <h1 className="font-display font-medium text-[26px] tracking-tight text-ink-900 leading-none">
             {tLabel('magents.titleLead', 'Your team')} <em className="not-italic text-skype-deep" style={{ fontStyle: 'italic', fontWeight: 400 }}>{tLabel('magents.titleCount', `of ${agents.length}`, { n: agents.length })}</em>

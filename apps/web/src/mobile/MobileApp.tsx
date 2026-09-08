@@ -124,11 +124,12 @@ export function MobileApp() {
   const whispers = useWhispers((s) => s.list)
   const whisperSelected = convoId !== null && whispers.some((w) => w.id === convoId)
 
-  // 看板直达:列表头看板钮 / 菜单看板项 → 资料库看板页(nonce 让重复
-  // 点击同目标也能重新生效)。
+  // 看板/资料库直达:列表头看板钮、菜单资料库项、行动分区 board/calendar
+  // 条目共用一条 tab 管线(nonce 让重复点击同目标也能重新生效;每次进库
+  // 都走重挂载,initialTab 保证落页正确)。
   const [libraryReq, setLibraryReq] = useState<{ tab: LibTab; n: number } | null>(null)
-  const openBoards = () => {
-    setLibraryReq((r) => ({ tab: 'boards', n: (r?.n ?? 0) + 1 }))
+  const openLibraryTab = (tab: LibTab) => {
+    setLibraryReq((r) => ({ tab, n: (r?.n ?? 0) + 1 }))
     setView('library')
   }
 
@@ -210,7 +211,7 @@ export function MobileApp() {
                   willChange: 'transform',
                 }}
               >
-                <MobileChatList onOpenBoards={openBoards} />
+                <MobileChatList onOpenLibraryTab={openLibraryTab} />
               </motion.div>
               {/* Chat / Info overlays. Explicit `zIndex: 1` +
                   inline opaque background guarantees they sit
@@ -260,50 +261,59 @@ export function MobileApp() {
           )}
 
           {/* LIBRARY view — documents, boards, calendar(#370 刀3:菜单进入,
-              顶部返回头与桌面 ViewShell 同语义) */}
+              顶部返回头与桌面 ViewShell 同语义;flex 列让返回条不挤爆
+              子视图的 h-full —— 评审 P1-1) */}
           {view === 'library' && (
-            <motion.div key="library" className="absolute inset-0"
+            <motion.div key="library" className="absolute inset-0 flex flex-col"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
               <ViewBoundary name="Library">
                 <MobileViewBack />
-                <MobileLibrary initialTab={libraryReq?.tab ?? 'documents'} tabNonce={libraryReq?.n ?? 0} />
+                <div className="min-h-0 flex-1">
+                  <MobileLibrary initialTab={libraryReq?.tab ?? 'documents'} tabNonce={libraryReq?.n ?? 0} />
+                </div>
               </ViewBoundary>
             </motion.div>
           )}
 
           {/* SHIP view — end-to-end contract, verification, release, and learning loop */}
           {view === 'shipping' && (
-            <motion.div key="shipping" className="absolute inset-0"
+            <motion.div key="shipping" className="absolute inset-0 flex flex-col"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
               <ViewBoundary name="Ship">
                 <MobileViewBack />
-                <Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('mapp.openingShip')}</div>}><ShippingWorkspace compact /></Suspense>
+                <div className="min-h-0 flex-1">
+                  <Suspense fallback={<div className="h-full grid place-items-center text-sm text-ink-400">{t('mapp.openingShip')}</div>}><ShippingWorkspace compact /></Suspense>
+                </div>
               </ViewBoundary>
             </motion.div>
           )}
 
           {/* AGENTS view */}
           {view === 'agents' && (
-            <motion.div key="agents" className="absolute inset-0"
+            <motion.div key="agents" className="absolute inset-0 flex flex-col"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
               <ViewBoundary name="Agents">
                 <MobileViewBack />
-                <MobileAgents />
+                <div className="min-h-0 flex-1">
+                  <MobileAgents />
+                </div>
               </ViewBoundary>
             </motion.div>
           )}
 
           {/* ME view */}
           {view === 'me' && (
-            <motion.div key="me" className="absolute inset-0"
+            <motion.div key="me" className="absolute inset-0 flex flex-col"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={fadeTransition}>
               <ViewBoundary name="Me">
                 <MobileViewBack />
-                <MobileMe />
+                <div className="min-h-0 flex-1">
+                  <MobileMe />
+                </div>
               </ViewBoundary>
             </motion.div>
           )}
@@ -359,7 +369,7 @@ function MobileViewBack() {
   const setView = useApp((s) => s.setView)
   return (
     <div
-      className="flex items-center gap-2 border-b border-ink-100 bg-cloud px-3 py-2"
+      className="flex shrink-0 items-center gap-2 border-b border-ink-100 bg-cloud px-3 py-2"
       style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}
     >
       <button
