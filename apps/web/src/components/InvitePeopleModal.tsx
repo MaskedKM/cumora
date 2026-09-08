@@ -65,7 +65,9 @@ export function InvitePeopleModal({ companyId, companyName, onClose }: Props) {
 
   useEffect(() => { void reload() }, [reload])
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // preventDefault:#369 刀2 —— 弹层消费 Esc,防被全局视图返回误吞
+    // (CompanySwitcher 在任意视图可开此弹)。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])

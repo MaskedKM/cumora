@@ -126,7 +126,9 @@ export function DateTimePicker({
       if (wrapRef.current?.contains(target) || popRef.current?.contains(target)) return
       setOpen(false)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    // preventDefault:#369 刀2 —— 嵌套弹层(EventEditor 内)消费 Esc,
+    // 防被全局视图返回误吞。
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false) } }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
     return () => {

@@ -133,9 +133,12 @@ export function DesktopApp() {
   }, [setView])
 
   // #369 刀2:Esc 在二级视图 = 返回对话(逐层退回:NavMenu 自己消化 Esc,
-  // 这里只处理视图层)。三重闸防误吞:菜单开着不管 / 会话视图不管(聊天侧
-  // Esc 语义丰富:关搜索/关提及/取消回复)/ 输入框与已 preventDefault 的
-  // 事件不管(视图内编辑态取消、组件自有 Esc)。
+  // 这里只处理视图层)。闸:菜单开着不管 / 会话视图不管(聊天侧 Esc 语义
+  // 丰富:关搜索/关提及/取消回复)/ 输入框 target 不管(视图内编辑态)。
+  // 关键时序(#373 评审 P1-2):本监听注册于应用挂载,在一切弹层的 window
+  // 监听**之前**执行,此刻 defaultPrevented 恒 false —— 真正的退场必须
+  // 延迟到事件分发结束后复查:弹层消费了这发 Esc(preventDefault)就让路,
+  // 层级 = 弹层 → 视图。已知余量:嵌套弹层一次 Esc 会同关两层。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
@@ -144,7 +147,9 @@ export function DesktopApp() {
       if (e.defaultPrevented) return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
-      s.setView('conversations')
+      setTimeout(() => {
+        if (!e.defaultPrevented) useApp.getState().setView('conversations')
+      }, 0)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
